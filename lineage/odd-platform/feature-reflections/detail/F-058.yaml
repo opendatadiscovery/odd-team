@@ -1,0 +1,837 @@
+---
+feature_id: F-058
+pillar_anchored_id: P-03:F-002
+pillar: Master Data Management
+feature_name: |-
+  Lookup Tables list page — operator-visible catalog of lookup tables; silently
+  caps at 30 rows because InfiniteScroll scrollableTarget references a
+  non-existent DOM id (copy-paste regression from Directory feature)
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__LookupTables.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Not re-fetched this invocation (LookupTables sidecar carries verbatim
+      excerpts from a 2026-05-26 status-200 WebFetch; reused as cross-reference
+      per Rule 1 — docs are downstream of code, never the source of intent).
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 3
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: |-
+      For any tenant with >30 lookup tables the list silently shows only the
+      first 30 rows — no loader, no "load more", no pagination hint — because
+      InfiniteScroll watches a DOM id that does not exist on this page.
+related_feature_flows: [F-026, F-059]
+related_concepts:
+  - lookup-tables
+  - master-data-management
+  - infinite-scroll
+related_drift_classes:
+  - copy_paste_regression_dom_id_mismatch_silent_truncation
+  - tests_coverage_semantic_empty_no_test_files
+  - full_pillar_user_facing_ux_defect_master_data_management
+new_drift_classes_proposed:
+  - ui_disabled_field_still_sent_on_wire   # the edit-form namespace_name drift, surfaced as a user-facing promise here
+---
+
+# Lookup Tables list page — product-owner reflection
+
+## product_owner_narrative
+
+The **Lookup Tables list page** at `/master-data/lookup-tables` is the entire
+front door of the Master Data Management pillar (P-03). It is where an operator
+who curates reference data inside ODD — country-code tables, tier mappings,
+customer-segment enumerations, the canonical lists that downstream pipelines and
+BI tools join against — comes to see, in one place, every lookup table they have
+authored or can read (per `system-mission.md:125-141`, P-03's one-line capability
+is "manage operator-curated reference data as first-class catalog entities," and
+the pillar is intentionally narrow — Lookup Tables is its sole child surface).
+The page is reached by clicking the **Master Data** toolbar tab; there is no
+other path to this content — no Directory drill-down for `LOOKUP_TABLE`-class
+entities, no Search facet that returns the full lookup-table population (per
+`LookupTables` sidecar understanding + `system-mission.md:125-141`). What the
+operator sees on this one page IS the feature.
+
+The page presents five pieces (per `LookupTables` sidecar understanding): a big
+**H1 count badge** that reads "N lookup tables overall," a **global search box**,
+a permission-gated **"+ Add new"** button that opens a create dialog, and a
+**scrolling table list** of three columns — Name, Description, Namespace — with
+per-row Edit and Delete actions. The operator's mental model is the obvious one:
+the counter tells me how many tables exist, the list shows me those tables, and I
+scroll to walk through all of them. They type in the search box to narrow down;
+they click "+ Add new" to author a table; they click a row's Edit to rename it or
+fix its description.
+
+The working parts the operator relies on are: a **server-side persisted search
+session** (the page mints a `?searchId=<uuid>` on first visit so a filtered view
+can be deep-linked or reloaded — per `LookupTables` sidecar implicit_adrs[0]); a
+**count facet** that the H1 reads straight from the backend; **search-as-you-type**
+that pushes each query to the session; **modal create/edit dialogs**; and an
+**infinite-scroll list** that is supposed to fetch the next page of 30 rows as the
+operator scrolls toward the bottom (per `LookupTables` sidecar performance +
+downstream_side_effects). The pagination is the load-bearing part: the list fetches
+30 rows per page and is meant to keep fetching as the operator scrolls.
+
+The integration story is small but real: lookup tables are themselves Data
+Entities of class `LOOKUP_TABLE`, so they show up in Discovery and lineage
+(per `system-mission.md:134` — P-03 feeds P-01 and P-05); each row's name links
+out to the catalog detail page for the underlying dataset (per `LookupTables`
+sidecar security.data_exposure). The create/edit flow shares form code with the
+per-table mutation lifecycle that sibling feature F-026 anchors.
+
+The edge cases a product owner would flag in a demo are exactly the ones this
+reflection lands on. The empty state shows a generic placeholder with no "create
+your first table" call to action (per `LookupTables` sidecar
+bugs_limitations_corner_cases[6]). The counter is global and unscoped — every
+authenticated user sees the platform-wide table count even with zero lookup-table
+permissions (per `LookupTables` sidecar security.known_security_gaps[1]). And the
+single most important edge — what happens when a tenant has more than 30 tables —
+is where the feature silently fails: the infinite-scroll list never fetches page
+two, so the catalog APPEARS complete at 30 rows while the counter above it reads
+the true (larger) total (per `LookupTables` sidecar bugs_limitations_corner_cases[1],
+stress_findings.name_behavior_pairs InfiniteScroll). This reflection converts each
+of these operator expectations into a falsifiable promise and traces it.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a tenant has more than 30 lookup tables, an operator who scrolls to the
+    bottom of the list sees the next page of tables load automatically (infinite
+    scroll), until the whole catalog is visible.
+  derivation: |-
+    The list renders size=30 per page via useInfiniteQuery and wraps the rows in an
+    InfiniteScroll whose name promises "load more rows when the user scrolls near the
+    bottom" — the standard SPA infinite-scroll pattern used on every other list page.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The InfiniteScroll does NOT fetch page two from container scroll. The list
+      wraps the rows in <ScrollableContainer id='lookup-tables-list'> (LookupTablesList.tsx:51)
+      but mounts <InfiniteScroll scrollableTarget='directory-entities-list'>
+      (LookupTablesList.tsx:53) — the scrollableTarget points at a DOM id that does
+      NOT exist on this page; it is the Directory feature's container id (confirmed:
+      Directory/Entities/EntitiesList/EntitiesList.tsx:45 declares id='directory-entities-list').
+      react-infinite-scroll-component falls back to window scroll when scrollableTarget
+      is unresolvable, but the rows live inside a ScrollableContainer with $offsetY=165
+      and overflow:auto, so window scroll never fires for content inside the container.
+      Net effect: fetchNextPage is never triggered by scrolling; the list is capped at
+      the first 30 rows. I confirmed via a single Rule-8 source read (grep across the
+      whole SPA) that EVERY other InfiniteScroll in the codebase (28 instances) pairs a
+      matching container id with its scrollableTarget; LookupTablesList is the SOLE mismatch.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "LookupTablesList.tsx:51-53"
+        note: "Mismatched id pair: container 'lookup-tables-list' vs target 'directory-entities-list'."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.name_behavior_pairs (InfiniteScroll)
+        cite: "LookupTablesList.tsx:51-53"
+        note: "drift: DRIFT_NAME_VS_BEHAVIOR — promise 'loads more rows' vs behaviour 'fetchNextPage never fires'."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: source_read_for_validation
+        cite: "Directory/Entities/EntitiesList/EntitiesList.tsx:45 (id='directory-entities-list')"
+        note: "Confirms the copy-paste source — the target id belongs to the Directory feature, not this page."
+    source_read_for_validation: true
+    operator_visible_failure: |-
+      (1) Primary: for any tenant with >30 lookup tables, the list shows only the
+      first 30 and gives NO signal that more exist — no bottom skeleton loader, no
+      "Load more" button, no pagination control, no count of shown-vs-total. The
+      operator believes they are looking at the complete catalog when they are not.
+      (2) Discovery failure: a new operator or a hand-over scenario cannot find a
+      table they don't already know exists — the search workaround only helps someone
+      who knows the missing table's name. (3) Blast radius: this is 100% of the P-03
+      pillar's user-facing UX (the pillar has exactly one surface), so a modest
+      organisation exceeding 30 tables loses the whole feature silently. (4) Trust:
+      the H1 counter reads the true total (e.g. "250 lookup tables overall") directly
+      above a list of 30 — once an operator notices the mismatch they cannot trust the
+      page, but most never look closely enough to notice.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a tenant has 30 or fewer lookup tables, the operator sees the entire
+    catalog on the list page.
+  derivation: |-
+    size=30 is the first page; below the page boundary no pagination is needed,
+    so the bug at H-001 does not bite.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The first page of up-to-30 rows renders on initial load via the
+      useInfiniteQuery's first fetch — this path does not depend on the broken
+      scroll trigger. data.pages[0].items is flattened and rendered verbatim
+      (no client-side filter/sort), so a tenant at N<=30 sees the full set.
+      The InfiniteScroll defect only suppresses pages 2+.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.orderings
+        cite: "LookupTablesList.tsx:27-30"
+        note: "data?.pages.flatMap(page => page.items) ?? [] — first page renders unconditionally."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.tunables (size=30)
+        cite: "LookupTablesList.tsx:23"
+        note: "size=30 — N<=30 fits in page one; no fetchNextPage required."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a tenant has exactly zero lookup tables, the operator sees a clear empty
+    state and an obvious way to create their first table.
+  derivation: |-
+    The page is a create-and-curate surface; the doc page describes the +Add new
+    button as the entry point; a fresh tenant landing here is a normal first-run case.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The empty case IS handled — when data.items is empty, isEmpty is true and
+      <EmptyContentPlaceholder offsetTop={215} /> renders (a generic icon + message).
+      But the placeholder carries NO "Create your first lookup table" call to action
+      pointing at the +Add new button (which sits at top-right). The empty state is
+      present and correct; the guidance to act on it is absent. The doc page describes
+      the +Add new flow as the entry point but a fresh tenant landing on the empty
+      list may not connect the top-right button to the empty body.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[6]
+        cite: "LookupTablesList.tsx:64 + shared/elements/EmptyContentPlaceholder"
+        note: "Generic placeholder, no CTA tying it to +Add new."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.tunables (N=0 boundary)
+        cite: "LookupTablesList.tsx:27-35, 64"
+        note: "N=0 → isEmpty → placeholder renders (static-derivable)."
+    operator_visible_failure: |-
+      A first-run operator sees an empty page with no inline prompt to create a
+      table; the create affordance is the +Add new button at top-right, visually
+      detached from the empty body. The flow works (the button is there) but is
+      not intuitive for a first-time user — a discoverability/onboarding gap, not a
+      data-correctness failure.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When an operator types text into the search box, the list narrows to lookup
+    tables matching that text (full-text over the table's searchable fields).
+  derivation: |-
+    The search box label reads "Search lookup tables..."; the request field is
+    named `query`; the user expects what they type to filter the list.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      handleSearch fires updateFacets({...facets, query}) which PUTs the new query
+      to /api/referencedata/search/{searchId}; the server merges it into the
+      persisted FacetStateDto and the subsequent /results call returns the matching
+      rows. The query string flows verbatim from the input box to FacetStateDto.query
+      to the SQL search predicate — no silent translation (Category-F request_inputs
+      verdict: drift NONE).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.request_inputs (query)
+        cite: "LookupTables.tsx:50-52 + LookupDataSearchServiceImpl.java:27-34"
+        note: "query → FacetStateDto.query → SQL predicate; drift: NONE."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    The "N lookup tables overall" counter in the H1 reflects the same set of tables
+    the list below it shows.
+  derivation: |-
+    The counter sits directly above the list; an operator reads "counter describes
+    the list." Counter and list sharing a set is the implicit page contract.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The counter and the list diverge on two independent axes. (a) Cap divergence:
+      the counter reads facets.total (the backend count of all tables matching the
+      query — LookupTables.tsx:60-62), while the list is capped at 30 by the broken
+      InfiniteScroll (H-001). For a >30-table tenant the counter says "250" and the
+      list shows 30. (b) Scope divergence: facets.total comes from
+      LookupDataSearchServiceImpl.countByState with NO owner-filter, namespace-scope,
+      or per-permission filter — it is the GLOBAL population size. So the counter
+      describes the whole platform's lookup tables, not "what this user can act on"
+      and not "what is in the list."
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[4]
+        cite: "LookupTables.tsx:60-62 + LookupDataSearchServiceImpl.java:62-68"
+        note: "Counter is global, unscoped count — no owner/permission filter."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "LookupTablesList.tsx:51-53"
+        note: "List capped at 30 (H-001) — counter and list cannot agree above 30."
+    operator_visible_failure: |-
+      (1) Above 30 tables, the counter (true total) and the list (30) visibly
+      disagree — the only operator-visible signal of the H-001 silent cap, but one
+      most users never inspect. (2) The counter leaks the global lookup-table
+      population to any authenticated user regardless of permissions (a MEDIUM
+      information-exposure posture confirmed in security.known_security_gaps[1]) —
+      a user who can act on zero tables still learns how many exist platform-wide.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    A user who lacks lookup-table permissions cannot reach the create flow — the
+    "+ Add new" button is hidden for them.
+  derivation: |-
+    The button is wrapped in <WithPermissions permissionTo={Permission.LOOKUP_TABLE_CREATE}>;
+    the doc page presents +Add new as the gated create entry point.
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The +Add new button is wrapped in <WithPermissions permissionTo=
+      {Permission.LOOKUP_TABLE_CREATE}> (LookupTables.tsx:72-82). WithPermissions reads
+      usePermissions().hasAccessTo(LOOKUP_TABLE_CREATE); when the user lacks the
+      permission the button is not rendered. This holds identically across all four
+      auth modes (DISABLED/LOGIN_FORM/OAUTH2/LDAP) — auth mode only changes how the
+      permission set is loaded, not the gate logic. The create endpoint is ALSO gated
+      at the wire (POST /api/referencedata/table → LOOKUP_TABLE_CREATE in
+      SecurityConstants.SECURITY_RULES), so hiding the button is defence-in-depth, not
+      the sole gate.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.auth_gates
+        cite: "LookupTables.tsx:72-82 + WithPermissions.tsx:11-32"
+        note: "Button gated by hasAccessTo(LOOKUP_TABLE_CREATE); identical across auth modes."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: security.authorization_assertions[0]
+        cite: "LookupTables.tsx:72-82"
+        note: "Wire-level gate on POST /api/referencedata/table backs the UI gate."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    A user who lacks ALL lookup-table permissions cannot see the page (or its
+    contents) at all — the page is permission-gated.
+  derivation: |-
+    The route is mounted under <WithPermissionsProvider> listing CREATE/UPDATE/DELETE;
+    the doc page implies the page is permission-gated by describing the +Add new
+    button as the entry point. A reader could reasonably expect the whole page gated.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The page renders fully for ANY authenticated user regardless of lookup-table
+      permissions. The route-level WithPermissionsProvider lists CREATE/UPDATE/DELETE
+      but PermissionProvider does NOT short-circuit rendering — it only passes
+      permission CONTEXT to children. So title, counter, search box, and the full
+      table list all render for a user with zero LOOKUP_TABLE_* permissions; only the
+      +Add new button (and per-row Edit/Delete) are hidden. Read endpoints
+      (/api/referencedata/search + /results) carry NO RBAC in SECURITY_RULES (per the
+      cross-referenced ReferenceDataController sidecar) — this is the platform's
+      documented read-collaborative posture, not an accidental hole.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: security.known_security_gaps[0]
+        cite: "LookupTables.tsx:72-82 + PermissionProvider.tsx (no render-gate) + masterDataRoutes sidecar"
+        note: "Provider passes context, does not block render; page renders for any authenticated user."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: security.owner_scoping
+        cite: "LookupTables.tsx:60-62 + ReferenceDataController sidecar known_security_gaps[0]"
+        note: "Read endpoints have no RBAC — read-collaborative posture is intentional."
+    operator_visible_failure: |-
+      A user with no lookup-table permissions still sees every table's name,
+      description, and namespace, plus the global count. If a deployment expected the
+      Master Data section to be permission-walled (a reasonable reading of the docs,
+      which describe the gated +Add new flow), that expectation is wrong: viewing is
+      open to all authenticated users; only mutation is gated. This is a doc/posture
+      gap (the read-collaborative stance is undocumented at this page) rather than a
+      code bug — the behaviour matches the platform's intentional posture.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When an operator edits a lookup table and the namespace field is shown disabled,
+    the namespace is not part of the update sent to the server (disabled = not editable
+    = not transmitted).
+  derivation: |-
+    The edit form disables the namespace field on edit (disabled={!!lookupTable}); the
+    doc page describes LOOKUP_TABLE_UPDATE as "renaming or editing description" only,
+    implying namespace is not updateable; a user reads "disabled field = not sent."
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The form types its data as LookupTableFormData (the CREATE shape, which includes
+      namespaceName) and submits that SAME shape to the UPDATE endpoint
+      (editLookupTable({ lookupTableUpdateFormData: data })). The OpenAPI UPDATE schema
+      LookupTableUpdateFormData defines ONLY name + description (components.yaml:3853-3862),
+      so namespace_name is sent on the wire on every edit despite the field being
+      visually disabled. Whether the server silently discards it (Jackson
+      FAIL_ON_UNKNOWN_PROPERTIES=false → 200, field ignored) or strictly rejects it
+      (400) is not statically determinable from the chain — it requires running the
+      edit against a local instance. This is a DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+      (Category-F) the sidecar already flagged PROBE-NEEDED (P-191).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "LookupTableForm.tsx:49, 60-66, 117-123 + components.yaml:3853-3862"
+        note: "CREATE shape submitted to UPDATE endpoint; namespace_name on the wire; disabled field hides it from user."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.request_inputs (lookupTableUpdateFormData)
+        cite: "P-191"
+        note: "drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION; discard-vs-reject is PROBE-NEEDED."
+    operator_visible_failure: |-
+      Probe-pending, two modes: (a) silent-discard — the disabled namespace field is a
+      UI hint, not a data guarantee; an operator inspecting the network tab on edit
+      sees namespace_name on the wire while the DB is unchanged (confusing but
+      harmless). (b) strict-rejection — every edit returns 400 and renaming a table is
+      impossible. The probe decides which; both make the UX-disabled field misleading.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-058-1
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    Typing into the search box does not flood the backend — keystrokes are debounced
+    so a single search produces roughly one server call, not one per character.
+  derivation: |-
+    Search-as-you-type is the interaction; a senior product owner expects debouncing
+    on a live-search box that PUTs server-side facet state per fire.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      handleSearch fires updateFacets({...facets, query}) on each SearchInput.onSearch,
+      and each fire is a PUT /api/referencedata/search/{searchId} that triggers
+      server-side FacetStateDto.merge + countByState recompute. No debounce is visible
+      in LookupTables.tsx; SearchInput is shared infrastructure whose debounce policy
+      is out of this file's scope and not captured in the sidecar. Whether SearchInput
+      debounces internally is undetermined — it requires reading the shared component
+      or observing the network tab while typing. If it does not debounce, every
+      keystroke is a server round-trip.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: performance.known_performance_gaps[0]
+        cite: "LookupTables.tsx:50-71"
+        note: "Per-keystroke PUT if SearchInput is not debounced — needs verification."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.request_inputs (query)
+        cite: "LookupTables.tsx:50-52, 70"
+        note: "Per-keystroke fire flagged as a performance concern (debounce unknown)."
+    operator_visible_failure: |-
+      Probe-pending: if undebounced, a fast typist generates one server-side facet
+      recompute per character — measurable load at scale and visible micro-latency on
+      each keystroke. Not a correctness failure; a performance/cost posture to confirm.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-058-2
+    routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    Clicking the "Master Data" toolbar tab takes the operator to a Master Data
+    section with its lookup-table catalog (the tab and the URL path imply a section).
+  derivation: |-
+    The toolbar tab is labelled "Master Data" and the route is /master-data/lookup-tables;
+    the doc taxonomy is "Master Data Management -> Lookup Tables," implying a section
+    that contains lookup tables among possibly other surfaces.
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The "Master Data" tab links directly to lookupTablesPath() and lands on the
+      lookup-tables list — there is NO /master-data section landing page and no other
+      sub-feature; the tab name and the doc taxonomy imply a multi-surface section
+      that today contains exactly one surface (the Lookup Tables list). This is
+      correct per the current implementation and per the pillar's documented narrowness
+      (system-mission.md:125-141 — "intentionally narrow today, one child surface"),
+      but it is a scaffolding asymmetry: the navigation promises a section, the product
+      delivers a single page.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.name_behavior_pairs (LookupTables as Master Data root)
+        cite: "LookupTables.tsx:18-91 + masterDataRoutes.ts:1-5 + ToolbarTabs.tsx:55-59"
+        note: "drift: MINOR — tab 'Master Data' lands directly on the single lookup-tables list; no section landing."
+    operator_visible_failure: |-
+      The operator clicking "Master Data" lands on a list, not a section overview;
+      harmless today (there is only one surface) and consistent with the documented
+      narrow scope, but the navigation taxonomy sets an expectation of a section that
+      the single page does not visually fulfil. Documentation already states the narrow
+      scope, so this is a known, accepted asymmetry rather than a defect.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    The same silent-truncation defect exists on the platform's other infinite-scroll
+    list pages (the copy-paste DOM-id mismatch is a class, not an isolated typo).
+  derivation: |-
+    The feature-flow note proposes a grep sweep across the SPA for scrollableTarget
+    pairs to determine whether the bug class extends across pillars; a product owner
+    auditing one broken list asks "where else does this pattern break?"
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      A single Rule-8 source read (grep for every scrollableTarget=/ScrollableContainer
+      id= pair across odd-platform-ui/src/components) shows 28 InfiniteScroll instances,
+      and EVERY one EXCEPT LookupTablesList pairs a matching container id with its
+      scrollableTarget (e.g. owners-list/owners-list, tags-list/tags-list,
+      messages-list/messages-list, directory-entities-list/directory-entities-list on
+      the Directory page itself). LookupTablesList.tsx:51-53 is the SOLE mismatch
+      (container 'lookup-tables-list' vs target 'directory-entities-list'). The copy-paste
+      regression did NOT propagate — it is one instance. The proposed cross-pillar
+      bug-class / LSN-NNN does not materialise; the fix is genuinely one line, one file.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: source_read_for_validation
+        cite: "grep scrollableTarget= across odd-platform-ui/src/components — 28 pairs, 1 mismatch (LookupTablesList.tsx:53)"
+        note: "All other InfiniteScroll pairs match; LookupTablesList is the only offender. Closes the cross-pillar hypothesis."
+    source_read_for_validation: true
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: render
+    coverage: verified
+    test_ref: "(scope-bounding finding; verified by exhaustive grep, not a runtime test)"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: |-
+    Lookup Tables list silently caps at 30 rows — InfiniteScroll scrollableTarget
+    'directory-entities-list' references a non-existent DOM id (should be
+    'lookup-tables-list'); fetchNextPage never fires; 100% of P-03's sole UX is
+    degraded for any >30-table tenant.
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN
+  proposed_fix_anchor: |-
+    LookupTablesList.tsx:53 — rename scrollableTarget 'directory-entities-list' ->
+    'lookup-tables-list' to match the container id at :51. Regression-resistant
+    fix: pair the container id and scrollableTarget via a single shared constant so
+    they cannot drift again. Convergent with scanner finding F-058a (docs/coverage/
+    undocumented-features, SR-20260527T1800Z) — independent re-derivation, raises
+    confidence; that finding is a scanner annotation, not yet a filed item.
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    The H1 "N lookup tables overall" counter is a global, unscoped count and (above
+    30 rows) disagrees with the list it sits above — leaks platform-wide population
+    size to any authenticated user and is the only visible signal of the H-001 cap.
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN
+  proposed_fix_anchor: |-
+    Two distinct fixes: (a) the cap divergence is fixed by H-001's one-liner; (b) the
+    scope leak (counter shows global count to permission-less users) is a separate
+    posture decision at LookupDataSearchServiceImpl.countByState — either scope the
+    count or document the read-collaborative posture (links to H-007 doc-gap).
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    Editing a lookup table submits the CREATE-shape body (namespace_name included) to
+    the UPDATE endpoint though LookupTableUpdateFormData defines only name+description;
+    the disabled namespace field is a UI hint, not a data guarantee. Discard-vs-reject
+    is probe-pending (PENDING-F-058-1).
+  dedup_status: net_new
+  distinct_from: F-026
+  recommended_log_as: PLT-NNN
+  proposed_fix_anchor: |-
+    LookupTableForm.tsx:49,60-66 — type the edit-submit branch as
+    LookupTableUpdateFormData (name+description only) instead of reusing the CREATE
+    LookupTableFormData shape, so namespace_name is not sent on edit. Distinct from
+    F-026 (per-table mutation lifecycle / RBAC / XSS) — this is the edit-form DTO
+    shape drift on the SAME form, a different failure mode. Confirm server behaviour
+    via PENDING-F-058-1 before filing the fix vs caveat split.
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Empty-state placeholder has no "Create your first lookup table" CTA tying it to
+    the top-right +Add new button — a first-run discoverability gap.
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables OR doc-gap-NNN"
+- hypothesis_id: H-009
+  one_line: |-
+    Search-as-you-type may PUT one server-side facet recompute per keystroke if the
+    shared SearchInput does not debounce — performance posture, probe-pending
+    (PENDING-F-058-2).
+  dedup_status: net_new
+  recommended_log_as: caveat (performance) pending PENDING-F-058-2 outcome
+- hypothesis_id: H-010
+  one_line: |-
+    "Master Data" toolbar tab lands directly on the single Lookup Tables list (no
+    section landing) — accepted scaffolding asymmetry, already documented as narrow
+    scope in system-mission.md; record as known asymmetry only.
+  dedup_status: already_tracked
+  tracked_as: "system-mission.md:125-141 (P-03 documented narrowness)"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (confirmed, partial, contradicted, or
+# probe-needed) becomes a missing-functional TEST-GAP candidate. The platform ships
+# ZERO tests for this feature (LookupTables sidecar tests_coverage_semantic.test_files: []
+# + no MasterData *.test.tsx + no IT-NNN protocol covers Master Data). Every promise below
+# is unguarded.
+- use_case_id: F-058-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: |-
+    A >30-table tenant scrolling to the bottom of the list loads page 2 and beyond
+    until the full catalog is visible.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-001)"
+  proposed_test: |-
+    RTL + jsdom: mount LookupTablesList with 35 seeded rows, mock the /results
+    endpoint, scroll the ScrollableContainer to the bottom, assert a page=2 fetch
+    fires AND row 31 renders. This is the regression guard for the H-001 fix and the
+    feature-flow's highest_leverage_uncovered. (Could also be an IT-NNN Playwright
+    flow driving the real UI->backend->DB scroll.)
+- use_case_id: F-058-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "A tenant at N<=30 tables sees the entire catalog on first load."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-002)"
+  proposed_test: |-
+    RTL: mount with 12 seeded rows, assert all 12 render and no fetchNextPage is
+    attempted. Guards the confirmed happy path so a future pagination refactor cannot
+    silently break the under-30 case.
+- use_case_id: F-058-UC-003
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "A zero-table tenant sees an empty state with a clear path to create the first table."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-003)"
+  proposed_test: |-
+    RTL: mount with 0 rows, assert EmptyContentPlaceholder renders; the partial gap
+    (no CTA) is the assertion to add once the CTA ships.
+- use_case_id: F-058-UC-004
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "Typing in the search box narrows the list to matching lookup tables."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-004)"
+  proposed_test: |-
+    RTL: type 'country' into the search box, assert a PUT /search/{id} fires with
+    query='country' and the results list re-renders from the mocked response.
+- use_case_id: F-058-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "The H1 counter reflects the same set of tables the list shows."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-005)"
+  proposed_test: |-
+    RTL: mount with backend total=250 and 30 rendered rows; assert the test pins the
+    INTENDED relationship (post-fix: counter == loaded-count when fully scrolled, or a
+    documented shown-of-total indicator). Currently asserts the bug (counter 250 vs
+    list 30) as a characterization pin until the fix lands.
+- use_case_id: F-058-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "A user without LOOKUP_TABLE_CREATE does not see the +Add new button."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-006)"
+  proposed_test: |-
+    RTL: mount with a permission set lacking LOOKUP_TABLE_CREATE, assert +Add new is
+    absent; mount WITH it, assert present. Guards the UI auth gate.
+- use_case_id: F-058-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: |-
+    The page's read surface (list, counter, search) is open to any authenticated user;
+    only mutation is gated (read-collaborative posture).
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-007)"
+  proposed_test: |-
+    RTL: mount with zero LOOKUP_TABLE_* permissions, assert title/counter/search/list
+    all render (only +Add new + per-row Edit/Delete hidden). Pins the intentional
+    read-collaborative posture so a future render-gate change is a conscious decision.
+    Pair with the H-007 doc-gap (document the posture at this page).
+- use_case_id: F-058-UC-008
+  hypothesis_id: H-008
+  kind: edit-reconcile
+  promise: |-
+    Editing a table does not transmit the (disabled) namespace; disabled field = not sent.
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-008); test_demand = probe PENDING-F-058-1"
+  proposed_test: |-
+    After PENDING-F-058-1 resolves: IT/RTL asserting the edit request body does NOT
+    include namespace_name (post-fix), or a characterization pin of the current
+    server discard/reject behaviour until the form types the UPDATE shape correctly.
+- use_case_id: F-058-UC-009
+  hypothesis_id: H-009
+  kind: happy-path
+  promise: "Search keystrokes are debounced — one search does not flood the backend."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-009); test_demand = probe PENDING-F-058-2"
+  proposed_test: |-
+    After PENDING-F-058-2 resolves the SearchInput debounce policy: assert N rapid
+    keystrokes produce <=1 PUT within the debounce window (if debounced) or document
+    the per-keystroke cost (if not).
+- use_case_id: F-058-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: "The Master Data tab leads to the lookup-table catalog."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-058-UC-010)"
+  proposed_test: |-
+    Routing test: clicking the Master Data toolbar tab navigates to
+    lookupTablesPath() and mounts LookupTables. Low priority (accepted asymmetry).
+
+### probes_emitted
+- probe_id: PENDING-F-058-1
+  hypothesis_id: H-008
+  full_hypothesis: |-
+    When an operator edits a lookup table and the namespace field is shown disabled,
+    the namespace is not part of the update sent to the server. ACTUAL: the edit form
+    submits the CREATE-shape body (namespace_name included) to the UPDATE endpoint
+    though LookupTableUpdateFormData (components.yaml:3853-3862) defines only
+    name+description. PROBE: stand up a local odd-platform instance, edit an existing
+    lookup table, observe the request on the wire AND the server response — does the
+    server silently discard namespace_name (Jackson FAIL_ON_UNKNOWN_PROPERTIES=false
+    -> 200, namespace unchanged) or strictly reject it (400)? Local execution:
+    docker-compose odd-platform + Postgres; no remote resources. (Same question the
+    sidecar emitted as P-192's sibling P-191.)
+  local_execution_blocked: false
+  note: |-
+    Parallel-safe mode — recorded here only; no P-NNN file created. The sidecar
+    references this as P-191; on a serial run the orchestrator may mint/merge.
+- probe_id: PENDING-F-058-2
+  hypothesis_id: H-009
+  full_hypothesis: |-
+    Typing into the search box does not flood the backend — keystrokes are debounced
+    so a single search produces roughly one server call. PROBE: stand up a local
+    odd-platform instance, open /master-data/lookup-tables, type a multi-character
+    query, count PUT /api/referencedata/search/{id} calls in the network tab. <=1 per
+    debounce window => debounced (confirmed); one per character => undebounced
+    (contradicted, performance caveat). Local execution: docker-compose; Playwright/
+    headless-browser network capture; no remote resources.
+  local_execution_blocked: false
+  note: |-
+    Parallel-safe mode — recorded here only; no P-NNN file created.
+
+### validation_gaps
+- sidecar: "(feature-flow F-058 hop 2 — LookupTablesList node)"
+  field_insufficient: |-
+    The list-renderer node (LookupTablesList) is marked unresolved: true in the
+    feature flow — it has NO standalone sidecar of its own. Its mechanics (the size=30
+    cap, the scrollableTarget mismatch, the EmptyContentPlaceholder, the flatMap render)
+    are captured only as COUPLING inside the LookupTables page-shell sidecar plus my
+    single Rule-8 grep. The H-001/H-011 verdicts therefore rest on the page-shell
+    sidecar's secondhand description + my source read, not on a dedicated enriched node.
+  proposed_refresh: |-
+    file-analyser should enrich LookupTablesList.tsx as its own node: confirm the
+    react-infinite-scroll-component fallback-to-window-scroll semantics, the
+    ScrollableContainer overflow:auto declaration (the reason window scroll never
+    fires), and the size=30 pagination wiring directly — so H-001 graduates from a
+    coupled+grepped verdict to a first-class enriched-node verdict.
+- sidecar: "(feature-flow F-058 hop 3 — ReferenceDataController list endpoint)"
+  field_insufficient: |-
+    Hop 3 (ReferenceDataController list/results endpoint) is unresolved: true with no
+    sidecar in the chain. The backend ORDER BY / tie-breaker for the paginated results
+    is REFERENCE-only in the page-shell sidecar (ReactiveLookupTableRepository not yet
+    in registry) — so I could not generate an ordering/pagination-stability hypothesis
+    (e.g. "page 2 does not skip or duplicate a row that page 1 already showed").
+  proposed_refresh: |-
+    Enrich ReactiveLookupTableRepository.findByState — capture the SQL ORDER BY and
+    tie-breaker so a pagination-determinism hypothesis can be authored on the next
+    reflection refresh (relevant once H-001 is fixed and pages 2+ actually load).
+
+### doc_drift_findings
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+  doc_says: |-
+    Describes the gated +Add new flow and the LOOKUP_TABLE_CREATE/UPDATE/DELETE
+    permissions, implying (by omission) that the Master Data page is permission-gated.
+  code_does: |-
+    The page renders fully (title, counter, search, full table list) for ANY
+    authenticated user regardless of lookup-table permissions; read endpoints carry no
+    RBAC. Only +Add new and per-row Edit/Delete are gated. The read-collaborative
+    posture is intentional but undocumented at this page.
+  recommended_log_as: doc-gap-NNN
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+  doc_says: |-
+    "LOOKUP_TABLE_UPDATE — Renaming a lookup table or editing its description,"
+    implying namespace is NOT updateable (matches the OpenAPI UPDATE schema).
+  code_does: |-
+    The UI form disables the namespace field on edit AND sends namespace_name on the
+    wire anyway (CREATE-shape body to the UPDATE endpoint). Drift between UX intent
+    (disabled = not editable) and wire reality (field transmitted, server behaviour
+    probe-pending). Already recorded in the sidecar's doc_drift_findings[0] at MEDIUM.
+  recommended_log_as: doc-gap-NNN
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+  doc_says: |-
+    Describes "every lookup table the user can read, with name, description, and
+    namespace columns plus search" — implies the list shows the readable set.
+  code_does: |-
+    The list is capped at 30 by the H-001 InfiniteScroll bug while the counter reads
+    the true (global, unscoped) total — so for a >30-table tenant the list does NOT
+    show "every lookup table the user can read." The doc claim is true only because
+    the bug is invisible; fixing H-001 makes the doc claim true again.
+  recommended_log_as: doc-gap-NNN (resolves with H-001 fix)
+
+## maintainer_notes
+
+<!-- Preserved across refreshes — only block the maintainer hand-edits. -->

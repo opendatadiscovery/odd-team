@@ -1,0 +1,818 @@
+---
+feature_id: F-096
+pillar_anchored_id: P-10:F-004
+pillar: P-10 Integrations & Ingestion
+feature_name: |-
+  Ingestion Batch Atomicity & Error Contract — `POST /ingestion/entities`
+  returns Void on a single-transaction-per-batch pipeline with no partial
+  success, no per-item error report, no DLQ
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+  - odd-platform__java__service__service__IngestionServiceImpl.md
+  - odd-platform__java__service__service__IngestionService.md
+  - odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md  # cross-referenced via the controller + service sidecars (default-OFF auth posture); not re-read in full this pass
+source_reads_for_validation:
+  # Rule 8 exception — verified the platform-API spec does NOT carry /ingestion/entities;
+  # the 201 declaration lives in the ingestion-contract repo (opendatadiscovery-specification),
+  # which is NOT cloned in this workspace. The 201 fact is therefore cited THROUGH the
+  # controller + service sidecars (which recorded odd_api.yaml:23-25), not re-verified directly.
+  - "odd-platform-specification/openapi.yaml:1-49 — confirmed this is the PLATFORM API spec (tags: feature/owner/.../genai); it does NOT contain a /ingestion/entities path. The ingestion contract (where the 201 is declared) is a separate, un-cloned repo. Recorded so a future analyser run that has the contract repo can pin odd_api.yaml:23-25 directly."
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/integrations"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: not-fetched-this-session
+    note: |-
+      WebFetch not exercised this pass (parallel-safe batch). The contributing sidecars
+      WebFetched the adjacent pages on 2026-05-12 / 2026-05-20 (status 200): the S2S
+      authentication sub-page (the ONLY live page that names `POST /ingestion/entities`,
+      via a curl example), the ingestion-filters page, and the authentication index. ALL
+      THREE were confirmed by the sidecars to be SILENT on the ingestion ERROR CONTRACT
+      (response codes, retry semantics, atomicity, DLQ-absence, per-item errors). The
+      doc-side gap is already minted as DOC-195 (error-contract section, status in-progress)
+      + DOC-GAP-074-META (the 201-vs-200 surface drift). No new doc fetch was needed to
+      reach the verdicts; the doc-drift is fully covered by existing tracked items.
+hypothesis_summary:
+  total: 11
+  confirmed: 2
+  contradicted: 7
+  partial: 1
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      A collector author's own client errors (duplicate ODDRN in batch, unknown
+      data_source_oddrn, oversized payload) all return HTTP 5xx — indistinguishable
+      from a platform crash — so their retry-with-backoff logic, the documented
+      pattern for 5xx, fires against errors that will NEVER succeed on retry,
+      turning a one-line collector bug into a self-inflicted retry storm.
+related_feature_flows: [F-096, F-008, F-094]
+related_concepts:
+  - "Ingestion (External Webhook)"
+  - "Single-Transaction-Per-Batch Ingestion"
+related_drift_classes:
+  - batch_atomicity_without_signal
+  - client_error_surfaces_as_5xx
+  - spec_says_201_impl_returns_200
+  - serialisation_under_pessimistic_lock_no_signal
+  - silent_failure_no_log
+new_drift_classes_proposed:
+  - sync_ingestion_no_202_accept_mode_http_connection_held_for_full_pipeline
+  - no_per_item_error_report_response_is_binary_void_or_5xx_envelope
+---
+
+# Ingestion Batch Atomicity & Error Contract — product-owner reflection
+
+## product_owner_narrative
+
+`POST /ingestion/entities` is the single load-bearing write endpoint of the whole
+ODD platform: every pull Collector, every push adapter (Airflow, dbt, Spark, Great
+Expectations), and every direct `odd-cli` invocation funnels its per-tick scan results
+through this one endpoint as a `DataEntityList` payload — one `data_source_oddrn` plus
+a list of `DataEntity` items (per `IngestionService.md` understanding + `postDataEntityList`
+understanding). The "user" of this feature is NOT a screen-facing human; it is a
+**custom-collector author** (audience `integration-author / custom-collector-developer`)
+and the **collector runtime** itself — an API consumer writing code against the published
+ingestion contract. The feature this reflection judges is therefore not a UI; it is the
+*contract* the endpoint presents to that author: what does a success look like, what does
+a failure look like, and what is the author supposed to DO when they get one.
+
+A collector author interacts with the feature in exactly one shape: assemble a batch,
+POST it, read the HTTP status, branch on it. On success the platform returns an empty
+body — `Mono<ResponseEntity<Void>>`, no per-item acknowledgement (per `postDataEntityList`
+understanding + IngestionController.java:38-45). On failure the platform returns a generic
+Spring reactive 5xx envelope — `{"status":500,"error":"Internal Server Error","path":"/ingestion/entities"}`
+— with no machine-readable discriminator naming WHICH item or WHICH condition failed
+(per the feature-flow `terminal_side_effect`). The contract is binary: 200 OK with no
+body, or 5xx with a body that carries nothing actionable.
+
+The working part a product owner would demo — and the one that defines the feature — is
+the **atomicity guarantee**: `ingest(...)` is `@ReactiveTransactional` (IngestionServiceImpl.java:66),
+so the datasource lookup, the bulk upsert, all 14 downstream processors (lineage, metadata,
+dataset-structure, FTS, alerts, activity), and the OTLP metric export run inside ONE
+Postgres transaction. One failure anywhere rolls back EVERY entity in the batch and every
+downstream side effect (per `IngestionService.md` downstream_side_effects closing paragraph:
+"One bad entity in a batch: NO per-entity isolation … The HTTP response is binary"). For
+an author this is a strong, clean promise — *all of my batch lands, or none of it does* —
+but it is a promise that is **nowhere documented** and is **paired with an error contract
+that hides the reason for the rollback**. The author gets all-or-nothing atomicity AND a
+5xx that won't tell them which entity poisoned the batch.
+
+This feature composes with two siblings. F-008 (same `IngestionServiceImpl`) owns the
+*destruction* angle — the replace-not-merge semantics where a collector that forgets to
+re-emit a lineage edge or a metadata field silently deletes it; this reflection's
+atomicity-and-error-contract angle is the operator-facing surface of the same single
+transaction. F-094 (ingestion auth coverage) owns the *who-can-call-it* angle — and it is
+load-bearing context here, because the endpoint ships UNAUTHENTICATED by default
+(`auth.ingestion.filter.enabled=false`, application.yml:48, per the controller sidecar
+bugs_limitations_corner_cases[0]), so the error-contract failure modes below are reachable
+by any caller able to hit the HTTP port, not only by a registered collector.
+
+The edge cases a product owner would surface in a demo are exactly the ones the contract
+gets wrong: a collector whose source-iteration glitches and emits the same ODDRN twice in
+one batch (a 5xx, not a 400); a collector pointed at a datasource ODDRN that was never
+registered or was renamed (a 5xx, not a 404); a collector whose tick produced a payload
+larger than the 20 MB codec cap (a 5xx, not a 413); two collectors emitting to the same
+datasource at once (the loser blocks on a `SELECT … FOR UPDATE` row lock held for the
+FULL pipeline duration, then may time out into a 5xx with no `Retry-After`); and an SRE
+trying to diagnose any of the above from logs, finding the service body emits ZERO `log.*`
+lines despite carrying `@Slf4j` (IngestionServiceImpl.java:53). Every one of these is a
+real user expectation the assembled chain violates.
+
+## hypotheses
+
+- id: H-000
+  hypothesis: |-
+    (Rule 9 / UI-surface check) This feature has NO enriched UI component in its chain,
+    and that is CORRECT for what it is: the audience is a custom-collector author / collector
+    runtime consuming an HTTP contract, not a screen-facing human. The reflection is
+    deliberately API-only. The senior-product-owner UX seed questions (intuitive? convenient?
+    consistent? customisable? cross-device?) are reframed for an API consumer as: is the
+    error contract self-describing, is the success/failure branch unambiguous, is the
+    retry semantics signalled — and those ARE judged below (H-002, H-007, H-008).
+  derivation: |-
+    Rule 9 mandates the first output be a validation_gap when a user-facing feature's UI hop
+    is unresolved. Here the chain is controller→service→row-lock→processors→response; there is
+    no UI hop because the feature is a machine-to-machine contract. Stating this explicitly so
+    a confident set of API-only verdicts is not mistaken for the F-031 error (judging a
+    user-facing feature from its backend alone).
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The feature is a server-to-server contract. P-10's audience list for ingestion is
+      [platform-operator, odd-collector-runtime, odd-api-consumer, integration-author,
+      data-engineer-analyst, data-quality-engineer] — none is a UI end-user. No UI sidecar
+      exists or belongs to `POST /ingestion/entities`. The API-only framing is
+      appropriate, not a coverage hole.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: concepts.audiences
+        cite: "IngestionController.java:38-45"
+        note: "Audiences are HTTP clients + operators + security reviewers; no end-user screen."
+      - sidecar: system-mission
+        section: "P-10 audiences"
+        cite: "system-mission.md:296"
+        note: "P-10 ingestion audiences are collector-runtime / api-consumer / integration-author."
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: verified
+    test_ref: "N/A — meta-hypothesis; the API-only framing needs no behavioural test"
+
+- id: H-001
+  hypothesis: |-
+    When a collector POSTs a valid `DataEntityList` (a registered `data_source_oddrn` +
+    a non-empty list of well-formed items), the platform either commits the ENTIRE batch
+    atomically and returns success, or — if any single item or any downstream processor
+    fails — rolls back EVERY entity in the batch (and every downstream side effect: lineage,
+    metadata, FTS, alerts, activity) so the catalog is never left in a half-applied state.
+  derivation: |-
+    The endpoint name + payload shape (one datasource, a LIST of entities) promises batch
+    semantics; `@ReactiveTransactional` on `ingest(...)` is the atomicity anchor.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `ingest(...)` is `@ReactiveTransactional` (IngestionServiceImpl.java:66). The single
+      transaction wraps datasource lookup + bulkUpdate + bulkCreate + restore + the full
+      14-processor chain (INITIAL→MAIN→FINALIZING) + OTLP export. A failure anywhere rolls
+      back everything; the response is binary 200-or-5xx with no partial-commit window. The
+      atomicity promise itself HOLDS — this is the one part of the contract that behaves
+      exactly as an author would hope.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionService.md
+        section: downstream_side_effects (closing paragraph)
+        cite: "IngestionServiceImpl.java:65-74"
+        note: "\"One bad entity in a batch: NO per-entity isolation … The HTTP response is binary: 200 OK or 5xx.\""
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: concepts.invariants[0]
+        cite: "IngestionServiceImpl.java:66"
+        note: "@ReactiveTransactional is the OUTER txn binding the whole chain + OTLP export."
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      The HAPPY-PATH 200 is covered (BaseIngestionTest.ingestAndAssert asserts isOk()), but
+      the ATOMICITY invariant itself — inject one bad entity into a 100-entity batch, assert
+      ALL 100 rolled back — has NO test (IngestionService.md uncovered_behaviours[0]:
+      `IngestionTransactionalRollbackTest` does not exist). A confirmed-but-untested promise:
+      the strongest guarantee the feature makes is the one with no regression guard.
+
+- id: H-002
+  hypothesis: |-
+    When a collector sends a batch containing a CLIENT error the author could fix (the same
+    ODDRN twice in one payload), the platform returns a 4xx that names the problem — so the
+    author's code can branch to "fix my payload, do NOT retry" rather than "platform is down,
+    retry with backoff".
+  derivation: |-
+    REST convention: a malformed request is the client's fault → 4xx; retry-with-backoff
+    (the documented collector pattern) is correct ONLY for 5xx. The author's branch logic
+    depends on the platform honouring that split.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `persistDataEntities` builds the per-call entity map with
+      `Collectors.toMap(DataEntityIngestionDto::getOddrn, identity())` (IngestionServiceImpl.java:86)
+      using the DEFAULT throwing merger. Two items sharing one ODDRN throw
+      `IllegalStateException: Duplicate key`. There is NO `@ExceptionHandler` on the ingestion
+      controller for it (controller sidecar uncovered_behaviours: no advice maps it), so the
+      default reactive error handler returns HTTP 5xx. The author receives a 500 — the exact
+      signal that means "retry me" — for an error that will crash identically on every retry.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: concepts.invariants[2] + bugs_limitations_corner_cases[0]
+        cite: "IngestionServiceImpl.java:83-86"
+        note: "Two-arg Collectors.toMap → default throwing merger → IllegalStateException."
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: tests_coverage_semantic.uncovered_behaviours[5] + bugs_limitations_corner_cases
+        cite: "IngestionController.java:38-45"
+        note: "No @ExceptionHandler(IllegalStateException) on the path → 500, not 400."
+    operator_visible_failure: |-
+      (1) A collector with a glitched source-iteration that emits a duplicate ODDRN once per
+      tick crashes the ENTIRE tick's ingestion — not just the duplicate — losing every other
+      entity in that batch (compounds with H-001's all-or-nothing rollback). (2) The author's
+      retry-with-backoff (the documented response to 5xx) fires against an error that NEVER
+      succeeds on retry, so a one-line collector bug becomes a self-inflicted retry storm that
+      pegs the platform for the whole retry budget. (3) The author cannot tell "I sent
+      duplicates" from "the platform crashed" without platform-side log access (which is empty,
+      per H-009). The fix is a one-line merger change to throw BadUserRequestException →
+      400 with `Duplicate ODDRN in batch: {oddrn}`.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a collector POSTs a batch whose `data_source_oddrn` does not match any registered
+    datasource (typo, un-provisioned source, renamed datasource), the platform returns 404
+    Not Found naming the datasource — so the author knows it is a CONFIGURATION error to fix,
+    not a transient platform fault.
+  derivation: |-
+    `data_source_oddrn` is a required request field naming a resource; a missing resource is
+    canonically 404. The author's mitigation for a 404 (fix config) differs from a 5xx (retry).
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `getIdByOddrnForUpdate(dataEntityList.getDataSourceOddrn())` resolves the datasource and
+      `switchIfEmpty(Mono.error(() -> new NotFoundException("dataSource", oddrn)))`
+      (IngestionServiceImpl.java:68-69). There is no `@ExceptionHandler(NotFoundException)`
+      returning 404 on the reactive ingestion path (controller sidecar uncovered_behaviours[2],
+      verified via grep). The default handler surfaces it as HTTP 5xx. A configuration error
+      (unknown datasource) is indistinguishable from a platform crash.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: concepts.invariants[1] + tests_coverage_semantic.uncovered_behaviours[2]
+        cite: "IngestionServiceImpl.java:68-69"
+        note: "NotFoundException raised but no @ExceptionHandler maps it to 404 → 500."
+      - sidecar: odd-platform__java__service__service__IngestionService.md
+        section: tests_coverage_semantic.uncovered_behaviours (datasource lookup failure)
+        cite: "IngestionServiceImpl.java:69"
+        note: "Confirmed no 404 mapping; `IngestionDataSourceNotFoundTest` does not exist."
+    operator_visible_failure: |-
+      An author who fat-fingers the datasource ODDRN, or whose datasource was deleted/renamed
+      on the platform side, sees a 500 in their collector logs and concludes the PLATFORM is
+      unhealthy — they open an incident, or they retry-with-backoff, when the actual fix is a
+      one-character config change on their side. SRE on the platform side, paged for "ingestion
+      5xx", finds a healthy platform and a misconfigured collector. Fix: an
+      `@ExceptionHandler(NotFoundException)` returning 404 with the datasource ODDRN.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a collector's batch exceeds the platform's payload size limit, the platform returns
+    413 Payload Too Large (ideally naming the limit) — so the author knows to split the batch,
+    rather than treating it as a transient failure to retry whole.
+  derivation: |-
+    A request body over the configured cap is a client-side sizing problem; 413 is the
+    canonical signal that tells the author the corrective action (split) without guesswork.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The body is buffered up to `spring.codec.max-in-memory-size: 20MB` (application.yml:14-15);
+      a payload over the cap throws `DataBufferLimitException`, and grep confirms there is NO
+      `@ExceptionHandler(DataBufferLimitException)` in odd-platform-api/src/main/java (controller
+      sidecar bugs_limitations_corner_cases[3]). The author receives a 5xx, not a 413.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: concepts.invariants[4] + bugs_limitations_corner_cases[3]
+        cite: "IngestionController.java:38 + application.yml:14-15"
+        note: "DataBufferLimitException on >20MB body; no handler → 500, not 413."
+    operator_visible_failure: |-
+      An author whose source grew past the point where one tick's scan exceeds 20 MB sees a
+      5xx and retries the SAME oversized batch on backoff — it fails identically every time,
+      and ingestion for that datasource is permanently wedged until the author independently
+      discovers the size cap (which is undocumented on the live site). The corrective action
+      (split the batch / raise the cap) is never signalled. Fix: catch DataBufferLimitException
+      at controller-advice level, return 413 with the configured limit value.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When a collector author generates their HTTP client from the published OpenAPI ingestion
+    contract, the success status code the generated client expects matches the status code the
+    running platform actually returns — so a conformant client treats a successful ingestion as
+    success, not as an anomaly.
+  derivation: |-
+    The OpenAPI contract is the source-of-truth SDK generators consume; a code-vs-spec status
+    mismatch silently breaks any client that branches strictly on the spec-declared code.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The controller returns `200 OK` (`ResponseEntity.ok().build()`, IngestionController.java:44)
+      and `BaseIngestionTest.java:79` asserts `isOk()` (200), locking the implementation in. The
+      ingestion contract (`odd_api.yaml:23-25`, per the controller sidecar) declares `201 Created`.
+      The sibling methods `postDataSetStatsList` and `ingestMetrics` both return 201, matching the
+      spec — `postDataEntityList` is the ONLY divergence. (Note: I could not re-verify the 201
+      line directly — the ingestion-contract repo is not cloned in this workspace; the platform-API
+      `openapi.yaml` carries no `/ingestion/entities` path. The 201 fact is cited through the
+      sidecars, which recorded it at HIGH confidence with a file:line.)
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: concepts.invariants[2] + docs_link_semantic.doc_drift_findings[2]
+        cite: "IngestionController.java:44 + odd_api.yaml:23-25 + BaseIngestionTest.java:79"
+        note: "Impl 200, spec 201, test locks 200; siblings return 201."
+    operator_visible_failure: |-
+      A strictly-conformant generated client (or a third-party integration that branches on
+      `if status == 201`) treats every successful ingestion as a failure/anomaly — potentially
+      retrying a batch that already committed (a duplicate-ingestion / double-write risk that the
+      idempotent-by-ODDRN upsert mostly absorbs but does not guarantee under concurrency). HTTP
+      semantics make 200 and 201 both "success", so lenient clients are unaffected — hence
+      severity MEDIUM, not HIGH. The drift propagates to every downstream artefact built from the
+      published spec. This is the `spec_says_201_impl_returns_200` drift class.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      confidence MEDIUM not HIGH solely because the 201 spec line was cited through the sidecars
+      (contract repo un-cloned), not re-read this pass; the 200 impl side is HIGH-confidence.
+
+- id: H-006
+  hypothesis: |-
+    When two collectors (or two ticks of one collector) ingest into the SAME datasource at the
+    same time, the platform serialises them safely and BOTH batches eventually succeed — a
+    collector author running a normal concurrent-collector deployment does not see one batch
+    spuriously fail because another was in flight.
+  derivation: |-
+    The platform's canonical deployment is one platform + many concurrent producers (system-mission
+    P-10 architectural pillar); a collector author reasonably assumes concurrent ingestion to one
+    datasource is safe and bounded.
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      `getIdByOddrnForUpdate` issues `SELECT … FOR UPDATE` on the `data_source` row
+      (IngestionServiceImpl.java:68, ReactiveDataSourceRepositoryImpl.java:94-101), held for the
+      FULL `@ReactiveTransactional` pipeline duration. Concurrent ingestions to the SAME datasource
+      are correctly SERIALISED (no interleaving, no lost write) — the safety half of the promise
+      HOLDS. But the loser BLOCKS for the entire winner's pipeline (datasource resolve + 14
+      processors + OTLP export); under a slow Postgres / saturated R2DBC pool / large winning batch,
+      the loser may exceed the transaction timeout and surface as a 5xx with NO `Retry-After` and
+      NO 429 — so "both eventually succeed" does NOT hold under contention.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionService.md
+        section: concepts.invariants (datasource lookup FOR UPDATE) + scaling
+        cite: "IngestionServiceImpl.java:68 + ReactiveDataSourceRepositoryImpl.java:94-101"
+        note: "Per-datasource row lock serialises same-datasource ingestions for full pipeline."
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: performance.resource_allocation + scaling_characteristics
+        cite: "IngestionServiceImpl.java:65-74"
+        note: "Lock lifetime = full ingestion; loser may time out → 5xx-no-detail."
+    operator_visible_failure: |-
+      Under the platform's OWN expected deployment pattern (many collectors), two collectors
+      pointed at one datasource degrade each other: the loser blocks, may time out into a generic
+      5xx, then (per the documented retry-on-5xx pattern) retries — worsening the contention into a
+      retry storm with no backoff signal. An author has no way to learn "you are contended, back
+      off" from the contract. partial because the correctness (no lost/interleaved write) is intact;
+      only the liveness/signalling under contention is broken. drift class
+      `serialisation_under_pessimistic_lock_no_signal`.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When a batch fails, the response tells the author WHICH item (or which condition) failed,
+    so they can correct just that item and re-submit — they do not have to bisect the batch by
+    hand to find the offending entity.
+  derivation: |-
+    Response shape: a batch endpoint that can partially fail is expected (207 Multi-Status or a
+    per-item error array) to report per-item outcomes; the `items: List<DataEntity>` request shape
+    sets that expectation.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The success response is `Mono<ResponseEntity<Void>>` — an empty body, no per-item ack
+      (IngestionController.java:38-45). The failure response is the generic Spring 5xx envelope
+      with only `status/error/path` — no per-item breakdown, no offending-ODDRN, no condition code
+      (feature-flow terminal_side_effect). There is no 207 Multi-Status, no per-entity error array,
+      no DLQ. The response is binary Void-or-5xx and carries zero per-item diagnostics.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionService.md
+        section: downstream_side_effects (closing paragraph)
+        cite: "IngestionServiceImpl.java:65-74"
+        note: "\"There is no DLQ, no partial-success response shape, no per-entity error reporting.\""
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: understanding + concepts.entities
+        cite: "IngestionController.java:38-45"
+        note: "Mono<ResponseEntity<Void>> — empty success body, no per-item structure."
+    operator_visible_failure: |-
+      When a 1000-entity batch fails on ONE bad entity, the author gets a single opaque 5xx and
+      must BISECT the batch by hand (or in code) to find the offender — because the rollback is
+      all-or-nothing (H-001), every re-submit of the full batch fails the same way until they
+      isolate it. For a high-volume collector this is hours of operator time per incident. This is
+      the `no_per_item_error_report_response_is_binary_void_or_5xx_envelope` drift class. (This is
+      a documented architectural posture, not a one-line bug — routes to caveat, with a doc demand,
+      rather than a bug-candidate.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a collector POSTs a large batch, the platform accepts it quickly (e.g. 202 Accepted +
+    async processing) so the collector is not blocked holding an HTTP connection open for the full
+    server-side processing time — a collector author does not have to tune long client-side timeouts
+    to match the platform's per-batch processing duration.
+  derivation: |-
+    Large-batch ingestion is the documented common case (collectors batch a tick's results); a
+    product owner would expect an intake/processing decoupling (202 + status endpoint) for a
+    high-volume write surface.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Ingestion is fully SYNCHRONOUS: the controller's `.thenReturn(ResponseEntity.ok().build())`
+      fires only AFTER the entire `@ReactiveTransactional` pipeline (body parse → datasource resolve
+      → upsert → 14 processors → OTLP export) completes (IngestionController.java:38-45 +
+      IngestionServiceImpl.java:65-74). There is no 202-Accepted / queue / async mode and no
+      status-check endpoint. The HTTP connection AND the DB transaction are held open for the full
+      processing duration.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: performance.throughput_characteristics + known_performance_gaps[0]
+        cite: "IngestionController.java:38-44 + IngestionServiceImpl.java:65-74"
+        note: "Synchronous .thenReturn after the full pipeline; no 202+queue mode."
+      - sidecar: odd-platform__java__service__service__IngestionService.md
+        section: understanding (closing)
+        cite: "IngestionServiceImpl.java:72"
+        note: "\"The whole pipeline including OTLP metric export completes BEFORE the 200 OK fires — no async-accept / 202 mode.\""
+    operator_visible_failure: |-
+      A collector author must size their HTTP client read-timeout to the platform's WORST-CASE
+      per-batch processing time (which scales with batch size, datasource contention H-006, and OTLP
+      backend latency). Set it too short and a batch that is actually committing server-side trips a
+      client timeout → the author retries → a duplicate concurrent ingestion that contends on the
+      row lock. There is no backchannel to learn "your batch is still processing". This is an
+      intentional design posture (the test suite depends on synchronous outcomes) — so it routes to
+      caveat, not bug — but it is undocumented and directly shapes how an author must configure their
+      collector. drift class `sync_ingestion_no_202_accept_mode_http_connection_held_for_full_pipeline`.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an ingestion fails and rolls back, an operator can open the platform logs and find a
+    log line naming the failure cause + a discriminator (which collector / which datasource /
+    how many entities) — so the platform side can diagnose a collector's failed ingestion without
+    needing the collector author's cooperation.
+  derivation: |-
+    Standard operability expectation for a destructive write path; a rollback that wipes a whole
+    batch is exactly the event an SRE expects to find logged at WARN.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `IngestionServiceImpl` carries `@Slf4j` (line 53) but a grep for `log.` in the file returns
+      ZERO matches (service sidecar requires-runtime + bugs_limitations_corner_cases[3], verified
+      this run per the feature-flow scanner_review F-096c). Every behavioural decision and every
+      rollback path executes silently. The only artefacts of a failure are the exception stack trace
+      (on the platform application log, via the default handler) and the absence of committed rows.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: requires-runtime + bugs_limitations_corner_cases[3] + implicit_adrs[3]
+        cite: "IngestionServiceImpl.java:53"
+        note: "@Slf4j present, zero log.* calls in the body (grep-verified)."
+    operator_visible_failure: |-
+      An SRE paged for "ingestion 5xx spike" sees only generic exception traces with no
+      collector-id / datasource-oddrn / entity-count discriminator to scope the failure to a
+      specific collector or batch — the SRE response window is doubled because they must
+      cross-reference traces by timestamp instead of filtering by a tagged WARN line. A security
+      review of "is someone probing the unauthenticated endpoint" cannot be answered from logs at
+      all. Fix: structured WARN log on every rollback path with the batch tag (collector-id +
+      datasource_oddrn + entity count). drift class `silent_failure_no_log`.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When a collector retries a failed batch (the documented response to a 5xx) against a payload
+    that is in fact a permanent client error, the retry storm does not take the platform — or
+    co-tenant collectors' ingestion — down with it.
+  derivation: |-
+    Combines H-002/H-003/H-004 (client errors return retry-triggering 5xx) with H-006 (per-datasource
+    row lock) — the compound behaviour under a real retry storm is the operator's actual risk and can
+    only be known by running it.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Statically: a permanent-error payload returns 5xx → the author's retry-with-backoff fires →
+      the same crash → retry again, while the failing transaction re-acquires the `data_source` row
+      lock each attempt (held for the full pipeline up to the crash point), blocking co-tenant
+      ingestion to that datasource. Whether this collapses into a sustained denial (heap pressure
+      from 20 MB re-buffering per attempt + lock contention) or degrades gracefully cannot be settled
+      from the sidecars — it depends on R2DBC pool sizing, transaction-timeout values, and the
+      collector's actual backoff curve. Requires a local load injection to measure.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: performance.known_performance_gaps + security.known_security_gaps[4]
+        cite: "IngestionController.java:38-44 + application.yml:14-15"
+        note: "20MB buffered per attempt; no rate limit; row lock re-acquired per retry."
+    operator_visible_failure: |-
+      Potential: one collector with a permanent-error payload + naive retry takes down ingestion for
+      every other collector sharing that datasource — a co-tenant denial-of-service from a single
+      misbehaving (or compromised, given the default-OFF auth) caller. Measuring the actual blast
+      radius is the probe's job.
+    severity: HIGH
+    confidence: LOW
+    probe_id: PENDING-F-096-1
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: "probe PENDING-F-096-1"
+
+- id: H-011
+  hypothesis: |-
+    When a collector sends a batch where all items are JOB_RUN-typed and the inbound entity set
+    (after the JOB_RUN split) is empty, the ingestion completes cleanly rather than failing on an
+    empty `IN ()` query or a downstream null/empty-collection path.
+  derivation: |-
+    The service splits JOB_RUN items into a separate flow (IngestionServiceImpl.java:84-91), then
+    fetches existing pojos by the remaining ODDRN set (line 93) — an all-JOB_RUN payload makes that
+    set empty, an edge case a collector emitting only task-runs would hit on every tick.
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      `dataEntityRepository.listByOddrns(emptySet, true, true)` (line 93) is reached when every item
+      is JOB_RUN. The service sidecar (uncovered_behaviours) states the empty-set path is "likely"
+      short-circuited by listByOddrns but explicitly UNTESTED (`IngestionAllJobRunPayloadTest` does
+      not exist). I will NOT assert confirmed on a path the sidecar itself flags as unverified and
+      hedges. Settling it needs either a direct repository read of the listByOddrns empty-IN handling
+      or a local run with an all-JOB_RUN payload.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: tests_coverage_semantic.uncovered_behaviours
+        cite: "IngestionServiceImpl.java:93"
+        note: "All-JOB_RUN → empty keySet → listByOddrns(emptySet,..); path untested."
+    operator_visible_failure: |-
+      A collector that emits ONLY task-runs on a given tick (a common pattern for a job-monitoring
+      collector) hits this path on every such tick. If the empty-IN path throws, that collector's
+      task-run ingestion is permanently broken; if it succeeds, no issue. The verdict cannot be
+      confirmed statically without the repository-layer evidence the sidecar lacked.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-096-2
+    routes_to_finding: validation-gap
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: "probe PENDING-F-096-2"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Duplicate ODDRN in one batch → IllegalStateException → 5xx (not 400); collector retry-storms on its own permanent client error."
+  dedup_status: already_tracked
+  tracked_as: PLT-045
+  proposed_fix_anchor: "IngestionServiceImpl.java:86 — Collectors.toMap merger throws BadUserRequestException(\"Duplicate ODDRN in batch: {oddrn}\")."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "Unknown data_source_oddrn → uncaught NotFoundException → 5xx (not 404); config error indistinguishable from platform crash."
+  dedup_status: already_tracked
+  tracked_as: PLT-045
+  proposed_fix_anchor: "Add @ExceptionHandler(NotFoundException) on the ingestion controller-advice → 404 with the datasource ODDRN."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "Oversized payload → DataBufferLimitException → 5xx (not 413); author retries the same too-big batch forever."
+  dedup_status: already_tracked
+  tracked_as: PLT-045
+  proposed_fix_anchor: "Catch DataBufferLimitException at controller-advice → 413 with the configured spring.codec.max-in-memory-size value."
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: "@Slf4j present but ZERO log.* in the ingest body — every rollback path is silent; SRE has no tagged WARN line to scope a failure."
+  dedup_status: already_tracked
+  tracked_as: PLT-045
+  proposed_fix_anchor: "IngestionServiceImpl.java:65-94 — doOnError WARN log with collector-id + datasource_oddrn + entity_count (PLT-045 Defect 3, needs IngestionContext plumbing)."
+- hypothesis_id: H-010
+  severity: HIGH
+  one_line: "Retry-storm against a permanent-error payload may DoS co-tenant ingestion via row-lock contention + 20MB re-buffer per attempt — blast radius unmeasured."
+  dedup_status: net_new
+  distinct_from: PLT-045
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    PLT-045 fixes the COMPONENTS (4xx for client errors → no retry; 429+Retry-After on lock
+    contention; narrowed lock scope). It does NOT measure or assert the COMPOUND retry-storm
+    blast radius (one bad caller taking down a datasource's co-tenants). That measured behaviour
+    is the distinct contribution — file as a follow-up to PLT-045 once probe PENDING-F-096-1 runs,
+    OR fold its acceptance into PLT-045's concurrent-collector test (Option A/B) extended to assert
+    co-tenant liveness under a sustained permanent-error retry stream.
+
+### caveat_candidates
+- hypothesis_id: H-006
+  one_line: "Concurrent ingestion to one datasource is SAFE (serialised on the data_source row lock) but the loser blocks for the full winner pipeline and may time out into a signal-less 5xx (no 429/Retry-After)."
+  dedup_status: already_tracked
+  tracked_as: PLT-045
+  # PLT-045 Defect 2 + DOC-195 (the integrations/README serialisation caveat).
+- hypothesis_id: H-007
+  one_line: "Response is binary Void-or-5xx: no 207 Multi-Status, no per-item error array, no DLQ — a 1000-entity batch failing on one entity forces hand bisection."
+  dedup_status: already_tracked
+  tracked_as: DOC-195
+  # DOC-195 ships the error-contract section on integrations/README; the no-partial-success +
+  # no-DLQ posture is the F-008 batch_atomicity_without_signal facet's operator-facing half.
+- hypothesis_id: H-008
+  one_line: "Ingestion is fully synchronous (no 202/queue/status endpoint); the author must size client timeouts to the platform's worst-case per-batch processing time."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/integrations (fold into DOC-195's error-contract section) — name the synchronous-no-202 posture + the timeout-sizing implication"
+  # DOC-195 currently scopes the error CONTRACT (status codes + serialisation); the synchronous
+  # intake posture + client-timeout-sizing guidance is an adjacent caveat not yet in DOC-195's AC.
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (including CONFIRMED-but-untested H-001) becomes a
+# missing-functional test demand. PLT-045's "## Tests" block ALREADY enumerates demands for H-002/
+# H-003/H-004/H-006/H-009 — those are tagged dedup-aware below (mint under PLT-045's test plan, do
+# not double-file). H-001 (the atomicity invariant) is the highest-value NET-NEW functional demand.
+- use_case_id: F-096-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "One bad entity (or one failing processor) in an N-entity batch rolls back ALL N entities + every downstream side effect — the catalog is never left half-applied."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-1)"
+  proposed_test: "IngestionTransactionalRollbackTest — POST a 100-entity batch with one constraint-violating entity (e.g. duplicate ODDRN OR over-long name); assert HTTP failure AND assert ZERO of the 100 entities persisted (data_entity count unchanged) AND no lineage/metadata/activity side effects committed."
+  dedup_note: "NET-NEW — `IngestionTransactionalRollbackTest` does not exist (IngestionService.md uncovered_behaviours[0]); NOT in PLT-045's test plan (which targets the 4xx/413/429 contract, not the atomicity invariant). Highest-leverage guard for the feature's strongest promise."
+- use_case_id: F-096-UC-2
+  hypothesis_id: H-002
+  kind: empty/no-match
+  promise: "Duplicate ODDRN in a batch returns 400 (DUPLICATE_ODDRN), not 5xx."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-2) — mint UNDER PLT-045 test plan"
+  proposed_test: "POST { items: [{oddrn: X}, {oddrn: X}] } → expect 400 with error_code DUPLICATE_ODDRN (currently fails: 5xx)."
+  dedup_note: "Already enumerated in PLT-045 '## Tests' (duplicate-ODDRN → 400). Regression guard for the PLT-045 Defect 1 fix."
+- use_case_id: F-096-UC-3
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "Unknown data_source_oddrn returns 404 (DATASOURCE_NOT_FOUND), not 5xx."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-3) — mint UNDER PLT-045 test plan"
+  proposed_test: "POST { data_source_oddrn: \"unknown\" } → expect 404 with error_code DATASOURCE_NOT_FOUND (currently fails: 5xx)."
+  dedup_note: "Already enumerated in PLT-045 '## Tests' (unknown-datasource → 404). Regression guard for PLT-045 Defect 1 fix."
+- use_case_id: F-096-UC-4
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "Oversized payload returns 413 Payload Too Large, not 5xx."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-4) — mint UNDER PLT-045 test plan"
+  proposed_test: "POST a payload > spring.codec.max-in-memory-size → expect 413 (currently fails: 5xx)."
+  dedup_note: "Already enumerated in PLT-045 '## Tests' (oversized → 413). Regression guard for PLT-045 Defect 1 fix."
+- use_case_id: F-096-UC-5
+  hypothesis_id: H-005
+  kind: grammar
+  promise: "The runtime success status matches the published contract (resolve the 201-spec vs 200-impl drift, then test conformance)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-5) — gated on SPC-001 / DOC-GAP-074-META deciding which side is canonical"
+  proposed_test: "Spec-conformance test asserting the agreed canonical code (200 or 201) for postDataEntityList; today BaseIngestionTest:79 locks 200, so the test must be authored alongside the spec/impl decision."
+  dedup_note: "The drift is tracked by SPC-001 + DOC-GAP-074-META; the conformance TEST is the missing guard once the canonical side is chosen."
+- use_case_id: F-096-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Concurrent ingestion to one datasource: both batches succeed (serialised), OR the loser gets 429+Retry-After — never a signal-less timeout 5xx."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-6) — mint UNDER PLT-045 test plan"
+  proposed_test: "10 concurrent POSTs to the same datasource: assert all succeed (Option A narrowed lock) OR contended ones return 429+Retry-After (Option B); assert NO signal-less 5xx."
+  dedup_note: "Already enumerated in PLT-045 '## Tests' (concurrent-collector Option A/B). Guards the PLT-045 Defect 2 fix."
+- use_case_id: F-096-UC-7
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "A batch failing on one item reports which item failed (per-item error array) rather than an opaque 5xx."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-7) — LOW priority; tied to the architectural decision on partial-success (F-008 facet); test only meaningful IF a 207/per-item shape is adopted"
+  proposed_test: "IF partial-success is adopted: POST a batch with one bad + many good entities → assert per-item status array distinguishes the failed item. (Today the posture is all-or-nothing; the test guards a future contract, not current behaviour.)"
+  dedup_note: "Posture documented via DOC-195 / F-008 batch_atomicity_without_signal; a behavioural test is premature until the partial-success decision is made. Listed for completeness, lowest priority."
+- use_case_id: F-096-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "An ingestion rollback emits a tagged WARN log line (collector-id + datasource_oddrn + entity_count)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-096-UC-9) — mint UNDER PLT-045 test plan"
+  proposed_test: "Log-assertion test: ingestion failure emits a WARN 'ingest rollback' line including collector-id + datasource-oddrn + entity-count (currently fails: zero log.*)."
+  dedup_note: "Already enumerated in PLT-045 '## Tests' (log-assertion test). Guards the PLT-045 Defect 3 fix."
+
+### probes_emitted
+# Parallel-safe mode: recorded here as PENDING-F-096-N with full hypothesis text; NO P-NNN file created.
+- probe_id: PENDING-F-096-1
+  hypothesis_id: H-010
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  expected_outcome: |-
+    "When a collector retries a permanent-error payload (e.g. duplicate-ODDRN) on backoff against a
+    datasource that a SECOND collector is also ingesting into, the retry storm does NOT take down the
+    second collector's ingestion." Probe: local docker-compose platform + Postgres; collector A
+    streams a fixed permanent-error payload at the platform's retry cadence; collector B ingests valid
+    batches to the SAME datasource; measure B's success rate, p99 latency, and platform heap/connection
+    pool under A's storm. Tools: k6/wrk for A's stream, a scripted valid-batch loop for B, local
+    docker-compose (Rule 6 local-only — satisfiable). Confirms or quantifies the H-010 co-tenant-DoS risk.
+- probe_id: PENDING-F-096-2
+  hypothesis_id: H-011
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  expected_outcome: |-
+    "When a batch contains ONLY JOB_RUN items (so the post-split entity ODDRN set is empty), ingestion
+    completes 2xx without erroring on the empty listByOddrns(emptySet,..) path." Probe: local platform +
+    Postgres; POST a DataEntityList whose every item is JOB_RUN-typed; assert 2xx and that task-runs
+    persisted and no empty-IN exception occurred. Tools: local docker-compose + a single curl/WebTestClient
+    call (Rule 6 local-only — satisfiable). Settles the verdict the sidecar left unverified.
+
+### validation_gaps
+- sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+  field_insufficient: "chain hops in F-096.yaml are all marked `sidecar: unresolved` even though enriched sidecars EXIST for hop-1 (postDataEntityList), hop-2 (IngestionServiceImpl), and the macro IngestionService interface sidecar"
+  proposed_refresh: "feature-flow-builder should re-resolve F-096's chain hops to the existing sidecar paths (postDataEntityList.md, IngestionServiceImpl.md, IngestionService.md) — the reflection consumed them directly; the chain's `unresolved` markers understate the available substrate."
+- sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+  field_insufficient: "tests_coverage_semantic hedges the all-JOB_RUN empty-keySet path ('likely yes') without the listByOddrns empty-IN evidence (drove H-011 to probe-needed rather than confirmed)"
+  proposed_refresh: "Next IngestionServiceImpl/ReactiveDataEntityRepositoryImpl refresh: pin listByOddrns behaviour on an empty collection (does it short-circuit, or issue `IN ()`?) so the all-JOB_RUN path can be settled statically."
+- sidecar: feature-flow F-096.yaml
+  field_insufficient: "the 201-vs-200 drift's spec side cites odd_api.yaml:23-25 in a repo (opendatadiscovery-specification) NOT cloned in this workspace; could not re-verify the 201 line directly (drove H-005 confidence to MEDIUM)"
+  proposed_refresh: "When the ingestion-contract repo is available, pin the 201 declaration line directly; the platform-API openapi.yaml in this workspace does NOT contain /ingestion/entities."
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "(published OpenAPI ingestion contract) odd_api.yaml:23-25"
+  doc_says: "POST /ingestion/entities success response is 201 Created."
+  code_does: "Returns 200 OK (IngestionController.java:44; BaseIngestionTest:79 locks 200). Siblings return 201."
+  recommended_log_as: "already tracked — SPC-001 (spec/impl decision) + DOC-GAP-074-META (surface drift); DOC-195 names the runtime 200 in api-reference."
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/integrations (+ S2S auth sub-page, ingestion-filters page)"
+  doc_says: "No live page documents the ingestion error contract, atomicity, retry semantics, DLQ-absence, or per-item-error absence (sidecars confirmed all three adjacent pages silent, 2026-05-12 / 2026-05-20)."
+  code_does: "Binary Void-or-5xx, all-or-nothing rollback, no per-item report, no DLQ, synchronous-no-202."
+  recommended_log_as: "already tracked — DOC-195 (error-contract section on integrations/README, in-progress); H-008's synchronous-intake caveat is the one not-yet-in-DOC-195 sliver (see caveat_candidates)."
+
+## maintainer_notes
+
+(Preserved across refreshes — only the maintainer hand-edits this block.)
+
+Convergence note (2026-06-03): this reflection is strong CONVERGENT VALIDATION of PLT-045 —
+the layer-4b top-down product-owner pass independently re-derived all three PLT-045 defects
+(client-errors-as-5xx, row-lock-no-429, zero-logging) plus the F-008/DOC-195 no-partial-success
+posture and the SPC-001 201/200 drift, purely from the user-promise direction, with no access to
+PLT-045 during hypothesis generation. Two NET-NEW contributions beyond the tracked items:
+(1) H-010 — the COMPOUND retry-storm co-tenant-DoS blast radius, which PLT-045 fixes the components
+of but never measures (probe PENDING-F-096-1); (2) F-096-UC-1 — the atomicity invariant
+(`IngestionTransactionalRollbackTest`) as the highest-value NET-NEW functional test, guarding the
+feature's STRONGEST promise (all-or-nothing) which today has zero regression guard and is NOT in
+PLT-045's test plan.

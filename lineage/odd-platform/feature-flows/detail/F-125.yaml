@@ -137,6 +137,113 @@ observed_vs_expected:
         without operational risk.
       evidence:
         - "V0_0_28__add_token.sql:1-9 (no UNIQUE on value)"
+use_cases:
+  # LSN-030 promise layer — projected from feature-reflections/detail/F-125.yaml (feature-reflector/0.3.0, 2026-06-03).
+  # uc_id == hypothesis id. coverage 'verified' ONLY where a real test exists (checked the contributing sidecars'
+  # tests_coverage_semantic.covered_behaviours + Grep of the odd-platform test tree). The full hypothesis + validation
+  # lives in the reflection; this is the compact projection the test-coverage-mapper Step 2b reads. Second coverage
+  # frontier summarised in use_case_coverage below (a TOP-LEVEL sibling key, not nested under use_cases).
+  - uc_id: F-125-UC-001
+    kind: teardown
+    promise: "Deleting a retired collector/datasource reclaims its token (no unbounded orphan accumulation)."
+    actor: platform-operator
+    trace: "soft-delete parent -> token row orphaned; HousekeepingJobManager 5-job cascade has no token leg (V0_0_28 no deleted_at)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — orphan-purge regression guard; bug-candidate (net_new, distinct_from PLT-087)"
+  - uc_id: F-125-UC-002
+    kind: edit-reconcile
+    promise: "A rotated-out token keeps working for a grace window so the collector can be reconfigured without an outage."
+    actor: platform-operator
+    trace: "ReactiveTokenRepositoryImpl.updateToken in-place UPDATE; old value gone => 401 immediately (no superseded_at)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — binary-cutover pin; caveat DOC-252/255 (done)"
+  - uc_id: F-125-UC-003
+    kind: render
+    promise: "The Regenerate confirmation warns the operator the old token dies immediately and breaks running collectors."
+    actor: platform-operator
+    trace: "ConfirmationDialog EXISTS (DataSourceItemToken.tsx:37-49) but body says only 'Are you sure?' — no consequence warning"
+    verdict: partial
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — pairs with PLT-038 dialog-text fix"
+  - uc_id: F-125-UC-004
+    kind: happy-path
+    promise: "Regeneration shows the new 40-char plaintext exactly once with a Copy button."
+    actor: platform-operator
+    trace: "showToken=true on rotation (ReactiveTokenRepositoryImpl.java:38); UI isHidden=false -> Copy + 'save it once' warning"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — confirmed-but-untested (LSN-030 fix)"
+  - uc_id: F-125-UC-005
+    kind: render
+    promise: "Tokens are not recoverable in the clear from the DB (hashed/encrypted at rest)."
+    actor: platform-operator
+    trace: "token.value VARCHAR(40) plaintext; TOKEN.VALUE.eq(token) plaintext SQL match; non-constant-time .equals()"
+    verdict: contradicted
+    coverage: verified
+    test_ref: "repository.reactive.CollectorTokenStorageKnownBugTest (GREEN @pins PLT-085 — flips RED on hash-at-rest)"
+    test_demand: "none — regression guard exists (PLT-085 pin); FIX is PLT-085 hash-at-rest migration"
+  - uc_id: F-125-UC-006
+    kind: render
+    promise: "Credential rotation/retirement is auditable (who rotated it, and who before that)."
+    actor: security-reviewer
+    trace: "no ActivityEvent, no audit row; only single-state token.updated_by (NULL under DISABLED, overwritten each rotation)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — guards future audit/platform_event mechanism (@ActivityLog blocked, F-021a)"
+  - uc_id: F-125-UC-007
+    kind: cross-actor
+    promise: "The Regenerate affordance is hidden for a user without the *_TOKEN_REGENERATE permission."
+    actor: platform-operator
+    trace: "WithPermissions(DATA_SOURCE_TOKEN_REGENERATE|COLLECTOR_TOKEN_REGENERATE) renders null for non-holders (WithPermissions.tsx:27-29)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — confirmed-but-untested (LSN-030 fix); pairs with probe P-084"
+  - uc_id: F-125-UC-008
+    kind: cross-actor
+    promise: "Token rotation is not freely available to an anonymous caller under default auth.type=DISABLED."
+    actor: anonymous-network-caller
+    trace: "UI hides buttons (empty perms) BUT backend bypasses SECURITY_RULES under DISABLED => anonymous PUT succeeds + returns plaintext"
+    verdict: partial
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — 32-cell auth matrix (probe P-052); REFACTOR-185 family"
+  - uc_id: F-125-UC-009
+    kind: edit-reconcile
+    promise: "Rotating a leaked token has a real security effect on the ingestion write path."
+    actor: platform-operator
+    trace: "IngestionDataEntitiesFilter @ConditionalOnProperty default-OFF => rotation no-op vs /ingestion/entities; /ingestion/datasources (always-on) IS affected"
+    verdict: partial
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — parameterised on auth.ingestion.filter.enabled; REFACTOR-185 family"
+  - uc_id: F-125-UC-010
+    kind: edit-reconcile
+    promise: "A double-click / retry on Regenerate rotates the token only once (the copied value stays valid)."
+    actor: platform-operator
+    trace: "PUT not idempotent (no If-Match); UI spinner blocks intra-dialog double-confirm only — runtime needed"
+    verdict: probe-needed
+    coverage: unverified
+    test_demand: "probe PENDING-F-125-1 (mirrors sidecar P-082 UI + P-050 backend)"
+  - uc_id: F-125-UC-011
+    kind: grammar
+    promise: "The UI correctly distinguishes masked vs plaintext tokens even if the backend mask format changes."
+    actor: platform-operator
+    trace: "UI decision is literal substring(0,6)==='******' hard-coupled to TokenMapper 6-asterisk mask — silent mis-classify on format change"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — confirmed-as-fragile (net_new); pin both render branches + cross-repo mask contract"
+  - uc_id: F-125-UC-012
+    kind: edit-reconcile
+    promise: "A non-destructive recovery path exists if the operator misses the one-time reveal."
+    actor: platform-operator
+    trace: "refetch/navigate re-masks; only recovery is a second destructive Regenerate (re-breaks the collector that picked up token 1)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP-NNN pending mint) — confirmed-as-absent (net_new, distinct_from PLT-128)"
+use_case_coverage:
+  verified: 1
+  total: 12
+  note: "SECOND COVERAGE FRONTIER (verified promises / total promises) — distinct from line/method coverage and the test_matrix cells. Only 1/12 user-facing promises is guarded by a real test (H-005/UC-005, the CollectorTokenStorageKnownBugTest PLT-085 plaintext-at-rest characterization pin). The other 11 promises — including 2 confirmed (UC-004 one-time-reveal, UC-007 RBAC-hidden), 2 confirmed-as-broken (UC-011 prefix-sniff fragility, UC-012 no-recovery), and 4 contradicted security/lifecycle promises (UC-001 orphan-forever, UC-002 no-grace, UC-005 plaintext, UC-006 no-audit) — are UNVERIFIED. A security-load-bearing credential-lifecycle feature sitting at 1/12 verified promises is itself a finding: the happy-path mint/reveal and the destructive teardown/rotation paths have no functional test obligation today. See feature-reflections/detail/F-125.yaml functional_test_demands for the 11 missing-functional TEST-GAP candidates (pending mint)."
 test_matrix:
   unit: GAP
   integration: GAP
@@ -201,6 +308,16 @@ notes_for_maintainer: |-
   F-125 names the STORAGE-LAYER + HOUSEKEEPING-GAP. Cross-pillar with
   F-010 (Housekeeping) — the fix is in HousekeepingJobManager but the
   feature surface is credential-lifecycle.
+
+  Layer-4b reflection (2026-06-03, feature-reflector/0.3.0): 12 hypotheses
+  (6 confirmed / 2 contradicted / 3 partial / 1 probe-needed). use_case_coverage
+  1/12 verified. Drift-class CORRECTION surfaced: `regenerate_token_ui_one_click_no_confirmation_modal`
+  is factually WRONG — a ConfirmationDialog DOES exist on both token controls
+  (DataSourceItemToken.tsx:37-49 + CollectorItemToken.tsx:37-49); the real gap
+  is the dialog carries no consequence warning. Net_new load-bearing finding:
+  the orphan-token HOUSEKEEPING-SWEEP (H-001) is only partially tracked — PLT-087
+  D1 covers DataSource per-delete cleanup; the Collector-side cleanup AND the
+  daily housekeeping sweep are net_new. See feature-reflections/detail/F-125.yaml.
 provenance: |-
   Graduated from SHB-182 by feature-flow-builder on 2026-05-26 (parallel
   triage slice H2). Evidence: 6 file:line citations across migrations +

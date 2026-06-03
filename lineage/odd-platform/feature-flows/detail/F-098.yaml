@@ -188,6 +188,121 @@ observed_vs_expected:
       drift_class: requested_scope_unused
       provenance: STATIC — SHB-129 + EventApiController sidecar doc_drift_findings[1].
 
+# LSN-030 / feature-reflector v0.3.0 — the promise layer. Each use_case is a
+# falsifiable user-facing promise projected from a hypothesis in
+# feature-reflections/detail/F-098.yaml. coverage is `verified` ONLY when a
+# behavioral test of the PROMISE exists; the two @pins PLT-054 tests are
+# STRUCTURAL source/schema scans (bug-presence characterization), not promise
+# tests — so every promise here is `unverified`.
+use_cases:
+  - uc_id: F-098-UC-001
+    kind: cross-actor
+    promise: "A request without a valid Slack signature is rejected (401); only Slack can write events to /api/slack/events."
+    actor: "Slack delivery system (legitimate) vs any internet host (adversary)"
+    trace: "EventApiController.java:22-27 (no header bound) + SlackEventParser.java:22-23 + grep HMAC/X-Slack-Signature across repo = zero matches"
+    coverage: unverified
+    verdict: contradicted
+    test_demand: missing-functional
+  - uc_id: F-098-UC-002
+    kind: happy-path
+    promise: "A Slack URL-verification challenge returns 200 with body {challenge:<echoed>} so the event subscription registers."
+    actor: "Slack app-config verification step"
+    trace: "EventApiController.java:44-56 (SlackEventResponse.challengeResponse) + EventApiController.java:29 (CHALLENGE branch)"
+    coverage: unverified
+    verdict: confirmed
+    test_demand: missing-functional
+  - uc_id: F-098-UC-003
+    kind: cross-actor
+    promise: "Under LOGIN_FORM/OAUTH2/LDAP the endpoint is anonymously reachable (whitelisted in all four modes); under DISABLED the datacollaboration.enabled flag is the sole defence."
+    actor: "platform-operator (auth-mode chooser) vs anonymous caller"
+    trace: "SecurityConstants.java:95-96 + AuthorizationCustomizer.java:22-23 + LoginFormSecurityConfiguration.java:49-51 + DisabledAuthSecurityConfiguration.java:13-17"
+    coverage: unverified
+    verdict: contradicted
+    test_demand: missing-functional
+  - uc_id: F-098-UC-004
+    kind: cross-actor
+    promise: "A duplicate Slack delivery (at-least-once) shows the message exactly once on the entity's Discussions tab."
+    actor: "odd-platform-ui-end-user reading the Discussions tab"
+    trace: "V0_0_59__data_collaboration.sql:25-39 (no UNIQUE, no event_id) + ReactiveMessageRepositoryImpl.java:136-155 (no ON CONFLICT) + :188-195 (no LIMIT 1)"
+    coverage: unverified
+    verdict: contradicted
+    test_demand: missing-functional
+  - uc_id: F-098-UC-005
+    kind: empty/no-match
+    promise: "A thread reply on a thread ODD is not tracking writes nothing and acks 200."
+    actor: "Slack delivery system"
+    trace: "SlackEventParser.java:65-74, 86-95 + SlackMessageProviderEventHandler.java:31-35 (two-stage thread_ts filter; untracked -> Mono.empty)"
+    coverage: unverified
+    verdict: confirmed
+    test_demand: missing-functional
+  - uc_id: F-098-UC-006
+    kind: empty/no-match
+    promise: "An unhandled Slack event type is acked 200 (avoiding a Slack retry storm); only a structurally-broken null-inner-event returns 400."
+    actor: "Slack delivery system"
+    trace: "EventApiController.java:30-37 + SlackEventParser.java:38-43, 56-60, 107-110"
+    coverage: unverified
+    verdict: confirmed
+    test_demand: missing-functional
+  - uc_id: F-098-UC-007
+    kind: render
+    promise: "A malformed JSON body (or non-object `event`) returns a clean 4xx, not a 5xx Slack would retry."
+    actor: "Slack delivery system / adversary"
+    trace: "SlackEventParser.java:22-23 (no try/catch on deserializeJson) + SlackEventParser.java:45 (unchecked cast) — response shape depends on global WebFlux error handler, untested"
+    coverage: unverified
+    verdict: probe-needed
+    test_demand: "probe PENDING-F-098-1"
+  - uc_id: F-098-UC-008
+    kind: cross-actor
+    promise: "A forged-event flood is bounded (body-size cap / rate limit) and does not fill message_provider_event or starve the single-leader processor."
+    actor: "adversary vs odd-platform-ui-end-user (whose Discussions tab stops updating)"
+    trace: "EventApiController.java:23-24 (no DataBuffer cap) + V0_0_59__data_collaboration.sql:32 (unbounded JSONB) + no rate-limit filter on the path"
+    coverage: unverified
+    verdict: probe-needed
+    test_demand: "probe PENDING-F-098-2"
+  - uc_id: F-098-UC-009
+    kind: teardown-constraint
+    promise: "After a suspected incident, an operator can distinguish forged inbound events from genuine ones (caller-IP / signature-validity recorded per event)."
+    actor: "platform-operator / security reviewer"
+    trace: "V0_0_59__data_collaboration.sql:25-39 (no created_by_caller_ip / signature_valid column; no audit table; no log.info on receive)"
+    coverage: unverified
+    verdict: contradicted
+    test_demand: missing-functional
+  - uc_id: F-098-UC-010
+    kind: cross-actor
+    promise: "The url_verification echo does not serve as an unauthenticated platform-fingerprinting oracle."
+    actor: "network scanner / adversary"
+    trace: "EventApiController.java:44-56 (echo) + bugs_limitations_corner_cases[0] (echo is ungated; mitigated by the same signing-secret check as UC-001)"
+    coverage: unverified
+    verdict: partial
+    test_demand: missing-functional
+  - uc_id: F-098-UC-011
+    kind: render
+    promise: "The live deployment docs warn the operator about the no-signature + duplicate-message limitations before they enable the feature."
+    actor: "platform-operator reading the deployment docs"
+    trace: "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-06-03 status 200 — 'Known limitations' block present; CONFIRMED (DOC-204 shipped, DOC-GAP-032/033 closed)"
+    coverage: unverified
+    verdict: confirmed
+    test_demand: missing-functional
+
+use_case_coverage:
+  verified: 0
+  total: 11
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises) — distinct from
+    the test_matrix cells below. 0/11 promises are behaviorally verified. Two
+    @pins PLT-054 characterization tests exist (DataCollabEventDedupKnownBugTest
+    schema scan + SecurityRulesAuthzGapsKnownBugsTest whitelist scan) but they
+    GREEN-pin the BUG's presence at source/schema level, NOT the user-facing
+    promise — so they do not count toward verified promises. This is a
+    user-facing, internet-reachable, forge-able feature sitting at 0/11 verified
+    promises: 4 contradicted (UC-001 no signature, UC-003 unauth-all-modes,
+    UC-004 no dedup, UC-009 no forensic trail), 1 partial (UC-010 fingerprint
+    oracle), 2 probe-needed (UC-007 malformed-body status, UC-008 flood bound),
+    and even the 4 confirmed happy-path/no-match promises (UC-002 challenge echo —
+    CRITICAL per the sidecar, UC-005 untracked-thread, UC-006 filter-ack, UC-011
+    doc-warning) have NO behavioral guard. Full hypotheses + verdicts in
+    lineage/odd-platform/feature-reflections/detail/F-098.yaml.
+
 test_matrix:
   unit:
     state: GAP
@@ -294,3 +409,19 @@ scanner_reviews:
       - ReactiveMessageRepositoryImpl.java:136-155 (createMessageEvent INSERT — NO .onConflict — VERIFIED)
       - SecurityConstants.java:95-96 (WHITELIST_PATHS contains /api/slack/events — VERIFIED)
       - "Grep X-Slack-Signature|signing.secret|signingSecret|verifySignature|HMAC.SHA256|HmacSha256|HmacUtils across odd-platform — ZERO MATCHES VERIFIED"
+
+# feature-reflector v0.3.0 reflection (2026-06-03) — appended note (does not
+# alter any field above; the promise layer is use_cases + use_case_coverage):
+#   Reflection: lineage/odd-platform/feature-reflections/detail/F-098.yaml
+#   11 hypotheses (4 confirmed / 4 contradicted / 1 partial / 2 probe-needed);
+#   use_case_coverage 0/11 verified; 11 functional_test_demands (all missing-functional).
+#   Highest-severity contradiction: H-001/UC-001 (no X-Slack-Signature HMAC — any
+#   internet host forges events that render on a real entity's Discussions tab).
+#   Dedup: H-001/H-004/H-003 already_tracked as PLT-054 (convergent validation,
+#   not new); H-009 + H-010 net_new (no-forensic-trail + fingerprint-oracle facets
+#   PLT-054 does not cover). Doc reconciliation: live docs (2026-06-03) now
+#   disclose the no-signature + duplicate limitations (DOC-204 shipped;
+#   DOC-GAP-032/033 closed; manifest dropped incoming-webhook) — F-098's
+#   doc-silence facets + finding F-098b are STALE; /enrich refresh queued.
+#   Validation gaps: chain hops 1-4 marked `unresolved` despite a complete
+#   EventApiController sidecar; UI-absent is correct (inbound webhook, no screen).

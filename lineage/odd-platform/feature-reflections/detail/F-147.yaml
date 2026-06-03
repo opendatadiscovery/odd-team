@@ -1,0 +1,667 @@
+---
+feature_id: F-147
+pillar_anchored_id: P-01:F-002
+pillar: P-01 Data Discovery
+feature_name: |-
+  Search Result Row tile — entire row onClick navigates to
+  /dataentities/{id}/overview (the SECOND UI surface that closes the
+  F-001/F-003 view_count inflation loop, from the Search list side)
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__Search.md          # parent surface (P-01:F-002 Catalog page root)
+  - odd-platform__ts__react-component__component__DataEntityDetails.md # F-001 hop-1 — the LSN-017 +2 doubling destination
+  # The backend chain F-147 navigates INTO (DataEntityController.getDataEntityDetails →
+  # DataEntityServiceImpl.getDetails @ReactiveTransactional → ReactiveDataEntityRepositoryImpl.incrementViewCount)
+  # is the F-001 chain, consulted via F-001.yaml + the F-001 reflection (feature-reflections/detail/F-001.yaml).
+  # Its per-hop multiplicity=1 invariants + the +2 amplification are PRIMARY-SOURCE CONFIRMED + probe-pinned
+  # (P-001/P-002/P-004) there and NOT re-litigated; F-147 inherits them.
+  # The hop-1 ResultItem sidecar is UNRESOLVED (no sidecar file exists) — read from primary source for this
+  # reflection (Rule 8 exception, recorded source_read_for_validation on each affected verdict).
+source_reads_for_validation:
+  - file: "odd-platform-ui/src/components/Search/Results/ResultItem/ResultItem.tsx:1-249"
+    reason: "Hop-1 node sidecar is unresolved; the row click-target + a11y + inner-child markup are load-bearing for every F-147 hypothesis and the chain carried no sidecar to validate against."
+  - file: "odd-platform-ui/src/components/Search/Results/Results.tsx:42-177"
+    reason: "Parent list component — needed for the empty-state ('No matches found') + infinite-scroll pagination + the row-mapping to confirm rows are the sole click affordance."
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: not-fetched-this-session
+    note: |-
+      WebFetch not run this session (parallel-safe batch). The relevant doc-side
+      surface is data-discovery/search.md; DOC-260 (tracked) already ships Caveat 4
+      (Filters truncation) + Caveat 5 (view_count amplification from search browsing)
+      as Known Limitations there. Doc-claim hypotheses below are seeded from the
+      DOC-260 caveat text recorded in PLT-091, not from a live fetch.
+hypothesis_summary:
+  total: 11
+  confirmed: 3
+  contradicted: 5
+  partial: 1
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "Scanning search results by clicking row after row silently inflates the home-page Popular ranking by +2 per click — routine 'click-to-check-then-go-back' browsing makes Popular measure what operators searched, not what they value."
+related_feature_flows: [F-001, F-003, F-017]   # F-001 backend chain inherited; F-003 Popular = the inflated surface; F-017 Search = parent surface hosting the row
+related_concepts:
+  - search-result-row
+  - view-count-inflation
+  - data-entity-detail-page
+related_drift_classes:                   # confirmed from F-147.yaml drift_class_summary
+  - search_result_row_entire_clickable_no_focus_visible_no_keyboard_no_aria_label_no_navigation_prevention_for_routine_scrolling
+  - search_row_click_amplifies_view_count_routine_browsing_inflates_popular_ranking
+  - inner_button_clicks_no_stop_propagation_audit_DetailsPreview_AppTooltip_QuestionIcon_may_double_navigate
+  - ui_route_target_hardcoded_to_overview_path_couples_search_to_F_001_inflation_loop
+  - back_navigation_does_not_dedupe_search_row_click_count_unbounded_per_session
+new_drift_classes_proposed:
+  - search_row_whole_tile_click_no_real_anchor_breaks_middle_click_open_in_new_tab   # a user scanning results cannot open a result in a background tab — a basic browse expectation a real <a> would satisfy
+---
+
+# Search Result Row tile — product-owner reflection
+
+## product_owner_narrative
+
+**What it is.** The Search results list is the main pane of the Data Discovery Catalog page (`/search/*`) — the surface a user lands on after typing a query into the catalog search box. Each match renders as one horizontal row (`ResultItem`), and the rows stack inside an infinite-scroll list (per `Search.md:understanding` + `Results.tsx:151-159`). A row shows the entity's name (with a staleness clock if `is_stale`), its entity-class badges, per-class stats (rows/columns/consumers for datasets, source/target for transformers, etc.), its namespace, its datasource (with logo), its owners, its status, and created/updated timestamps (`ResultItem.tsx:85-244`). This is where an operator answers "is this the table I'm looking for?" by scanning the list — and then opens the one they want.
+
+**How a user interacts with it.** The entire row is one big click target: `<S.Container container onClick={() => navigate(detailsLink)}>` (`ResultItem.tsx:72-76`). `detailsLink` is built once as `dataEntityDetailsPath(searchResult.id)` (`ResultItem.tsx:42`), which — with no path segment supplied — resolves to `/dataentities/{id}/overview`, the entity's Overview tab. So a click anywhere on the row navigates the SPA to that entity's detail page. There is no separate "open" button and no anchor on the name cell; the row tile IS the affordance.
+
+**The working parts — and the part the user never sees.** The Overview tab the row navigates to is the F-001 chain's mounting site. Mounting `DataEntityDetails` fires `fetchDataEntityDetails` → `GET /api/dataentities/{id}` → `DataEntityServiceImpl.getDetails` (`@ReactiveTransactional`) → `ReactiveDataEntityRepositoryImpl.incrementViewCount` → `UPDATE data_entity SET view_count = view_count + 1` (per `DataEntityDetails.md:downstream_side_effects`). Because of the LSN-017 dependency-array bug at `DataEntityDetails.tsx:56-64`, that mount fires the fetch TWICE, so a single row-click writes +2 view_count (empirically pinned by probe P-004 — xhr_count=2, DB delta=2). The home-page "Popular" strip (F-003) ranks by exactly this column. So the act of clicking a search result to inspect it feeds the popularity ranking — the user is voting by browsing, with no awareness and no opt-out (per `F-001.yaml` facet `Directory level-4 EntityItem ALSO closes the F-001 inflation loop` — the Search row is the same closure shape at a different mount site).
+
+**The integration story.** F-147 is the SEARCH-LIST analog of F-001's home-page PopularStrip closure and the Directory level-4 EntityItem closure: three distinct UI surfaces, all routing through `dataEntityDetailsPath(id)` into the same read-as-write Overview tab (per `DataEntityDetails.md:upstream_callers`). Search is one of the platform's three read-collaborative cross-owner surfaces (alongside Popular and the Activity feed; per `system-mission.md` P-09 maintainer notes), so the list a user scans spans every owner's entities — and every click on any of them inflates the global Popular ranking. The fix the maintainer has scoped (PLT-091 + PLT-104) deliberately couples the search-side and home-side triggers so the Popular metric becomes meaningful only when BOTH are addressed.
+
+**Edge cases a demo would highlight.** A keyboard-only operator can type a query, watch results render, and then have no way to open one — the row is a `<div>` (`S.Container` is a styled MUI `Grid`), not an `<a>`/`<button>`, with no `tabindex`, `role`, `aria-label`, or `onKeyDown` (`ResultItem.tsx:72-76`). A power user who middle-clicks a result to open it in a background tab (the universal "open this, keep scanning" gesture) gets nothing — there is no real `href`, only a JS `navigate`. And inside the row sit three smaller interactive elements — a staleness tooltip, a search-highlights `QuestionIcon` tooltip, and a hover-preview (`MetadataStale` / `AppTooltip`+`QuestionIcon` / `DataEntityDetailsPreview` at `ResultItem.tsx:87-106`) — none of which stop click propagation at the consumer site, so a click intended for one of them also fires the row's navigate.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user clicks a search result row, the SPA navigates to that entity's detail page so the user can inspect the entity they found."
+  derivation: "Route-shape: ResultItem.tsx:42 builds detailsLink = dataEntityDetailsPath(searchResult.id); :75 navigates to it on row click — the primary 'drill from search into the entity' action of the Search & Filtering pillar."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The row navigates exactly as expected. `dataEntityDetailsPath(searchResult.id)` with no path
+      argument resolves to `/dataentities/{id}/overview` (the default `path='overview'` segment per
+      F-001's dataEntitiesRoutes.ts:66-73 analysis), and `onClick={() => navigate(detailsLink)}`
+      (ResultItem.tsx:75) fires that navigation on any click within the row container. The destination
+      mounts DataEntityDetails — the per-entity detail page. This is the same path-builder + same
+      Overview-tab destination the home-page Popular tiles and Directory leaves use.
+    evidence:
+      - sidecar: "(source read — ResultItem.tsx, hop-1 sidecar unresolved)"
+        section: render
+        cite: "ResultItem.tsx:42, :72-76"
+        note: "detailsLink = dataEntityDetailsPath(id); row onClick navigates to it. source_read_for_validation: true."
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
+        section: upstream_callers
+        cite: "routes/dataEntitiesRoutes.ts:66-73"
+        note: "dataEntityDetailsPath defaults to /dataentities/{id}/overview; Search results listed as a caller surface."
+    confidence: HIGH
+    source_read_for_validation: true
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-002
+  hypothesis: "Clicking a search result row to inspect an entity is a read-only browse action — it does not itself change that entity's popularity ranking."
+  derivation: "Negative-space + product-owner: a user scanning search hits expects browsing TO an entity to be neutral with respect to a 'most-popular' ranking elsewhere; a ranking that moves because you clicked a search result is a feedback loop a senior PO flags on sight."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      A row click is NOT read-only with respect to the ranking — it writes +2 view_count. The row
+      navigates to /dataentities/{id}/overview (ResultItem.tsx:42,:75), which mounts DataEntityDetails,
+      which fires the read-as-write fetchDataEntityDetails. Because of the LSN-017 dep-array bug
+      (DataEntityDetails.tsx:56-64), that mount fires the fetch twice → +2 view_count per click
+      (empirically pinned by probe P-004: xhr_count=2, DB delta=2). The home-page Popular strip (F-003)
+      ranks solely by view_count DESC. There is no client-side debounce, no per-session "already counted"
+      guard, no analytics-only navigation, no idempotency key at any layer of the F-001 chain. The Search
+      row is the SECOND UI closure point of the inflation loop (after the home-page PopularStrip), and the
+      Directory level-4 EntityItem is a third — all three route through dataEntityDetailsPath into the same
+      read-as-write Overview tab.
+    evidence:
+      - sidecar: "(source read — ResultItem.tsx, hop-1 sidecar unresolved)"
+        section: render
+        cite: "ResultItem.tsx:42, :72-76"
+        note: "Whole-row navigate into the Overview tab; no client-side dedupe/analytics-only mode. source_read_for_validation: true."
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
+        section: bugs_limitations_corner_cases
+        cite: "DataEntityDetails.tsx:56-64 + lineage/odd-platform/probe-runs/2026-05-19-P-004.yaml"
+        note: "LSN-017 doubling: one page-open = +2 view_count, empirically pinned (xhr_count=2, delta=2)."
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
+        section: upstream_callers
+        cite: "DataEntityDetails.md upstream_callers (Search results + Directory leaves enumerated as click sources)"
+        note: "Search row is one of three UI surfaces closing the inflation loop into the same Overview read-as-write."
+    operator_visible_failure: |
+      (1) Routine search browsing — type a query, click a result to check it, hit Back, click the next —
+      silently inflates the home-page Popular ranking by +2 per click. One operator re-reading a result
+      twice writes that entity's popularity by +4. (2) The Popular metric thus measures "what people
+      searched and clicked" as much as "what the team values" — an operator using Popular to decide what to
+      deprecate/promote is reasoning over a polluted signal. (3) Cross-owner amplification: because Search
+      spans every owner's entities (read-collaborative posture), a user scanning results across teams
+      inflates OTHER teams' entities into the shared home-page strip. (4) There is no read-only browse mode
+      and no per-session guard, so the user cannot avoid contributing to the loop. (5) Combined with the
+      a11y gap (H-005), a user who DID have a real anchor could middle-click to inspect without mounting the
+      page — but the whole-row navigate forecloses even that mitigation.
+    severity: HIGH
+    confidence: HIGH
+    source_read_for_validation: true
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: "A keyboard-only operator can reach and open a search result row using the keyboard (Tab to the row, Enter/Space to open it)."
+  derivation: "Product-owner UX seed (Rule 9 — 'can the user use this from what is on screen / across input modalities'): a catalog search list is a primary navigation surface; WCAG 2.1.1 makes keyboard reach a baseline expectation for any actionable element."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The row is unreachable by keyboard. `<S.Container container onClick={...}>` (ResultItem.tsx:72-76)
+      is a styled MUI Grid (a <div>), not an <a> or <button>. It carries only `data-testid` and `container`
+      props — NO `tabIndex`, NO `role`, NO `aria-label`, NO `onKeyDown` handler for Enter/Space. The
+      row therefore does not appear in the tab order, screen readers do not announce it as actionable, and
+      there is no key binding to trigger the navigate. A keyboard-only operator can type a query, see the
+      results render, and has no way to open any of them. The hover background-change in S.Container styles
+      is a mouse-only affordance and does not serve as a focus indicator.
+    evidence:
+      - sidecar: "(source read — ResultItem.tsx, hop-1 sidecar unresolved)"
+        section: render
+        cite: "ResultItem.tsx:72-76"
+        note: "S.Container is a styled Grid div with onClick only — no tabindex/role/aria-label/onKeyDown. source_read_for_validation: true."
+    operator_visible_failure: |
+      (1) Keyboard-only operators (motor-impairment, power users, screen-reader users) are locked out of the
+      Search surface entirely — they can search but cannot open a result without a pointing device
+      (WCAG 2.1.1 Keyboard failure). (2) Screen readers announce each row as static text, giving no signal
+      that it is clickable, so an assistive-tech user cannot discover the primary action. (3) This is
+      inconsistent with the rest of the platform's navigable lists insofar as none expose a real link here;
+      the same fix shape is already on the F-001 PopularStrip a11y backlog.
+    severity: MEDIUM
+    confidence: HIGH
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: "When a user wants to open a search result in a new background tab (middle-click / Ctrl+click) to keep scanning the list, it opens in a new tab as any link would."
+  derivation: "Product-owner UX seed (Rule 9 — 'intuitive and consistent with how the same task is done elsewhere / across device interaction patterns'): opening list items in background tabs is the universal browse-many-then-read gesture; a real <a href> satisfies it for free."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Middle-click / Ctrl+click does nothing useful. The row is a <div> wired with a JS
+      `onClick={() => navigate(detailsLink)}` (ResultItem.tsx:75) and carries NO `href` — there is no real
+      anchor anywhere in the row (the name cell is a plain MUI Typography, ResultItem.tsx:91-98). React
+      Router's `navigate()` is a same-tab programmatic push; it has no new-tab, bookmark, copy-link, or
+      "open in new window" behaviour. A user accustomed to middle-clicking results to queue several entities
+      in background tabs gets no response from a middle-click and a useless empty target from Ctrl+click.
+    evidence:
+      - sidecar: "(source read — ResultItem.tsx, hop-1 sidecar unresolved)"
+        section: render
+        cite: "ResultItem.tsx:42, :72-76, :91-98"
+        note: "detailsLink is passed to navigate() not to an href; the name cell is plain Typography, no anchor. source_read_for_validation: true."
+    operator_visible_failure: |
+      (1) The "open several results in background tabs, then read each" workflow — standard for anyone
+      triaging a list of candidates — is unavailable; the user is forced into open-one / go-Back / open-next,
+      which (per H-002) inflates view_count on every round-trip. (2) Copy-link-address and bookmark-this-result
+      from the row are also impossible because there is no anchor. (3) This is a convenience + consistency
+      gap a real `<a href={detailsLink}>` (the PLT-091 suggested fix) resolves while ALSO fixing H-003's
+      keyboard reach in one change.
+    severity: LOW
+    confidence: HIGH
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: "Clicking an interactive element inside a row (the staleness clock, the search-highlights question mark, the hover-preview) performs only that element's action — it does not also navigate to the entity."
+  derivation: "Negative-space + product-owner: a row contains smaller affordances (tooltips, a preview); a user clicking one expects its local behaviour, not a surprise full-page navigation. Inner clickable children that don't stopPropagation are the classic whole-row-onClick hazard."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The row mounts three inner interactive elements with NO visible event.stopPropagation at the consumer
+      site: MetadataStale (ResultItem.tsx:87-90, a tooltip-anchored staleness clock), the AppTooltip
+      wrapping a QuestionIcon for search highlights (ResultItem.tsx:101-105), and DataEntityDetailsPreview
+      (ResultItem.tsx:106, a hover-preview component). Because the row's onClick is on the outer
+      S.Container, a DOM click event originating on any of these children bubbles up to the row handler and
+      fires navigate(detailsLink) — UNLESS one of the children calls stopPropagation internally. MetadataStale,
+      AppTooltip, QuestionIcon, and DataEntityDetailsPreview live in components/shared/elements and were NOT
+      read this pass (out of the F-147 slice; the F-147.yaml facet flags this exact audit as ui_unverified).
+      Whether a click on each child double-navigates therefore cannot be settled from the sidecars — it needs
+      the rendered component exercised. PLT-091 Defect 4 already records this as an open hazard.
+    evidence:
+      - sidecar: "(source read — ResultItem.tsx, hop-1 sidecar unresolved)"
+        section: render
+        cite: "ResultItem.tsx:87-90, :101-105, :106"
+        note: "Three inner interactive children inside the row's onClick container; no stopPropagation at consumer site. source_read_for_validation: true."
+      - sidecar: "(feature-flow F-147)"
+        section: observed_vs_expected
+        cite: "F-147.yaml facet inner_button_clicks_no_stop_propagation_audit (ui_unverified: true)"
+        note: "DataEntityDetailsPreview internals out-of-slice; stopPropagation behaviour unverified — needs a rendered probe."
+    operator_visible_failure: |
+      IF the children do not stopPropagation (the un-probed worst case): (1) a user clicking the staleness
+      clock or the search-highlights question mark to read a tooltip is instead yanked to the entity's full
+      detail page — a jarring, unintended navigation; (2) each such accidental navigation also writes +2
+      view_count (compounding H-002's inflation); (3) the hover-preview's own click target collides with the
+      row navigate, so the preview interaction is unreliable. The probe must click each inner element and
+      assert the row does NOT navigate.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-147-1
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "PENDING-F-147-1 (probe)"
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: "When a user's search matches nothing, the results list shows a clear 'no matches' empty state rather than a blank pane."
+  derivation: "Product-owner empty-state seed: a search surface must tell the user when their query matched nothing, distinctly from 'still loading'."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The Search results list has a real, search-specific empty state. Results.tsx:161-165 renders
+      <EmptyContentPlaceholder isContentLoaded={!isSearchFetching} isContentEmpty={!searchResults.length}
+      text={t('No matches found')} /> — so when the fetched result set is empty and loading has settled,
+      the user sees a translated "No matches found" message rather than a blank pane or the generic
+      "No information to display" used elsewhere. (This is BETTER than the home-page Popular strip, whose
+      empty state is the generic placeholder per the F-001 reflection H-010.) The skeleton
+      (SearchResultsSkeleton) covers the loading window separately (Results.tsx:140, :147).
+    evidence:
+      - sidecar: "(source read — Results.tsx, parent list component)"
+        section: render
+        cite: "Results.tsx:161-165"
+        note: "EmptyContentPlaceholder with text 'No matches found', gated on !isSearchFetching + !length. source_read_for_validation: true."
+    confidence: HIGH
+    source_read_for_validation: true
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-007
+  hypothesis: "A row visually communicates that it is clickable — a user scanning the list can tell the rows are actionable before clicking one."
+  derivation: "Product-owner UX seed (Rule 9 — 'does the user understand how to use this from what is on screen'): if the entire row is the click target, the affordance must be discoverable, not hidden."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The row signals clickability to MOUSE users only, and weakly. S.Container has a hover
+      background-change (the styled-component hover state referenced in the F-147.yaml a11y facet), which
+      gives a mouse user a hover cue. But there is no cursor:pointer guarantee surfaced in the read, no
+      explicit "open" affordance, no chevron/arrow, no link-styled name. For a first-time user the row reads
+      as a data table row (it has column headers above it via TableHeader, Results.tsx:139), so the
+      expectation set by the layout is "this is a table" not "every row is a button" — the whole-row
+      navigate is a hidden behaviour discovered by clicking. For keyboard/AT users there is no cue at all
+      (H-003). So the affordance is partially communicated (hover, for mouse) and partially hidden (no
+      persistent visual signal; nothing for non-mouse input).
+    evidence:
+      - sidecar: "(source read — ResultItem.tsx, hop-1 sidecar unresolved)"
+        section: render
+        cite: "ResultItem.tsx:72-76"
+        note: "Whole-row onClick with no link-styling/chevron/role; hover cue only. source_read_for_validation: true."
+      - sidecar: "(source read — Results.tsx)"
+        section: render
+        cite: "Results.tsx:139 (TableHeader above the rows)"
+        note: "Column-headered table layout sets a 'table' mental model, not a 'each row is a button' one."
+    operator_visible_failure: |
+      (1) A first-time user may not realise the whole row is clickable (the layout reads as a sortable table),
+      and may hunt for an 'open' button or click only the name. (2) Mouse users get a hover cue but
+      keyboard/AT users get nothing (compounds H-003). (3) The mismatch between 'looks like a data table' and
+      'behaves like a list of buttons' is a discoverability gap; a link-styled name cell would resolve both
+      the affordance signal and (with a real anchor) H-003/H-004.
+    severity: LOW
+    confidence: MEDIUM
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-008
+  hypothesis: "When a user opens a search result and then uses the browser Back button to return and open it (or a near-identical result) again, the catalog does not keep re-counting the same conceptual 'I looked at this' over and over."
+  derivation: "Negative-space: a user comparing candidates naturally opens A, goes Back, opens A again to re-check; a counter feeding a ranking should not treat repeat same-session looks as unbounded new votes."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no per-session dedupe anywhere. Each row click navigates to the Overview tab and mounts
+      DataEntityDetails fresh; back-navigation returns to the search list and a second click remounts the
+      Overview tab and fires fetchDataEntityDetails again → another +2 view_count. The F-001 chain has no
+      idempotency key, no localStorage/session "already viewed" guard, and no TTL window — confirmed across
+      the chain (DataEntityDetails.md downstream_side_effects + the F-001 reflection H-006). So opening
+      result A, going Back, and opening A again writes +2 × 2 = +4 view_count for two conceptually-identical
+      "looked at A" gestures, unbounded per session. The same applies whether the user re-clicks the same
+      row or re-runs the search and clicks the matching row again.
+    evidence:
+      - sidecar: "(source read — ResultItem.tsx, hop-1 sidecar unresolved)"
+        section: render
+        cite: "ResultItem.tsx:72-76"
+        note: "Row click has no client-side guard against repeat opens. source_read_for_validation: true."
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
+        section: downstream_side_effects
+        cite: "DataEntityDetails.tsx:56-76 (no AbortController/cleanup) + F-001 reflection H-006"
+        note: "Remount re-fires the read-as-write; no idempotency/dedupe at any layer of the F-001 chain."
+    operator_visible_failure: |
+      (1) Comparison shopping among search results (the normal way to evaluate several candidates)
+      multiplies the inflation in H-002: every Back-and-reopen is another +2 into Popular. (2) The view_count
+      becomes a count of "navigations", not "distinct human reads", so two users genuinely interested look
+      identical to one user bouncing in and out. (3) There is no operator lever to dedupe; the fix has to be
+      a per-(session,entity) guard in the F-001 chain (PLT-104) and the search-side trigger removal (PLT-091).
+    severity: MEDIUM
+    confidence: HIGH
+    source_read_for_validation: true
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: bug-candidate
+
+- id: H-009
+  hypothesis: "On an auth-disabled deployment, an anonymous user clicking search result rows does not silently mutate catalog state."
+  derivation: "Endpoint-shape + cross-pillar (P-09 security): the row click triggers a backend GET that is part of the read-collaborative chain; a product owner asks whether anonymous browsing under the DEFAULT auth.type=DISABLED writes state without an audit trail."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Under auth.type=DISABLED, an anonymous user can search (the Search list is rendered unconditionally
+      per Search.md invariants — no read gate), click any result row, land on /dataentities/{id}/overview,
+      and trigger the +2 view_count UPDATE with no authentication and no audit trail. The backend GET
+      /api/dataentities/{id} has no @PreAuthorize and falls through to .authenticated(), which under DISABLED
+      is not wired at all — empirically pinned for the direct-API case by probe P-002 (10 anonymous GETs →
+      +10 view_count). The Search row is simply a UI driver of that same anonymous read-as-write. Unlike the
+      home-page Popular strip (which Overview.tsx:25-27 HIDES under DISABLED), the Search results list has no
+      such gate — so under DISABLED the home-page inflation loop is closed but the SEARCH-side inflation loop
+      remains fully open and anonymous.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Search.md
+        section: invariants
+        cite: "Search.md invariants (read-collaborative; list rendered unconditionally, no read gate)"
+        note: "Search list + row navigate are not auth-gated for reads; every authenticated mode and DISABLED reach them."
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
+        section: security
+        cite: "lineage/odd-platform/probe-runs/2026-05-19-P-002.yaml"
+        note: "DISABLED-mode anonymous +1/GET empirically pinned; row click is a UI driver of the same path."
+    operator_visible_failure: |
+      (1) On the DEFAULT config (auth.type=DISABLED) anonymous visitors inflate the Popular ranking by
+      browsing search results, with no identity captured — the popularity signal is anonymously forgeable
+      from the UI. (2) Operators who rely on the home-page Popular strip being hidden under DISABLED as a
+      defence get no equivalent protection on the search surface — the search-side loop stays open. (3) No
+      audit trail records who (or what bot) drove the counts. This is the search-side facet of the F-001
+      disabled_mode_bypass drift class.
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: "The doc page for Search tells operators what clicking a result row does, including that it contributes to the Popular ranking."
+  derivation: "Doc-claim seed: a user-facing behaviour with an operator-visible side effect (popularity inflation) should be documented; DOC-260 was filed to cover exactly this on data-discovery/search.md."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The doc-side caveat exists as a tracked, shipped Known Limitation. DOC-260 ships Caveat 5 on
+      data-discovery/search.md — "view_count amplification: routine browsing from search silently inflates
+      the popularity score by +2 per click" (per PLT-091 Doc-side handling). So the operator-facing doc DOES
+      warn about the row-click → Popular-inflation behaviour. (NOTE: a live WebFetch was not run this session
+      to confirm the caveat is rendered on the published page; the claim is grounded in the DOC-260 / PLT-091
+      tracking text, not a 2026-06-03 fetch — recorded as a validation_gap.) The pure-code a11y + middle-click
+      + stopPropagation defects (H-003/H-004/H-005) have no doc surface and are code-only fixes per PLT-091.
+    evidence:
+      - sidecar: "(tracked artefact)"
+        section: cross-reference
+        cite: "issues/odd-platform/PLT-091.md 'Doc-side handling' + backlog/docs/DOC-260.md"
+        note: "DOC-260 Caveat 5 documents the search-browse view_count amplification on data-discovery/search.md."
+    confidence: MEDIUM
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: doc-gap-candidate
+
+- id: H-011
+  hypothesis: "Scrolling through a large result set (infinite scroll) does not get materially slower or double-fire row click-targets as more rows load."
+  derivation: "Performance/pagination negative-space: the search list uses InfiniteScroll appending size:30 pages; a senior PO asks whether the growing DOM and the per-row handlers stay performant and correct at hundreds of rows."
+  seed_source: response-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Results.tsx:143-160 uses react-infinite-scroll-component, appending pages of size 30 via
+      fetchDataEntitySearchResults({searchId, page+1, size}) (Results.tsx:71-74) as the user scrolls, with no
+      windowing/virtualisation (every loaded ResultItem stays mounted in the DOM). Each ResultItem builds a
+      memoised SearchHighlights and binds its own row onClick. Two questions cannot be settled statically:
+      (a) does the un-virtualised list degrade interaction latency at, say, 500-1000 loaded rows on a large
+      catalog (each row carrying a DataEntityDetailsPreview + tooltips)? (b) does the absence of a dedupe key
+      on the click handler combine with any fast-scroll/duplicate-page-fetch to mis-fire? Both want a rendered
+      probe against a seeded large result set; neither is reasoned-out from the sidecars. The backend search
+      query's scale behaviour is a separate concern (SearchController FTS path; not this node).
+    evidence:
+      - sidecar: "(source read — Results.tsx)"
+        section: render
+        cite: "Results.tsx:71-74, :143-160"
+        note: "InfiniteScroll appends size:30 pages, no virtualisation; all rows stay mounted. source_read_for_validation: true."
+    probe_id: PENDING-F-147-2
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "PENDING-F-147-2 (probe)"
+    routes_to_finding: none
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Search row click writes +2 view_count (search-side closure of the F-001/LSN-017 inflation loop); routine browsing inflates the home-page Popular ranking, cross-owner, with no client-side dedupe/analytics-only mode."
+  dedup_status: already_tracked
+  tracked_as: PLT-091
+  distinct_from: PLT-104
+  proposed_fix_anchor: |-
+    PLT-091 Defect 2 names this exact instance (ResultItem.tsx:42,:72-76). The two fixes must land together:
+    PLT-091 (b2) drop the search-row-click as a write trigger / treat as navigation-only, AND PLT-104 (the
+    chain-level fix) remove DataEntityDetails.tsx:63 from the dep-array (kills the doubling) + add a
+    per-(session,entity) guard on incrementViewCount. PLT-104 is the F-001-chain root; PLT-091 is the
+    search-side trigger — both are needed for the Popular metric to mean anything.
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "Search result row has no a11y semantics — <div> with onClick, no role/tabindex/aria-label/onKeyDown; keyboard-only + screen-reader users cannot reach or open a result (WCAG 2.1.1)."
+  dedup_status: already_tracked
+  tracked_as: PLT-091
+  proposed_fix_anchor: "PLT-091 Defect 3 + suggested fix (c): render the row (or the name cell) as <a href={detailsLink} role='link' aria-label='Open {name}' tabIndex=0 onKeyDown=Enter/Space> at ResultItem.tsx:72-76. Same fix shape as the F-001 PopularStrip a11y backlog."
+- hypothesis_id: H-004
+  severity: LOW
+  one_line: "Whole-row navigate() with no real <a href> breaks middle-click / Ctrl-click open-in-new-tab, copy-link, and bookmark — the standard 'queue several results in background tabs' browse gesture is unavailable."
+  dedup_status: net_new
+  distinct_from: PLT-091
+  recommended_log_as: "Fold into PLT-091 Defect 3 as a sub-point — the suggested fix (c) <a href> already RESOLVES this (renders a real anchor so middle-click/bookmark work), but PLT-091's rationale frames Defect 3 purely as keyboard/SR a11y and does not call out the middle-click/new-tab consequence. Add the new-tab/bookmark consequence to PLT-091 Defect 3's 'Why it matters'."
+  proposed_fix_anchor: "Same one-line fix as H-003 (real <a href={detailsLink}>); no separate code change."
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: "Inner row children (MetadataStale clock, search-highlights QuestionIcon, DataEntityDetailsPreview) have no stopPropagation at the consumer site — a click on them may bubble to the row onClick and double-navigate (+2 view_count). Un-probed."
+  dedup_status: already_tracked
+  tracked_as: PLT-091
+  proposed_fix_anchor: "PLT-091 Defect 4 + suggested fix (d): either change the row onClick to `if (e.target === e.currentTarget) navigate(...)` OR have each inner child stopPropagation. The probe (PENDING-F-147-1) confirms whether the hazard actually fires before/after the fix."
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: "No per-session dedupe — opening a result, going Back, and reopening it writes +2 each time (+4 for two identical 'looked at A' gestures), unbounded per session; comparison-shopping among results compounds the inflation."
+  dedup_status: already_tracked
+  tracked_as: PLT-104
+  distinct_from: PLT-091
+  proposed_fix_anchor: "PLT-104's per-(session,entity) idempotency guard on incrementViewCount is the chain-level fix that bounds repeat same-session views; PLT-091's search-side trigger removal reduces how often the search surface fires it. The back-nav-no-dedupe facet of F-147 is the same loop as F-001's PopularStrip back-nav remount."
+
+### caveat_candidates
+- hypothesis_id: H-009
+  one_line: "Under the DEFAULT auth.type=DISABLED, anonymous users inflate the Popular ranking by browsing search results (no auth, no audit) — and unlike the home-page Popular strip (hidden under DISABLED), the Search list has NO such gate, so the search-side loop stays fully open."
+  dedup_status: already_tracked
+  tracked_as: DOC-260
+  distinct_from: PLT-091
+  recommended_log_as: "DOC-260 Caveat 5 covers the view_count amplification generally; add a one-line note that the search-side loop (unlike the home-page Popular strip) is NOT hidden under DISABLED, so anonymous DISABLED-mode browsing inflates without an audit trail. Security epic for the surface is PLT-090."
+- hypothesis_id: H-007
+  one_line: "The result row's clickability is communicated only by a mouse hover cue against a column-headered table layout that reads as a (non-actionable) data table — first-time + non-mouse users have no persistent affordance signal."
+  dedup_status: net_new
+  recommended_log_as: "Fold into PLT-091 Defect 3 (the <a href> + link-styled name fix resolves the discoverability signal alongside the keyboard a11y) — no separate item needed; the affordance-discoverability rationale is the net-new framing to add."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# The whole point: confirmed-but-untested promises (H-001, H-006) belong HERE, not silently dropped.
+# F-147 sits at 0/9 verified promises — a user-facing feature with NO functional test guarding any promise.
+# There are ZERO UI test files in the odd-platform-ui tree (confirmed by Glob across *.test.* / *.spec.*),
+# so EVERY F-147 promise is unverified; the row's only test seam today is data-testid='search-result-item'.
+- use_case_id: F-147-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Clicking a search result row navigates to that entity's /dataentities/{id}/overview detail page."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-001)"
+  proposed_test: "Vitest + react-testing-library: render <ResultItem> in a MemoryRouter, click the row (data-testid='search-result-item'), assert navigation to /dataentities/{id}/overview. The HIGHEST-value guard — it is the feature's reason to exist and has zero coverage."
+- use_case_id: F-147-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "A search-row click is read-only with respect to the Popular ranking (the contradicted promise — the test is the regression guard for the PLT-091/PLT-104 fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-002)"
+  proposed_test: "Playwright e2e (the existing odd-platform/tests harness): search → click a result row → assert exactly +1 view_count delta (the post-fix assertion; current bug behaviour = +2). Couples to the F-001 P-004 probe; flips from 2→1 on the PLT-091+PLT-104 fix. Reuse route-interception per the snake_case-wire note."
+- use_case_id: F-147-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "A keyboard-only user can Tab to a result row and open it with Enter/Space (the contradicted promise — regression guard for the a11y fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-003)"
+  proposed_test: "Vitest + jest-axe + react-testing-library: assert the row exposes role='link' + aria-label + is in tab order; userEvent.keyboard('{Enter}') on the focused row navigates. RED today (div onClick); GREEN after the <a href> fix."
+- use_case_id: F-147-UC-004
+  hypothesis_id: H-004
+  kind: render
+  promise: "A result row exposes a real anchor so middle-click/Ctrl-click opens it in a new tab and the link can be bookmarked/copied."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-004)"
+  proposed_test: "Vitest: assert the rendered row contains an <a> with href === dataEntityDetailsPath(id). RED today; GREEN after the <a href> fix (same fix as UC-003)."
+- use_case_id: F-147-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "Clicking an inner row child (staleness clock / highlights icon / preview) does NOT navigate to the entity."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-005); blocked-on probe PENDING-F-147-1"
+  proposed_test: "Vitest + react-testing-library: click each inner child (MetadataStale, QuestionIcon tooltip, DataEntityDetailsPreview), assert navigate spy NOT called. PENDING-F-147-1 first establishes whether the hazard fires."
+- use_case_id: F-147-UC-006
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "An empty result set shows a 'No matches found' empty state, not a blank pane."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-006)"
+  proposed_test: "Vitest: render <Results> with mock store {searchResults: [], isSearchFetching: false}, assert 'No matches found' text present and no ResultItem rendered."
+- use_case_id: F-147-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "The row visually communicates it is clickable to all users (the partial promise — guard the affordance after the link-styling fix)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-007)"
+  proposed_test: "Vitest: assert the row name cell renders as a link-styled anchor (post-fix). Lower priority — folds into UC-003/UC-004's <a href> change."
+- use_case_id: F-147-UC-008
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "Repeat same-session opens of the same result do not unboundedly re-count views (the contradicted promise — regression guard for the dedupe fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-008)"
+  proposed_test: "Playwright e2e: search → open result A → Back → open A again → assert view_count delta is bounded (post-fix: at most +1 within the session TTL; current: +4). Couples to PLT-104's per-(session,entity) guard."
+- use_case_id: F-147-UC-009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "Anonymous DISABLED-mode search browsing does not silently mutate catalog state (the contradicted promise — documented caveat + security epic)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-147-UC-009); security epic PLT-090"
+  proposed_test: "Playwright e2e against AUTH_TYPE=DISABLED stack: anonymous search → click result → assert view_count delta (pins the current DISABLED-bypass; flips when fail-closed lands). Mirrors the F-001 P-002 probe at the search-UI entry."
+
+### probes_emitted
+# Parallel-safe mode: recorded here as PENDING-F-147-N with full hypothesis text; NO P-NNN file created.
+- probe_id: PENDING-F-147-1
+  hypothesis_id: H-005
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution: "local docker-compose + Playwright (or Vitest + react-testing-library on the rendered ResultItem)"
+  expected_outcome: |-
+    Clicking an interactive element inside a row (MetadataStale staleness clock at ResultItem.tsx:87-90,
+    the AppTooltip+QuestionIcon search-highlights icon at :101-105, the DataEntityDetailsPreview at :106)
+    performs ONLY that element's action and does NOT navigate to /dataentities/{id}/overview. The probe
+    clicks each inner element and asserts the row does NOT navigate (no URL change, no +2 view_count delta).
+    Current expectation if children do not stopPropagation: the click bubbles to the row onClick and DOES
+    navigate (hazard confirmed).
+  probe_path: "(not created — parallel-safe; orchestrator mints P-NNN)"
+- probe_id: PENDING-F-147-2
+  hypothesis_id: H-011
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution: "local docker-compose + Playwright + seeded large result set (k6/seed for catalog volume)"
+  expected_outcome: |-
+    Scrolling an infinite-scroll result set to several hundred loaded rows (un-virtualised, each carrying a
+    DataEntityDetailsPreview + tooltips) keeps row-click interaction latency acceptable (assert p95 click→nav
+    under a threshold), and no row click-target mis-fires or duplicate-page-fetches under fast scroll. Probe
+    seeds a large catalog, drives InfiniteScroll, measures interaction latency + asserts each visible row
+    navigates to its own entity exactly once per click.
+  probe_path: "(not created — parallel-safe; orchestrator mints P-NNN)"
+
+### validation_gaps
+- sidecar: "odd-platform__ts__react-component__component__ResultItem (DOES NOT EXIST — hop-1 sidecar is 'unresolved' in F-147.yaml chain)"
+  field_insufficient: "ENTIRE SIDECAR MISSING — the F-147 chain hop-1 node (ResultItem) carries `sidecar: unresolved`. The load-bearing UI hop (the row click-target, a11y posture, inner-child markup) had no enriched sidecar to validate against; this reflection read ResultItem.tsx + Results.tsx from primary source (Rule 8 exception, recorded as source_reads_for_validation). Per Rule 9 this is therefore a source-grounded UI reflection, NOT API-only — but the canonical sidecar is still owed."
+  proposed_refresh: |-
+    Run /enrich on ResultItem (and its inner children MetadataStale / DataEntityDetailsPreview / SearchHighlights
+    / AppTooltip — the stopPropagation audit of PLT-091 Defect 4 / H-005 requires DataEntityDetailsPreview's
+    internals). The sidecar should capture: the whole-row onClick at :72-76 (a11y posture: no role/tabindex/
+    aria-label/onKeyDown), detailsLink at :42 (defaults to /overview — couples to the F-001 inflation loop),
+    the three inner interactive children + their stopPropagation behaviour, and the per-class column dispatch
+    (:120-185). This closes the F-147.yaml `ui_unverified: true` flag on the inner-button facet.
+- sidecar: "(doc-side) data-discovery/search.md live render"
+  field_insufficient: "H-010 confirmed from the DOC-260/PLT-091 TRACKING text, not from a live 2026-06-03 WebFetch (not run this parallel-safe session). The caveat's PRESENCE on the published page is asserted, not verified this session."
+  proposed_refresh: "WebFetch https://docs.opendatadiscovery.org/features/data-discovery/search in a fetch-permitted session; confirm DOC-260 Caveat 5 (view_count amplification) is rendered, and add the H-009 sub-note (search-side loop NOT hidden under DISABLED, unlike the home-page Popular strip)."
+
+### doc_drift_findings
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+  doc_says: "DOC-260 ships Caveat 5: routine browsing from search inflates the popularity score by +2 per click (per PLT-091 Doc-side handling)."
+  code_does: "ResultItem.tsx:42,:75 → /dataentities/{id}/overview → F-001 chain +2 view_count — MATCHES the caveat. (Live render not re-verified this session — see validation_gaps.)"
+  recommended_log_as: "none net-new — DOC-260 already tracks the caveat. Add the H-009 sub-note (search loop open+anonymous under DISABLED) to DOC-260 when it next updates."
+
+## maintainer_notes
+
+(reserved — no prior reflection to inherit; first reflection for F-147 at feature-reflector/0.3.0)
+
+Convergent-validation note for the triager: this top-down pass independently re-derived, from the
+search-user seat, the four ResultItem defects already clustered in PLT-091 (row-click +2 inflation =
+H-002, result-row a11y = H-003, inner-child stopPropagation = H-005, plus the chain-level dedupe gap =
+H-008→PLT-104) and the DOC-260 caveat (H-010). Two independent methods agreeing is a high-confidence
+signal, NOT duplicate work — recorded here, not re-filed. The genuinely net-new findings are H-004
+(whole-row navigate breaks middle-click/new-tab/bookmark — a convenience+consistency gap PLT-091's a11y
+framing does not call out) and H-007 (the row's clickability is communicated only by a mouse hover cue
+against a table-looking layout) — both fold into PLT-091 Defect 3's <a href> fix rather than needing
+separate items, so the recommendation is to EXTEND PLT-091's rationale, not open new issues.
+
+The load-bearing structural finding for the methodology: F-147's hop-1 node (ResultItem) has NO sidecar
+(chain hop-1 `sidecar: unresolved`), so the platform's SECOND-most-trafficked click surface was
+feature-anchored but never enriched. This reflection had to read primary source to validate any hypothesis
+(Rule 8 exception). The /enrich of ResultItem + its inner children is surfaced as the primary validation_gap.
+
+The promise-layer headline (LSN-030): F-147 sits at use_case_coverage 0/9 verified — a user-facing feature
+on the platform's main discovery surface with ZERO functional tests guarding ANY promise (there are no UI
+test files in odd-platform-ui at all). Even the two CONFIRMED promises (H-001 row→overview navigation, H-006
+'No matches found' empty state) are unverified and routed to functional_test_demands — these are the
+highest-value, lowest-cost guards to mint (pure Vitest + react-testing-library, the row already exposes
+data-testid='search-result-item'). The contradicted promises' functional tests double as the regression
+guards for the PLT-091/PLT-104 fixes.

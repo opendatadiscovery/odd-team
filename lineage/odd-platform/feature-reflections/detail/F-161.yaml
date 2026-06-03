@@ -1,0 +1,926 @@
+---
+feature_id: F-161
+pillar_anchored_id: P-08:F-017
+pillar: "P-08 — Management & Administration"
+feature_name: |-
+  Management Section Top-Level Chrome — Management.tsx composes a fixed 3/9
+  sidebar (ManagementTabs) + content pane (ManagementRoutes) under one outer
+  WithPermissionsProvider seeded with OWNER_ASSOCIATION_MANAGE. The chrome owns
+  three behaviours distinct from its siblings: (1) the sidebar hides ONLY the
+  Associations tab from non-admins, rendering the other eight admin-surface
+  labels (Namespaces/Datasources/Integrations/Collectors/Owners/Tags/Roles/
+  Policies) to every authenticated reader — leaking the existence of the admin
+  catalog; (2) the outer provider is the default permission CONTEXT for any
+  descendant lacking its own override (the bare Integrations sub-area); (3) the
+  fixed xs=3/xs=9 grid has no responsive breakpoint and no collapse affordance.
+reflected_at: "2026-06-03T00:00:00Z"
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__routes__route__management.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 1
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: MEDIUM
+    one_line: |-
+      The Management sidebar renders the labels Policies / Roles / Owners /
+      Collectors / Datasources / Namespaces / Tags / Integrations to EVERY
+      authenticated user — a non-admin learns the platform's full admin-surface
+      catalog exists; only Associations is hidden, so the asymmetry actively
+      signals "Associations is the one thing you can't see" while disclosing the
+      other eight.
+related_feature_flows: [F-105, F-074, F-041, F-033]
+related_concepts:
+  - read-collaborative-posture
+  - management-ui-permission-model
+  - admin-surface-reconnaissance-leak
+  - permission-context-fall-through
+related_drift_classes:
+  - management_tab_label_visibility_leaks_admin_surface_existence_to_every_authenticated_user
+  - outer_provider_owner_association_manage_leaks_into_integrations_sub_area_via_context_fallback
+  - management_section_uses_fixed_3_9_grid_no_responsive_breakpoint_no_collapse_for_narrow_viewports
+new_drift_classes_proposed:
+  - management_chrome_has_zero_unit_or_e2e_coverage_despite_being_the_mount_for_nine_admin_surfaces
+---
+
+# Management Section Top-Level Chrome — product-owner reflection
+
+## product_owner_narrative
+
+The Management section is the operator's control room inside the running ODD Platform —
+where namespaces, datasources, collectors and their tokens, owners, tags, RBAC roles, and
+authorization policies are administered (per system-mission.md P-08, "Operator-facing UI for
+everything an operator configures inside the running platform"). F-161 is not any one of
+those nine surfaces; it is the **chrome** the operator lives inside while using them: the
+"Management" entry in the global toolbar opens a two-pane screen — a fixed left sidebar of
+vertical tabs and a right content pane — composed by `Management.tsx` and mounted at the
+wildcard `/management/*` route (per route__management:understanding, `App.tsx:62`). A new
+operator would describe the screen they see as "the list of everything I can administer, down
+the left, with the selected one open on the right."
+
+The way the user reaches and reads this chrome is the load-bearing fact of the feature. There
+is one URL into the whole section; landing on it (or on bare `/management`) redirects to
+`/management/namespaces` and paints the Namespaces tab pre-selected, with the full vertical
+strip of tab labels alongside (per route__management:bugs_limitations_corner_cases —
+`ManagementRoutes.tsx:151` Navigate fallback). What that strip shows depends on exactly ONE
+permission: `ManagementTabs.tsx:14-17` derives `hideAssociations` from
+`!hasAccessTo(OWNER_ASSOCIATION_MANAGE)` and that flag hides the Associations tab and only
+the Associations tab — the other eight labels (Namespaces, Datasources, Integrations,
+Collectors, Owners, Tags, Roles, Policies) carry no `hidden` flag and render to every
+authenticated session regardless of any permission (per route__management:stress_findings.
+auth_gates, DISABLED branch: "all eight non-associations sub-tabs visible and the Associations
+tab HIDDEN"). The operator perceives this as "permission-aware tabs," and the live
+`/features/management` doc now names it exactly that way ("Tab visibility is permission-aware
+(Associations is the explicit case today; other tabs are visible to any signed-in operator)",
+WebFetched 2026-06-03, status 200).
+
+The working parts a product owner would walk through: the chrome itself does no data
+fetching, no rendering gate, and no redirect — it is a layout plus a context seed (per
+route__management:understanding, "owns NO rendering, NO authorization, NO data fetching"). Its
+one behavioural lever beyond layout is the outer `WithPermissionsProvider
+allowedPermissions={[OWNER_ASSOCIATION_MANAGE]}` it wraps everything in (`Management.tsx:9-12`),
+which publishes that permission set as the default CONTEXT inherited by any descendant that
+does not install its own provider — and the Integrations sub-area at `ManagementRoutes.tsx:150`
+is mounted bare, with no provider of its own, so any future `hasAccessTo()` call deep inside it
+resolves against the OWNER_ASSOCIATION_MANAGE context (per route__management:security.
+known_security_gaps[1]). The layout is a fixed `xs=3` sidebar + `xs=9` content with
+`wrap='nowrap'` (`Management.tsx:13-19`) and a vertically-oriented `AppTabs` strip
+(`ManagementTabs.tsx:57-62`) — no responsive breakpoint, no hamburger, no collapse.
+
+This chrome composes with the rest of P-08 and is the parent of two siblings that own the
+behaviours BEHIND its surfaces: F-105 owns the route-level gating (every tab except
+Associations renders its full catalog because `WithPermissionsProvider` is context-only, not a
+gate), and F-074 owns the cross-cutting read-collaborative posture of the seven directory-list
+ENDPOINTS those tabs call. F-161's distinct contribution is the chrome the operator perceives
+*before* any of that fires: what the sidebar advertises, what context the shell seeds, and how
+the two-pane layout behaves on the operator's actual screen. It also shares a boundary with
+F-041 (the platform-wide AppToolbar that hosts the "Management" entry the user clicks to get
+here) and F-033 (the Integration Wizard that mounts inside the unwrapped Integrations subtree).
+
+The edge a product owner would flag in a demo: the asymmetry is the worst of both worlds for a
+non-admin. Hiding only Associations does not protect anything (its endpoint is ungated anyway,
+per F-074:H-006) — but it DOES teach the non-admin that "Associations is the one surface
+gated," while leaving the labels "Policies" and "Roles" in plain sight as reconnaissance that
+those admin catalogs exist (and, per F-105, are then fully readable on click). And the operator
+who works on a laptop split-pane or a tablet has no usable Management UI at all: the
+three-column sidebar crushes the tab labels and the content pane is too narrow for the dense
+Datasources / Collectors / Policies rows — a UX gap the live doc is entirely silent on
+(WebFetched 2026-06-03: responsive/mobile support is ABSENT from the page).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user with zero Management-tier permissions opens /management, the
+    sidebar shows ONLY the tabs they can meaningfully act on (or a curated subset),
+    so the UI does not advertise the existence of admin surfaces (Policies, Roles)
+    the user has no business with.
+  derivation: |-
+    UI-label + pillar: the pillar frames Management as the operator-facing admin
+    surface; the Associations tab IS hidden by permission (hideAssociations), which
+    sets the expectation that tab visibility tracks permission. A non-admin seeing
+    "Policies" learns an admin surface exists.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      ManagementTabs.tsx:14-50 hides ONLY the Associations tab (the sole entry with
+      hidden: hideAssociations at lines 42-43, derived from
+      !hasAccessTo(OWNER_ASSOCIATION_MANAGE) at 14-17). The other eight tab entries
+      (Namespaces, Datasources, Integrations, Collectors, Owners, Tags, Roles,
+      Policies) carry no hidden flag and render to every authenticated user,
+      including one with an empty permission set. The visibility model is therefore
+      asymmetric: Associations is hidden when forbidden; every other admin surface
+      is advertised by name when forbidden. This is NOT the route-bypass (that is
+      F-105's H-001) — it is the front-door RECON leak: the label itself discloses
+      the surface before any click.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: stress_findings.auth_gates
+        cite: "ManagementTabs.tsx:14-17 (hideAssociations) + ManagementTabs.tsx:19-50 (9-tab list, sole hidden flag on Associations)"
+        note: "8 of 9 tab labels render to every authenticated session; only Associations hides."
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: security.data_exposure
+        cite: "Management.tsx:9-12 + ManagementTabs.tsx:14-50"
+        note: "tab label strings are emitted to every session; the asymmetry tells a non-admin which surface is gated and which exist."
+    operator_visible_failure: |-
+      (1) A non-admin user opening /management reads the labels "Policies," "Roles,"
+      "Owners," "Collectors," "Datasources" — learning the platform's full
+      admin-surface catalog exists, which is reconnaissance for a user who (per the
+      operator's least-privilege intent) was meant to see none of it. (2) The
+      asymmetry is actively misleading: because Associations DOES hide, the non-admin
+      infers "the hidden tabs are the ones I lack permission for" and reads the eight
+      visible labels as "surfaces I am entitled to" — but those eight are visible to
+      everyone regardless of permission, and (per F-105) fully readable on click. The
+      hide-only-Associations design teaches a false mental model AND discloses the
+      catalog. (3) The recon compounds with F-105: the label is the entry point; the
+      click reads the full Policy/Role catalog.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a user lacks OWNER_ASSOCIATION_MANAGE, the Associations tab is hidden from
+    the sidebar strip (so the user does not see a tab whose route would redirect
+    them away).
+  derivation: |-
+    UI-label + consistency (Rule 9): a tab whose route redirects (F-105:H-002 /
+    RestrictedRoute) should not render as a clickable affordance. The sidecar names
+    a hideAssociations memo on exactly this permission.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      ManagementTabs.tsx:42-43 carries hidden: hideAssociations on the Associations
+      entry, and hideAssociations = !hasAccessTo(OWNER_ASSOCIATION_MANAGE)
+      (ManagementTabs.tsx:14-17). A user without the permission does not see the
+      Associations tab; the same permission gates the RestrictedRoute redirect
+      (F-105:H-002). So tab visibility and route gating AGREE for this one sub-area:
+      the user never sees a dead Associations affordance. This is the single
+      sub-area where the chrome's visibility and the route's gate are consistent —
+      and it is precisely what makes the OTHER eight tabs' visibility (H-001)
+      anomalous by contrast.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: stress_findings.auth_gates
+        cite: "ManagementTabs.tsx:14-17 + 42-43"
+        note: "hideAssociations memo removes the tab when OWNER_ASSOCIATION_MANAGE absent; agrees with the route redirect."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When the platform later ships a permission-gated control inside the
+    /management/integrations sub-area (e.g. a wizard step wrapped in
+    hasAccessTo(<an integration permission>)), that control evaluates against the
+    user's real integration permissions — not the chrome's outer
+    OWNER_ASSOCIATION_MANAGE context.
+  derivation: |-
+    The chrome's outer WithPermissionsProvider seeds OWNER_ASSOCIATION_MANAGE as the
+    fallback context; ManagementRoutes.tsx:150 mounts Integrations with NO provider
+    override, so an inner check inherits the wrong context. This is the F-161a
+    facet outer_provider_owner_association_manage_leaks_into_integrations_sub_area.
+  seed_source: view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Every ManagementRoutes sub-route except /integrations/* installs its own
+      per-route WithPermissionsProvider (ManagementRoutes.tsx:29-149); the
+      integrations route at line 150 mounts <Integrations /> bare. Per
+      WithPermissionsProvider/PermissionProvider.tsx:27-32, hasAccessTo resolves via
+      allowedPermissions.includes(...) against the NEAREST provider context — which,
+      for the bare Integrations subtree, is the chrome's outer Management.tsx context
+      seeded with [OWNER_ASSOCIATION_MANAGE] only. A check for any
+      integration-relevant permission (e.g. DATA_SOURCE_UPDATE) therefore
+      deny-by-defaults regardless of the user's real grants. This is the SAME
+      structural fact F-105:H-006 owns from the route-gating angle; F-161 owns it as
+      the CHROME defect — the outer provider seed is the chrome's, and the fix lands
+      on the chrome's child route, not on F-105's gate model.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: security.known_security_gaps
+        cite: "Management.tsx:9-12 (outer seed) + ManagementRoutes.tsx:150 (bare integrations) + PermissionProvider.tsx:27-32 (includes() resolution)"
+        note: "bare integrations subtree inherits the chrome's OWNER_ASSOCIATION_MANAGE context; any inner hasAccessTo(<integration perm>) denies."
+    operator_visible_failure: |-
+      Latent today (no Integration control is confirmed to call hasAccessTo — the
+      grep is a P-162 follow-up, per route__management:security gap[1]). The day a
+      permission-gated integration affordance ships, it is DEAD for every user: an
+      admin holding the correct integration permission but not OWNER_ASSOCIATION_MANAGE
+      sees the control hidden (hide-not-disable, so it simply never appears, with no
+      error). It would present as "the new integration toggle isn't there / does
+      nothing." This is a chrome-topology foot-gun baked in now. Cross-references
+      F-105:H-006 (same root, route-gating framing); the dedup is recorded below.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When an operator opens the Management section on a narrow viewport (laptop
+    split-pane, tablet portrait, or phone), the layout adapts — the sidebar
+    collapses into a drawer/hamburger or reflows — so the tab labels stay legible
+    and the content pane stays usable.
+  derivation: |-
+    Senior-PO UX seed (Rule 9: "how does it behave across device types?"). The
+    feature-flow facet management_section_uses_fixed_3_9_grid_no_responsive_breakpoint
+    flags a fixed xs=3/xs=9 grid; the pillar serves a platform-operator audience who
+    may work split-pane.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Management.tsx:13-19 uses <S.Container container wrap='nowrap'> with a fixed
+      xs=3 sidebar and xs=9 content — no md=/lg= responsive variant and no
+      hamburger/collapse. ManagementTabs renders the strip vertically (AppTabs
+      orientation='vertical' type='menu', ManagementTabs.tsx:57-62). On a narrow
+      viewport the 3-column sidebar crushes the tab labels and the 9-column content
+      pane is too narrow for the dense Datasources/Collectors/Policies rows. There is
+      no breakpoint at which the layout reflows. The live /features/management doc is
+      SILENT on responsive behaviour (WebFetched 2026-06-03 — "No discussion of
+      responsive design, mobile compatibility, or narrow viewport behaviour appears
+      in the documentation"), so it is neither adaptive nor documented as
+      desktop-only.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: performance.hot_paths
+        cite: "Management.tsx:13-19 (fixed xs=3/xs=9, wrap='nowrap') + ManagementTabs.tsx:57-62 (vertical AppTabs)"
+        note: "fixed grid, no responsive breakpoint, no collapse affordance."
+      - sidecar: WebFetch
+        section: management doc
+        cite: "https://docs.opendatadiscovery.org/features/management (2026-06-03, status 200)"
+        note: "responsive/mobile support absent from the page — not adaptive AND not documented desktop-only."
+    operator_visible_failure: |-
+      (1) An operator working on a laptop split-pane (browser beside collector logs)
+      experiences the Management UI as cramped — labels truncate, the content pane is
+      too narrow for the wide Datasources/Collectors/Policies tables, forcing
+      horizontal scroll. (2) A phone-based or tablet-portrait operator has no usable
+      Management surface at all. (3) Because the doc is silent, an operator cannot even
+      learn "Management is desktop-only" — they discover the breakage by hitting it.
+      The feature-flow facet marks the exact breakpoint threshold ui_unverified (depends
+      on shared MUI tokens not read in the UI pass), so the precise crush width is a
+      probe target (H-009), but the absence of ANY responsive affordance is confirmed
+      from the fixed-grid source.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When an operator lands on /management with no sub-path, the chrome opens a
+    sensible default tab so the operator is never staring at an empty content pane.
+  derivation: |-
+    Senior-PO UX seed (Rule 9: "is it intuitive from what is on screen?"). The
+    sidecar records a Navigate fallback; a two-pane layout with no default selection
+    would be a dead-end first impression.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      ManagementRoutes.tsx:151 mounts <Route path='' element={<Navigate
+      to='namespaces' replace />} />, so bare /management redirects to
+      /management/namespaces and the Namespaces tab paints pre-selected with its
+      catalog. The same 'namespaces' slug is the safe-default landing the
+      RestrictedRoute redirect uses (redirectTo='../namespaces',
+      ManagementRoutes.tsx:106) — so a non-admin bounced off Associations also lands
+      on Namespaces, never on an empty pane. The chrome's default-tab behaviour is
+      consistent and intuitive. (Note: Namespaces being the default means the FIRST
+      thing every Management visitor sees is a full directory list — which is benign
+      content but, per H-001, part of the read-collaborative surface.)
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: implicit_adrs
+        cite: "ManagementRoutes.tsx:151 (Navigate to namespaces) + 106 (RestrictedRoute redirectTo ../namespaces)"
+        note: "namespaces is the single safe-default landing for both empty-path and associations-redirect."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When an operator clicks a Management tab in the sidebar, the URL changes to that
+    sub-area and the content pane swaps to it (the sidebar is a working navigation
+    control, not decorative).
+  derivation: |-
+    Endpoint-shape + UX (Rule 9: convenient/intuitive). Each tab entry is a
+    managementPath() link; the operator's basic expectation is that clicking a tab
+    navigates.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      ManagementTabs.tsx:19-50 builds each AppTabItem with a link =
+      managementPath('<slug>') (e.g. managementPath('owners') ->
+      '/management/owners', per route__management:concepts.operations). Clicking
+      pushes that URL; ManagementRoutes.tsx:23-156 mounts the matching sub-route's
+      component, which fetches its catalog on mount (NamespaceList.tsx:46-48 is the
+      canonical fetch-on-mount shape). The vertical AppTabs strip is a working
+      router-link navigation control. managementPath() is invoked 9 times per
+      ManagementTabs render (one per tab) — O(1) string builds, no I/O (per
+      route__management:performance.hot_paths).
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: upstream_callers
+        cite: "ManagementTabs.tsx:22-48 (9 managementPath() calls) + concepts.operations (managementPath builds /management/<sub>)"
+        note: "each tab is a managementPath() router link; click navigates and swaps the pane."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When the operator is inside a Management sub-area, the sidebar highlights the
+    currently-active tab (the operator can always tell where they are in the section).
+  derivation: |-
+    Senior-PO UX seed (Rule 9: "is it intuitive?"). A vertical tab menu with no
+    active-state indication leaves the operator unsure which surface they are on.
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The active-tab highlight depends on the shared AppTabs component's internal
+      active-state logic (orientation='vertical' type='menu', ManagementTabs.tsx:
+      57-62) matching the current location against each tab's link. The
+      route__management sidecar enriches the route-builder + the chrome composition
+      but does NOT read AppTabs' internal active-matching implementation (it is a
+      shared element outside this node's primary source). Whether AppTabs derives the
+      active tab from useLocation / a NavLink-style match — and whether it matches
+      /management/policies/:id (a detail route) back to the Policies tab — cannot be
+      confirmed from the chain's sidecars. Running the UI (or enriching the AppTabs
+      sidecar) is required to verify the active-state and especially the detail-route
+      case.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: dependencies_semantic
+        cite: "ManagementTabs.tsx:57-62 (AppTabs orientation/type) — AppTabs internals not in this node"
+        note: "active-state matching lives in the shared AppTabs element, not enriched in this chain."
+    operator_visible_failure: |-
+      If AppTabs does not highlight the active tab (or fails to match a detail route
+      like /management/policies/:id back to its parent Policies tab), the operator
+      loses their place: inside a policy detail they may see NO tab highlighted and be
+      unsure whether they are still in Management. This is a navigation-clarity gap,
+      not a data/security failure — surfaced as probe-needed because the verdict
+      hinges on a shared component the chain does not enrich.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-161-1
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-161-1"
+
+- id: H-008
+  hypothesis: |-
+    When the live /features/management documentation describes the Management UI, it
+    states that the sidebar shows all admin-surface tabs to every authenticated
+    operator (only Associations hidden) — so an operator is not surprised that a
+    non-admin can see "Policies" and "Roles."
+  derivation: |-
+    Doc-claim seed: F-161c (scanner finding) recorded the live doc as understating
+    the read/recon reality; this hypothesis re-tests the LIVE doc at reflection time
+    against the tab-visibility behaviour (H-001/H-002).
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      As of the 2026-06-03 WebFetch (status 200), /features/management states "Tab
+      visibility is permission-aware (Associations is the explicit case today; other
+      tabs are visible to any signed-in operator and the per-tab actions enforce
+      permission checks)" and "The Associations tab is hidden unless the signed-in
+      user has the OWNER_ASSOCIATION_MANAGE permission." This MATCHES the code
+      (ManagementTabs.tsx:14-50). The doc also documents the read-collaborative
+      posture and the Policy-JSON deep-link disclosure. This is a CHANGE from the
+      F-161c scanner finding (2026-05-27), which recorded the doc as understating the
+      read-side reality. The tab-visibility half of F-161c appears REMEDIATED — the
+      doc now describes the behaviour H-001 flags. (Per Rule 1 the doc is correct
+      because it matches what the code does.)
+    evidence:
+      - sidecar: WebFetch
+        section: management doc
+        cite: "https://docs.opendatadiscovery.org/features/management (2026-06-03, status 200)"
+        note: "doc now states 'other tabs are visible to any signed-in operator'; matches code; F-161c tab-visibility half remediated."
+    severity: LOW
+    confidence: MEDIUM  # MEDIUM pending /review Gate 8 raw-HTML confirmation (WebFetch body may mask head truncation)
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When the Management chrome is rendered below a specific narrow-viewport
+    threshold, the sidebar tab labels become illegible (truncated/overlapping) and
+    the content pane forces horizontal scroll — a measurable breakage point.
+  derivation: |-
+    Negative-space + the feature-flow facet's own ui_unverified note: the fixed
+    xs=3/xs=9 grid (H-004) implies a crush point, but the exact threshold "depends
+    on shared MUI / theme tokens not read in this UI pass" (feature-flow facet
+    ui_unverified_reason).
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The fixed xs=3/xs=9/wrap='nowrap' grid (H-004, confirmed from Management.tsx:
+      13-19) guarantees the sidebar never reflows, but the EXACT viewport width at
+      which labels become illegible and the content pane overflows depends on the
+      shared MUI breakpoint tokens, the AppTabs label typography, and the widest
+      table column in each sub-area — none read in this chain (the feature-flow facet
+      explicitly marks this ui_unverified). Determining the threshold and confirming
+      the visual breakage requires rendering the chrome at a range of widths.
+      Local-only: Playwright headless with page.setViewportSize across {1366x768
+      split-pane half, 768 tablet portrait, 390 phone}, screenshot + assert label
+      legibility / no horizontal overflow on the content pane.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: performance.hot_paths
+        cite: "Management.tsx:13-19 + ManagementTabs.tsx:57-62"
+        note: "fixed grid confirmed; exact crush threshold depends on unread MUI/theme tokens — feature-flow facet marks ui_unverified."
+    operator_visible_failure: |-
+      If confirmed, the chrome has a hard width below which Management is unusable —
+      relevant to the platform-operator audience that works split-pane. The probe
+      both fixes the threshold (so a doc caveat or a responsive fix can be scoped) and
+      provides the regression guard once a breakpoint is added. No security/data
+      consequence; pure UX/operability.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-161-2
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-161-2"
+
+- id: H-010
+  hypothesis: |-
+    When an operator wants to tailor the Management section to their workflow (pin
+    or reorder the tabs they use daily, hide the ones they never touch), the UI lets
+    them customise the sidebar.
+  derivation: |-
+    Senior-PO UX seed (Rule 9: "can the user customise it?"). The pillar names a
+    daily-ops operator workflow (system-mission.md P-08 maintainer notes); a daily
+    control-room surface often supports personalisation.
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The tab set is a frozen 9-entry AppTabItem[] literal built unconditionally in
+      ManagementTabs.tsx:19-50 — there is no reorder, no pin, no per-user hide. The
+      ONLY conditional visibility is the permission-driven hideAssociations
+      (H-002); there is no user-customisation lever at all. The hypothesis is
+      partially true only in the trivial sense that visibility varies by PERMISSION
+      (Associations), not by user PREFERENCE. Adding a tenth tab is a compile-time
+      edit to the literal plus consumer edits (per route__management:understanding —
+      "adding a tenth area is a deliberate edit to this file plus three consumer
+      edits"), confirming the tab set is developer-fixed, not operator-customisable.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: understanding
+        cite: "ManagementTabs.tsx:19-50 (frozen literal) + route__management understanding (compile-time tab set)"
+        note: "tab set is a developer-fixed literal; only permission-driven hide, no user customisation."
+    operator_visible_failure: |-
+      A daily operator who uses only Collectors + Datasources cannot streamline the
+      sidebar; a large deployment cannot hide surfaces irrelevant to its setup. This
+      is a feature-absence, not a defect — but a senior PO would note the control
+      room is one-size-fits-all and flag it as a customisation gap relative to the
+      daily-ops workflow the pillar names. Low-priority; routes to a caveat, not a bug.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When the Management chrome's behaviours change (tab set, the hideAssociations
+    gate, the default-tab redirect, the outer permission context), an automated test
+    catches the regression — because the chrome is the mount for nine admin surfaces
+    and a silent break would unmount all of them.
+  derivation: |-
+    Negative-space + the feature-flow test_matrix (unit=GAP, integration=GAP,
+    security=GAP, all covered: []). A senior PO expects the highest-fan-out chrome in
+    the section to have at least smoke coverage.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No test targets the Management chrome. The route__management sidecar records
+      ZERO test files for the routes/ module (grep managementPath|associationsPath|
+      integrationsPath across *.test.*/*.spec.* returned no matches at commit
+      4ec2b20) and the feature-flow test_matrix records unit=GAP, integration=GAP,
+      security=GAP with covered: [] in every cell. The odd-platform Playwright
+      harness (tests/) has a ManagementPage page-object but it exposes ONLY owners +
+      tags selectors (management-page.ts:4-7) and is exercised only by the add-owner
+      and add/change/delete-tag write specs — there is NO test for tab-label
+      visibility, the hideAssociations gate, the default-tab redirect, the
+      Integrations context, or the responsive layout (grep for viewport/
+      setViewportSize/hideAssociations/Associations across tests/ returns no
+      Management coverage). The chrome that mounts all nine admin surfaces is
+      entirely uncovered.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: tests_coverage_semantic
+        cite: "grep managementPath|associationsPath|integrationsPath across *.test.*/*.spec.* (no matches at 4ec2b20)"
+        note: "zero unit tests for the routes/ module incl. the Management chrome."
+      - sidecar: source_read_for_validation
+        section: "odd-platform/tests/ui/pages/management/management-page.ts:4-17 + go-to-steps.ts:17-19"
+        cite: "tests/ui/pages/management/management-page.ts:4-7 (only owners+tags selectors)"
+        note: "Playwright Management page-object covers only owners/tags write flows; no chrome/visibility/responsive test."
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      Any regression in the chrome ships silently: a typo in BASE_PATH breaks every
+      Management link (caught only when a human clicks); a change to the
+      hideAssociations derivation could expose or wrongly hide the Associations tab;
+      a change to the default-tab redirect could leave operators on an empty pane.
+      Because nine admin surfaces mount through this chrome, a single chrome break has
+      the widest blast radius in P-08 and there is no automated guard. This is the
+      highest-leverage missing test in the feature.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: |-
+    The Management chrome's outer WithPermissionsProvider (OWNER_ASSOCIATION_MANAGE)
+    is the inherited context for the bare /management/integrations subtree
+    (ManagementRoutes.tsx:150 has no provider), so any future hasAccessTo(<integration
+    permission>) inside Integrations deny-by-defaults — a permission-gated integration
+    control would ship dead.
+  dedup_status: already_tracked
+  tracked_as: "F-105:H-006 + F-161:facet outer_provider_owner_association_manage_leaks_into_integrations_sub_area_via_context_fallback (== scanner finding F-161a, ontology-confirmed)"
+  distinct_from: "F-105:H-006"
+  recommended_log_as: null  # corroboration — F-105:H-006 + the F-161a scanner finding own this; convergent re-derivation from the chrome-shell angle
+  proposed_fix_anchor: |-
+    ManagementRoutes.tsx:150 — wrap the integrations/* route in its own
+    WithPermissionsProvider seeded with integration-relevant allowedPermissions
+    (mirror the eight sibling sub-routes), OR document the outer-context
+    fall-through as deliberate (benign today — no integration permissions exist).
+    F-161 owns the CHROME-side framing (the outer seed is the chrome's); F-105:H-006
+    owns the route-gating framing. Same fix, one locus.
+- hypothesis_id: H-011
+  severity: MEDIUM
+  one_line: |-
+    The Management chrome (mount for nine admin surfaces) has ZERO unit/integration/
+    security/responsive test coverage; a chrome regression (BASE_PATH typo,
+    hideAssociations break, default-redirect break) ships silently with the widest
+    blast radius in P-08.
+  dedup_status: net_new
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — see functional_test_demands F-161-UC-2/5/6/11"
+  proposed_fix_anchor: |-
+    Add an RTL unit test on ManagementTabs (tab set + hideAssociations) and a
+    Playwright e2e on the chrome (default-tab redirect + tab navigation + non-admin
+    tab visibility), extending the existing tests/ui/pages/management page-object
+    beyond its current owners+tags-only selectors.
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: |-
+    The Management sidebar advertises 8 admin-surface labels (Policies/Roles/Owners/
+    etc.) to every authenticated user and hides ONLY Associations — recon disclosure
+    of the admin catalog AND a misleading "hidden = forbidden" signal for a non-admin.
+  dedup_status: already_tracked
+  tracked_as: "F-161:facet management_tab_label_visibility_leaks_admin_surface_existence_to_every_authenticated_user (== scanner finding F-161c) + F-074:H-011 (sidebar visibility) + F-105:H-007 (hideAssociations)"
+  distinct_from: "F-105:H-007"  # F-105:H-007 confirms the hideAssociations MECHANISM; F-161:H-001 owns the RECON/mental-model consequence of the asymmetry
+  recommended_log_as: null  # the live /features/management doc now documents tab visibility (H-008); the RECON-asymmetry FRAMING is the residual — fold into the F-161c caveat, do not re-file
+- hypothesis_id: H-004
+  one_line: |-
+    The Management section uses a fixed xs=3/xs=9 grid with no responsive breakpoint
+    and no collapse; it is cramped on a laptop split-pane and unusable on phone/tablet
+    portrait — and the live doc is silent on responsive support.
+  dedup_status: already_tracked
+  tracked_as: "F-161:facet management_section_uses_fixed_3_9_grid_no_responsive_breakpoint (== scanner finding F-161b, missing-caveat LOW)"
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/management (state Management is desktop-optimised / name the minimum viewport) — the doc-side of F-161b; the live page is confirmed silent on responsive (2026-06-03)"
+- hypothesis_id: H-010
+  one_line: |-
+    The Management sidebar tab set is a developer-fixed 9-entry literal — no operator
+    customisation (pin/reorder/hide); the daily-ops control room is one-size-fits-all.
+  dedup_status: net_new
+  recommended_log_as: "doc-gap-NNN (low priority — note the tab set is fixed; or a future enhancement backlog item, not a defect)"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# NO F-161 hypothesis is coverage:verified (the chrome has zero tests, per H-011), so EVERY
+# non-probe promise carries a functional demand; the two probe-needed promises route to their probes.
+- use_case_id: F-161-UC-1
+  hypothesis_id: H-001
+  kind: cross-actor
+  promise: |-
+    A user with zero Management-tier permissions opens /management and sees the eight
+    non-Associations tab labels (Namespaces/Datasources/Integrations/Collectors/
+    Owners/Tags/Roles/Policies) rendered; only the Associations tab is hidden — the
+    sidebar advertises the admin-surface catalog.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-1)"
+  proposed_test: |-
+    Unit/RTL on ManagementTabs: render with a usePermissions mock returning
+    hasAccessTo=false for all permissions; assert all eight non-Associations tab
+    labels are present in the document AND the Associations tab is absent. Pins the
+    recon-leak asymmetry (RED the moment a permission gate is added to any other tab).
+- use_case_id: F-161-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: |-
+    The Associations tab is hidden from the sidebar strip when the user lacks
+    OWNER_ASSOCIATION_MANAGE and present when they hold it (agreeing with the route
+    redirect).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-2)"
+  proposed_test: |-
+    Unit/RTL on ManagementTabs: render with hasAccessTo(OWNER_ASSOCIATION_MANAGE)=false
+    -> assert Associations tab absent; render with =true -> assert present. Pins the
+    hideAssociations memo. (Shares intent with F-105-UC-7; F-161 owns the chrome-side
+    assertion of the tab strip.)
+- use_case_id: F-161-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: |-
+    A permission-gated control inside /management/integrations evaluates against the
+    user's real integration permissions, not the chrome's outer
+    OWNER_ASSOCIATION_MANAGE context.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-3); regression guard for the H-003 fix; SHARES the F-105-UC-6 fixture"
+  proposed_test: |-
+    Unit/RTL: mount an Integrations-subtree component calling hasAccessTo(DATA_SOURCE_UPDATE)
+    under a session that HAS DATA_SOURCE_UPDATE but NOT OWNER_ASSOCIATION_MANAGE; assert
+    the gated control is present. RED today (inherits the chrome's OWNER_ASSOCIATION_MANAGE
+    context -> denies); GREEN once a provider wraps the integrations route.
+- use_case_id: F-161-UC-4
+  hypothesis_id: H-004
+  kind: render
+  promise: |-
+    On a narrow viewport the Management chrome adapts (collapses the sidebar / reflows)
+    so labels stay legible and the content pane stays usable.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-4); pairs with the H-009 probe"
+  proposed_test: |-
+    Playwright (odd-platform/tests harness): page.setViewportSize to 768x1024 (tablet
+    portrait); GoToSteps.management(); assert the sidebar either collapses to a drawer
+    OR (characterising the CURRENT behaviour, LSN-029 style) assert the fixed 3-col
+    sidebar persists and the content pane overflows — GREEN now (pins the non-responsive
+    reality), flips RED when a breakpoint is added.
+- use_case_id: F-161-UC-5
+  hypothesis_id: H-005
+  kind: happy-path
+  promise: |-
+    Bare /management redirects to /management/namespaces and paints the Namespaces tab
+    pre-selected — the operator never lands on an empty content pane.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-5)"
+  proposed_test: |-
+    Playwright: GoToSteps.management() (or navigate to /management); assert the final
+    URL is /management/namespaces AND the Namespaces content renders. Guards the
+    default-tab redirect (ManagementRoutes.tsx:151).
+- use_case_id: F-161-UC-6
+  hypothesis_id: H-006
+  kind: happy-path
+  promise: |-
+    Clicking a Management sidebar tab navigates to that sub-area URL and swaps the
+    content pane to it.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-6)"
+  proposed_test: |-
+    Playwright: from /management/namespaces click the 'Owners' tab; assert URL becomes
+    /management/owners and the Owners list renders. Extend the tests/ui/pages/management
+    page-object beyond its current owners+tags-only selectors to cover the tab strip.
+- use_case_id: F-161-UC-7
+  hypothesis_id: H-007
+  kind: render
+  promise: |-
+    The sidebar highlights the currently-active Management tab (including from a
+    detail route like /management/policies/:id).
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-161-1 (active-tab highlight — depends on shared AppTabs internals not enriched in this chain)"
+  proposed_test: |-
+    Playwright (after the probe resolves the AppTabs behaviour): navigate to
+    /management/policies and assert the Policies tab carries the active style; navigate
+    to a /management/policies/:id detail and assert the Policies tab stays highlighted.
+- use_case_id: F-161-UC-8
+  hypothesis_id: H-008
+  kind: grammar
+  promise: |-
+    The live /features/management doc states the sidebar shows all admin tabs to any
+    authenticated operator (only Associations hidden) — matching the code.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-8); doc-coverage assertion, low priority"
+  proposed_test: |-
+    Doc-link verification (Gate 8 style): WebFetch /features/management and assert it
+    contains the 'other tabs are visible to any signed-in operator' + Associations-hidden
+    statements. Guards against the doc regressing to the pre-2026-05-27 understatement.
+- use_case_id: F-161-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: |-
+    Below a measurable narrow-viewport threshold the chrome's sidebar labels become
+    illegible and the content pane overflows (the fixed-grid breakage point).
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-161-2 (responsive-breakage threshold — local Playwright multi-viewport screenshot)"
+  proposed_test: |-
+    Playwright: setViewportSize across {1366x768 split half, 768 portrait, 390 phone};
+    screenshot the Management chrome and assert label legibility / no content-pane
+    horizontal overflow. Fixes the threshold and becomes the regression guard once a
+    breakpoint ships.
+- use_case_id: F-161-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: |-
+    An operator can customise the Management sidebar (pin/reorder/hide tabs) to their
+    daily workflow.
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-10); feature-absence — low priority"
+  proposed_test: |-
+    Characterisation: assert the tab set is the fixed 9-entry literal regardless of
+    user preference (no reorder/pin/hide control present). Documents the current
+    no-customisation state; becomes the acceptance check if personalisation is added.
+- use_case_id: F-161-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: |-
+    A regression in the Management chrome (tab set, hideAssociations gate, default
+    redirect, outer context) is caught by an automated test before it unmounts the
+    nine admin surfaces.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-161-UC-11); the meta-demand — the chrome has zero coverage"
+  proposed_test: |-
+    The combined unit (ManagementTabs: tab set + hideAssociations) + Playwright
+    (default redirect + tab navigation + non-admin visibility) suite from
+    UC-1/2/5/6 IS this guard. Establishing ANY of them moves the chrome off
+    zero-coverage.
+
+### probes_emitted
+- probe_id: PENDING-F-161-1
+  hypothesis_id: H-007
+  probe_path: "(parallel-safe mode — not materialised; recorded here for orchestrator mint)"
+  hypothesis_text: |-
+    The Management sidebar highlights the currently-active tab, including when the
+    operator is on a detail route (/management/policies/:id matches back to the
+    Policies tab). Verdict hinges on the shared AppTabs component's active-state
+    matching (orientation='vertical' type='menu'), which is NOT enriched in this
+    chain's sidecars. Local-only: docker-compose odd-platform + Playwright headless;
+    navigate to /management/policies and /management/policies/:id, assert the Policies
+    tab carries the active style in both. emitted_by: feature-reflector. status:
+    pending-reflection-verification. expected_outcome: the active tab is highlighted;
+    detail-route highlighting is the open question.
+  local_execution_blocked: false
+- probe_id: PENDING-F-161-2
+  hypothesis_id: H-009
+  probe_path: "(parallel-safe mode — not materialised; recorded here for orchestrator mint)"
+  hypothesis_text: |-
+    Below a measurable viewport width the fixed xs=3/xs=9 Management grid crushes the
+    sidebar labels and overflows the content pane. The exact threshold depends on
+    shared MUI/theme tokens not read in this UI pass (feature-flow facet
+    ui_unverified_reason). Local-only: Playwright headless with page.setViewportSize
+    across {1366x768 split-pane half, 768 tablet portrait, 390 phone}; screenshot the
+    Management chrome and assert label legibility + no content-pane horizontal
+    overflow. emitted_by: feature-reflector. status: pending-reflection-verification.
+    expected_outcome: legibility/overflow degrades below ~768px (to be measured).
+  local_execution_blocked: false
+
+### validation_gaps
+- sidecar: "(feature-flow F-161 chain — all four UI hops)"
+  field_insufficient: |-
+    RULE 9 (senior-product-owner, from-the-screen): the F-161 chain lists all four
+    contributing nodes (Management.tsx, ManagementTabs.tsx, ManagementRoutes.tsx,
+    WithPermissionsProvider.tsx) as sidecar: unresolved. The actual enriched
+    understanding this reflection validated against lives in a DIFFERENT node's
+    sidecar — odd-platform__ts__routes__route__management.md (the route-builder
+    module) — which is HIGH-confidence and reads Management.tsx:1-25 +
+    ManagementTabs.tsx:1-68 + ManagementRoutes.tsx:1-157 + WithPermissionsProvider.tsx:
+    12-48 in full (per its sources block). So this reflection is NOT API-only (Rule 9
+    satisfied — the UI surface IS in the analysis via the route__management sidecar
+    + the feature-flow's own ui_review_2026_05_26 facets, two of which carry
+    ui_unverified: false), but the chain's own hop sidecars are stale: a
+    graph-retriever following the F-161 chain hits 'unresolved' instead of the
+    evidence.
+  proposed_refresh: |-
+    Enrich the four UI component nodes as first-class sidecars (Management.tsx,
+    ManagementTabs.tsx — the hideAssociations + tab-set leaf, ManagementRoutes.tsx,
+    WithPermissionsProvider.tsx — the context-vs-gate leaf) and re-point the F-161
+    chain hops at them. This is the LSN-025 substrate-coverage shape (the UI nodes
+    exist as chain entries but lack their own sidecars); today the route__management
+    sidecar carries the full HIGH-confidence walk so the verdicts hold.
+- sidecar: "(no enriched sidecar for the shared AppTabs element)"
+  field_insufficient: |-
+    H-007 (active-tab highlight) cannot be resolved because AppTabs' internal
+    active-state matching (orientation='vertical' type='menu') is a shared component
+    OUTSIDE the route__management node's primary source — the sidecar reads how
+    ManagementTabs PASSES props to AppTabs (ManagementTabs.tsx:57-62) but not how
+    AppTabs derives the active tab from the current location, nor whether it matches a
+    detail route back to its parent tab.
+  proposed_refresh: |-
+    Enrich components/shared/elements/AppTabs (or whichever shared tab component
+    ManagementTabs wraps) with its active-state matching logic, so H-007 can be
+    verdicted from the sidecar instead of via PENDING-F-161-1. This shared element is
+    reused across the platform (Catalog tabs, entity-detail tabs), so the enrichment
+    pays off beyond F-161.
+
+### doc_drift_findings
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: |-
+    "Tab visibility is permission-aware (Associations is the explicit case today;
+    other tabs are visible to any signed-in operator and the per-tab actions enforce
+    permission checks)"; "The Associations tab is hidden unless the signed-in user
+    has the OWNER_ASSOCIATION_MANAGE permission"; plus the read-collaborative posture
+    and the Policy-JSON deep-link disclosure.
+  code_does: |-
+    Matches — ManagementTabs.tsx:14-50 hides only Associations and renders the other
+    eight to every authenticated user. The doc now AGREES with the code; the
+    tab-visibility half of scanner finding F-161c appears REMEDIATED.
+  recommended_log_as: doc-gap-NNN
+  note: |-
+    CONFIRM-RESOLVED on the F-161c tab-visibility half. This reflection re-derived
+    the F-161c scan finding and found the live doc now covers it — a convergent CLOSE
+    signal, not a new open finding. /review Gate 8 should confirm via raw-HTML fetch
+    (WebFetch body may mask head-level truncation per the live-render-verify memory).
+    RESIDUAL: (a) the doc states tab visibility as a FEATURE ("permission-aware") but
+    does not frame the hide-only-Associations asymmetry as a recon disclosure / a
+    misleading "hidden = forbidden" signal (the H-001 framing); (b) the doc is SILENT
+    on responsive/mobile support (H-004 — confirmed absent 2026-06-03). Both are
+    narrow residual Cornerstone-3 caveat gaps under the F-161 facets.
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: |-
+    Nothing — responsive design, mobile compatibility, and narrow-viewport behaviour
+    are ABSENT from the page (WebFetched 2026-06-03, status 200).
+  code_does: |-
+    The chrome uses a fixed xs=3/xs=9 grid with no responsive breakpoint and no
+    collapse (Management.tsx:13-19); it is cramped on a split-pane and unusable on
+    phone/tablet portrait.
+  recommended_log_as: doc-gap-NNN
+  note: |-
+    Net-new doc-side caveat for scanner finding F-161b: the page should state
+    Management is desktop-optimised and/or name the minimum supported viewport, so an
+    operator does not discover the breakage by hitting it. Low priority (UX, no
+    security/data consequence).
+
+## maintainer_notes
+
+(none yet — this block is preserved verbatim across refreshes; only the maintainer edits it)

@@ -1,0 +1,794 @@
+---
+feature_id: F-179
+pillar_anchored_id: P-01:F-179
+pillar: P-01 Data Discovery
+feature_name: |-
+  Overview-tab sidebar collections (Tags / Terms / Groups) render with
+  visibleLimit truncation + "View All" collapse — but the slice-before-
+  sort pattern means the operator sees an ARBITRARY top-N rather than
+  the alphabetised / importance-ordered top-N they expect
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__Overview.md  # the home-page Overview (P-01) — read to CONFIRM its TopTagsList / Domains are the HOME-PAGE surfaces, NOT the F-179 per-entity sidebar panels; the three F-179 components have NO enriched sidecar (all chain hops 1a/1b/1c are `unresolved`)
+contributing_sidecars_unresolved:
+  - "odd-platform ts react-component:OverviewTags  (chain hop 1a — sidecar: unresolved)"
+  - "odd-platform ts react-component:OverviewTerms (chain hop 1b — sidecar: unresolved)"
+  - "odd-platform ts react-component:OverviewGroups (chain hop 1c — sidecar: unresolved)"
+  - "odd-platform ts react-component:TagItem / TermItem / GroupItem (leaf render — sidecar: unresolved)"
+source_reads_for_validation:
+  # Rule 8 exception — the three F-179 components have NO enriched sidecar, so the single
+  # lines that confirm/contradict the hypotheses were read directly from primary source and
+  # cited here so the next file-analyser refresh of these three nodes fills the gap.
+  - "odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTags/OverviewTags.tsx:1-117 (read 2026-06-03)"
+  - "odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTerms/OverviewTerms.tsx:1-109 (read 2026-06-03)"
+  - "odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/OverviewGroups.tsx:1-106 (read 2026-06-03)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Live-fetched this run (status 200). Names "the sidebar list truncation
+      (Tags / Terms / Groups)" in the entity-detail-page subsection list but carries
+      NO ordering / importance / top-N specifics on the discovery landing page itself.
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/entity-detail-page"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Live-fetched this run (status 200). CRITICAL CROSS-REFERENCE: this page has ALREADY
+      been updated (prior doc-gaps session, DOC-286 family) to document the slice-then-sort
+      caveat verbatim — "The Tags panel sorts by importance (important tags first) then
+      alphabetically" BUT "the sorting happens after the truncation to 20 items, not before
+      … important tags beyond position 20 won't appear in the initial view", and
+      "The Groups and Terms panels' visible-window ordering is undefined … collector-insertion
+      order; do not rely on it being alphabetical or importance-based." Per Rule 1 the doc is a
+      cross-reference, not the source of intent: the doc documenting the defect as a caveat does
+      NOT make it a non-defect — the code's user-facing PROMISE (the tagsCompare comparator's
+      stated "important first") is still unmet. The hypotheses below are contradicted against
+      that promise; the doc caveat means the contradictions route to bug-candidate (the fix) +
+      an ALREADY-TRACKED caveat (DOC-286), not a fresh doc-gap.
+hypothesis_summary:
+  total: 9
+  confirmed: 1
+  contradicted: 5
+  partial: 1
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: MEDIUM
+    one_line: |
+      An entity with >20 tags whose important ones sit beyond array index 19 shows NO
+      important tag in the visible top-20 — and clicking "View All" does NOT fix it, because
+      the two windows are sorted independently and never merged, so the important tag lands
+      after every non-important tag in window 1.
+related_feature_flows: [F-018, F-002, F-176, F-001]
+related_concepts:
+  - "Tag (important flag)"
+  - "Term (LinkedTerm)"
+  - "Data Entity Group (DataEntityRef)"
+  - "Overview Tab Sidebar Panel"
+  - "Data Entity Status (DELETED soft-delete)"
+related_drift_classes:
+  - slice_then_sort_sorts_only_truncated_window_not_full_list
+  - tags_importance_ordering_lost_when_list_exceeds_twenty_important_invisible_below_cut
+  - top_n_window_for_tags_and_terms_is_array_position_order_not_importance_order
+  - groups_default_sort_call_with_no_comparator_undefined_behaviour
+  - view_all_button_text_includes_full_count_revealing_truncation_only_after_click
+  - view_all_collapse_unmountonexit_loses_user_scroll_position
+new_drift_classes_proposed:
+  - view_all_expansion_sorts_each_window_independently_merged_importance_order_never_assembled
+  - terms_bare_sort_no_comparator_on_linkedterm_objects_is_a_no_op_same_class_as_groups
+  - deleted_entity_status_hides_add_edit_affordance_but_existing_collections_still_render
+---
+
+# Overview sidebar Tags / Terms / Groups truncation — product-owner reflection
+
+## product_owner_narrative
+
+The per-entity **Overview tab** is the first screen an operator lands on after clicking any data
+entity in the catalog (route `/dataentities/{id}/overview`, the routing default per
+`Overview.md` downstream_side_effects and the F-176 composition). Down the right rail of that
+screen sit three sibling collection panels — **Tags**, **Dictionary terms**, and **Data entity
+groups** — each answering an at-a-glance question the operator carries to the entity: *what does
+this entity mean, who classified it, and what is it part of?* (panel headers `t('Tags')`,
+`t('Dictionary terms')`, `t('Data entity groups')` — OverviewTags.tsx:37, OverviewTerms.tsx:30,
+OverviewGroups.tsx:31). This feature is the **per-entity READ surface** for three concepts whose
+authoring/directory surfaces live elsewhere: F-018 owns the Tag directory, F-002 the Term linkage,
+F-012 the group-membership write path. F-179 is where those three land on the screen the user
+actually reads.
+
+The user interacts with each panel in one of three states. When the collection is non-empty, the
+panel renders the items as chips/rows, capped at a panel-specific visible limit — 20 for Tags
+(OverviewTags.tsx:23), 20 for Terms (OverviewTerms.tsx:22), 10 for Groups
+(OverviewGroups.tsx:24). When the collection exceeds the cap, a `View All (N)` button appears whose
+parenthetical count is the only on-screen signal that more items exist
+(OverviewTags.tsx:85, OverviewTerms.tsx:76, OverviewGroups.tsx:71-73); clicking it expands a
+`<Collapse unmountOnExit>` that renders the overflow inline (OverviewTags.tsx:68-83). When the
+collection is empty, the panel shows `t('Not created').` plus a permission-gated add affordance
+(OverviewTags.tsx:102-109). A fourth, cross-cutting state: when the entity's status is **DELETED**,
+the add/edit affordance is hidden on all three panels (`!isStatusDeleted &&` at OverviewTags.tsx:39,
+OverviewTerms.tsx:32, OverviewGroups.tsx:33) while the already-assigned items still render — a
+read-only teardown view.
+
+The working parts the operator would describe in a demo: *"the Tags panel puts the important tags
+first so you can see what matters about this entity at a glance"* (the `tagsCompare` comparator,
+OverviewTags.tsx:26-32, sorts important-first then alphabetically) — and *"if there are a lot of
+tags, the first twenty show and you click View All for the rest."* These two descriptions are each
+true in isolation and **false in combination**, which is the load-bearing finding of this whole
+feature. The render expression is `tags.slice(0, visibleLimit).sort(tagsCompare).map(...)`
+(OverviewTags.tsx:54-65): JavaScript evaluates left-to-right, so `.slice` runs first and returns the
+first 20 elements in the server's return order (insertion / database order, no `ORDER BY` on the
+join per the F-018 repository semantics), and `.sort` then re-orders only those 20. An important tag
+sitting at array index 22 is never in the window the comparator can reach. Terms and Groups have the
+same slice-then-sort shape with an additional defect — the comparator is a **bare `.sort()`** with no
+arguments on arrays of objects (`LinkedTerm[]` at OverviewTerms.tsx:48-50, `DataEntityRef[]` at
+OverviewGroups.tsx:49-51), which per ECMAScript stringifies each element to `"[object Object]"`, all
+elements compare equal, and the sort is a silent no-op.
+
+This feature integrates downstream of three other pillars and upstream of none: it CONSUMES the
+`tags` / `terms` / `dataEntityGroups` arrays from the parent `DataEntityDetails` payload
+(`GET /api/dataentities/{id}`, the same fetch IT-020/IT-016/IT-024 wait on), which is itself fed by
+the F-018 tag-assign, F-002 term-link, and F-012 group-membership write paths and ultimately by the
+P-10 ingestion pipeline. F-179 fires no mutation of its own beyond the in-panel edit forms; it is a
+`page-render` terminal side effect (feature-flow `terminal_side_effect.side_effect_class:
+page-render`). The cross-pillar promise that matters here is the **same READ-surface drift family as
+F-018**: the Top-Tags catalog-home strip (F-018, IT-005) has a backend `listMostPopular` ordering bug;
+F-179 has the symmetric CLIENT-side ordering bug on the per-entity strip. Two surfaces, two layers,
+one user-facing failure: *"the ordering I see is not the ordering the panel promises."*
+
+In a demo a senior product owner would highlight three edge cases. First, the >20-tags entity where
+the important tags were added last (the common case — an operator adds the entity, then later marks
+its key tags important): the visible top-20 contains zero important tags and the operator concludes
+the entity has none. Second, the expand-then-collapse cycle: `unmountOnExit` tears down the DOM, so a
+user who expanded, scrolled, and collapsed loses their scroll position on re-expand. Third — the one
+the feature-flow detail under-stated — **clicking View All does NOT repair the ordering**: the overflow
+window (`tags.slice(visibleLimit).sort(tagsCompare)`, OverviewTags.tsx:70-72) is sorted independently
+of the first window, so the merged global importance order is never assembled; an important tag at
+index 22 appears in window 2, after every non-important tag in window 1. The operator's mental model
+("View All will show me everything in importance order") is contradicted even after the click.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When a data entity carries more than 20 tags and at least one tag marked `important: true`
+    sits beyond array index 19 (e.g. the operator added it last), opening the entity's Overview
+    tab shows that important tag among the FIRST tags in the visible window — because the Tags
+    panel "sorts by importance first" (the tagsCompare comparator's stated intent).
+  derivation: |
+    The `tagsCompare` comparator (OverviewTags.tsx:26-32) declares "compare by importance and
+    alphabet" and returns important-first; the panel header "Tags" plus the comparator's existence
+    is the user-facing promise that important tags surface at a glance.
+  seed_source: ui-label
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The render expression is `tags.slice(0, visibleLimit).sort(tagsCompare).map(...)`
+      (OverviewTags.tsx:54-56). JS array methods evaluate left-to-right: `.slice(0, 20)` runs
+      FIRST and returns the first 20 elements in the array's existing order (the server's return
+      order — tag_to_data_entity insertion / DB order, no ORDER BY on the relation join per the
+      F-018 ReactiveDataEntityRepositoryImpl semantics). `.sort(tagsCompare)` then re-orders only
+      those 20. A tag at index 22 marked important is never in the sliced window, so it cannot
+      surface regardless of its importance flag. The comparator's promise holds only WITHIN the
+      first-20 window of the array, not across the full list.
+    evidence:
+      - sidecar: "(source read — OverviewTags has no sidecar)"
+        section: render
+        cite: "OverviewTags.tsx:54-56"
+        note: ".slice(0, visibleLimit) runs before .sort(tagsCompare) — slice truncates first"
+      - sidecar: "(source read)"
+        section: comparator
+        cite: "OverviewTags.tsx:26-32"
+        note: "tagsCompare declares important-first intent — the unmet promise"
+      - sidecar: F-179.yaml
+        section: observed_vs_expected.facets[0]
+        cite: "F-179.yaml:136-164"
+        note: "feature-flow detail confirms slice_then_sort drift class at this anchor"
+    operator_visible_failure: |
+      (1) Obvious: an entity with 25 tags where indices 22-24 are important shows NONE of its
+      important tags in the visible top-20; the operator scans the strip, sees no important tag, and
+      assumes the entity has no important tags. (2) Subtle: which tags ARE visible is non-deterministic
+      from the operator's seat — it is whatever order the backend join returned (insertion order),
+      so two entities tagged with the same set in a different add-sequence show different "top" tags.
+      (3) Compounding: the failure is invisible — there is no "showing arbitrary subset" signal; the
+      panel looks like it is honouring the importance ordering because the 20 it shows ARE sorted.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |
+    When a Tags panel is truncated and the operator clicks "View All (N)", the full list is then
+    presented in importance order (important tags first across the whole list) — i.e. View All is
+    the escape hatch that restores the ordering the truncated window could not show.
+  derivation: |
+    Negative-space: a user who notices the truncation expects the expand action to give them the
+    complete, correctly-ordered list. This is the natural recovery from H-001.
+  seed_source: negative-space
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The overflow render is `tags.slice(visibleLimit).sort(tagsCompare).map(...)`
+      (OverviewTags.tsx:70-72) inside the `<Collapse>`. The visible window (slice 0..20, sorted)
+      and the overflow window (slice 20.., sorted) are sorted INDEPENDENTLY and concatenated in DOM
+      order; the merged global importance order is never assembled. So after View All, the operator
+      sees: [window-1: indices 0-19 sorted important-first] THEN [window-2: indices 20+ sorted
+      important-first]. An important tag at index 22 appears in window-2 — i.e. AFTER every tag in
+      window-1, including non-important ones. The importance ordering is NOT restored by expansion;
+      it is only ever local to each 20-element window.
+    evidence:
+      - sidecar: "(source read)"
+        section: collapse-overflow-render
+        cite: "OverviewTags.tsx:68-83"
+        note: "second window slice(visibleLimit).sort(tagsCompare) — sorted independently of window 1"
+      - sidecar: F-179.yaml
+        section: observed_vs_expected.facets[0].evidence
+        cite: "F-179.yaml:158 — OverviewTags.tsx:69-83 (Collapse contents sorts the SECOND window)"
+        note: "feature-flow notes each window independently sorted; global order never assembled"
+    operator_visible_failure: |
+      The operator who DOES notice the truncation and clicks View All to recover still cannot trust
+      the ordering: an important tag added late lands at the start of the SECOND visual block, below
+      every non-important tag in the first block. The recovery action the UI offers does not actually
+      recover the promised ordering — there is no point in the flow at which the operator sees
+      important-first across the full list. This is the new drift class
+      view_all_expansion_sorts_each_window_independently_merged_importance_order_never_assembled and
+      is the part of the defect the single-window framing of PLT-096 under-stated.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |
+    When a data entity has <= 20 tags, opening the Overview tab shows ALL its tags in
+    importance-then-alphabetical order (the comparator's promise holds when nothing is truncated).
+  derivation: |
+    Endpoint/render shape: with no overflow, slice(0,20) is a no-op on a <=20 array, so
+    sort(tagsCompare) orders the full list — the comparator's promise should hold in this regime.
+  seed_source: response-shape
+  sme_consultation_recommended: false
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      For a tags array of length L <= 20, `tags.slice(0, 20)` returns a shallow copy of the full
+      array (slice past the end is clamped), and `.sort(tagsCompare)` then orders ALL L elements
+      important-first then by localeCompare on name. The comparator's promise is fully honoured in
+      the no-truncation regime. The overflow branch (tags.length > visibleLimit) is not entered, so
+      the View-All defect (H-002) does not apply. This is the happy path the panel was designed for
+      and is correct.
+    evidence:
+      - sidecar: "(source read)"
+        section: render
+        cite: "OverviewTags.tsx:52-65"
+        note: "tags?.length ? slice(0,20).sort(tagsCompare).map — for L<=20 the slice is a full copy; comparator orders the whole list"
+      - sidecar: "(source read)"
+        section: comparator
+        cite: "OverviewTags.tsx:26-32"
+        note: "important===important → localeCompare(name); else important ? -1 : 1 — correct two-key sort"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |
+    When a data entity carries more than 20 linked Dictionary terms, the Overview Terms panel
+    presents the visible 20 in a meaningful order (alphabetical by term name, mirroring the Tags
+    panel's at-a-glance ordering intent the user has learned elsewhere on the platform).
+  derivation: |
+    UI-label + cross-platform-consistency: the Terms panel sits beside the Tags panel and has the
+    identical slice/sort/View-All shape, so a user reasonably expects the same ordering discipline.
+  seed_source: ui-label
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The render expression is `terms.slice(0, visibleLimit).sort().map(...)` (OverviewTerms.tsx:48-51)
+      — a BARE `.sort()` with NO comparator on an array of `LinkedTerm` objects. Per ECMAScript,
+      Array.prototype.sort with no comparator converts each element to a string via String()/toString();
+      a `LinkedTerm` plain object has no toString override, so every element stringifies to
+      "[object Object]" and all compare equal. Under V8's stable TimSort the result is the pre-slice
+      array position. NET: the panel shows terms in raw server insertion order, NOT alphabetical, and
+      the `.sort()` call does nothing. The slice-then-sort flaw is moot here because the sort is itself
+      a no-op — both the truncation AND the ordering fail.
+    evidence:
+      - sidecar: "(source read)"
+        section: render
+        cite: "OverviewTerms.tsx:48-51"
+        note: "terms.slice(0, visibleLimit).sort().map(...) — bare no-arg sort on LinkedTerm[]"
+      - sidecar: F-179.yaml
+        section: chain.hop-1b.evidence
+        cite: "F-179.yaml:105-111"
+        note: "feature-flow: bare no-comparator sort on LinkedTerm objects → no effective ordering"
+    operator_visible_failure: |
+      The visible 20 terms are whatever order the backend returned (insertion order). For an entity
+      with >20 linked terms, the visible window is an arbitrary slice with no ordering guarantee; a
+      term the operator expects near the top (alphabetically) may be in the hidden overflow. The doc
+      (entity-detail-page, fetched this run) now explicitly warns "do not rely on it being
+      alphabetical" — confirming the contradiction is real, but the user-facing surface still presents
+      a sorted-looking list that is not sorted.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |
+    When a data entity belongs to more than 10 groups, the Overview "Data entity groups" panel
+    presents the visible 10 in a stable, name-ordered sequence (so the same entity always shows the
+    same 10 groups in the same order across reloads).
+  derivation: |
+    UI-label + endpoint-shape: the Groups panel caps at 10 and has a `.sort()` call, implying an
+    intended deterministic ordering of the visible window.
+  seed_source: ui-label
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The render expression is `dataEntityGroups.slice(0, visibleLimit).sort().map(...)`
+      (OverviewGroups.tsx:49-51) — bare `.sort()` on `DataEntityRef[]`. Same ECMAScript no-op as Terms:
+      DataEntityRef is a plain DTO with no toString override, every element stringifies to
+      "[object Object]", all compare equal, V8 TimSort preserves pre-slice position. The visible 10
+      are the first 10 in server return order; the `.sort()` is dead code. Order IS stable across
+      reloads ONLY because the backend return order is stable AND TimSort is stable — not because the
+      sort does anything. The cap of 10 (vs 20 for Tags/Terms) is also undocumented as to why Groups
+      gets a smaller window.
+    evidence:
+      - sidecar: "(source read)"
+        section: render
+        cite: "OverviewGroups.tsx:49-51"
+        note: "dataEntityGroups.slice(0, visibleLimit).sort().map(...) — bare sort on DataEntityRef[] is a no-op"
+      - sidecar: F-179.yaml
+        section: observed_vs_expected.facets[3]
+        cite: "F-179.yaml:206-227"
+        note: "feature-flow: bare sort() default comparator → '[object Object]' → no ordering effect"
+    operator_visible_failure: |
+      The visible 10 group memberships are an arbitrary slice in insertion order; for an entity in
+      >10 groups the operator cannot predict which 10 appear or in what order, and the `.sort()` gives
+      a false impression to a reader of the code that ordering is intentional. The user impact is
+      lower than Tags (groups have no importance flag), hence the LOW severity in the feature-flow,
+      but the dead-code sort is a maintenance hazard and the truncation-without-ordering is a real
+      read-surface gap.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |
+    When a Tags / Terms / Groups panel is truncated, the operator can tell at first paint (before
+    any click) that the list is incomplete — i.e. there is a visible truncation signal in the strip
+    itself, not only buried in a button label.
+  derivation: |
+    Negative-space + UX-consistency: a truncated list with no first-paint signal silently misleads
+    the operator about the collection size; a senior PO expects an explicit "showing N of M" cue.
+  seed_source: negative-space
+  sme_consultation_recommended: false
+  validation:
+    verdict: partial
+    actual_behavior: |
+      A signal EXISTS but only as the parenthetical count in the button label
+      `${t('View All')} (${tags?.length})` (OverviewTags.tsx:85; OverviewTerms.tsx:76;
+      OverviewGroups.tsx:71-73), and ONLY when overflow exists (the button is conditionally rendered
+      on `tags.length > visibleLimit`). So the truncation IS signalled, but weakly: the full count is
+      in small tertiary-button text at the end of the strip, and the visible 20 chips themselves carry
+      no "+5 more" / fade / "showing 20 of 25" affordance. An operator scanning the chips who does not
+      read the button text concludes the entity has exactly 20 tags. The signal is present (so not a
+      full contradiction) but easy to miss (so not confirmed).
+    evidence:
+      - sidecar: "(source read)"
+        section: view-all-button
+        cite: "OverviewTags.tsx:84-89"
+        note: "View All (N) — N is tags.length; only rendered when tags.length > visibleLimit"
+      - sidecar: F-179.yaml
+        section: observed_vs_expected.facets[4]
+        cite: "F-179.yaml:228-247"
+        note: "feature-flow: count suffix is the only truncation signal; visible only on overflow"
+    operator_visible_failure: |
+      The truncation cue is the parenthetical (25) suffix in a tertiary button; if missed, the
+      operator under-counts the collection. The unmet part of the promise is the at-a-glance count
+      WITHIN the chip strip; the met part is that a count does exist for users who read the button.
+      Routes to a documentation caveat (already tracked via DOC-286, which the live doc now reflects)
+      plus a functional test for the count-suffix presence.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |
+    When an operator expands a truncated panel (View All), scrolls partway through the overflow,
+    then collapses it (Hide) and re-expands, their scroll position is preserved (the list does not
+    jump back to the top on every expand/collapse cycle).
+  derivation: |
+    Negative-space + cross-device convenience: a long expanded list that resets scroll on every
+    toggle is a known UX friction; a senior PO checks expand/collapse statefulness.
+  seed_source: negative-space
+  sme_consultation_recommended: true
+  sme_consultation_question: |
+    For a data-catalog read surface, is scroll-position preservation across an inline expand/collapse
+    of a tag/term/group list considered load-bearing UX by operators of comparable catalogs
+    (DataHub / Amundsen / OpenMetadata entity pages), or an acceptable minor friction? Archetype: workflow.
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The overflow is wrapped in `<Collapse in={viewAll} timeout='auto' unmountOnExit>`
+      (OverviewTags.tsx:68; OverviewTerms.tsx:61; OverviewGroups.tsx:57). `unmountOnExit` tears down
+      the overflow DOM on collapse; on re-expand the nodes re-mount fresh. STATICALLY this means any
+      scroll position INSIDE the collapsed region is lost on collapse (the nodes no longer exist). But
+      whether the OPERATOR observes a disruptive jump depends on runtime layout: the panel is a
+      right-rail strip whose overflow may or may not be independently scrollable (the chips wrap; the
+      page, not the panel, scrolls). Whether a real scroll-position loss is user-observable, vs the
+      page simply shortening, requires rendering the component in a browser with a >20-item list and
+      observing the expand/scroll/collapse/re-expand cycle. STATIC analysis cannot resolve the
+      user-visible severity; this is a probe.
+    evidence:
+      - sidecar: "(source read)"
+        section: collapse-prop
+        cite: "OverviewTags.tsx:68 (unmountOnExit)"
+        note: "unmountOnExit tears down overflow DOM on collapse — scroll state inside it cannot survive"
+      - sidecar: F-179.yaml
+        section: observed_vs_expected.facets[5]
+        cite: "F-179.yaml:248-265"
+        note: "feature-flow: unmountOnExit loses scroll position across expand/collapse"
+    operator_visible_failure: |
+      (predicted, pending probe) An operator reviewing a heavily-tagged entity who expands, scrolls to
+      a tag mid-overflow, collapses to compare with another panel, then re-expands, is returned to the
+      top of the overflow and must re-scroll. Friction scales with collection size. Severity is LOW
+      and contingent on the panel being independently scrollable at the rendered viewport.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-179-1
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-179-1"
+
+- id: H-008
+  hypothesis: |
+    When a data entity's status is DELETED, the operator can still SEE the entity's existing tags,
+    terms, and group memberships on the Overview tab (the historical classification is preserved and
+    readable), but cannot add or edit them.
+  derivation: |
+    Pillar P-01 ("flag entity statuses … DELETED + soft-delete TTL") + negative-space teardown: a
+    soft-deleted entity should remain auditable; the affordance to mutate should be withdrawn.
+  seed_source: pillar
+  sme_consultation_recommended: false
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `isStatusDeleted = useAppSelector(getIsEntityStatusDeleted(dataEntityId))` is read on all three
+      panels (OverviewTags.tsx:20, OverviewTerms.tsx:25, OverviewGroups.tsx:26). The ADD/EDIT affordance
+      is gated `{!isStatusDeleted && (<...EditForm/AddForm.../>)}` in BOTH the non-empty header
+      (OverviewTags.tsx:39, OverviewTerms.tsx:32, OverviewGroups.tsx:33) AND the empty-state branch
+      (OverviewTags.tsx:104, OverviewTerms.tsx:95, OverviewGroups.tsx:92). The collection-rendering
+      branch (`tags?.length ? slice/sort/map`) is NOT gated by isStatusDeleted — so existing
+      tags/terms/groups STILL render on a DELETED entity; only the mutation affordance is withdrawn.
+      The hypothesis is confirmed: read preserved, write withdrawn.
+    evidence:
+      - sidecar: "(source read)"
+        section: deleted-status-gate
+        cite: "OverviewTags.tsx:20,39,104"
+        note: "isStatusDeleted gates only the edit/add forms; the chip-render branch is ungated"
+      - sidecar: "(source read)"
+        section: deleted-status-gate
+        cite: "OverviewTerms.tsx:25,32,95; OverviewGroups.tsx:26,33,92"
+        note: "identical teardown gate on Terms and Groups"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |
+    When the calling user lacks the per-panel mutation permission (DATA_ENTITY_TAGS_UPDATE for Tags,
+    DATA_ENTITY_ADD_TERM for Terms, DATA_ENTITY_ADD_TO_GROUP for Groups), the add/edit affordance is
+    hidden, but the user can still READ the entity's tags/terms/groups (read-collaborative posture).
+  derivation: |
+    Pillar P-09 cross-pillar ("authorization gates every mutation … READS bypass per-owner scoping")
+    + the WithPermissions wrappers on each panel header.
+  seed_source: cross-pillar
+  sme_consultation_recommended: false
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Each add/edit affordance is wrapped `<WithPermissions permissionTo={Permission.X}>`
+      (OverviewTags.tsx:38,103 DATA_ENTITY_TAGS_UPDATE; OverviewTerms.tsx:31,94 DATA_ENTITY_ADD_TERM;
+      OverviewGroups.tsx:32,91 DATA_ENTITY_ADD_TO_GROUP). The collection render is OUTSIDE the
+      WithPermissions wrapper, consistent with read-collaborative. BUT whether `WithPermissions` is a
+      RENDERING GATE (hides children when the permission is absent) or a CONTEXT-ONLY provider depends
+      on the `WithPermissions` implementation — and the sibling `WithPermissionsProvider` in the
+      Overview HOME-PAGE sidecar is documented (Overview.md implicit_adr[3]) to be CONTEXT-ONLY (it
+      renders children regardless of permission). `WithPermissions` (a different component:
+      components/shared/contexts) may behave differently. I did not read WithPermissions.tsx (Rule 8 —
+      it is outside this feature's chain and has no sidecar). Whether the add affordance is actually
+      HIDDEN for a permission-less user, or merely context-wrapped-but-rendered, cannot be resolved
+      from the F-179 components alone. Probe required (or a file-analyser sidecar on WithPermissions).
+    evidence:
+      - sidecar: "(source read)"
+        section: permission-wrapper
+        cite: "OverviewTags.tsx:38 (WithPermissions permissionTo=DATA_ENTITY_TAGS_UPDATE)"
+        note: "affordance wrapped in WithPermissions; gate-vs-context behaviour unverified at this layer"
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: implicit_adrs
+        cite: "Overview.md implicit_adr[3] — WithPermissionsProvider is context-only, NOT a rendering gate"
+        note: "the SIBLING provider is context-only; raises doubt that WithPermissions gates rendering"
+    operator_visible_failure: |
+      (predicted, pending probe) IF WithPermissions is context-only like its sibling, a user WITHOUT
+      DATA_ENTITY_TAGS_UPDATE would still see the "Edit tags" / "Add tags" button and only hit a
+      backend 403 on click — a worse UX than hiding it, and a possible false affordance. IF it IS a
+      rendering gate, the hypothesis holds. The distinction is user-observable and security-adjacent,
+      hence worth a probe rather than a hedge.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-179-2
+    routes_to_finding: validation-gap
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: "probe PENDING-F-179-2"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: MEDIUM
+  one_line: |
+    slice-then-sort on OverviewTags truncates BEFORE the importance comparator runs — important
+    tags beyond index 19 are invisible in the visible top-20.
+  dedup_status: already_tracked
+  tracked_as: PLT-096
+  proposed_fix_anchor: |
+    OverviewTags.tsx:54-56 — swap to `.sort(tagsCompare).slice(0, visibleLimit)` (sort the full
+    array, THEN truncate). One-line flip; PLT-096 Defect 1.
+- hypothesis_id: H-002
+  severity: MEDIUM
+  one_line: |
+    View All does NOT repair the ordering — the two windows (slice 0..20 and slice 20..) are sorted
+    independently and never merged, so an important tag at index 22 lands after all non-important
+    tags in window 1 even after expansion.
+  dedup_status: net_new
+  distinct_from: PLT-096
+  recommended_log_as: BUG-NNN (or fold into PLT-096 as Defect 1b)
+  proposed_fix_anchor: |
+    The sort-before-slice fix at OverviewTags.tsx:54 fixes window 1; the overflow window at
+    OverviewTags.tsx:70-72 must render `sortedTags.slice(visibleLimit)` from the SAME pre-sorted
+    array (compute `const sorted = [...tags].sort(tagsCompare)` once, then slice sorted into both
+    windows) so the merged importance order is global. PLT-096's single-window framing under-stated
+    this — the new drift class is
+    view_all_expansion_sorts_each_window_independently_merged_importance_order_never_assembled.
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |
+    OverviewTerms uses a bare `.sort()` (no comparator) on LinkedTerm[] — a no-op; the visible 20
+    terms are unordered insertion order.
+  dedup_status: already_tracked
+  tracked_as: PLT-096
+  proposed_fix_anchor: |
+    OverviewTerms.tsx:48-50 — supply a comparator (e.g. by linkedTerm.term.name localeCompare) AND
+    sort-before-slice. PLT-096 names the Terms sibling shape under Defect 1 / the slice-then-sort class.
+- hypothesis_id: H-005
+  severity: LOW
+  one_line: |
+    OverviewGroups uses a bare `.sort()` (no comparator) on DataEntityRef[] — a no-op (dead code);
+    the visible 10 groups are unordered insertion order.
+  dedup_status: already_tracked
+  tracked_as: PLT-096
+  proposed_fix_anchor: |
+    OverviewGroups.tsx:49-51 — either remove the dead `.sort()` and document insertion-order, OR
+    supply a comparator by group.internalName/externalName and sort-before-slice. PLT-096 Defect 2.
+
+### caveat_candidates
+- hypothesis_id: H-006
+  one_line: |
+    Truncation is signalled only by the (N) suffix in the View All button, only on overflow; the
+    visible chip strip has no at-a-glance "showing 20 of 25" cue.
+  dedup_status: already_tracked
+  tracked_as: DOC-286
+  recommended_log_as: |
+    caveat in https://docs.opendatadiscovery.org/features/data-discovery/entity-detail-page — the
+    live page ALREADY documents the truncation + View All behaviour (verified this run, status 200);
+    DOC-286 covers it. No fresh doc-gap.
+- hypothesis_id: H-007
+  one_line: |
+    Collapse unmountOnExit tears down the overflow DOM on collapse — scroll position inside the
+    expanded list is not preserved across expand/collapse cycles.
+  dedup_status: net_new
+  recommended_log_as: |
+    caveat in entity-detail-page doc IF the probe (PENDING-F-179-1) confirms a user-observable
+    scroll jump; otherwise drop. Hold until probe resolves.
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate,
+# INCLUDING the confirmed-but-untested ones (H-003, H-008). The display-only e2e tests
+# (IT-020/IT-016/IT-024) verify a chip RENDERS, not its ORDERING — so no F-179 promise is verified.
+- use_case_id: F-179-UC-1
+  hypothesis_id: H-001
+  kind: render
+  promise: "Important tags surface in the visible top-20 even when added late (beyond array index 19)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-179-UC-1)"
+  proposed_test: |
+    Unit (Vitest/RTL) on OverviewTags: render with 25 tags where indices 22-24 are important=true;
+    assert an important tag IS in the first 20 rendered TagItems. RED today; GREEN after sort-before-slice.
+    Sibling integration: extend IT-020 with a >20-tag, important-at-end seed and assert the important
+    chip is visible WITHOUT clicking View All.
+- use_case_id: F-179-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "Clicking View All presents the full list in global importance order (important-first across all tags)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-179-UC-2)"
+  proposed_test: |
+    Unit on OverviewTags: 25 tags, important at index 22; click View All; assert the important tag
+    renders BEFORE the first non-important tag in DOM order across the merged list. RED today.
+- use_case_id: F-179-UC-3
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "An entity with <=20 tags shows all tags in importance-then-alphabetical order."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-179-UC-3)"
+  proposed_test: |
+    Unit on OverviewTags: render 5 tags (2 important, mixed names); assert DOM order is
+    [important sorted by name, then non-important sorted by name]. Guards the happy path that the
+    sort-before-slice fix must NOT regress. (Confirmed-but-untested — the LSN-030 fix demands this guard.)
+- use_case_id: F-179-UC-4
+  hypothesis_id: H-004
+  kind: render
+  promise: "An entity with >20 linked terms shows the visible 20 in a meaningful (name) order."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-179-UC-4)"
+  proposed_test: |
+    Unit on OverviewTerms: render 25 terms in shuffled name order; assert visible 20 are name-sorted.
+    RED today (bare sort is a no-op). GREEN after a real comparator + sort-before-slice.
+- use_case_id: F-179-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "An entity in >10 groups shows the visible 10 in a stable, name-ordered sequence."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-179-UC-5)"
+  proposed_test: |
+    Unit on OverviewGroups: render 15 groups shuffled; assert visible 10 are name-ordered (or, if the
+    fix is "remove the dead sort + document insertion order", assert insertion order explicitly).
+- use_case_id: F-179-UC-6
+  hypothesis_id: H-006
+  kind: render
+  promise: "A truncated panel signals at first paint that the list is incomplete."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-179-UC-6)"
+  proposed_test: |
+    Unit on OverviewTags: render 25 tags; assert a 'View All (25)' control is present and its label
+    contains the full count. Guards the (weak) truncation signal that exists today.
+- use_case_id: F-179-UC-7
+  hypothesis_id: H-007
+  kind: render
+  promise: "Scroll position is preserved across expand/collapse of a truncated panel."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-179-1 (resolve before minting a TEST-GAP)"
+  proposed_test: |
+    Playwright (local docker-compose): seed >20 tags, expand View All, scroll, collapse, re-expand;
+    assert scroll offset. Author only if the probe confirms a user-observable jump.
+- use_case_id: F-179-UC-8
+  hypothesis_id: H-008
+  kind: teardown-constraint
+  promise: "A DELETED entity still SHOWS its existing tags/terms/groups but hides the add/edit affordance."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-179-UC-8)"
+  proposed_test: |
+    Unit on OverviewTags/Terms/Groups: with getIsEntityStatusDeleted → true, assert existing chips
+    RENDER and the Edit/Add form is NOT in the DOM; with false, assert the affordance IS present.
+    (Confirmed-but-untested teardown constraint — LSN-030 demands the guard so a future refactor that
+    gates the render branch on isStatusDeleted, or ungates the affordance, is caught.)
+- use_case_id: F-179-UC-9
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "A user lacking the per-panel mutation permission can READ the collection but the add/edit affordance is hidden."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-179-2 (resolve WithPermissions gate-vs-context first)"
+  proposed_test: |
+    Unit on OverviewTags with a mocked permissions context lacking DATA_ENTITY_TAGS_UPDATE: assert the
+    Edit/Add affordance is NOT rendered AND the chips ARE. Author once PENDING-F-179-2 establishes
+    whether WithPermissions is a rendering gate (the precondition for this test to be meaningful).
+
+### probes_emitted
+- probe_id: PENDING-F-179-1
+  hypothesis_id: H-007
+  hypothesis_text: |
+    When an operator expands a truncated panel (View All), scrolls partway through the overflow, then
+    collapses (Hide) and re-expands, their scroll position is preserved (the list does not jump to the
+    top on every expand/collapse cycle).
+  local_execution: |
+    Playwright against local docker-compose odd-platform (the existing integration-tests harness):
+    seed an entity with >20 tags; open /dataentities/{id}/overview; click View All; scroll the
+    overflow; click Hide; click View All again; assert the scroll offset is non-zero / preserved.
+    Disposition: unmountOnExit at OverviewTags.tsx:68 predicts scroll loss; severity contingent on
+    whether the panel is independently scrollable at the rendered viewport.
+  status: pending-reflection-verification
+- probe_id: PENDING-F-179-2
+  hypothesis_id: H-009
+  hypothesis_text: |
+    When the calling user lacks DATA_ENTITY_TAGS_UPDATE / DATA_ENTITY_ADD_TERM /
+    DATA_ENTITY_ADD_TO_GROUP, the add/edit affordance on the corresponding Overview panel is HIDDEN
+    (WithPermissions is a rendering gate), while the collection still renders.
+  local_execution: |
+    Two paths: (a) a Vitest/RTL render of OverviewTags with a mocked permissions context lacking the
+    permission, asserting the Edit/Add form is absent; OR (b) read WithPermissions.tsx
+    (components/shared/contexts) directly to determine gate-vs-context behaviour (cheaper — resolves
+    statically). Preferred: spawn a file-analyser sidecar on WithPermissions so the gate semantics
+    enter the ontology rather than being re-derived per feature.
+  status: pending-reflection-verification
+
+### validation_gaps
+- sidecar: "odd-platform ts react-component:OverviewTags (chain hop 1a)"
+  field_insufficient: |
+    Rule 9 — NO enriched UI sidecar exists for any of the three F-179 components (all chain hops
+    1a/1b/1c are `unresolved`). This reflection's render/ordering verdicts are grounded in a Rule-8
+    single-line source read of the three .tsx files, NOT in an enriched sidecar with the full
+    understanding / dependencies_semantic / tests_coverage_semantic / docs_link_semantic blocks. As a
+    consequence: (i) the WithPermissions gate-vs-context behaviour (H-009) could not be resolved; (ii)
+    the parent DataEntityDetails payload shape (does the backend ever ORDER BY on the tags/terms/groups
+    relation? — the F-018 repo semantics say no, but that was not re-confirmed for THIS payload) is
+    inferred, not pinned; (iii) the user-observable severity of the unmountOnExit scroll loss (H-007)
+    is a probe. This is the reflection-layer equivalent of the F-031 mistake (a confident verdict set
+    for a user-facing feature from below the UI layer) and is surfaced per Rule 9 as the FIRST output.
+  proposed_refresh: |
+    Spawn file-analyser sidecars for OverviewTags / OverviewTerms / OverviewGroups (and the shared
+    WithPermissions context) so the chain's three `unresolved` hops resolve. The Stress Protocol
+    Category B (method-vs-behaviour) would independently catch the bare-sort no-op; Category F would
+    catch the slice-then-sort. Once those sidecars exist, re-run this reflection to upgrade H-007/H-009
+    from probe-needed and to anchor the render verdicts in sidecar citations rather than source reads.
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/entity-detail-page"
+  doc_says: |
+    "The Tags panel sorts by importance (important tags first) then alphabetically" BUT "the sorting
+    happens after the truncation to 20 items, not before … important tags beyond position 20 won't
+    appear in the initial view."
+  code_does: |
+    Confirmed: OverviewTags.tsx:54-56 slices before sorting. The doc and the code now AGREE — the doc
+    has been updated (DOC-286) to document the defect as a known caveat. Per Rule 1 this does NOT make
+    the defect a non-defect: the comparator's user-facing PROMISE (important-first) is still unmet, so
+    H-001 stays contradicted and routes to bug-candidate PLT-096. No NEW doc-gap (the caveat exists);
+    recorded here as a confirmed code↔doc agreement that the underlying bug is still open.
+  recommended_log_as: "no fresh doc-gap — DOC-286 already documents the caveat; PLT-096 owns the fix"
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/entity-detail-page"
+  doc_says: |
+    "The Groups and Terms panels' visible-window ordering is undefined … do not rely on it being
+    alphabetical or importance-based."
+  code_does: |
+    Confirmed: bare .sort() no-op on Terms (OverviewTerms.tsx:48-50) and Groups
+    (OverviewGroups.tsx:49-51). Doc accurately documents the undefined ordering. Agreement; underlying
+    cleanup (PLT-096 Defect 2) still open.
+  recommended_log_as: "no fresh doc-gap — DOC-286 covers it; PLT-096 owns the cleanup"
+
+## maintainer_notes
+
+<!-- preserved across refreshes — only block the maintainer hand-edits -->

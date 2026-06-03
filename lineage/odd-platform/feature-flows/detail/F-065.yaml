@@ -306,6 +306,115 @@ observed_vs_expected:
       way to distinguish two distinct platform failure modes from the
       same observable.
     severity: MEDIUM
+use_cases:
+  # LSN-030 promise layer — projected from feature-reflections/detail/F-065.yaml
+  # (feature-reflector/0.3.0, reflected 2026-06-03). Full hypotheses + validation
+  # live in the reflection file; this is the compact promise projection the
+  # test-coverage-mapper Step 2b reads. uc_id == hypothesis id.
+  - uc_id: F-065-UC-1
+    kind: happy-path
+    promise: "Four disjoint default advisory-lock-ids (90/100/110/120) elect four independent leaders with zero contention."
+    actor: platform-operator
+    trace: "application.yml:177,197-202 + PostgreSQLLeaderElectionManagerImpl.java:22 (pg_advisory_lock per subsystem)"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: confirmed
+  - uc_id: F-065-UC-2
+    kind: "empty/no-match"
+    promise: "An advisory-lock-id collision is detected at startup (fail-fast / WARN / readiness degradation) — never a silent forever-wedge."
+    actor: platform-operator
+    trace: "CONTRADICTED — PostgreSQLLeaderElectionManagerImpl.java:22 blocking pg_advisory_lock, no validator (DataCollaborationProperties.java:14-20 checks only retry-count)"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: contradicted
+  - uc_id: F-065-UC-3
+    kind: cross-actor
+    promise: "Both partition managers run under the ONE shared lock 90 — the deliberate cross-subsystem share is legal."
+    actor: spring-container
+    trace: "PostgreSQLPartitionCreationJob.java:31 acquire(activityLockId, false) wraps the List<PartitionManager> loop"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: confirmed
+  - uc_id: F-065-UC-4
+    kind: render
+    promise: "Operator can read one authoritative enumeration of the resolved advisory-lock-id values at boot."
+    actor: platform-operator
+    trace: "CONTRADICTED — no registry class (grep AdvisoryLockId/LockIdRegistry zero); values split across 3 @ConfigurationProperties prefixes"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: contradicted
+  - uc_id: F-065-UC-5
+    kind: render
+    promise: "A wedged subsystem flips an observable signal (leader-state gauge=0 / health DEGRADED)."
+    actor: platform-operator
+    trace: "CONTRADICTED — no Micrometer in notification/partition packages (NotificationSubscriber known_performance_gaps[4]); no health indicator"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: contradicted
+  - uc_id: F-065-UC-6
+    kind: happy-path
+    promise: "Two replicas: exactly one holds the notifications WAL lock (100); killing it hands leadership to the standby."
+    actor: platform-operator
+    trace: "NotificationSubscriber.java:47 blocking acquire + IT-012 notifications-wal-failover (real 2-replica pg_locks GRANTED/WAITING + failover)"
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/notifications-wal-failover.spec.ts (IT-012)"
+    test_demand: none
+    verdict: confirmed
+  - uc_id: F-065-UC-7
+    kind: happy-path
+    promise: "DC sender (120) and receiver (110) each elect a single leader across replicas; failover works (IT-012-shaped for DC)."
+    actor: platform-operator
+    trace: "DataCollaborationMessageSenderJob.java:94 + ...EventProcessor.java:148 blocking acquire; only STRUCTURAL pin (AdrDataCollabDeliveryScanTest), no behavioral HA test"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: confirmed
+  - uc_id: F-065-UC-8
+    kind: teardown-constraint
+    promise: "Removing partition.advisory-lock-id fails fast with a registry-aware message (not a bare placeholder error)."
+    actor: platform-operator
+    trace: "PARTIAL — PostgreSQLPartitionCreationJob.java:26 has no :default (fails bean wiring, but generic Spring placeholder error); doc-side removal risk now mitigated by updated live docs"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: partial
+  - uc_id: F-065-UC-9
+    kind: "empty/no-match"
+    promise: "Equal DC sender/receiver lock-ids are rejected at @PostConstruct."
+    actor: platform-operator
+    trace: "CONTRADICTED — DataCollaborationProperties.java:14-20 @PostConstruct checks only retry-count, never the two lock ids (uncovered_behaviours[4])"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: contradicted
+  - uc_id: F-065-UC-10
+    kind: resolve-later
+    promise: "One poison ALERT row affects only its own delivery; subsequent alerts still deliver."
+    actor: platform-operator
+    trace: "CONTRADICTED — NotificationSubscriber.java:77-91 no try/catch around process(); un-advanced LSN replays the poison row forever (tracked PLT-139)"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: contradicted
+  - uc_id: F-065-UC-11
+    kind: grammar
+    promise: "The acquire(id, flag) signature unambiguously communicates that acquisition is always blocking."
+    actor: odd-platform-maintainer
+    trace: "PARTIAL — PostgreSQLLeaderElectionManagerImpl.java:18 flag is replicationConnection (NOT blocking); pg_advisory_lock always blocks; callsites acquire(id,false/true) misreadable"
+    coverage: unverified
+    test_demand: missing-functional
+    verdict: partial
+use_case_coverage:
+  verified: 1
+  total: 11
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises) — distinct from
+    the test_matrix cells below (which are 0/4 PROBED). Only 1 of 11 user-facing
+    promises is behaviorally verified: F-065-UC-6 (notifications WAL leader election
+    + failover) by IT-012. The other 10 are unverified: 3 confirmed-but-untested
+    happy/share paths (UC-1, UC-3, UC-7 — hand-proven, no guard, so highest-value
+    new functional tests), 5 contradicted operator-safety promises (UC-2/4/5/9/10 —
+    silent-wedge class, mostly tracked by PLT-089 + PLT-139), and 2 partials
+    (UC-8 doc-resolved-code-residual, UC-11 naming clarity). A user-facing
+    operational-infrastructure contract sitting at 1/11 verified promises is itself
+    the headline finding: the platform's leader-election registry has exactly one
+    behavioral test, covering one of its four subsystems.
 test_matrix:
   unit:
     state: GAP

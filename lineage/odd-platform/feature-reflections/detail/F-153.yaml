@@ -1,0 +1,773 @@
+---
+feature_id: F-153
+pillar_anchored_id: P-06:F-006
+pillar: P-06 Data Glossary
+feature_name: |-
+  Term Linked-Columns Tab — paginated reverse-lookup of every Dataset
+  Field linked to the current Term, with broken pagination (InfiniteScroll
+  `next` wired to noop) and explicit-trigger-only search
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__TermController__controller-class__TermController.md  # hop-2 controller (getTermLinkedColumns delegates to DatasetFieldService.listByTerm — NOT TermService)
+  - odd-platform__java__service__service__TermServiceImpl.md  # P-06 service-tier context (Term-side; NOT the linked-columns read path, which is DatasetFieldService)
+  - odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md  # P-06 persistence-tier context + link-table topology + soft-delete posture
+source_reads_for_validation:
+  # Rule 8 exception — the two F-153 UI contributing nodes (LinkedColumnsList,
+  # LinkedColumn) have NO enriched sidecar (chain hop 1 is `unresolved`), and the
+  # ACTUAL linked-columns read path is DatasetFieldService.listByTerm /
+  # ReactiveDatasetFieldRepositoryImpl.listByTerm / DatasetFieldListMapperImpl —
+  # none of which has a sidecar. The load-bearing facets (the noop pagination,
+  # the hook queryKey shape, the backend termId scoping, the hard-coded
+  # hasNext=false) were read directly at primary source this run; the next
+  # file-analyser refresh of these nodes should fill the sidecar gap (see
+  # validation_gaps).
+  - "odd-platform-ui/src/components/Terms/TermDetails/TermLinkedColumnsList/LinkedColumnsList.tsx:1-99 (the whole component — useGetTermLinkedColumns hook call at :22-27 with page:1/size:50/query; useEffect search() on mount :29-31; Enter+icon search triggers :33-49; InfiniteScroll next={() => {}} :77 + hasMore={pageInfo.hasNext} :78; empty-state :89-93)"
+  - "odd-platform-ui/src/lib/hooks/api/terms.ts:36-43 (useGetTermLinkedColumns — useQuery with queryKey ['termLinkedColumns', termId] (NO query key), enabled:false, initialData {pageInfo:{total:0,hasNext:false}, items:[]})"
+  - "odd-platform-api/.../service/DatasetFieldServiceImpl.java:183-189 (listByTerm → reactiveDatasetFieldRepository.listByTerm(termId,query,page,size).collectList().map(mapPojos))"
+  - "odd-platform-api/.../repository/reactive/ReactiveDatasetFieldRepositoryImpl.java:141-204 (listByTerm — CTE materialises ALL dataset_field rows then outer .where(DATASET_FIELD_TO_TERM.TERM_ID.eq(termId)) at :196; name search containsIgnoreCase :148; limit(size).offset((page-1)*size) :199-200)"
+  - "odd-platform-api/.../mapper/DatasetFieldListMapperImpl.java:20-49 (mapPojos sets pageInfo = new PageInfo(dataFieldsDto.size(), false) — hasNext ALWAYS false; total = THIS-PAGE row count, not the catalog-wide linked-field count)"
+  - "odd-platform-api/.../service/DatasetFieldServiceImplTest.java (exists, but contains NO listByTerm coverage — verified by grep)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      WebFetch permission was not available this session; the page state is
+      inherited from the TermServiceImpl + TermController sidecars' batch-K/U
+      WebFetch (verified 200 on 2026-05-19/05-20) AND cross-read against the
+      local canonical clone `documentation/docs/data-glossary/business-glossary.md`
+      (lines 162-200, read this run). The local clone is the SoT per CLAUDE.md.
+      The page carries an EXPLICIT caveat on the Linked Columns tab truncation
+      (lines 180-182) — but that caveat contains a factual error (it claims a
+      "more available loading indicator on scroll" that the code never shows;
+      see doc_drift_findings + H-005). A doc-gap candidate is routed back.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: |-
+      A Term linked to 51+ dataset fields silently truncates at column 50 with
+      NO affordance — the InfiniteScroll `next` is a noop AND the backend
+      hard-codes pageInfo.hasNext=false, so the scroll trigger never even fires;
+      governance audits of a sensitive term (e.g. PII) miss every column past 50.
+related_feature_flows: [F-024, F-151, F-152, F-002, F-056]
+related_concepts:
+  - term-reverse-lookup
+  - dataset-field-term-linkage
+  - infinite-scroll-pagination-defect
+  - "Read-collaborative Catalog Posture"
+related_drift_classes:
+  - ui_pagination_silently_broken_via_noop_callback
+  - ui_hook_call_misses_query_dependency_only_explicit_refetch_works
+  - ui_renders_unscoped_reverse_lookup_surface
+new_drift_classes_proposed:
+  - backend_pageinfo_hasnext_hardcoded_false_makes_ui_more_affordance_dead
+  - backend_pageinfo_total_is_page_count_not_catalog_count_no_result_total
+  - cte_materialises_full_table_before_term_join_unbounded_reverse_lookup_cost
+---
+
+# Term Linked-Columns Tab — product-owner reflection
+
+## product_owner_narrative
+
+The **Linked Columns tab** is one of the three reverse-lookup surfaces on a Term's detail page in the Business Glossary (pillar P-06, "operator-curated term entities … reverse-look-up every entity tied to a Term" per `system-mission.md:185-186`). Where the Term page's other tabs answer "what does this term mean and own", the Linked Columns tab answers the governance question that makes a glossary load-bearing: **"which dataset fields across the entire catalog have been linked to this term?"** A steward who has defined a `PII` term, or a `Revenue` term, opens this tab to see every column that has been tagged with that concept — the audit surface for "where does this sensitive/regulated concept actually live in our data". The tab is reached at the UI route `/terms/:termId/linked-columns` and is rendered by `LinkedColumnsList` (per `LinkedColumnsList.tsx:1-99`, read this run).
+
+A user interacts with it in two ways. On opening the tab, the list loads automatically (a `useEffect` fires the query's `refetch` on mount — `LinkedColumnsList.tsx:29-31`). There is a single search box at the top-left; typing into it does NOT live-filter — the user must press Enter or click the search icon to apply the filter (`LinkedColumnsList.tsx:33-49`, and confirmed by the hook's `enabled:false` + `queryKey` that omits `query` at `terms.ts:36-43`). Each result row shows five columns: the field **Name**, its **Dataset**, the **Namespace**, the **Datasource**, and the **Owner** (the five `TermLinkedColumnsResultsTableHeader` labels at `LinkedColumnsList.tsx:52-68`). When the term has no linked columns, an empty-state "No linked columns" placeholder renders (`LinkedColumnsList.tsx:89-93`).
+
+The working parts, as the user experiences them: a reverse-lookup list, a name-search filter applied on explicit trigger, and an infinite-scroll table that — on paper — pages through large result sets. The route through the code is unusual and worth naming: although this is a *Term* page tab, the controller method `getTermLinkedColumns` does NOT delegate to the Term service — it delegates to **`DatasetFieldService.listByTerm`** (per the `TermController` sidecar, operations, `getTermLinkedColumns` at controller `:111`). The dataset-field side owns the list shape. That repository query (`ReactiveDatasetFieldRepositoryImpl.listByTerm:141-204`, read this run) correctly scopes the result to the term — it joins `dataset_field_to_term` and filters `.where(DATASET_FIELD_TO_TERM.TERM_ID.eq(termId))` at line 196 — and applies a `limit(size).offset((page-1)*size)` page window with `size=50`.
+
+This feature integrates with the wider catalog along the read-collaborative posture (`system-mission.md:267` — "every authenticated user can enumerate the entire catalog"): every authenticated user sees every dataset field linked to the term, across every namespace and owner, with no per-team scoping at the controller or repository tier (consistent with the `TermController` sidecar's `owner_scoping: BYPASSES` finding). The reverse-lookup is fed by the term-linkage write surface — both the explicit `POST /api/datasetfields/{id}/terms` link and the `[[ns:term]]` description-mention auto-link side-channel (`TermServiceImpl` sidecar) — so a column linked silently via a description edit surfaces here exactly like a manually-linked one.
+
+The edge cases a product owner would flag in a demo are the load-bearing ones for this reflection. First, the pagination: the InfiniteScroll's `next` callback is a literal noop (`next={() => {}}` at `LinkedColumnsList.tsx:77`), and — the part no single sidecar saw — the backend list mapper hard-codes `pageInfo.hasNext = false` (`DatasetFieldListMapperImpl.java:48`, `new PageInfo(total, false)`). So a term with 51+ linked fields shows only the first 50, the user gets NO "more available" signal, and there is no way to reach columns 51+ from the UI at all. Second, the `pageInfo.total` the UI reads is NOT the catalog-wide count of linked fields — it is the row count of the current page (`dataFieldsDto.size()` at `DatasetFieldListMapperImpl.java:23`) — so the UI cannot even display "showing 50 of N". Third, the reverse-lookup query materialises the entire `dataset_field` table in a CTE before the term join narrows it (`ReactiveDatasetFieldRepositoryImpl.java:151-156, 191-196`), an unbounded cost that the 50-row cap masks.
+
+## hypotheses
+
+- id: H-000
+  hypothesis: "(Rule 9 / Rule 11 gate) The user-facing experience of this Term tab can be judged from an enriched UI sidecar in the chain."
+  derivation: "Rule 9 — a user-facing feature whose UI hop is `unresolved` cannot be reflected from the API alone without explicitly recording the gap."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The feature flow's hop-1 (`LinkedColumnsList`) carries `sidecar: unresolved`,
+      and the ACTUAL linked-columns read path (DatasetFieldService.listByTerm →
+      ReactiveDatasetFieldRepositoryImpl.listByTerm → DatasetFieldListMapperImpl)
+      has no sidecar either. Per Rule 8's single-line exception this reflection
+      read the UI component, the hook, the service, the repository, and the mapper
+      directly at primary source (recorded in source_reads_for_validation) — so the
+      verdicts below ARE screen-grounded, not API-only. But the absence of enriched
+      sidecars means this reflection is the ONLY record of the UI-level behaviour;
+      it is one product-owner pass, not the bottom-up Stress-Protocol coverage the
+      methodology expects for a user-facing surface.
+    evidence:
+      - sidecar: "feature-flows/detail/F-153.yaml"
+        section: "chain.hop-1"
+        cite: "F-153.yaml:21-31"
+        note: "hop-1 LinkedColumnsList sidecar: unresolved"
+      - sidecar: "(none — DatasetFieldService.listByTerm path)"
+        section: source_read_for_validation
+        cite: "ReactiveDatasetFieldRepositoryImpl.java:141-204"
+        note: "the load-bearing read path has zero sidecar coverage"
+    operator_visible_failure: |
+      Not an operator failure — a methodology-coverage gap. The risk it creates:
+      a future refresh that trusts only the (nonexistent) sidecars would re-derive
+      this feature API-only and miss the noop-pagination + hasNext=false coupling
+      that is only visible by reading the UI and the backend mapper together. That
+      is the F-031 mistake class (LSN-023) the gate exists to prevent.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: validation-gap
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: none
+
+- id: H-001
+  hypothesis: "When the Linked Columns tab loads for a Term, the response contains only dataset fields that are linked to THAT term (scoped by term id), not an unscoped list of all columns."
+  derivation: "Endpoint shape — the controller method is `getTermLinkedColumns(termId, …)` and the route is `/terms/:termId/linked-columns`; the reverse-lookup promise (`system-mission.md:185-186`) is per-term."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The repository query scopes correctly. `ReactiveDatasetFieldRepositoryImpl.listByTerm`
+      builds a CTE over `dataset_field`, LEFT JOINs `dataset_field_to_term` (line
+      188-189) keyed on the CTE's `DATASET_FIELD.ID`, and the outer query applies
+      `.where(DATASET_FIELD_TO_TERM.TERM_ID.eq(termId))` (line 196). Only fields with
+      a `dataset_field_to_term` row for the given term survive. NOTE the structural
+      cost: the CTE materialises ALL dataset fields before the join+filter (it is
+      `asMaterialized` at :191-192 with no termId predicate inside it) — correct,
+      but the filter happens late (see H-008).
+    evidence:
+      - sidecar: "(source read)"
+        section: listByTerm
+        cite: "ReactiveDatasetFieldRepositoryImpl.java:196"
+        note: ".where(DATASET_FIELD_TO_TERM.TERM_ID.eq(termId)) — correct term scoping"
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: operations
+        cite: "TermController.java:111-118"
+        note: "getTermLinkedColumns delegates to DatasetFieldService.listByTerm"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    source_read_for_validation: true
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When the user types a column name into the search box and presses Enter (or clicks the search icon), the list is filtered to dataset fields whose name contains the typed text (case-insensitively)."
+  derivation: "UI label — there is a search Input with a search-click handler; endpoint shape — listByTerm takes a `query` parameter."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The repository applies the name filter: `if (StringUtils.isNotBlank(query))
+      conditions.add(DATASET_FIELD.NAME.containsIgnoreCase(query))`
+      (ReactiveDatasetFieldRepositoryImpl.java:147-148) inside the CTE. The UI fires
+      the query only on explicit trigger — `search()` is the tanstack-query `refetch`
+      (terms.ts hook has `enabled:false`), called on Enter (`LinkedColumnsList.tsx:34`)
+      and on the Input's `handleSearchClick` (:48). The match is on `DATASET_FIELD.NAME`,
+      the technical/physical field name. Confirmed substring + case-insensitive.
+    evidence:
+      - sidecar: "(source read)"
+        section: listByTerm
+        cite: "ReactiveDatasetFieldRepositoryImpl.java:147-148"
+        note: "DATASET_FIELD.NAME.containsIgnoreCase(query)"
+      - sidecar: "(source read)"
+        section: LinkedColumnsList
+        cite: "LinkedColumnsList.tsx:33-49"
+        note: "Enter + icon-click both call search() (the refetch fn)"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    source_read_for_validation: true
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When the user types into the search box but does NOT press Enter or click the icon, the list updates live as they type (the typical search-as-you-type expectation)."
+  derivation: "Negative-space — most search boxes in modern UIs filter on keystroke; a product owner asks whether this one does, and whether the explicit-trigger requirement is discoverable. Resolves the feature flow's `ui_unverified` facet H2."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      It does NOT live-filter. The hook `useGetTermLinkedColumns` is `useQuery` with
+      `queryKey: ['termLinkedColumns', params.termId]` (terms.ts:38) — the `query`
+      value is NOT part of the queryKey, AND `enabled: false` (terms.ts:40) means the
+      query never auto-runs on argument change. The ONLY way to fetch is the explicit
+      `refetch()` (aliased `search`) on Enter/icon-click/mount. This RESOLVES the
+      feature-flow facet `search_query_not_in_hook_deps_array_no_refetch_on_query_change`
+      (previously `ui_unverified: true`) to CONFIRMED-explicit-trigger-only at primary
+      source. There is no on-screen hint that Enter is required.
+    evidence:
+      - sidecar: "(source read)"
+        section: useGetTermLinkedColumns
+        cite: "terms.ts:37-42"
+        note: "queryKey omits `query`; enabled:false — no auto-refetch on type"
+      - sidecar: "(source read)"
+        section: LinkedColumnsList
+        cite: "LinkedColumnsList.tsx:44-48"
+        note: "onChange only setQuery (local state); only handleSearchClick/Enter refetch"
+    operator_visible_failure: |
+      (1) A steward types a column name, sees the list NOT change, and concludes
+      "there are no matching columns" — when in fact the filter never ran. They must
+      know to press Enter, which nothing on screen tells them. (2) The placeholder is
+      a bare "Search" with no "press Enter" affordance. (3) Inconsistency risk across
+      the platform: several catalog search boxes (e.g. the main entity search) behave
+      differently, so muscle memory misleads. This is a MEDIUM UX defect, not a data
+      correctness bug — the filter IS correct when triggered (H-002).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    source_read_for_validation: true
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a Term is linked to more than 50 dataset fields, the user can reach the columns past 50 by scrolling (the InfiniteScroll loads the next page)."
+  derivation: "UI label / endpoint shape — the component wraps results in an InfiniteScroll and the backend takes page/size; a user with a heavily-linked term (PII, Revenue) expects to reach every linked column. Negative-space: the governance audit case."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The user CANNOT reach columns past 50, and gets no signal that they exist.
+      Two independent blocks compound: (1) The InfiniteScroll `next` callback is a
+      literal noop — `next={() => {}}` (LinkedColumnsList.tsx:77); the hook is a
+      single-page `useQuery` fixed at `page:1, size:50` (terms.ts + LinkedColumnsList.tsx:16,27)
+      with no `fetchNextPage`. (2) Even the noop would never be reached, because the
+      InfiniteScroll's `hasMore={pageInfo.hasNext}` (LinkedColumnsList.tsx:78) is driven
+      by a backend value that is HARD-CODED false: `DatasetFieldListMapperImpl.pageInfo`
+      returns `new PageInfo(total, false)` (line 48). react-infinite-scroll-component
+      does not invoke `next` when `hasMore` is false, so the scroll trigger never fires.
+      Net: silent truncation at 50 rows with ZERO "more available" affordance.
+    evidence:
+      - sidecar: "(source read)"
+        section: LinkedColumnsList
+        cite: "LinkedColumnsList.tsx:74-82"
+        note: "next={() => {}} + hasMore={pageInfo.hasNext}; single-page hook"
+      - sidecar: "(source read)"
+        section: DatasetFieldListMapperImpl
+        cite: "DatasetFieldListMapperImpl.java:47-49"
+        note: "pageInfo(total) => new PageInfo(total, false) — hasNext ALWAYS false"
+      - sidecar: "feature-flows/detail/F-153.yaml"
+        section: "observed_vs_expected.facet"
+        cite: "F-153.yaml:62-89"
+        note: "feature-flow facet ui_pagination_silently_broken_via_noop_callback (HIGH)"
+    operator_visible_failure: |
+      (1) GOVERNANCE MISS — a steward auditing "every column linked to PII" on a term
+      with 200 linked fields sees 50 and believes that is the complete set; 150
+      sensitive columns are invisible. This is the documented use case for the tab
+      (business-glossary.md:181 names exactly this PII scenario). (2) NO AFFORDANCE —
+      unlike a normal broken infinite-scroll that at least shows a spinner, here
+      hasNext=false means the UI shows no "loading more" indicator at all, so there is
+      not even a visual cue that more data exists. (3) The feature-flow facet's own
+      text is itself WRONG on one point — it says "the UI PROMISES more pages" via
+      hasMore; in reality hasNext is always false so the UI promises NOTHING; the
+      truth (no affordance) is arguably worse than a false promise because the user
+      has no reason to suspect truncation. Workaround exists only via the raw API
+      with explicit page/size (business-glossary.md:181).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    source_read_for_validation: true
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When the user scrolls a Linked Columns list that has more rows available, a 'more available' loading indicator appears (as the live Business Glossary doc states)."
+  derivation: "Doc-claim — business-glossary.md:181 states 'The tab shows the \"more available\" loading indicator on scroll, but the underlying scroll handler is not wired to fetch additional pages.'"
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No loading indicator appears on scroll. The InfiniteScroll `loader` prop is
+      `{isFetching && <LinkedColumnsListSkeleton />}` (LinkedColumnsList.tsx:79), and
+      react-infinite-scroll-component only renders the loader while `hasMore` is true
+      AND a `next` fetch is in flight. Since `hasMore={pageInfo.hasNext}` is hard-coded
+      false at the backend (DatasetFieldListMapperImpl.java:48), the component never
+      enters the loading state on scroll — the loader never shows. The doc's claim of a
+      "more available loading indicator on scroll" is factually inaccurate. The doc IS
+      correct that additional rows never load and that the cap is 50.
+    evidence:
+      - sidecar: "(source read)"
+        section: LinkedColumnsList
+        cite: "LinkedColumnsList.tsx:78-79"
+        note: "hasMore=hasNext(false) → loader gated by isFetching never triggers on scroll"
+      - sidecar: "(source read)"
+        section: DatasetFieldListMapperImpl
+        cite: "DatasetFieldListMapperImpl.java:48"
+        note: "hasNext hard-coded false"
+      - sidecar: "(doc clone)"
+        section: "Visibility and cross-tab UX"
+        cite: "documentation/docs/data-glossary/business-glossary.md:181"
+        note: "doc claims a 'more available loading indicator on scroll'"
+    operator_visible_failure: |
+      An operator who read the doc expects a loading indicator to tell them the list
+      is truncated, and watches for it while scrolling. It never appears — so the doc
+      actively misleads them into believing the absence of the indicator means "all
+      rows are shown". The doc's intent (warn about truncation) is right; its mechanism
+      claim is wrong, which inverts the safety value of the caveat. This is a doc-drift
+      finding (the code is ground truth; the doc must be corrected to "no affordance at
+      all — the list silently stops at 50 with no indicator").
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When the Term has zero linked dataset fields, the user sees a clear empty-state ('No linked columns') rather than a blank panel or a spinner."
+  derivation: "Negative-space / UI label — there is an EmptyContentPlaceholder with text 'No linked columns'; a freshly-linked-nothing term is a common state."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The empty-state renders correctly. `EmptyContentPlaceholder` (LinkedColumnsList.tsx:89-93)
+      shows "No linked columns" gated by `isContentLoaded={!isFetching && isFetched}` and
+      `isContentEmpty={!pageInfo.total}`. With zero linked fields the backend returns an
+      empty list, `pageInfo.total = dataFieldsDto.size() = 0`
+      (DatasetFieldListMapperImpl.java:23), so `!pageInfo.total` is true and the placeholder
+      shows after the fetch completes. The InfiniteScroll block is also guarded by
+      `items.length > 0` (:74) so no empty scroll container renders. NOTE: this tab is
+      hidden entirely when the linked-column count is zero per business-glossary.md:173 —
+      so in practice the empty-state is reached transiently (last link removed while viewing)
+      rather than on a fresh term.
+    evidence:
+      - sidecar: "(source read)"
+        section: LinkedColumnsList
+        cite: "LinkedColumnsList.tsx:71-93"
+        note: "EmptyContentPlaceholder + items.length>0 guard; total drives both"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    source_read_for_validation: true
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "The 'showing N results' / result-count the user sees reflects the total number of dataset fields linked to the term (so a steward knows the size of the linked set)."
+  derivation: "Response shape — the response carries a `pageInfo.total`; a product owner expects a count surface so the user can gauge the linked-set size, especially given the 50-row cap."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `pageInfo.total` is NOT the catalog-wide count of linked fields — it is the row
+      count of the CURRENT page. `DatasetFieldListMapperImpl.mapPojos` sets
+      `pageInfo(dataFieldsDto.size())` (line 23) where `dataFieldsDto` is the already-
+      paginated list (max 50 rows). So for a term with 200 linked fields, `total`
+      reports 50, and for a term with 30 it reports 30. The UI uses `total` ONLY to
+      drive the empty-state boolean (`!pageInfo.total`, LinkedColumnsList.tsx:71,92) —
+      it does NOT render a count to the user, so today there is no user-visible wrong
+      number. But the field is semantically wrong, and any future "showing X of N"
+      affordance built on it would display the page size as the total.
+    evidence:
+      - sidecar: "(source read)"
+        section: DatasetFieldListMapperImpl
+        cite: "DatasetFieldListMapperImpl.java:21-24,47-49"
+        note: "total = dataFieldsDto.size() (page row count), not a COUNT(*) over the link table"
+      - sidecar: "(source read)"
+        section: LinkedColumnsList
+        cite: "LinkedColumnsList.tsx:71,92"
+        note: "UI consumes total only as an empty-state boolean; no count rendered"
+    operator_visible_failure: |
+      (1) No user-visible wrong number TODAY (the UI never renders the count) — so this
+      is latent, not active. (2) It is the root cause that makes H-004 unfixable without
+      a backend change: a correct infinite-scroll/"load more" needs a real total or a
+      real hasNext, and the backend supplies neither (both are derived from the page row
+      count / hard-coded false). (3) Any maintainer who adds a "50 of N linked columns"
+      label — the obvious fix for the silent-truncation UX — will wire it to this field
+      and display "50 of 50" for a 200-field term, compounding the H-004 deception.
+      Classed as a bug-candidate because it blocks the H-004 fix, but it is lower-blast
+      than H-004 because nothing renders it yet.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When the catalog has a very large number of dataset fields, opening the Linked Columns tab for a term with few links is still fast (the query reads roughly the linked rows, not the whole field population)."
+  derivation: "Negative-space / performance — a reverse-lookup on a term with 3 links should not scan the entire `dataset_field` table; a product owner of a catalog-scale system asks about the cost ceiling. Pillar = catalog-wide governance surface."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The query materialises the FULL `dataset_field` table before narrowing to the
+      term. `ReactiveDatasetFieldRepositoryImpl.listByTerm` builds the CTE `records` as
+      `select(DATASET_FIELD.fields()).from(DATASET_FIELD).where(conditions)` where
+      `conditions` is EITHER empty OR just the optional name filter (lines 144-154) — it
+      has NO termId predicate — and the CTE is `asMaterialized` (line 192). The term
+      filter is applied only in the OUTER query after the join (line 196). So Postgres
+      materialises every dataset field in the catalog (modulo the name filter) before
+      the join+filter reduces to the term's links. Whether the planner pushes the
+      `dataset_field_to_term` join down to avoid the full materialise — and the real
+      p95 latency for a catalog with, say, 500K fields and a term with 5 links — cannot
+      be determined by reading; it must be measured.
+    evidence:
+      - sidecar: "(source read)"
+        section: listByTerm
+        cite: "ReactiveDatasetFieldRepositoryImpl.java:151-156,191-196"
+        note: "CTE over all DATASET_FIELD, asMaterialized, termId filtered only in outer query"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+        section: docs_link_semantic.doc_drift_findings
+        cite: "REPOSITORY-DOC-GAP-C"
+        note: "sibling getTermDetailsDto has an analogous undocumented fan-out cost ceiling"
+    operator_visible_failure: |
+      If the materialise is not optimised away, every open of the Linked Columns tab
+      issues a full-table read of `dataset_field` (the largest table in a mature
+      catalog), gated only by the 50-row outer limit. On a large deployment this is a
+      slow tab open and a load multiplier (every steward opening any term's columns tab
+      hits it). The 50-cap masks the result SIZE but not the SCAN COST. Probe required
+      to confirm whether this is a real hot path or planner-elided.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-153-1
+    routes_to_finding: bug-candidate
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-153-1"
+
+- id: H-009
+  hypothesis: "When a dataset field is linked to the term in a namespace owned by a different team, a user from team A still sees that team-B column in the Linked Columns tab (read-collaborative catalog posture)."
+  derivation: "Pillar / cross-pillar — `system-mission.md:267` declares the read-collaborative posture; the feature-flow facet `ui_renders_unscoped_reverse_lookup_surface` (LOW) asserts no UI namespace/owner filter. A product owner asks whether the reverse-lookup respects team isolation."
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Team-A user sees team-B columns. The repository query applies NO owner or
+      namespace predicate scoping the result to the caller — the only WHERE conditions
+      are the optional name filter (inside the CTE) and the termId join filter
+      (`ReactiveDatasetFieldRepositoryImpl.java:147-148, 196`). The controller adds no
+      principal-based scoping (TermController sidecar `owner_scoping: BYPASSES` — read
+      endpoints "return data across all namespaces and all owners to every
+      authenticated user"). Aligned with the documented read-collaborative posture;
+      the absence of a UI namespace/owner filter is the intentional manifestation
+      (feature-flow facet, LOW). Confirmed as intended behaviour, not a bug.
+    evidence:
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: security
+        cite: "TermController.java owner_scoping BYPASSES + system-mission.md:267"
+        note: "read endpoints unscoped by owner/namespace — read-collaborative"
+      - sidecar: "(source read)"
+        section: listByTerm
+        cite: "ReactiveDatasetFieldRepositoryImpl.java:144-196"
+        note: "no owner/namespace predicate; only name + termId conditions"
+      - sidecar: "feature-flows/detail/F-153.yaml"
+        section: "observed_vs_expected.facet"
+        cite: "F-153.yaml:114-131"
+        note: "facet term_linked_columns_reverse_lookup_inherits_read_collaborative_posture (LOW)"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    source_read_for_validation: true
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    sme_consultation_recommended: false
+
+- id: H-010
+  hypothesis: "When a dataset field is linked to the term ONLY via a `[[ns:term]]` description mention (the auto-link side-channel), it appears in the Linked Columns tab exactly like a manually-linked field."
+  derivation: "Response shape / cross-pillar — `dataset_field_to_term` carries `is_description_link`; the TermServiceImpl sidecar documents that description mentions synthesise link rows. A steward auditing 'where is this term used' expects auto-linked columns to surface."
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Auto-linked fields DO surface — the `listByTerm` query joins `dataset_field_to_term`
+      with NO filter on `is_description_link` (ReactiveDatasetFieldRepositoryImpl.java:188-189),
+      so rows created by description mentions (is_description_link=TRUE) and manual links
+      (is_description_link=FALSE) both appear. GOOD for completeness. The PARTIAL: the
+      tab does NOT project or render the `is_description_link` distinction at all — the
+      five rendered columns are name/dataset/namespace/datasource/owner
+      (DatasetFieldListMapperImpl.mapPojo:27-44), with no auto-link badge. So a steward
+      cannot tell, from this tab, which columns were linked deliberately vs swept in by a
+      description mention. (Note the sibling Linked Entities tab has the SAME omission per
+      business-glossary.md:185.) AND: if both a manual and a description-link row exist for
+      the same (field, term), the dataset-field read path does not run the
+      `removeDuplicateNonDescriptionTerms` collapse that the Term-side read paths use
+      (that collapse lives in TermServiceImpl.getDataEntityTerms/getDatasetFieldTerms, NOT
+      in DatasetFieldService.listByTerm) — so a field with both link rows could appear
+      TWICE in this list. Unverified-by-read whether the PK on
+      (dataset_field_id, term_id, is_description_link) permits both rows here; routed to probe.
+    evidence:
+      - sidecar: "(source read)"
+        section: listByTerm
+        cite: "ReactiveDatasetFieldRepositoryImpl.java:188-189"
+        note: "join on dataset_field_to_term with no is_description_link filter — both link kinds surface"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: invariants
+        cite: "removeDuplicateNonDescriptionTerms (TermServiceImpl.java:444-448)"
+        note: "the Term-side read collapses dup link rows; the DatasetFieldService path does NOT call it"
+      - sidecar: "(doc clone)"
+        section: "Visibility and cross-tab UX"
+        cite: "documentation/docs/data-glossary/business-glossary.md:185"
+        note: "sibling tab omits the auto-link visual distinction"
+    operator_visible_failure: |
+      (1) AUDIT AMBIGUITY — a steward cannot distinguish deliberate links from
+      description-mention sweeps in this tab; "show me columns deliberately tagged PII"
+      is not answerable from the UI. (2) POSSIBLE DOUBLE ROW — if a field carries both
+      a manual and a description-mention link, it may render twice (unconfirmed; probe
+      PENDING-F-153-2). If so, the count is inflated and the list looks buggy. Routed
+      as caveat + probe; the duplicate-row question must be measured against a real DB.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-153-2
+    routes_to_finding: caveat-candidate
+    source_read_for_validation: true
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-153-2"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |-
+    Linked Columns tab silently truncates at 50 rows with no affordance — noop
+    InfiniteScroll `next` AND backend pageInfo.hasNext hard-coded false; governance
+    audits of a term with 51+ linked columns miss every column past 50.
+  dedup_status: net_new
+  distinct_from: "doc caveat business-glossary.md:180-182 (a doc-side WORKAROUND, not a code-fix tracking item — and itself factually wrong per H-005); feature-flow finding F-153a (internal ontology drift facet, not a filed bug)"
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    Two coupled fixes: (a) DatasetFieldListMapperImpl.pageInfo must compute a REAL
+    hasNext (e.g. fetch size+1 rows and set hasNext = rows > size, or add a COUNT)
+    — ReactiveDatasetFieldRepositoryImpl.listByTerm + DatasetFieldListMapperImpl.java:47-49;
+    (b) migrate useGetTermLinkedColumns to useInfiniteQuery with fetchNextPage and wire
+    next={fetchNextPage} (mirror the LinkedTermsList sibling pattern), OR replace the
+    InfiniteScroll with an explicit "Load more" button — LinkedColumnsList.tsx:22-27,77.
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |-
+    pageInfo.total is the current page's row count (max 50), not the catalog-wide
+    count of fields linked to the term — blocks any correct "50 of N" surface and
+    is a precondition for the H-004 fix.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    DatasetFieldListMapperImpl.mapPojos uses pageInfo(dataFieldsDto.size()); needs a
+    real COUNT over dataset_field_to_term WHERE term_id = ? (and name filter) supplied
+    from the repository — DatasetFieldListMapperImpl.java:21-24,47-49 +
+    ReactiveDatasetFieldRepositoryImpl.listByTerm.
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    listByTerm materialises the full dataset_field table in a CTE before the termId
+    join narrows it — potential full-table read per tab open on large catalogs
+    (probe-gated).
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    Push the dataset_field_to_term join (or a termId-scoped subquery) INTO the CTE so
+    the materialised set is the term's links, not all fields —
+    ReactiveDatasetFieldRepositoryImpl.java:151-156,191-196. Confirm via PENDING-F-153-1
+    before fixing (planner may already elide).
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Linked Columns search is explicit-trigger-only (Enter / icon click); typing alone
+    never filters, and nothing on screen says so.
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-glossary/business-glossary (add to the Linked Columns hint at business-glossary.md:180-182)"
+- hypothesis_id: H-009
+  one_line: |-
+    Linked Columns reverse-lookup is catalog-wide — every authenticated user sees
+    every linked column across all namespaces/owners (intended read-collaborative
+    posture; no UI team filter).
+  dedup_status: already_tracked
+  tracked_as: "DOC-238 (read-collaborative posture doc-gap cluster — same posture as F-024 H, F-153 facet)"
+- hypothesis_id: H-010
+  one_line: |-
+    The tab does not distinguish description-mention auto-links from deliberate links
+    (no is_description_link badge); and may render a field twice if it has both link
+    kinds (probe-gated).
+  dedup_status: net_new
+  recommended_log_as: "caveat in business-glossary.md (extend the auto-link-visual-distinction hint at :185 to the Linked Columns tab) + probe PENDING-F-153-2"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP
+# candidate. The whole point: confirmed-but-untested promises (H-001, H-002, H-006,
+# H-009) belong HERE, not dropped to routes_to_finding: none. The Term Linked-Columns
+# feature sits at 0/10 verified promises — a user-facing governance surface with zero
+# guarding tests at any layer (service test exists but omits listByTerm entirely).
+- use_case_id: F-153-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Linked Columns lists only dataset fields linked to THIS term (term-id scoped)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-001)"
+  proposed_test: |-
+    @JooqTest (or DatasetFieldServiceImplTest with a real listByTerm): seed term T with 3
+    linked fields + 2 unlinked fields → assert listByTerm(T) returns exactly the 3.
+- use_case_id: F-153-UC-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Search filters linked columns by name, case-insensitive substring, on explicit trigger."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-002)"
+  proposed_test: |-
+    listByTerm(T, query='cust') returns only fields whose name contains 'cust'
+    case-insensitively; query='' returns all linked fields.
+- use_case_id: F-153-UC-003
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "Typing in the search box without Enter/icon does NOT filter (explicit-trigger contract)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-003)"
+  proposed_test: |-
+    Playwright (IT): open Linked Columns, type a substring, assert NO new
+    GET /api/terms/{id}/linked_columns fires until Enter / search-icon click; then
+    assert the filtered call fires once. Pins the explicit-trigger contract.
+- use_case_id: F-153-UC-004
+  hypothesis_id: H-004
+  kind: resolve-later
+  promise: "A term with 51+ linked columns lets the user reach columns past 50."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-004) — REGRESSION GUARD for the H-004 fix"
+  proposed_test: |-
+    IT: seed term with 51 linked fields → open tab → assert page-2 NOT fetched and only
+    50 rows render (PINS the current bug); flip to GREEN-all-51 when the fix lands.
+- use_case_id: F-153-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "A 'more available' indicator appears on scroll when the list is truncated."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-005)"
+  proposed_test: |-
+    IT/unit: with hasNext=false, assert the InfiniteScroll loader does NOT render on
+    scroll (pins the no-affordance truth that contradicts the doc claim).
+- use_case_id: F-153-UC-006
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "A term with zero linked columns shows the 'No linked columns' empty-state."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-006)"
+  proposed_test: |-
+    Render LinkedColumnsList with items=[] / total=0 after fetch → assert
+    'No linked columns' placeholder renders and no InfiniteScroll container mounts.
+- use_case_id: F-153-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "The result count reflects the catalog-wide count of linked fields."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-007)"
+  proposed_test: |-
+    Service/mapper test: seed term with 60 linked fields, request page=1 size=50 →
+    assert pageInfo.total today == 50 (pins the page-count-not-total bug); flip when fixed.
+- use_case_id: F-153-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "Opening the tab for a sparsely-linked term on a large catalog is fast (no full-table scan)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-153-1 (perf) — promote to TEST-GAP-NNN if probe confirms full-table read"
+  proposed_test: |-
+    k6/EXPLAIN ANALYZE probe: term with 5 links on a 200K-field catalog → measure
+    listByTerm plan + p95; assert no Seq Scan of dataset_field materialising the full table.
+- use_case_id: F-153-UC-009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "Reverse-lookup is catalog-wide — team-A user sees a team-B linked column."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-153-UC-009) — pins the read-collaborative posture"
+  proposed_test: |-
+    IT: link a field in namespace-B to a term in namespace-A → assert a namespace-A
+    user's Linked Columns tab returns the namespace-B field (pins the documented posture).
+- use_case_id: F-153-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: "Description-mention auto-links surface, distinguishably, without duplicate rows."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-153-2 (duplicate-row) — promote to TEST-GAP-NNN once the dup-row question is resolved"
+  proposed_test: |-
+    IT: link a field to a term BOTH manually and via a [[ns:term]] description mention →
+    assert the field appears exactly ONCE in the Linked Columns tab (catches the missing
+    removeDuplicateNonDescriptionTerms collapse on the DatasetFieldService path).
+
+### probes_emitted
+# PARALLEL-SAFE MODE — recorded here with full hypothesis text; no P-NNN file created.
+- probe_id: PENDING-F-153-1
+  hypothesis_id: H-008
+  emitted_by: feature-reflector
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  expected_outcome: |-
+    "When the catalog has a very large number of dataset fields, opening the Linked
+    Columns tab for a term with few links is still fast (the query reads roughly the
+    linked rows, not the whole field population)." Stand up local Postgres (docker-compose)
+    seeded with ~200K dataset_field rows + a term with 5 links; run EXPLAIN ANALYZE on
+    ReactiveDatasetFieldRepositoryImpl.listByTerm's emitted SQL. CONFIRMED if the plan
+    does NOT materialise the full dataset_field table (join pushed down / index used);
+    CONTRADICTED if a full Seq Scan + materialise of dataset_field precedes the term join.
+- probe_id: PENDING-F-153-2
+  hypothesis_id: H-010
+  emitted_by: feature-reflector
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  expected_outcome: |-
+    "A dataset field linked to a term BOTH manually (is_description_link=FALSE) AND via a
+    [[ns:term]] description mention (is_description_link=TRUE) appears exactly ONCE in the
+    Linked Columns tab." Local Postgres: insert both dataset_field_to_term rows for one
+    (field,term) pair; call GET /api/terms/{id}/linked_columns. CONFIRMED if one row
+    returned; CONTRADICTED if two rows returned (the DatasetFieldService.listByTerm path
+    does not run the Term-side removeDuplicateNonDescriptionTerms collapse).
+
+### validation_gaps
+- sidecar: "(missing) odd-platform ts react-component:LinkedColumnsList"
+  field_insufficient: "entire sidecar absent — chain hop-1 is `sidecar: unresolved`"
+  proposed_refresh: |-
+    Enrich LinkedColumnsList.tsx as a UI sidecar capturing: the useQuery (enabled:false,
+    queryKey omits query), the noop InfiniteScroll next, hasMore={pageInfo.hasNext}, the
+    fixed page:1/size:50, and the five rendered columns. This reflection is currently the
+    only record of the UI behaviour (Rule 9 gap).
+- sidecar: "(missing) odd-platform java service:DatasetFieldServiceImpl + repository:ReactiveDatasetFieldRepositoryImpl + mapper:DatasetFieldListMapperImpl"
+  field_insufficient: "the ACTUAL linked-columns read path has no sidecar; F-153's chain hop-2/3 cite TermController + ReactiveTermRepositoryImpl, but getTermLinkedColumns routes through DatasetFieldService, NOT TermService"
+  proposed_refresh: |-
+    Enrich the DatasetFieldService.listByTerm chain. The load-bearing facts a sidecar must
+    capture: pageInfo.hasNext hard-coded false + total = page-row-count
+    (DatasetFieldListMapperImpl.java:47-49,23); the CTE-materialises-all-fields-before-
+    term-join cost (ReactiveDatasetFieldRepositoryImpl.java:151-196); the missing
+    is_description_link dedup collapse on this path. The F-153 feature-flow chain hop
+    nodes should be corrected to point at DatasetFieldService, not (only) the Term tier.
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: |-
+    "The tab shows the 'more available' loading indicator on scroll, but the underlying
+    scroll handler is not wired to fetch additional pages." (business-glossary.md:181)
+  code_does: |-
+    No loading indicator appears on scroll — hasMore={pageInfo.hasNext} is hard-coded
+    false at the backend (DatasetFieldListMapperImpl.java:48), so the InfiniteScroll
+    never enters the loading state. The list silently stops at 50 with NO affordance.
+  recommended_log_as: "doc-gap-NNN (correct the Linked Columns caveat at business-glossary.md:180-182 to 'silently caps at 50 with no indicator'; the cap-at-50 + walk-the-API-workaround parts are correct and should stay)"
+
+## maintainer_notes
+
+(none yet — this block is preserved verbatim across refreshes for maintainer hand-edits.)

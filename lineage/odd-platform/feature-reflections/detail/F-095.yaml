@@ -1,0 +1,757 @@
+---
+feature_id: F-095
+pillar_anchored_id: P-10:F-003
+pillar: "P-10 — Integrations & Ingestion"
+feature_name: |-
+  Dataset-Field Statistics Ingestion — cross-dataset write surface
+  (`POST /ingestion/entities/datasets/stats`) accepts any field-ODDRN regardless
+  of payload parent-dataset claim
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__IngestionController__controller-method__postDataSetStatsList.md
+  # ^ the entry-point sidecar; it carries the FULL downstream chain mechanics
+  #   (IngestionServiceImpl.ingestStats + DatasetFieldServiceImpl.updateStatistics
+  #    + updateFieldsStatistics + updateFieldsTags) with file:line citations, so
+  #   the chain is HIGH-confidence STATIC even though the per-service sidecars do
+  #   not yet exist (see validation_gaps).
+  - odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md (cross-ref via feature-flow facet 2 + F-094)
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+    last_verified_at: "2026-05-20T00:00:00Z"   # WebFetch permission not held this session; verbatim excerpts carried in the entry-point sidecar docs_link_semantic[1] (status 200 then)
+    last_verified_status: 200
+  - url: "https://docs.opendatadiscovery.org/features/data-quality"
+    last_verified_at: "2026-05-20T00:00:00Z"   # entry-point sidecar docs_link_semantic[0] (status 200 then) — names the endpoint, documents no payload/auth/tag/idempotency behaviour
+    last_verified_status: 200
+hypothesis_summary:
+  total: 12
+  confirmed: 2
+  contradicted: 7
+  partial: 2
+  probe_needed: 1
+  note: |-
+    Only 2 confirmed is faithful to F-095's nature, not overcalling. This is a
+    write-side ingestion surface anchored in pillar P-10's load-bearing implicit
+    ADR ("datasource scoping is payload-driven, NOT principal-driven") and feeding
+    pillar P-04's consumer surfaces (Dataset Structure tab + Quality Dashboard
+    rings). Each hypothesis is framed as a product-owner / security expectation a
+    customer would state about a "push your dataset statistics" endpoint (it is
+    authenticated; it writes only to the dataset I named; a re-push is safe; the
+    write is auditable; invalid numbers are rejected). The assembled chain diverges
+    from most of them. The 2 confirmed (H-001 stats render on the Structure tab,
+    H-009 INTERNAL UI-curated tags survive a re-ingest) are genuinely honoured and
+    are exactly the high-value promises that have NO regression test — they become
+    the headline functional_test_demands (LSN-030). The 2 partial (H-005 numeric
+    validity, H-008 idempotency) hold in the centre and fail at the boundary.
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      A caller who knows any dataset-field's ODDRN can overwrite that field's
+      `dataset_field.stats` even when the payload's declared parent `datasetOddrn`
+      is a DIFFERENT dataset — the write is scoped by field-ODDRN, the parent claim
+      is used only to recalc FTS, and there is no parent-child consistency check.
+related_feature_flows:
+  - F-094   # Ingestion auth coverage matrix — F-095 is one of the 3 unauthenticated endpoints F-094 enumerates
+  - F-008   # entity-list destruction surface — F-095 is the stats-plane sibling of F-008's silent_destruction_replace_not_merge
+  - F-018   # Manual Object Tagging — the UI-curated tag plane whose EXTERNAL_STATISTICS-vs-INTERNAL separation H-009 confirms
+  - F-022   # Per-Dataset DQ Test Reports & SLA — dataset_field.stats consumer (poisoned-stats blast radius)
+  - F-032   # Catalog-wide DQ Dashboard — Quality Dashboard rings consume the poisoned stats
+related_concepts:
+  - "Ingestion (External Webhook)"
+  - "Ingestion Authentication Filter"
+  - "Ingestion Filter Path-Coverage Incomplete"
+  - "Default-Off Ingestion Auth"
+related_drift_classes:                   # confirmed by this reflection from the feature-flow's drift_class_summary
+  - payload_driven_field_scoping_no_parent_validation
+  - unauthenticated_under_every_supported_configuration
+  - silent_destruction_replace_not_merge
+  - fts_recompute_on_lying_parent_dos_amplifier
+new_drift_classes_proposed:
+  - stats_write_unaudited_no_activitylog          # the write has no @ActivityLog while its DatasetFieldServiceImpl siblings (updateInternalName, updateDatasetFieldTags) do
+  - silent_drop_unknown_field_oddrn_201_zero_write # a typo in field ODDRNs returns 201 Created having written nothing
+---
+
+# Dataset-Field Statistics Ingestion — cross-dataset write surface — product-owner reflection
+
+## product_owner_narrative
+
+Dataset-Field Statistics Ingestion is the platform's "push your column profiles here" surface. A data-quality producer — the `odd-collector-profiler`, a Great Expectations / dbt push adapter, or any custom framework — computes per-column statistics (null counts, min/max, mean/median, distinct counts, plus optional per-field tags) and POSTs them as a `DatasetStatisticsList` to `POST /ingestion/entities/datasets/stats`. The platform stores each column's profile as a JSONB blob on the `dataset_field.stats` column and recomputes the full-text-search vector for the named dataset so the new tags become searchable (per `postDataSetStatsList.md`:understanding + dependencies_semantic). This is pillar P-10's data-quality ingest arm and the feed for pillar P-04's three quality granularities (per `system-mission.md` P-04 sub-feature "Test Results Import" + cross-pillar map P-10→P-04).
+
+A producer interacts with the feature purely over HTTP: one POST per dataset per profiling tick, body is a list of `DataSetStatistics` items, each carrying a parent `datasetOddrn` plus a `fields: Map<fieldOddrn, DataSetFieldStat>` map (per `postDataSetStatsList.md`:concepts.entities). The endpoint returns `201 Created` with an empty body — the producer learns nothing programmatically about how many fields were actually updated (per `postDataSetStatsList.md`:bugs_limitations_corner_cases[10]). The end *user* never touches this endpoint directly; what they see is downstream — the per-column statistics rendered on the Dataset Structure tab and aggregated into the Quality Dashboard rings (per `postDataSetStatsList.md`:security.data_exposure[0] + feature-flow F-095 terminal_side_effect). That downstream render surface is the operator-visible face of every contradiction below.
+
+The working parts a product owner would demo: you push a per-field stat and it shows up on the column's profile; you push a tag alongside the stat and it appears as an EXTERNAL_STATISTICS-origin tag on the field, kept distinct from tags a UI user curated by hand (per `postDataSetStatsList.md`:implicit_adrs[2] + the service test `externalStatisticsTagStateIngestionTest`); you re-push and the profile updates in place rather than accumulating duplicates (per `postDataSetStatsList.md`:concepts.invariants[3]). Those three are the feature's genuine promises and the chain honours them.
+
+The integration story is where the feature's seams show. This endpoint sits in pillar P-09's blind spot: it is whitelisted via `/ingestion/**` in `SecurityConstants.WHITELIST_PATHS` and is NOT matched by `IngestionDataEntitiesFilter` (whose path matcher is exact-literal `/ingestion/entities`, POST), so it is unauthenticated under every supported `auth.type` and regardless of `auth.ingestion.filter.enabled` (per `postDataSetStatsList.md`:security.auth_mode_relevance + the live Security doc page, which lists this exact path as "outside the ingestion filter's coverage"). Pillar P-10's own load-bearing note — "datasource scoping is payload-driven, NOT principal-driven" (per `system-mission.md` P-10 maintainer-notes) — manifests here in its sharpest form: the write target is chosen entirely by the field-ODDRN in the payload, the declared parent `datasetOddrn` is consulted only to pick which dataset's FTS vector to recompute, and nothing cross-checks that the field actually belongs to the named parent (per `postDataSetStatsList.md`:concepts.invariants[4] + bugs_limitations_corner_cases[1]). The same payload also reaches into pillar P-08's Tag taxonomy: a `tags` array on a stat creates catalog tags via `getOrCreateTagsByName(...)`, the same auto-create primitive the UI gates behind `TAG_CREATE` (per `postDataSetStatsList.md`:dependencies_semantic.requires-feature + bugs_limitations_corner_cases[5]).
+
+Edge cases a product owner would flag in a demo: a re-push that drops a previously-sent tag silently removes that EXTERNAL_STATISTICS tag from the field (the F-008 `silent_destruction_replace_not_merge` class, applied to the per-field tag plane — per `postDataSetStatsList.md`:bugs_limitations_corner_cases[6]); a payload with a typo in the field ODDRN returns `201 Created` having written nothing, with no warning logged (per `postDataSetStatsList.md`:bugs_limitations_corner_cases[8]); negative null-counts, inverted min/max, and NaN means are accepted verbatim into JSONB because the OpenAPI integer fields carry no bounds (per `postDataSetStatsList.md`:bugs_limitations_corner_cases[4]); and an empty `{}` body NPEs to a 500 because — unlike the sibling `postDataEntityList` — there is no empty-payload guard (per `postDataSetStatsList.md`:concepts.invariants[1]). None of these is recorded on the Activity Feed: `updateStatistics` carries no `@ActivityLog`, while its `DatasetFieldServiceImpl` siblings `updateInternalName` and `updateDatasetFieldTags` do (per `postDataSetStatsList.md`:security.known_security_gaps[5]).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a producer POSTs a valid `DatasetStatisticsList` with a per-field `DataSetFieldStat` for a known dataset field, that field's statistics (nulls_count, min/max, mean) become visible on the Dataset Structure tab for every catalog viewer."
+  derivation: "Endpoint name 'datasets/stats' + DTO `DataSetFieldStat` field names (nulls_count/low_value/mean_value) promise the column profile is persisted and rendered; the data-quality pillar's whole premise is surfacing pushed stats in an operator view."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The chain persists each stat as a JSONB blob: `updateFieldsStatistics`
+      resolves the field by ODDRN, serialises the `DataSetFieldStat`, and writes
+      it via `field.setStats(JSONB.jsonb(...))` + `bulkUpdate`. The service test
+      `externalStatisticsTagStateIngestionTest` posts stats via the endpoint and
+      asserts the resulting `DataSetStructure` carries the pushed stats
+      (`assertDatasetStructuresEqual` with `buildExpectedDataSetFieldStat`). The
+      Structure tab reads `dataset_field.stats` for display.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: dependencies_semantic.requires-feature.DatasetFieldService.updateStatistics
+        cite: "DatasetFieldServiceImpl.java:233-251 (field.setStats + bulkUpdate)"
+        note: "the per-field stats persistence write"
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: tests_coverage_semantic.covered_behaviours[1]
+        cite: "DatasetFieldIngestionTest.java:207-306 externalStatisticsTagStateIngestionTest"
+        note: "service test asserts the DataSetStructure reflects pushed stats"
+    severity:
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "DatasetFieldIngestionTest.externalStatisticsTagStateIngestionTest"
+    test_demand: none
+
+- id: H-002
+  hypothesis: "When a producer POSTs a stat keyed by a field ODDRN that belongs to dataset B, but declares the parent `datasetOddrn` as dataset A, the platform writes the stat to dataset A's field (or rejects the mismatch) — i.e. the declared parent dataset bounds where the write lands."
+  derivation: "The DTO pairs a parent `datasetOddrn` with a `fields` map; a product owner reading 'push statistics for dataset A' expects the write confined to dataset A's columns, not to any column whose ODDRN the caller happens to know."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The write is scoped ENTIRELY by the field ODDRN: `updateStatistics` resolves
+      target rows via `getLastVersionDatasetFieldsByOddrns(statistics.keySet())`
+      where the keys are the field ODDRNs from the payload. The declared parent
+      `datasetOddrn` is consumed ONLY to compute the set of dataset ODDRNs whose
+      FTS vector to recalc (lines 168-170, 179). There is no JOIN from the resolved
+      field back to `dataset_oddrn`, and no consistency check. A payload
+      `{datasetOddrn: A, fields: {<field-of-B>: stat}}` writes the stat to dataset
+      B's field while recalcing FTS on dataset A.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: concepts.invariants[4]
+        cite: "DatasetFieldServiceImpl.java:172-174 (resolve by field ODDRN) + 168-170,179 (datasetOddrn used only for FTS)"
+        note: "write target is field-ODDRN; parent claim feeds FTS only"
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: bugs_limitations_corner_cases[1]
+        cite: "DatasetFieldServiceImpl.java:158-181 (no parent-child cross-check)"
+        note: "explicit: no parent-child consistency check anywhere in the chain"
+    operator_visible_failure: |
+      (1) Cross-dataset stats poisoning: a caller who knows one field's ODDRN
+      overwrites that field's profile while the audit-confusing FTS recalc fires on
+      an unrelated, attacker-named dataset. Field ODDRNs follow a deterministic
+      naming convention and are visible to every authenticated catalog viewer, so
+      they are enumerable. (2) The operator viewing dataset B's Structure tab sees
+      statistics they cannot explain and cannot attribute (no audit — see H-011),
+      and a confused investigator looking at dataset A's FTS/search churn finds no
+      stats change there. (3) Combined with the unauthenticated posture (H-003),
+      any HTTP caller — not merely a misconfigured collector — can do this. The
+      Quality Dashboard rings (F-032) and per-dataset SLA (F-022) aggregate the
+      poisoned values, so the blast radius is the catalog-wide DQ surface, not one
+      column.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When the platform is deployed with a UI auth mode enabled (`auth.type=OAUTH2/LDAP/LOGIN_FORM`) and/or the ingestion filter on (`auth.ingestion.filter.enabled=true`), an unauthenticated caller POSTing to `/ingestion/entities/datasets/stats` is rejected (401/403)."
+  derivation: "Pillar P-09's stated contract is that operators configure authentication for write surfaces; an operator who turns on OAUTH2 + the ingestion filter reasonably expects every ingestion write to require a credential."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The endpoint is unauthenticated under EVERY combination of `auth.type` and
+      `auth.ingestion.filter.enabled`. `/ingestion/**` is in
+      `SecurityConstants.WHITELIST_PATHS` (SecurityConstants.java:95-96) so the UI
+      auth chain never sees it; and `IngestionDataEntitiesFilter`'s path matcher is
+      exact-literal `/ingestion/entities` POST (IngestionDataEntitiesFilter.java:28)
+      so it does not match the sub-path. The controller carries no `@PreAuthorize`
+      and the OpenAPI-generated `IngestionApi` interface carries no security
+      annotation. The live Security doc page confirms verbatim: this path "remains
+      outside the ingestion filter's coverage" and is "Unauthenticated under
+      auth.type = DISABLED, OAUTH2, or LDAP — even when the ingestion filter is
+      enabled."
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: security.auth_mode_relevance
+        cite: "IngestionController.java:81-87 + IngestionDataEntitiesFilter.java:28 + SecurityConstants.java:95-96"
+        note: "no method auth; exact-literal filter matcher; whitelist"
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: docs_link_semantic.inferred_docs[1]
+        cite: "WebFetch enable-security 2026-05-20 (status 200) — verbatim 'outside the ingestion filter's coverage'"
+        note: "live doc confirms the gap"
+    operator_visible_failure: |
+      An operator who has done everything the Security docs ask — enabled OAUTH2 for
+      the UI and turned on the ingestion filter — still has an open, anonymous write
+      endpoint for dataset statistics. The property `auth.ingestion.filter.enabled`
+      reads as "protect the ingestion namespace" but its matcher protects exactly
+      one sibling endpoint; flipping it to true gives the operator a false sense
+      that all of `/ingestion/*` is now gated. Any caller able to reach the port can
+      poison stats (H-002) and mint tags (H-006).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a producer pushes statistics for a dataset field, the write is recorded somewhere an operator can audit — so a later 'who changed these stats?' investigation can attribute the change."
+  derivation: "Negative-space + pillar P-07's Activity-Feed audit promise; sibling DatasetFieldService mutations (rename, tag) ARE audited, so a product owner expects the stats mutation to be too."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `DatasetFieldServiceImpl.updateStatistics` (lines 158-181) carries NO
+      `@ActivityLog` annotation, unlike its siblings `updateInternalName` (line 99)
+      and `updateDatasetFieldTags` (line 119) which ARE audited. There is also no
+      `log.info`/`log.warn` on the controller or service path. The Activity Feed
+      records no stats write; application logs record none either.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: security.known_security_gaps[5]
+        cite: "DatasetFieldServiceImpl.java:158-181 (no @ActivityLog) vs siblings :99,:119"
+        note: "audit asymmetry: stats write unaudited while rename/tag-edit audited"
+    operator_visible_failure: |
+      A stats-poisoning incident (H-002) leaves no Activity-Feed trace and no log
+      line. An operator weighing detection-vs-perimeter mitigation has no detective
+      control: they cannot answer "who wrote these stats, when, from where?" from
+      the platform itself. The asymmetry is also a correctness gap for honest
+      producers — there is no record that a profiling run landed.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a producer pushes a statistic with an out-of-range value (negative nulls_count, high_value < low_value, NaN/Infinity mean), the platform rejects it or normalises it so downstream DQ surfaces never render nonsense."
+  derivation: "Response-shape / DTO field semantics — `nulls_count`, `low_value`/`high_value`, `mean_value` name quantities with natural validity constraints a quality product would enforce."
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Partial: the happy path (well-formed numbers) is honoured and rendered (H-001),
+      but there is NO application-layer validation of numeric validity. The OpenAPI
+      integer fields are `format: int64` with no `minimum`/`maximum`
+      (opendatadiscovery-specification components.yaml:1596-1621), and
+      `updateFieldsStatistics` serialises the supplied stat verbatim into JSONB
+      (lines 233-251). Negative counts, inverted ranges, `unique_count > row_count`,
+      and NaN/Infinity doubles are all accepted and persisted.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: bugs_limitations_corner_cases[4]
+        cite: "components.yaml:1596-1621 (no bounds) + DatasetFieldServiceImpl.java:233-251 (verbatim serialize-and-write)"
+        note: "no numeric validation; invalid values persist"
+    operator_visible_failure: |
+      The Dataset Structure tab and Quality Dashboard rings render nonsense values
+      (a column showing -5 nulls, or a min greater than its max). A BI tool reading
+      `dataset_field.stats` (cross-pillar consumer) ingests the same garbage. The
+      failure is silent: 201 Created, no warning. Honest producers with a sampling
+      bug, and malicious callers seeding confusing numbers, both land here.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When a producer includes a `tags` array on a `DataSetFieldStat`, creating a brand-new catalog tag requires the same `TAG_CREATE` authority the UI requires — an unauthenticated caller cannot populate the global tag taxonomy through this endpoint."
+  derivation: "Cross-pillar promise (P-10 ingest → P-08 Tag taxonomy): the Tags management surface is RBAC-gated by TAG_CREATE; a product owner expects tag creation to honour that gate regardless of the door used."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `updateFieldsTags` extracts tag names from the payload's `stat.getTags()` and
+      calls `tagService.getOrCreateTagsByName(...)` (DatasetFieldServiceImpl.java:202),
+      which CREATES any tag name not already present. There is no `TAG_CREATE`
+      check on this path (no auth at all — H-003). An anonymous POST with
+      `tags: [{name: 'arbitrary'}]` mints the tag into the global namespace, stamped
+      `EXTERNAL_STATISTICS` origin, discoverable by every user via tag search.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: bugs_limitations_corner_cases[5]
+        cite: "DatasetFieldServiceImpl.java:202 (getOrCreateTagsByName) + IngestionController.java:81-87 (no auth)"
+        note: "tag auto-create reachable unauthenticated, bypassing TAG_CREATE"
+    operator_visible_failure: |
+      The catalog's tag-filter facet and tag search fill with attacker-controlled
+      tag names; an operator curating a clean tag taxonomy finds it polluted with
+      entries they never authorised and cannot trace (no audit — H-004). This is the
+      `getOrCreateTagsByName` auto-create side-channel that PLT-026 enumerates as one
+      of the "5 side-channel mints into the global Tag directory" — the stats
+      endpoint is one of those five doors.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a producer re-pushes statistics for a field but omits a tag it sent on a previous push, the previously-pushed tag is preserved (a missing tag in one payload does not silently delete it)."
+  derivation: "Negative-space — a product owner expects a profiling run that briefly stops emitting a tag (sampling jitter) not to destroy catalog state; merge, not replace, is the safe default."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Re-push is replace-not-merge for EXTERNAL_STATISTICS-origin tags:
+      `updateFieldsTags` computes `relationsToDelete` as the existing
+      EXTERNAL_STATISTICS relations not present in the new payload and DELETEs them
+      (DatasetFieldServiceImpl.java:221-223), then re-creates the desired set. A
+      re-push with fewer tags silently removes the absent ones. This is exactly the
+      F-008 `silent_destruction_replace_not_merge` class, applied to the per-field
+      EXTERNAL_STATISTICS tag plane (F-008 is the entity-list plane).
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: bugs_limitations_corner_cases[6]
+        cite: "DatasetFieldServiceImpl.java:221-223 (relationsToDelete = existing minus new) + 201-228"
+        note: "replay-with-fewer-tags deletes the absent EXTERNAL_STATISTICS tags"
+    operator_visible_failure: |
+      A producer whose profiler skips a tag for one tick (a transient sampling bug)
+      silently loses that tag on every affected field — with no audit trail to
+      notice (H-004). The operator sees tags disappear from the Structure tab with no
+      explanation. Note this is the SAME drift class as F-008 but a DISTINCT code
+      locus (per-field EXTERNAL_STATISTICS reconciliation, not entity-list metadata
+      replace), so it is a net-new instance, not a duplicate of F-008's finding.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a producer re-pushes the exact same statistics payload, the operation is idempotent — the second push produces the same final state as the first, with no duplication and no surprise."
+  derivation: "Endpoint shape — a 'push your latest stats' endpoint is expected to be safely repeatable (collectors retry on timeout); a product owner expects replay-safety."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Partial: at the data layer a replay IS idempotent for the stats blob (re-push
+      overwrites `dataset_field.stats` to the same value; the tag-reconciliation diff
+      is empty for an identical payload) — confirmed by the overwrite-by-bulkUpdate
+      semantics. BUT there is NO request-level idempotency key and NO atomicity
+      across concurrent posts: two concurrent POSTs against the same fields race
+      inside `@ReactiveTransactional`; Postgres MVCC serialises the row writes but
+      the EXTERNAL_STATISTICS tag read-modify-write (lines 217-228) is computed
+      independently per request, so concurrent tag reconciliation is last-writer-wins,
+      not merge. The single-caller replay is safe; the concurrent-caller case is not.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: concepts.invariants[3]
+        cite: "DatasetFieldServiceImpl.java:233-251 (overwrite) + 201-228 (tag reconcile)"
+        note: "data-layer replay idempotent for stats blob"
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: bugs_limitations_corner_cases[11]
+        cite: "DatasetFieldServiceImpl.java:217-228 (read-modify-write not atomic across concurrent POSTs)"
+        note: "concurrent tag reconciliation is last-writer-wins"
+    operator_visible_failure: |
+      A single collector retrying is safe. But two producers (or one producer with
+      overlapping ticks) posting to the same fields concurrently can drop each
+      other's tags non-deterministically — a flaky, hard-to-reproduce tag-loss that
+      only appears under concurrency. The verdict on the concurrent case needs a
+      runtime probe to characterise the actual race window (see H-008 probe).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: probe-needed
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    probe_id: PENDING-F-095-1
+    test_demand: PENDING-F-095-1
+
+- id: H-009
+  hypothesis: "When a UI user has hand-curated (INTERNAL-origin) tags on a dataset field, a statistics ingestion push does NOT clobber those manually-set tags."
+  derivation: "Cross-pillar promise (P-10 ingest must not destroy P-08/P-01 UI-curated state) + DTO origin semantics — EXTERNAL_STATISTICS is a distinct origin from INTERNAL; a product owner expects the ingest to touch only its own origin."
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The reconciliation operates ONLY on EXTERNAL_STATISTICS-origin relations:
+      `listTagsRelations(datasetFieldIds, TagOrigin.EXTERNAL_STATISTICS)` (line 218)
+      restricts the read, and `createExternalStatisticsRelation` stamps
+      `TagOrigin.EXTERNAL_STATISTICS` on writes (lines 273-278). INTERNAL
+      (UI-curated) relations are never read or deleted by this path. The service test
+      `externalStatisticsTagStateIngestionTest` explicitly asserts "statistics and
+      tags from different ingestion endpoints do not mix their states" — it ingests
+      via the standard endpoint, then the stats endpoint, then re-ingests, and
+      asserts the structure's tag state is the expected non-mixed merge.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: implicit_adrs[2]
+        cite: "DatasetFieldServiceImpl.java:218 (listTagsRelations scoped to EXTERNAL_STATISTICS) + 273-278"
+        note: "reconciliation isolated to EXTERNAL_STATISTICS origin"
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: tests_coverage_semantic.covered_behaviours[1]
+        cite: "DatasetFieldIngestionTest.java:207-306 (states do not mix assertion)"
+        note: "test pins origin-separation across endpoints"
+    severity:
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: verified
+    test_ref: "DatasetFieldIngestionTest.externalStatisticsTagStateIngestionTest"
+    test_demand: none
+
+- id: H-010
+  hypothesis: "When a producer pushes statistics for a field whose ODDRN does not exist in the platform (e.g. a typo), the platform signals the failure — a 4xx, or at minimum a logged warning — so the producer knows the data did not land."
+  derivation: "Negative-space + the sibling `postDataEntityList` returns 4xx on unknown parent/reference ODDRNs (DatasetFieldIngestionTest.missingFieldDependenciesTest), so a product owner expects symmetric feedback on the stats path."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Unknown field ODDRNs are SILENTLY DROPPED. `getLastVersionDatasetFieldsByOddrns`
+      returns only the existing rows; field ODDRNs with no matching row are simply
+      absent from `existingFields`, and the for-loop iterates only over the resolved
+      set (lines 172-181, 237). No `BadUserRequestException`, no `log.warn`. The
+      `log.error("Unexpected behaviour...")` at lines 240-241 fires only in the
+      inverse (impossible-by-construction) direction. The caller gets 201 Created
+      having written zero rows. Contrast the sibling entity-list path, which 4xxes on
+      unknown dependencies (DatasetFieldIngestionTest.missingFieldDependenciesTest,
+      asserting `is4xxClientError`).
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: bugs_limitations_corner_cases[8]
+        cite: "DatasetFieldServiceImpl.java:172-181,237-244 (silent drop + inverse-direction log)"
+        note: "unknown field ODDRN -> 201, zero write, no warning"
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: tests_coverage_semantic.uncovered_behaviours[7]
+        cite: "DatasetFieldIngestionTest.java:308-332 missingFieldDependenciesTest (entity-list 4xx — the asymmetry)"
+        note: "sibling path 4xxes; stats path does not"
+    operator_visible_failure: |
+      A producer with a typo'd or version-skewed field ODDRN gets a 201 Created and
+      believes its profiling run succeeded; in reality nothing was written and the
+      Structure tab/Quality Dashboard show stale or empty stats for those columns.
+      The failure is undetectable from the response and from logs — a classic
+      silent-success bug that costs an operator a debugging session.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a producer POSTs an empty or malformed body (`items: []` or `{}`), the platform responds with a clean client error (4xx), not a 500."
+  derivation: "Endpoint shape — the sibling `postDataEntityList` short-circuits empty payloads with `CollectionUtils.isNotEmpty`; a product owner expects symmetric graceful handling."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Partial by input shape: `items: []` commits a harmless no-op transaction and
+      returns 201 (not a 4xx, but not a crash). `items: null` (a bare `{}` body)
+      flows into `datasetStatisticsList.getItems().stream()` which NPEs at
+      DatasetFieldServiceImpl.java:161/168 -> reactive default error handler -> HTTP
+      500. There is NO empty-payload guard at the controller, unlike the sibling
+      `postDataEntityList` (IngestionController.java:40-42).
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: concepts.invariants[1]
+        cite: "DatasetFieldServiceImpl.java:161,168 (null-unsafe stream) + IngestionController.java:40-42 (sibling guard this method lacks)"
+        note: "null body NPEs to 500; empty list is a 201 no-op"
+    operator_visible_failure: |
+      A malformed `{}` body returns an opaque 500 (server error) rather than a 4xx
+      (your-request-was-bad), misdirecting a producer's debugging toward a platform
+      fault. The `items: []` no-op silently returns 201 with no indication nothing
+      happened. Both are minor, but the asymmetry with the sibling endpoint is
+      undocumented.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When a producer names a heavy dataset as the parent `datasetOddrn` but pushes trivial or no resolvable field stats, the platform does NOT perform expensive work proportional to the named parent."
+  derivation: "Negative-space / cross-pillar (FTS recompute cost) — a product owner expects work to be proportional to the data actually written, not to an arbitrary parent claim; an uncoupled cost is a DoS amplifier."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      FTS structure-vector recompute runs on EVERY ingest for every dataset ODDRN in
+      the payload, computed from `DataSetStatistics.datasetOddrn`, NOT from the
+      actually-resolved field rows (line 179, fed by 168-170). A payload with bogus
+      (unresolvable) field ODDRNs but a real, heavy `datasetOddrn` still triggers
+      `updateStructureVectorForDataEntitiesByOddrns` on that dataset. Combined with
+      the unauthenticated posture (H-003), repeated invocations naming a heavy
+      dataset drive Postgres CPU on its FTS recompute while writing nothing.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+        section: performance.known_performance_gaps[1]
+        cite: "DatasetFieldServiceImpl.java:158-181,179 (no early-exit before FTS recalc; FTS keyed on payload datasetOddrn)"
+        note: "FTS recompute fires on the lying parent even with zero writes"
+    operator_visible_failure: |
+      A cheap unauthenticated DoS amplifier: an attacker names the catalog's largest
+      dataset(s) as parents and posts empty/bogus stats in a loop, forcing repeated
+      FTS-vector recomputes and Postgres CPU load with near-zero attacker cost and no
+      audit trail. Honest producers are unaffected unless they over-broadly batch.
+      The exact per-request FTS cost on a large dataset wants a runtime probe to
+      quantify, but the mechanism (recompute on lying parent) is statically certain.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Cross-dataset stats write: field-ODDRN scopes the write; the declared parent datasetOddrn is used only for FTS recalc; no parent-child consistency check."
+  dedup_status: already_tracked
+  tracked_as: PLT-106
+  proposed_fix_anchor: "DatasetFieldServiceImpl.updateStatistics:172-181 — filter the field lookup by the declared parent dataset and reject fields whose parent != declared datasetOddrn."
+
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "Stats endpoint unauthenticated under every auth.type and regardless of auth.ingestion.filter.enabled (whitelist + exact-literal filter matcher)."
+  dedup_status: already_tracked
+  tracked_as: PLT-106
+  distinct_from: PLT-043
+  # PLT-106 is the F-095-specific bug (auth + parent-child + audit, cites F-095);
+  # PLT-043 is the broader ingestion-filter path-coverage cluster that lists this
+  # path among uncovered siblings. Same gap, two granularities; PLT-106 is primary.
+  proposed_fix_anchor: "IngestionDataEntitiesFilter.java:28 — broaden the matcher to cover the stats sub-path under a filter flag, OR add a programmatic auth check / dedicated SecurityRule on postDataSetStatsList."
+
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Stats write is UNAUDITED: updateStatistics has no @ActivityLog while its siblings updateInternalName/updateDatasetFieldTags do."
+  dedup_status: already_tracked
+  tracked_as: PLT-106
+  proposed_fix_anchor: "DatasetFieldServiceImpl.updateStatistics:158-181 — add @ActivityLog so the write is auditable like its siblings (lines 99,119)."
+
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Unauthenticated stats POST mints arbitrary catalog tags via getOrCreateTagsByName, bypassing TAG_CREATE (EXTERNAL_STATISTICS-origin)."
+  dedup_status: already_tracked
+  tracked_as: PLT-026
+  # PLT-026 enumerates the 5 getOrCreateTagsByName side-channel mints into the
+  # global Tag directory; the stats endpoint is one of those doors.
+  proposed_fix_anchor: "DatasetFieldServiceImpl.java:202 — gate tag auto-create behind the endpoint's (currently absent) auth, or restrict stats ingestion to pre-existing tags."
+
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "Replay-with-fewer-tags silently deletes the absent EXTERNAL_STATISTICS-origin tags from affected fields (silent_destruction_replace_not_merge on the per-field tag plane)."
+  dedup_status: net_new
+  distinct_from: F-008
+  # Same drift CLASS as F-008 (silent_destruction_replace_not_merge) but a DISTINCT
+  # code locus: per-field EXTERNAL_STATISTICS reconciliation
+  # (DatasetFieldServiceImpl.java:221-223), not the entity-list metadata replace that
+  # F-008 tracks. PLT-106 covers auth/parent-child/audit on this endpoint but NOT the
+  # replay-removal. Net-new instance.
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "DatasetFieldServiceImpl.updateFieldsTags:221-223 — merge EXTERNAL_STATISTICS tags rather than replace, OR require an explicit destructive-mode flag."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "No numeric validation on statistics — negative counts, inverted min/max, NaN means accepted verbatim into JSONB and rendered downstream."
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-quality (the DatasetStatisticsList payload section DOC-GAP-009-class proposes) + upstream-issue for service-layer validation
+
+- hypothesis_id: H-010
+  one_line: "Unknown field ODDRNs are silently dropped — 201 Created with zero rows written, no warning (asymmetric vs entity-list path's 4xx)."
+  dedup_status: net_new
+  recommended_log_as: upstream-issue (add a logged warning / 4xx on fully-unresolved stats payloads) + caveat in the data-quality payload doc section
+
+- hypothesis_id: H-011
+  one_line: "Empty/null body handling asymmetric vs sibling: items:null NPEs to 500, items:[] is a 201 no-op; no empty-payload guard."
+  dedup_status: net_new
+  recommended_log_as: caveat in the data-quality payload doc section (or fold into the H-010 upstream-issue)
+
+- hypothesis_id: H-012
+  one_line: "FTS recompute fires on the payload's declared parent even when zero fields resolve — an unauthenticated DoS amplifier on a named heavy dataset."
+  dedup_status: net_new
+  recommended_log_as: upstream-issue (early-exit FTS recompute when no fields resolved; rate-limit per dataset_oddrn) — cross-link PLT-106's auth fix which mitigates the unauthenticated half
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the second coverage frontier. Every UNVERIFIED promise becomes a
+# missing-functional TEST-GAP candidate, INCLUDING the confirmed-but-untested ones. H-001
+# and H-009 are confirmed AND already have the service test externalStatisticsTagStateIngestionTest
+# => coverage: verified => NOT a demand. Everything else is unverified.
+- use_case_id: F-095-UC-2
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "A stat keyed by a field of dataset B with declared parent A writes to A (or is rejected) — the declared parent bounds the write."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-2)"
+  proposed_test: "Ingestion IT: ingest dataset A and dataset B; POST stats {datasetOddrn: A, fields:{<field-of-B>: stat}}; assert B's field is NOT silently overwritten (RED today — pins the cross-dataset write; flips GREEN when parent-child validation lands)."
+
+- use_case_id: F-095-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "With OAUTH2/LDAP + auth.ingestion.filter.enabled=true, an anonymous POST to the stats endpoint is rejected (401/403)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-3)"
+  proposed_test: "WebFlux security IT under auth.type=OAUTH2 + auth.ingestion.filter.enabled=true: anonymous POST /ingestion/entities/datasets/stats; assert isUnauthorized/isForbidden (RED today — pins the unauthenticated posture)."
+
+- use_case_id: F-095-UC-4
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "A stats write is recorded on the Activity Feed so a 'who changed these stats' query can attribute it."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-4)"
+  proposed_test: "Service IT: ingest stats; query activity for the affected dataset/field; assert an activity event exists (RED today — pins the audit-silence; flips GREEN when @ActivityLog is added)."
+
+- use_case_id: F-095-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A pushed per-field stat renders on the Dataset Structure tab for every viewer."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "DatasetFieldIngestionTest.externalStatisticsTagStateIngestionTest"
+  recommended_log_as: "none — verified by service test"
+  proposed_test: "(covered) DatasetFieldIngestionTest.externalStatisticsTagStateIngestionTest asserts DataSetStructure reflects pushed stats."
+
+- use_case_id: F-095-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "Stats ingestion does not clobber a UI user's INTERNAL-origin hand-curated tags."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "DatasetFieldIngestionTest.externalStatisticsTagStateIngestionTest"
+  recommended_log_as: "none — verified by service test (states-do-not-mix assertion)"
+  proposed_test: "(covered) DatasetFieldIngestionTest.externalStatisticsTagStateIngestionTest pins EXTERNAL_STATISTICS vs INTERNAL origin separation."
+
+- use_case_id: F-095-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "Out-of-range statistics (negative counts, inverted min/max, NaN) are rejected or normalised so downstream surfaces never render nonsense."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-5)"
+  proposed_test: "Service/validator unit: post DataSetFieldStat with nulls_count=-1 and high_value<low_value; assert rejection or normalisation (RED today — accepted verbatim)."
+
+- use_case_id: F-095-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Creating a new catalog tag through stats ingestion honours TAG_CREATE (an unauthenticated caller cannot mint tags)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-6)"
+  proposed_test: "IT: anonymous POST stats with tags:[{name:'x'}]; assert the global tag taxonomy is NOT mutated (RED today — pins the side-channel mint)."
+
+- use_case_id: F-095-UC-7
+  hypothesis_id: H-007
+  kind: teardown
+  promise: "A re-push omitting a previously-sent tag preserves that EXTERNAL_STATISTICS tag (no silent delete)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-7)"
+  proposed_test: "Service IT: push stats with tags [a,b]; re-push with tags [a]; assert b is preserved (RED today — characterizes the silent-destruction; flips when merge-semantics land). Pin per LSN-029 if shipping as known-bug."
+
+- use_case_id: F-095-UC-8
+  hypothesis_id: H-008
+  kind: edit-reconcile
+  promise: "Concurrent stats pushes to the same fields reconcile tags without nondeterministic loss."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-095-1 (probe) then TEST-GAP-NNN if confirmed"
+  proposed_test: "Concurrency probe PENDING-F-095-1 — two parallel posts to the same fields; measure tag-loss window."
+
+- use_case_id: F-095-UC-10
+  hypothesis_id: H-010
+  kind: empty/no-match
+  promise: "An unknown/typo'd field ODDRN signals failure (4xx or logged warning), not a silent 201 with zero writes."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-10)"
+  proposed_test: "Service IT: post stats with a non-existent field ODDRN; assert a 4xx or a logged warning (RED today — silent 201, zero write)."
+
+- use_case_id: F-095-UC-11
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "An empty/null body returns a clean 4xx, not a 500."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-11)"
+  proposed_test: "Controller IT: POST {} (items:null) -> assert 4xx not 500; POST {items:[]} -> assert documented behaviour (RED today — null NPEs to 500)."
+
+- use_case_id: F-095-UC-12
+  hypothesis_id: H-012
+  kind: cross-actor
+  promise: "Work is proportional to data written — naming a heavy parent with zero resolvable fields does not trigger an FTS recompute."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-095-UC-12)"
+  proposed_test: "Service IT: post stats with a real heavy datasetOddrn but all-bogus field ODDRNs; assert updateStructureVectorForDataEntitiesByOddrns is NOT invoked (RED today — fires unconditionally)."
+
+### probes_emitted
+- probe_id: PENDING-F-095-1
+  hypothesis_id: H-008
+  probe_path: "(parallel-safe mode — not materialised; recorded here per run instructions)"
+  hypothesis_text: |
+    When two producers POST statistics concurrently to the SAME dataset fields,
+    does the EXTERNAL_STATISTICS tag reconciliation (read-modify-write at
+    DatasetFieldServiceImpl.java:217-228, computed independently per request inside
+    @ReactiveTransactional) drop one writer's tags nondeterministically? Expected
+    outcome to verify: under concurrent posts with overlapping-but-different tag
+    sets, both writers' tags survive (merge) — OR characterise the actual
+    last-writer-wins window. Local-only: Testcontainers + local Postgres, two
+    parallel WebTestClient posts; emitted_by: feature-reflector;
+    status: pending-reflection-verification; local_execution_blocked: false.
+
+### validation_gaps
+- sidecar: "(none) — DatasetFieldServiceImpl#updateStatistics + updateFieldsStatistics + updateFieldsTags"
+  field_insufficient: |
+    Rule 9 (API-only reflection): this feature is a WRITE-SIDE ingestion endpoint —
+    its own chain has NO enriched UI hop. The user-facing surface that makes every
+    contradiction operator-visible (the Dataset Structure tab rendering the stats,
+    and the Quality Dashboard rings + per-dataset SLA aggregating them) lives in
+    pillars P-04/P-01 and is NOT part of this feature flow's chain. This reflection
+    therefore judges what the API DOES and what a downstream viewer WOULD see; it
+    cannot directly judge the rendered UX of the poisoned values (font, placement,
+    whether a -5 null-count is shown raw or clamped). A complete reflection would
+    trace H-002/H-005's operator-visible failure into the Dataset Structure tab
+    component sidecar — which does not yet exist in the chain.
+  proposed_refresh: |
+    Resolve the feature-flow F-095 chain hops 2-3 by enriching DatasetFieldServiceImpl
+    (updateStatistics / updateFieldsStatistics / updateFieldsTags) as standalone
+    sidecars, and add the Dataset Structure tab React component as the downstream
+    render hop so the reflection can validate the rendered-UX half of H-002/H-005.
+- sidecar: "(chain hops marked unresolved in feature-flows/detail/F-095.yaml)"
+  field_insufficient: |
+    The feature-flow detail marks all three chain hops `sidecar: unresolved`, but the
+    entry-point sidecar postDataSetStatsList.md actually carries the full downstream
+    DatasetFieldServiceImpl mechanics with file:line citations (it was enriched 1-hop
+    deep). The chain hops should be re-pointed to that sidecar (and to the new
+    per-service sidecars once they exist) so the unresolved flag clears.
+  proposed_refresh: "Re-run feature-flow-builder so the F-095 chain hops reference postDataSetStatsList.md (and the to-be-created DatasetFieldServiceImpl sidecar) instead of `unresolved`."
+
+### doc_drift_findings
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/data-quality"
+  doc_says: "Names POST /ingestion/entities/datasets/stats as an option for custom DQ frameworks; says nothing about its authentication posture."
+  code_does: "The endpoint is unauthenticated under every auth mode; the security caveat lives only on the enable-security page, a second hop away from where an operator first meets the endpoint."
+  recommended_log_as: "already routed — doc-gaps.md entry (lines 217-219) tracks the postDataSetStatsList content gap; DOC-GAP-038 cluster covers the ingestion-filter coverage. Add a security cross-link on the data-quality page."
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/features/data-quality"
+  doc_says: "No mention that statistics ingestion can create catalog tags."
+  code_does: "Stats payload `tags` mint catalog tags via getOrCreateTagsByName, unauthenticated, bypassing TAG_CREATE (EXTERNAL_STATISTICS origin)."
+  recommended_log_as: "already routed — doc-gaps.md entry (lines 217-219) explicitly proposes documenting the tag-as-side-effect contract for postDataSetStatsList."
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/features/data-quality"
+  doc_says: "No mention of replace-not-merge idempotency for stats/tags."
+  code_does: "Re-push with fewer tags silently removes the absent EXTERNAL_STATISTICS tags (same class as F-008)."
+  recommended_log_as: "already routed — doc-gaps.md entry (lines 217-219) proposes documenting the replace-not-merge idempotency for the stats payload."
+
+## maintainer_notes
+
+(none — auto-derived; preserved across refreshes for the maintainer's hand-edits)

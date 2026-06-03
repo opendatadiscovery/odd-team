@@ -170,7 +170,8 @@ observed_vs_expected:
       evidence:
         - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:53"
       drift_class: silent_failure_no_log
-      provenance: STATIC — SHB-127 + cross-link to existing IngestionService sidecar known_security_gaps.
+      provenance: |-
+        STATIC — SHB-127 + cross-link to existing IngestionService sidecar known_security_gaps.
     - facet: serialisation-under-data_source-row-lock + retry-storm shape
       observed: |-
         getIdByOddrnForUpdate holds the data_source row lock for the FULL
@@ -189,6 +190,116 @@ observed_vs_expected:
         - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:68"
       drift_class: serialisation_under_pessimistic_lock_no_signal
       provenance: STATIC — SHB-127 evidence.
+
+# Promise layer (LSN-030 / feature-reflector Rule 11) — projected from
+# feature-reflections/detail/F-096.yaml. Each use_case = one falsifiable user promise
+# (uc_id = hypothesis id). coverage `verified` ONLY if a real test for the promise exists;
+# every `unverified` promise yields a functional test demand in the reflection's
+# cross_references.functional_test_demands. SECOND COVERAGE FRONTIER recorded below.
+use_cases:
+  - uc_id: H-001
+    kind: happy-path
+    promise: "One bad entity (or one failing processor) in an N-entity batch rolls back ALL N entities + every downstream side effect — the catalog is never half-applied."
+    actor: custom-collector-author
+    trace: "IngestionServiceImpl.java:66 @ReactiveTransactional wraps lookup + upsert + 14 processors + OTLP export (IngestionService.md downstream_side_effects closing para)."
+    coverage: unverified
+    verdict: confirmed
+    test_demand: "functional — IngestionTransactionalRollbackTest (NET-NEW; does not exist)"
+  - uc_id: H-002
+    kind: empty/no-match
+    promise: "Duplicate ODDRN in one batch returns 400 (DUPLICATE_ODDRN), not 5xx — the author branches to fix-payload, not retry-with-backoff."
+    actor: custom-collector-author
+    trace: "IngestionServiceImpl.java:86 Collectors.toMap default throwing merger throws IllegalStateException; no @ExceptionHandler maps it, so 5xx."
+    coverage: unverified
+    verdict: contradicted
+    test_demand: "functional — mint under PLT-045 test plan (duplicate-ODDRN to 400)"
+  - uc_id: H-003
+    kind: empty/no-match
+    promise: "Unknown data_source_oddrn returns 404 (DATASOURCE_NOT_FOUND), not 5xx — a config error reads as config, not platform crash."
+    actor: custom-collector-author
+    trace: "IngestionServiceImpl.java:68-69 NotFoundException uncaught; no @ExceptionHandler maps it to 404."
+    coverage: unverified
+    verdict: contradicted
+    test_demand: "functional — mint under PLT-045 test plan (unknown-datasource to 404)"
+  - uc_id: H-004
+    kind: empty/no-match
+    promise: "Oversized payload returns 413 Payload Too Large, not 5xx — the author learns to split rather than retrying the same too-big batch."
+    actor: custom-collector-author
+    trace: "IngestionController.java:38 + application.yml:14-15 — DataBufferLimitException on bodies over 20MB, no handler, so 5xx."
+    coverage: unverified
+    verdict: contradicted
+    test_demand: "functional — mint under PLT-045 test plan (oversized to 413)"
+  - uc_id: H-005
+    kind: grammar
+    promise: "The runtime success status matches the published OpenAPI ingestion contract (resolve 201-spec vs 200-impl)."
+    actor: odd-api-consumer
+    trace: "IngestionController.java:44 returns 200; odd_api.yaml:23-25 declares 201 (cited via sidecar); BaseIngestionTest:79 locks 200."
+    coverage: unverified
+    verdict: contradicted
+    test_demand: "functional — spec-conformance test, gated on SPC-001 / DOC-GAP-074-META canonical decision"
+  - uc_id: H-006
+    kind: cross-actor
+    promise: "Concurrent ingestion to one datasource: both batches succeed (serialised), OR the loser gets 429+Retry-After — never a signal-less timeout 5xx."
+    actor: platform-operator
+    trace: "IngestionServiceImpl.java:68 SELECT ... FOR UPDATE held for full pipeline; loser may time out into 5xx with no Retry-After."
+    coverage: unverified
+    verdict: partial
+    test_demand: "functional — mint under PLT-045 test plan (concurrent-collector Option A/B)"
+  - uc_id: H-007
+    kind: empty/no-match
+    promise: "A batch failing on one item reports WHICH item failed (per-item error array) rather than an opaque 5xx."
+    actor: custom-collector-author
+    trace: "IngestionController.java:38-45 Mono<ResponseEntity<Void>>; IngestionService.md — no DLQ, no partial-success shape, no per-entity error reporting."
+    coverage: unverified
+    verdict: contradicted
+    test_demand: "functional — LOW priority; premature until the partial-success (207) decision is made"
+  - uc_id: H-008
+    kind: render
+    promise: "Ingestion accepts large batches quickly (202/async) so the collector is not blocked holding a connection for the full server-side processing time."
+    actor: custom-collector-author
+    trace: "IngestionController.java:38-44 synchronous .thenReturn after the full pipeline; no 202/queue/status endpoint (IngestionService.md understanding)."
+    coverage: unverified
+    verdict: contradicted
+    test_demand: "functional — synchronous-intake posture; caveat in DOC-195; timeout-sizing guidance net-new doc sliver"
+  - uc_id: H-009
+    kind: render
+    promise: "An ingestion rollback emits a tagged WARN log line (collector-id + datasource_oddrn + entity_count) so SRE can scope the failure."
+    actor: platform-operator
+    trace: "IngestionServiceImpl.java:53 @Slf4j present; grep for log. returns zero matches in the body."
+    coverage: unverified
+    verdict: contradicted
+    test_demand: "functional — mint under PLT-045 test plan (log-assertion test)"
+  - uc_id: H-010
+    kind: cross-actor
+    promise: "A retry-storm against a permanent-error payload does NOT take down co-tenant ingestion to the same datasource."
+    actor: platform-operator
+    trace: "Compound of H-002/3/4 (5xx triggers retry) + H-006 (per-datasource row lock re-acquired per attempt) + 20MB re-buffer per attempt."
+    coverage: unverified
+    verdict: probe-needed
+    test_demand: "probe PENDING-F-096-1 (local docker-compose retry-storm + co-tenant liveness measurement)"
+  - uc_id: H-011
+    kind: empty/no-match
+    promise: "An all-JOB_RUN batch (empty post-split entity set) ingests cleanly without erroring on the empty listByOddrns(emptySet,..) path."
+    actor: custom-collector-author
+    trace: "IngestionServiceImpl.java:93 listByOddrns(emptySet,true,true) when every item is JOB_RUN; sidecar hedges 'likely' — untested."
+    coverage: unverified
+    verdict: probe-needed
+    test_demand: "probe PENDING-F-096-2 (local all-JOB_RUN payload, assert 2xx, no empty-IN exception)"
+
+use_case_coverage:
+  verified: 0
+  total: 11
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises) — 0/11. This is the
+    operator-facing ERROR CONTRACT of the platform's single load-bearing write endpoint, and
+    ZERO of its 11 user-facing promises has a behavioural test guarding it. The happy-path 200
+    is covered (BaseIngestionTest), but every PROMISE that defines the contract — atomicity
+    rollback (H-001, confirmed-but-untested), the three client-error-vs-5xx contradictions
+    (H-002/3/4), spec-conformance (H-005), concurrent-safety signalling (H-006), per-item errors
+    (H-007), synchronous-intake (H-008), rollback observability (H-009) — is unverified. H-001 is
+    the highest-value NET-NEW functional demand (the strongest guarantee with no guard). H-002/3/
+    4/6/9 are convergent with PLT-045's existing test plan (mint there, do not double-file). The
+    feature sitting at 0/11 verified promises is itself the headline finding.
 
 test_matrix:
   unit:

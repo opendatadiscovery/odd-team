@@ -1,0 +1,632 @@
+---
+feature_id: F-094
+pillar_anchored_id: P-10:F-002
+pillar: P-09 Security & Access Control (feature lives at the P-09/P-10 boundary — Ingestion authentication filter; the feature-flow anchors it under P-10 Integrations & Ingestion)
+feature_name: |-
+  Ingestion API Authentication Coverage Matrix — `auth.ingestion.filter.enabled`
+  covers 1 of 5 ingestion endpoints, but its name suggests the whole namespace
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+  - odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md
+  - odd-platform__java__IngestionController__controller-class__IngestionController.md
+  - odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+  - odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+    last_verified_at: "2026-05-27T00:00:00Z"
+    last_verified_status: 200
+    note: >-
+      Not re-fetched live this run (WebFetch not exercised in this parallel-safe
+      reflection). Cross-referenced via the scanner_review on the feature-flow
+      (SR-20260527T1700Z, status 200) + the IngestionController sidecar's
+      WebFetch 2026-05-25 (status 200). The live page is AHEAD of the code: it
+      DOES disclose that /ingestion/** is whitelisted and that
+      auth.ingestion.filter.enabled only guards /ingestion/entities. The
+      residual gap is at the YAML surface (no inline comment) + the absence of
+      an executable matrix test, NOT a doc-accuracy gap.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s"
+    last_verified_at: "2026-05-25T00:00:00Z"
+    last_verified_status: 200
+    note: >-
+      Per the filter + postDataEntityList sidecars (WebFetched 2026-05-12/19/25,
+      status 200): recommends "combine S2S with auth.ingestion.filter.enabled:
+      true" and shows a curl example using X-API-Key against /ingestion/entities
+      — conflating the two distinct filters. The recommendation is the seed for
+      hypothesis H-007 (which is contradicted — the /ingestion/** whitelist
+      short-circuits before the S2S filter).
+hypothesis_summary:
+  total: 11
+  confirmed: 3
+  contradicted: 7
+  partial: 1
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: >-
+      An operator who sets auth.ingestion.filter.enabled=true, reads the property
+      name as "ingestion is locked down", and ships it, leaves 3 of 5 ingestion
+      endpoints (datasets/stats, metrics, DEG-children) wide open in every mode.
+related_feature_flows: [F-008, F-007, F-030, F-029]
+related_concepts:
+  - "Ingestion Authentication Filter"
+  - "Default-Off Ingestion Auth"
+  - "Ingestion Filter Path-Coverage Incomplete"
+  - "Shared-Secret Tokens Stored Plaintext"
+  - "Two Ingestion Filters Asymmetric Auth"
+related_drift_classes:
+  - property_name_misdirection_narrow_scope
+  - ingestion_filter_path_coverage_incomplete_endpoint_dimension
+  - ui_auth_chain_whitelists_entire_ingestion_namespace
+new_drift_classes_proposed:
+  - s2s_whitelist_short_circuits_before_s2s_filter   # the /ingestion/** WHITELIST_PATHS permitAll runs BEFORE the S2S addFilterAt step, so auth.s2s.enabled=true does NOT protect ingestion — the live doc's own defence-in-depth recommendation is undercut by the whitelist ordering
+---
+
+# Ingestion API Authentication Coverage Matrix — product-owner reflection
+
+## product_owner_narrative
+
+The Ingestion Authentication feature is the single security control standing between the public internet and the ODD Platform's write surface. ODD's catalog is fed by collectors and push adapters that `POST` to the `/ingestion/*` path family — entity definitions, dataset statistics, per-entity metrics, datasource registrations, DEG-membership reads. Of the five `/ingestion/*` endpoints on `IngestionController`, four MUTATE the catalog (and per F-008's destruction-surface analysis, a partial-state `DataEntityList` payload can SILENTLY DELETE metadata and lineage). The one knob an operator reaches for to protect this surface is `auth.ingestion.filter.enabled` (per `config-key-consumer:auth.ingestion.filter.enabled@L20.md:understanding`). The feature's product promise, read from the property name, is "authenticate ingestion." The reality, read from the code, is "authenticate exactly one of the five ingestion endpoints." That gap between the name's promise and the implementation's scope is the load-bearing finding this reflection exists to surface.
+
+The user of this feature is not an end-user clicking a screen — it is the **platform operator** hardening a deployment (reading `application.yml`, picking an `auth.type`, deciding whether to flip the filter on), the **collector / push-adapter HTTP client** sending tokens, and the **security reviewer** auditing "which of my endpoints require a credential?" The interaction surface is a YAML file and an HTTP wire, not a form or a modal. An operator hardens ingestion by setting `auth.ingestion.filter.enabled: true` (default `false` per `application.yml:46-48`); a collector then sends `Authorization: Bearer <per-datasource-token>` and the `IngestionDataEntitiesFilter` validates it via plaintext `String.equals` against the datasource's (or parent collector's) TOKEN row, returning 401 on mismatch (per `auth__filter__IngestionDataEntitiesFilter.md:invariants[3,4]`). The observable outcome the operator and reviewer see is the per-endpoint HTTP status code, and the YAML value they trust to predict it.
+
+The working parts decompose along four dimensions that compose into an 80-cell matrix: 5 endpoints × 4 UI auth modes (`DISABLED / LOGIN_FORM / OAUTH2 / LDAP`) × 2 filter-toggle states × 2 S2S-toggle states (per `IngestionController__controller-class.md:understanding` + `feature-flow F-094:terminal_side_effect`). The single ingestion filter (`IngestionDataEntitiesFilter`) binds a HARD-CODED EXACT-LITERAL matcher to `/ingestion/entities` POST (`auth__filter__IngestionDataEntitiesFilter.md:invariants[1]` — line 28); its sibling `IngestionDataSourceFilter` is unconditional and covers `/ingestion/datasources`; the other three endpoints (`postDataSetStatsList` → `/ingestion/entities/datasets/stats`, `ingestMetrics` → `/ingestion/metrics`, `getDataEntitiesByDEGOddrn`) are matched by NO filter. All four UI auth modes whitelist `/ingestion/**` entirely (`SecurityConstants.WHITELIST_PATHS` line 95-96, applied by `AuthorizationCustomizer:22` for OAUTH2/LDAP and `LoginFormSecurityConfiguration:50` for LOGIN_FORM), so the UI auth mode never protects ingestion regardless of `auth.type`. The net class-level posture (per `IngestionController__controller-class.md:coherence_check.strengthens[0]`): under default deployment, 4 of 5 endpoints accept unauthenticated POSTs; under the MOST-hardened deployment (OAUTH2 + S2S + filter ON), 3 of 5 endpoints REMAIN unauthenticated.
+
+This feature is the integration spine's gatekeeper: P-10 (Integrations & Ingestion) feeds P-01 (Discovery), P-04 (Quality), P-05 (Lineage), and P-07 (Active Platform Features) through these exact endpoints (per `system-mission.md` cross-pillar graph `P-10→P-01/P-04/P-05/P-07`). The AlertManager webhook (`POST /ingestion/alert/alertmanager`, F-007) is a sixth `/ingestion/*` path that is unauthenticated in every configuration (per `AlertManagerController__postAlerts.md:invariants[2]`). The metrics endpoint (F-030) carries the same posture plus PII-label-passthrough and tenant-isolation-absence on the default INTERNAL_POSTGRES backend (per PLT-051 / DOC-GAP-240). The platform-API contract (F-029) exposes all five endpoints in the OpenAPI spec without any auth annotation. This feature is therefore the causal root of a cluster: its property-name misdirection is the trap, and the sibling-endpoint coverage gaps are the blast radius.
+
+The edge cases a product owner would highlight in a demo are the silent ones: an operator who flips the filter on and audits the ticket as "done" never sees that stats/metrics/alertmanager stayed open (no boot-time WARN, no startup log — `IngestionController__controller-class.md:coupling` notes the `@Slf4j` annotation is dead code); an operator who "turns on auth" by switching `auth.type` to OAUTH2 is surprised that ingestion stays open (the whitelist precedes the auth check); an operator who follows the live S2S doc's defence-in-depth recommendation (combine S2S with the filter) finds S2S does not protect ingestion either (the `/ingestion/**` whitelist `permitAll` short-circuits BEFORE the S2S `addFilterAt`); and a future maintainer who adds `/ingestion/entities/batch` silently ships it unprotected because the matcher is an exact literal with no wildcard. Every one of these is invisible until a request hits the open endpoint — which is exactly the LSN-001 / LSN-002 class (a silent insecure default the docs of the day did not warn about).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator sets `auth.ingestion.filter.enabled=true` in application.yml, reads the property name as 'ingestion is authenticated', and ships the deployment, all five `/ingestion/*` endpoints require a credential."
+  derivation: "The property is named `auth.ingestion.filter.enabled` (namespace-wide reading); the pillar P-09 promise is 'enable the Ingestion filter for production deployments'. Endpoint-shape + pillar-mission seed."
+  seed_source: pillar + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Setting the property `true` registers exactly ONE filter bean
+      (`IngestionDataEntitiesFilter`) whose matcher is the hard-coded exact
+      literal `/ingestion/entities` POST (filter sidecar invariants[1], line 28).
+      `postDataSetStatsList` (/ingestion/entities/datasets/stats), `ingestMetrics`
+      (/ingestion/metrics), and `getDataEntitiesByDEGOddrn` are matched by NO
+      filter and stay unauthenticated even with the toggle ON. The unconditional
+      sibling `IngestionDataSourceFilter` covers only /ingestion/datasources. So
+      enabling the toggle authenticates 2 of 5 endpoints, not 5.
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: concepts.invariants[1] + coupling[0]
+        cite: "IngestionDataEntitiesFilter.java:28"
+        note: "Hard-coded exact-literal /ingestion/entities POST matcher; sibling paths unmatched."
+      - sidecar: odd-platform__java__IngestionController__controller-class__IngestionController.md
+        section: coherence_check.strengthens[1]
+        cite: "IngestionController.java:31-103 + SecurityConstants.java:95-96"
+        note: "Class-level roll-up: 3 of 5 endpoints remain unauthenticated even with the toggle enabled."
+    operator_visible_failure: |
+      The operator files the security audit as "ingestion locked down" and ships
+      a deployment where /ingestion/entities/datasets/stats, /ingestion/metrics,
+      and (via the F-007 sibling) /ingestion/alert/alertmanager accept arbitrary
+      payloads from any network-reachable caller. Concrete consequences: (a) an
+      attacker mints catalog tags via the postDataSetStatsList tag side-channel,
+      bypassing the TAG_CREATE RBAC gate (IngestionController sidecar
+      downstream_side_effects); (b) an attacker mints arbitrary metric_entity
+      rows / Prometheus series (cardinality DoS, PLT-051 Defect 3); (c) the
+      AlertManager webhook accepts forged anomaly alerts. None of these surfaces
+      a boot-time warning — the misperception persists until exploited.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When the operator enables the filter and a collector POSTs `/ingestion/entities` with a valid `Authorization: Bearer <per-datasource-token>`, the request is accepted (2xx); a missing or wrong token is rejected with 401."
+  derivation: "The filter's purpose per its understanding is per-datasource bearer-token auth; the happy + 401 paths are the feature's core contract. Endpoint-shape seed."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      When registered, the filter requires `Authorization: bearer <token>`
+      (case-insensitive prefix), resolves the datasource by the payload's
+      data_source_oddrn, and compares the supplied token via plaintext
+      String.equals to the datasource's TOKEN row (or, when datasource.token()
+      is null, the parent collector's TOKEN row). Mismatch throws
+      AccessDeniedException → 401 with the verbatim body "Token is not correct";
+      a missing/malformed header throws "Token is missed" → 401. A correct token
+      admits the request and re-emits the buffered body to the controller.
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: concepts.invariants[2,3] + security.authorization_assertions
+        cite: "IngestionDataEntitiesFilter.java:41,46-58 + AbstractIngestionFilter.java:45-51,66-72"
+        note: "Bearer-token resolution + plaintext compare + 401 wire shapes confirmed at primary source."
+    severity: ~
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When the operator runs the BUNDLED DEFAULTS (auth.type=DISABLED + auth.ingestion.filter.enabled=false) and a caller POSTs `/ingestion/entities` with no credential, the platform rejects it."
+  derivation: "Negative-space — an operator who has not customised config would HOPE the write endpoint is not open to the internet. Pillar P-09 'enable the ingestion filter for production deployments' implies a safe default."
+  seed_source: negative-space + pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The hypothesis predicts a REJECTION; the code ACCEPTS. With the bundled
+      defaults the filter bean is not registered (havingValue="true", no
+      matchIfMissing, application.yml ships explicit false), and the
+      SecurityWebFilterChain under DISABLED does anyExchange().permitAll() — so
+      the request reaches the controller and IngestionService.ingest with no
+      credential check. The verdict is "confirmed" in the sense that the code's
+      behaviour is unambiguous and fully traced (the endpoint IS open by
+      default); it directly CONTRADICTS the safe-default a careful operator
+      would hope for, which is why it routes to a caveat as well as a test.
+    evidence:
+      - sidecar: odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md
+        section: concepts.invariants[0,1,2] + bugs_limitations_corner_cases[0]
+        cite: "IngestionDataEntitiesFilter.java:20 + application.yml:46-48 + LoginFormSecurityConfiguration.java:50 + SecurityConstants.java:95-96"
+        note: "Default-off posture: bean not registered; endpoint anonymously reachable in all four UI modes."
+    operator_visible_failure: |
+      A deployment run straight from the install guide (the LSN-001 shape) ships
+      with the platform's largest write surface open to any caller that reaches
+      port 8080. Per F-008, partial-state payloads silently DELETE metadata and
+      lineage. The live docs NOW disclose this (mitigated 2026-05-27), but the
+      YAML surface still carries no inline comment (F-094a / PLT-043). This is
+      "confirmed" as code behaviour and a caveat the maintainer tracks.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When the operator enables `auth.ingestion.filter.enabled=true`, the sibling MUTATING ingestion endpoints (`POST /ingestion/entities/datasets/stats` and `POST /ingestion/metrics`) become authenticated too."
+  derivation: "These are mutating /ingestion/* endpoints (one writes dataset stats + creates tags, one writes metric series); a reviewer expects the ingestion-auth toggle to cover all ingestion writes. Endpoint-shape + view-mode (per-endpoint) seed."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Neither endpoint is matched by any filter. The exact-literal matcher binds
+      /ingestion/entities only; /ingestion/entities/datasets/stats is a deeper
+      path (not a prefix match) and /ingestion/metrics is a different path. Both
+      stay anonymously reachable under every combination of auth.type and
+      filter/S2S toggles. The stats endpoint additionally has a tag-creation
+      side-channel that bypasses the TAG_CREATE RBAC gate.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-class__IngestionController.md
+        section: coherence_check.strengthens[1] + downstream_side_effects (tag side-channel)
+        cite: "IngestionDataEntitiesFilter.java:28 + IngestionController.java:81-95 + DatasetFieldServiceImpl.java:202"
+        note: "stats + metrics covered by NO filter; stats creates tags bypassing TAG_CREATE."
+    operator_visible_failure: |
+      A hardened deployment (filter ON) still accepts anonymous statistics and
+      metrics writes: forged DQ statistics skew the Quality Dashboard (P-04);
+      forged metric series inflate Prometheus/Postgres cardinality (PLT-051);
+      crafted `tags` in a stats payload silently populate the catalog tag
+      taxonomy without the TAG_CREATE permission. The reviewer who trusts the
+      toggle cannot tell from any startup signal that these holes remain.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When the operator enables `auth.ingestion.filter.enabled=true`, the Prometheus AlertManager webhook (`POST /ingestion/alert/alertmanager`) becomes authenticated too."
+  derivation: "It is an /ingestion/* endpoint; an operator enabling 'ingestion auth' reasonably believes the whole namespace (including the alert receiver) is covered. Cross-pillar (P-07 AlertManager) + endpoint-shape seed."
+  seed_source: cross-pillar + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The AlertManager webhook is a hand-rolled @PostMapping at
+      AlertManagerController.java:21 with NO @PreAuthorize, NO @ConditionalOnProperty,
+      and NO filter coverage (the exact-literal ingestion matcher does not match
+      it, and IngestionDataSourceFilter does not either). It sits inside
+      SecurityConstants.WHITELIST_PATHS (/ingestion/**), so it is unauthenticated
+      in every auth mode and every toggle combination. The toggle has zero effect
+      on this endpoint.
+    evidence:
+      - sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+        section: understanding + concepts.invariants[2]
+        cite: "AlertManagerController.java:21 + SecurityConstants.java:96 + IngestionDataEntitiesFilter.java:28"
+        note: "Webhook unauthenticated in all modes; no @PreAuthorize, no filter, whitelisted."
+    operator_visible_failure: |
+      Any network-reachable caller POSTs forged AlertManager-shaped payloads that
+      create DISTRIBUTION_ANOMALY alerts against arbitrary entity_oddrn values —
+      cross-tenant alert injection, no idempotency, no audit (per
+      AlertManagerController sidecar bugs_limitations + F-007 facets). The
+      operator who "turned on ingestion auth" still has an open alert-injection
+      endpoint and no signal telling them so.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When the operator switches `auth.type` from DISABLED to LOGIN_FORM / OAUTH2 / LDAP ('turning on authentication'), the `/ingestion/**` endpoints start requiring authentication."
+  derivation: "The most basic operator mental model: picking a non-DISABLED auth mode makes the platform require login. Pillar P-09 ('pick a UI auth mode') + IT-009's own contract (auth.type decides whether a route needs auth). Pillar-mission + doc-claim seed."
+  seed_source: pillar + doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Every non-DISABLED mode ends its chain with .pathMatchers("/**").authenticated(),
+      BUT /ingestion/** is in WHITELIST_PATHS and is permitAll'd BEFORE that
+      catch-all (AuthorizationCustomizer:22-23 for OAUTH2/LDAP;
+      LoginFormSecurityConfiguration:50 for LOGIN_FORM). So switching auth.type
+      away from DISABLED does NOT start requiring authentication on the ingestion
+      namespace — the whitelist exempts it in every mode. (IT-009 proves the
+      auth.type boundary on a NON-whitelisted endpoint /api/dataentities/classes;
+      the ingestion namespace is the explicit opposite case.)
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: dependencies_semantic.coupling[2] + security.auth_mode_relevance
+        cite: "SecurityConstants.java:95-96 + AuthorizationCustomizer.java:22 + LoginFormSecurityConfiguration.java:49-51"
+        note: "All four UI modes whitelist /ingestion/**; ingestion auth is orthogonal to auth.type."
+    operator_visible_failure: |
+      The operator who "turned on auth" (e.g. OAUTH2 for the UI) believes the
+      whole platform now requires a credential and leaves the ingestion filter
+      off — shipping an open write surface behind a protected UI. This is the
+      exact split the P-09 doc warns about ("Enabling one does not protect the
+      other") but the operator who reasons from auth.type alone misses it. The
+      live enable-security page now discloses this (2026-05-27); the residual
+      risk is the operator who reasons from the auth.type knob without reading it.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When the operator enables S2S (`auth.s2s.enabled=true`) as defence-in-depth alongside the ingestion filter — exactly as the live S2S doc recommends — the `X-API-Key` gate protects the `/ingestion/**` endpoints."
+  derivation: "The live S2S doc (WebFetched 2026-05-25, status 200) recommends 'combine S2S with auth.ingestion.filter.enabled: true' and shows a curl using X-API-Key against /ingestion/entities. Doc-claim seed."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The S2sAuthenticationFilter is mounted via addFilterAt within the
+      non-DISABLED security configurations — but the /ingestion/** WHITELIST_PATHS
+      permitAll runs at the authorize step BEFORE the request would be subject to
+      the S2S authority requirement, so a whitelisted path is admitted without
+      the S2S filter ever gating it. S2S grants ADMIN identity to a valid
+      X-API-Key, but on /ingestion/** the whitelist short-circuits the
+      authorization, so S2S being ON does not CLOSE the ingestion endpoints — it
+      only opens an additional admin path elsewhere. The doc's defence-in-depth
+      recommendation does not hold for the whitelisted ingestion namespace.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-class__IngestionController.md
+        section: dependencies_semantic.requires-config[auth.s2s.enabled]
+        cite: "SecurityConstants.java:95-96 + S2sAuthenticationFilter (addFilterAt after permitAll) + LoginFormSecurityConfiguration.java:61-63"
+        note: "/ingestion/** whitelist permitAll precedes the S2S authority check; S2S does not gate ingestion."
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: dependencies_semantic.coupling[3]
+        cite: "S2sAuthenticationFilter.java:17-48 + live S2S doc WebFetch 2026-05-19"
+        note: "Doc recommends combining S2S with the ingestion filter — a defense-in-depth pairing the platform does not enforce on whitelisted paths."
+    operator_visible_failure: |
+      An operator following the live S2S doc literally — enabling S2S as the
+      extra lock on ingestion — gets a false sense of layered protection: the
+      three filter-uncovered endpoints (stats, metrics, alertmanager) stay open
+      even with S2S ON, because the whitelist exempts /ingestion/** before the
+      S2S gate. The doc's own recommendation is the trap; this surfaces as both a
+      new drift class (s2s_whitelist_short_circuits_before_s2s_filter) and a
+      doc-drift finding to route into the doc-gaps registry.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a collector POSTs `/ingestion/entities` (filter ON) with a payload whose `data_source_oddrn` is unregistered, the platform returns a 4xx (the datasource/credential could not be resolved), not a 5xx server error."
+  derivation: "Endpoint-shape — a caller supplying an unknown identifier expects a client-error status, not a server-crash status; a security reviewer expects no info-leak in the status differential. Negative-space + response-shape seed."
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      When the payload's data_source_oddrn does not resolve (or the fallback
+      collector lookup is empty), the filter throws NotFoundException — but the
+      parent AbstractIngestionFilter only catches AccessDeniedException to write a
+      401. NotFoundException propagates to the default reactive error handler and
+      surfaces as 5xx (500). An attacker can therefore distinguish "datasource
+      exists, wrong token" (401) from "datasource does not exist" (5xx) — a minor
+      info-leak — and a half-configured collector gets a misleading server-error
+      status instead of a credential/4xx status.
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: concepts.invariants[6] + bugs_limitations_corner_cases[7]
+        cite: "IngestionDataEntitiesFilter.java:43-51 + AbstractIngestionFilter.java:40"
+        note: "Only AccessDeniedException → 401; NotFoundException → 5xx (info-leak + misleading status)."
+    operator_visible_failure: |
+      (a) Operator-debug: a collector pointed at a datasource not yet registered
+      gets HTTP 500 ("server is broken") rather than a 4xx telling them the
+      datasource/credential is the problem — a confusing on-call signal. (b)
+      Security: the 401-vs-5xx differential lets an unauthenticated prober
+      enumerate which data_source_oddrns are registered.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When the ingestion filter is ON, a collector holding datasource A's token cannot ingest entities into datasource B (cross-tenant write is blocked)."
+  derivation: "Multi-tenant deployments expect per-datasource token scoping — a stolen/misused token for A should not authorise writes to B. Negative-space + cross-actor seed."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The filter resolves the datasource by the PAYLOAD's data_source_oddrn, then
+      validates the supplied bearer token against THAT datasource's token (or its
+      parent collector's). A token valid for datasource A authenticates only
+      payloads naming datasource A; a payload naming datasource B requires B's
+      token. So cross-datasource ingestion is blocked AS LONG AS per-datasource
+      tokens differ. (The isolation holds only while the filter is ON — which, by
+      H-003, it is not, by default.)
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+        section: tests_coverage_semantic.uncovered_behaviours[cross-tenant] + concepts.invariants[3]
+        cite: "IngestionDataEntitiesFilter.java:46-58"
+        note: "Token compared to the payload-named datasource's token; cross-tenant write blocked when filter ON and tokens differ. Explicitly noted UNTESTED."
+    severity: ~
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When a security reviewer needs to answer 'which of my 5 ingestion endpoints are auth-required under my exact config?', an authoritative per-cell coverage matrix exists they can consult (in-repo or in-docs)."
+  derivation: "Pillar P-09 primary action 'audit the deployment'; the feature-flow's own expected[a] asks for a documented per-endpoint × per-mode matrix. Pillar-mission seed."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The matrix EXISTS in the live docs (DOC-228, status done — an 80-cell
+      deployment matrix shipped on configuration-and-deployment/enable-security/README.md,
+      cross-linked from odd-platform.md). So a reviewer who reads the docs CAN
+      answer the question. But (a) the matrix does NOT exist in-repo: no
+      executable test enumerates the cells (TEST-GAP-958 is minted, not
+      implemented), so the doc matrix can silently drift from code without a
+      CI signal; (b) the YAML surface still carries no inline comment (F-094a /
+      PLT-043), so a reviewer auditing application.yml in isolation (offline
+      Helm merge, CI review) cannot reconstruct it; (c) there is no boot-time
+      WARN enumerating open endpoints under the running config (feature-flow
+      expected[b]).
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-class__IngestionController.md
+        section: coherence_check.conflicts_surfaced[matrix] + tests_coverage_semantic.gaps
+        cite: "IngestionController.java:31-103 (no in-repo matrix) + DOC-228 (doc matrix done)"
+        note: "Docs are AHEAD of code's self-documentation; no executable matrix, no YAML comment, no boot-time validator."
+    operator_visible_failure: |
+      A reviewer who audits the YAML or the running config (not the docs site,
+      which may be unreachable on an isolated audit terminal) cannot mechanically
+      determine the per-endpoint auth posture; and the doc matrix has no
+      executable guard, so a future code change (widened matcher, new endpoint)
+      can drift the real posture away from the documented one undetected.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a future maintainer adds a new ingestion write endpoint (e.g. `POST /ingestion/entities/batch` or `/ingestion/entities/v2`), it inherits the ingestion-filter protection automatically."
+  derivation: "A maintainer reasonably expects security wiring to be feature-by-feature, not endpoint-by-literal — adding a sibling write path should be covered by the same toggle. Negative-space seed."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The path matcher is a HARD-CODED exact literal string ("/ingestion/entities"
+      + HttpMethod.POST) constructed in the subclass; the parent accepts a matcher
+      but no @Value/property injects a pattern, and there is no central path
+      registry. A new endpoint POST /ingestion/entities/batch would NOT match and
+      would bypass the filter SILENTLY — no compile-time signal, no test asserting
+      the path scope, no @docs annotation pinning the literal.
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: concepts.invariants[1] + bugs_limitations_corner_cases[1]
+        cite: "IngestionDataEntitiesFilter.java:28"
+        note: "Exact-literal matcher; future sibling paths bypass silently with no compile-time or test signal."
+    operator_visible_failure: |
+      A future feature addition silently degrades the security posture: the new
+      endpoint ships unauthenticated even in a hardened deployment, and neither
+      the author nor the operator gets a signal. This is a latent-regression class
+      — the kind a parameterised matrix pin (TEST-GAP-958) exists to catch by
+      going RED the instant the matcher is widened OR a new path is added without
+      coverage.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Filter ON still leaves POST /ingestion/entities/datasets/stats + POST /ingestion/metrics anonymously reachable (exact-literal matcher); stats also creates tags bypassing TAG_CREATE."
+  dedup_status: already_tracked
+  tracked_as: PLT-051
+  distinct_from: ~
+  recommended_log_as: ~
+  proposed_fix_anchor: "PLT-051 Defect 1 covers /ingestion/metrics; the stats endpoint + tag side-channel is covered by REFACTOR-073 (ingestion-filter path coverage incomplete) + DOC-GAP-240's metrics framing. Convergent re-derivation — corroboration, not a new file."
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "POST /ingestion/alert/alertmanager is unauthenticated in EVERY config (no @PreAuthorize, no filter, /ingestion/** whitelisted); the toggle has zero effect on it."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-107
+  distinct_from: ~
+  recommended_log_as: ~
+  proposed_fix_anchor: "DOC-GAP-038 (toggle-asymmetry at filter layer) + DOC-GAP-107 (AlertManager webhook compound finding) + REFACTOR-073 track this; F-007 reflection (PLT-121 batch) is the feature home. Reflection convergent-validates the same locus."
+- hypothesis_id: H-011
+  severity: MEDIUM
+  one_line: "Hard-coded exact-literal /ingestion/entities matcher means a future sibling write path (e.g. /ingestion/entities/batch) silently bypasses the filter with no compile-time or test signal."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-073
+  distinct_from: ~
+  recommended_log_as: ~
+  proposed_fix_anchor: "Latent-regression dimension of REFACTOR-073 (ingestion-filter path coverage incomplete); the regression guard is TEST-GAP-958 (matrix pin goes RED on a widened matcher). Corroboration of the existing scope."
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "Property name auth.ingestion.filter.enabled reads namespace-wide but covers exactly one of five endpoints; operator audits 'ingestion locked down' and ships 3 open endpoints."
+  dedup_status: already_tracked
+  tracked_as: PLT-043
+  recommended_log_as: ~
+- hypothesis_id: H-003
+  one_line: "Bundled defaults (DISABLED + filter false) leave POST /ingestion/entities anonymously reachable — the platform's largest write surface open straight from the install guide (LSN-001 shape)."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-038
+  recommended_log_as: ~
+- hypothesis_id: H-006
+  one_line: "Switching auth.type away from DISABLED does NOT protect /ingestion/** (whitelisted in every UI mode); the operator who 'turned on auth' still has an open write surface."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-082
+  recommended_log_as: ~
+- hypothesis_id: H-008
+  one_line: "Unknown data_source_oddrn (filter ON) surfaces as 5xx not 4xx — NotFoundException is not caught for 401; misleading on-call status + a 401-vs-5xx registered-datasource enumeration info-leak."
+  dedup_status: already_tracked
+  tracked_as: TEST-GAP-119
+  recommended_log_as: "caveat is the doc/test side; the code-fix (catch NotFoundException → 4xx) is unfiled as a PLT but is LOW/MEDIUM and corroborates the filter sidecar bugs_limitations[7]. If the maintainer wants a code fix tracked separately, log as a small PLT; otherwise TEST-GAP-119 pins the current 5xx behaviour."
+- hypothesis_id: H-010
+  one_line: "No in-repo executable coverage matrix + no YAML inline comment + no boot-time WARN — a reviewer auditing the running config (not the docs) cannot mechanically determine the per-endpoint auth posture; the doc matrix has no CI guard against code drift."
+  dedup_status: already_tracked
+  tracked_as: TEST-GAP-958
+  recommended_log_as: "DOC-228 (done) ships the doc matrix; PLT-043 ships the YAML comment; the boot-time security-posture validator is the REFACTOR-073/REFACTOR-185 prescription. All tracked — corroboration."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional demand.
+# This feature's striking signature: use_case_coverage 0/11 — ZERO promises verified.
+# All demands map to ALREADY-MINTED test-gaps (the filter cluster TEST-GAP-116..123 +
+# the class-level matrix umbrella TEST-GAP-958), EXCEPT the cross-tenant isolation pin
+# (H-009 / UC-9) which is pending mint. The demands below are the promise-level view
+# that the test-coverage-mapper reads; each carries dedup to the existing gap.
+- use_case_id: F-094-UC-1
+  hypothesis_id: H-001
+  kind: grammar
+  promise: "auth.ingestion.filter.enabled=true authenticates all five /ingestion/* endpoints"
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-958 (already minted — category: missing-security; the 80-cell IngestionControllerAuthMatrixTest pins the property-name-misdirection cell-by-cell). Add use_case_id F-094-UC-1."
+  proposed_test: "Parameterised WebTestClient: with filter ON, assert /ingestion/entities → auth-required AND /ingestion/entities/datasets/stats + /ingestion/metrics → STILL anonymous (the misdirection)."
+- use_case_id: F-094-UC-2
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "filter ON + valid bearer → 2xx; missing/wrong token → 401"
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-117 + TEST-GAP-118 (already minted — opt-in 401 + bearer happy path). THE LSN-030 FIX: a hand-proven happy path with NO test — the highest-value guard to write."
+  proposed_test: "Testcontainers-Postgres + WebTestClient, profile auth.ingestion.filter.enabled=true, seeded TOKEN row: valid bearer → 2xx, wrong → 401 'Token is not correct', missing → 401 'Token is missed'."
+- use_case_id: F-094-UC-3
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "bundled defaults → POST /ingestion/entities accepts unauthenticated (current posture)"
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-116 (already minted — CRITICAL — IngestionFilterDefaultOffTest pins the LSN-001-class insecure default)."
+  proposed_test: "WebTestClient loading application.yml unmodified: POST /ingestion/entities with valid payload + NO Authorization header → assert 2xx (pins the current vulnerable posture; RED the instant the default flips closed)."
+- use_case_id: F-094-UC-4
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "filter ON authenticates stats + metrics endpoints too"
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-958 (matrix umbrella) — pins stats + metrics cells as anonymous even with filter ON. PLT-051 is the code-fix."
+  proposed_test: "Matrix cells: filter ON × {stats, metrics} → assert STILL anonymous-reachable (filter doesn't match these paths)."
+- use_case_id: F-094-UC-5
+  hypothesis_id: H-005
+  kind: grammar
+  promise: "filter ON authenticates the AlertManager webhook too"
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-958 (matrix umbrella covers /ingestion/alert/alertmanager). F-007 reflection / DOC-GAP-107 is the home."
+  proposed_test: "Matrix cell: any auth.type × any toggle × POST /ingestion/alert/alertmanager → assert anonymous-reachable (no filter, whitelisted)."
+- use_case_id: F-094-UC-6
+  hypothesis_id: H-006
+  kind: grammar
+  promise: "switching auth.type to OAUTH2/LDAP/LOGIN_FORM protects /ingestion/**"
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-958 (matrix — the auth.type dimension). Contrast IT-009 which proves the boundary on a NON-whitelisted endpoint."
+  proposed_test: "Matrix cells: auth.type ∈ {LOGIN_FORM,OAUTH2,LDAP} × filter OFF × /ingestion/entities → assert STILL anonymous (whitelist exempts it in every mode)."
+- use_case_id: F-094-UC-7
+  hypothesis_id: H-007
+  kind: happy-path
+  promise: "S2S enabled (per the live doc recommendation) protects /ingestion/**"
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-958 (matrix — the s2s toggle dimension). Also a doc-drift finding (see doc_drift_findings)."
+  proposed_test: "Matrix cells: auth.s2s.enabled=true × filter OFF × {stats, metrics, alertmanager} → assert STILL anonymous (whitelist short-circuits before the S2S filter)."
+- use_case_id: F-094-UC-8
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: "unknown data_source_oddrn (filter ON) → 4xx not 5xx"
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-119 (already minted — pins the NotFoundException → 5xx misleading-status behaviour + collector fallback)."
+  proposed_test: "filter ON, payload with unregistered data_source_oddrn → assert current 5xx (pins the gap); separately assert valid-datasource-wrong-token → 401 (the differential)."
+- use_case_id: F-094-UC-9
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "filter ON: collector A's token cannot ingest into datasource B"
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint — category: missing-security, use_case_id F-094-UC-9). NOT yet minted — the cross-tenant isolation pin is the one net-new functional test demand from this reflection."
+  proposed_test: "filter ON, two datasources A/B with distinct tokens: POST /ingestion/entities with B's data_source_oddrn + A's bearer → assert 401; with B's bearer → assert 2xx. Locks the per-datasource isolation invariant."
+- use_case_id: F-094-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "an authoritative per-cell coverage matrix exists the reviewer can consult"
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-958 (the executable matrix that guards the DOC-228 doc matrix against code drift)."
+  proposed_test: "The matrix test IS the artefact — its existence makes the doc matrix CI-guarded. Cross-link DOC-228 (done) ↔ TEST-GAP-958 (pending)."
+- use_case_id: F-094-UC-11
+  hypothesis_id: H-011
+  kind: grammar
+  promise: "a future sibling write path inherits filter protection automatically"
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-958 (the matrix pin goes RED on a widened matcher OR an uncovered new path — the regression guard for REFACTOR-073)."
+  proposed_test: "Assert the exact-literal matcher scope (/ingestion/entities only); a parameterised cell per future-added path forces a deliberate coverage decision."
+
+### probes_emitted
+[]   # No probe-needed verdicts — every hypothesis was resolvable from the chain's sidecars at HIGH/MEDIUM confidence (the auth posture is static config + path-matcher wiring, not a runtime race / cache / concurrency question). The 80-cell behaviour IS worth EXERCISING, but that is a deterministic parameterised test (TEST-GAP-958), not a probe.
+
+### validation_gaps
+- sidecar: "(missing) SecurityConstants — no sidecar exists for the WHITELIST_PATHS / SECURITY_RULES array"
+  field_insufficient: "The feature-flow contributing_node `security-constants:SecurityConstants` has sidecar: unresolved. The WHITELIST_PATHS array (the load-bearing /ingestion/** entry) is cited only THROUGH the filter + controller sidecars, never enriched as its own node. SecurityConstants.SECURITY_RULES (lines 98-355) is the central authorization-rule table for the whole platform and has no sidecar."
+  proposed_refresh: "Enrich SecurityConstants as a config/security node: extract WHITELIST_PATHS verbatim + the SECURITY_RULES table, with a snapshot-test demand (the F-094 test_matrix.unit[1] already asks for this). This is the single highest-value missing node for the P-09 security pillar — every auth feature-flow cites it second-hand."
+- sidecar: "(reflection-layer Rule 9 declaration) NO enriched UI hop in this feature flow"
+  field_insufficient: "Per Rule 9, a user-facing feature with no enriched UI hop should surface this as the first validation_gap. Here the absence is CORRECT, not a defect: this is an operator-config / S2S wire feature whose 'user' is the operator (reading application.yml), the collector HTTP client, and the security reviewer — there is no end-user screen behind it. This reflection is intentionally config-and-API-only; it does NOT claim to judge an end-user UX. The F-031 mistake (confident verdicts on a UI feature from a backend-only chain) does not apply because this feature HAS no UI surface to miss."
+  proposed_refresh: "None for the UI axis (no UI exists). The only enrichment gap is the SecurityConstants node above."
+
+### doc_drift_findings
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s"
+  doc_says: "If you only need to authenticate the ingestion pipeline (collectors / push adapters), consider combining S2S with `auth.ingestion.filter.enabled: true` — and the curl example uses `X-API-Key` against `/ingestion/entities`."
+  code_does: "S2S (auth.s2s.enabled) does NOT protect /ingestion/** — the /ingestion/** WHITELIST_PATHS permitAll short-circuits the authorization step BEFORE the S2S filter's authority requirement applies. And /ingestion/entities under the filter wants `Authorization: Bearer`, not `X-API-Key` (two distinct filters conflated). So the doc's defence-in-depth recommendation does not hold for the whitelisted ingestion paths, and the X-API-Key curl example only works if auth.s2s.enabled=true (a DIFFERENT mechanism than auth.ingestion.filter.enabled)."
+  recommended_log_as: "Already tracked — DOC-GAP-038 (S2S/ingestion-filter conflation) + the filter sidecar's doc_drift_findings[1]. Corroboration; the new angle (whitelist short-circuits BEFORE the S2S filter) extends DOC-GAP-038's framing."
+
+## maintainer_notes
+
+This reflection is overwhelmingly CONVERGENT VALIDATION rather than net-new discovery: every contradicted/partial hypothesis re-derives a finding already tracked (PLT-043, PLT-051, DOC-GAP-038/082/107/240, DOC-228, REFACTOR-073/185, TEST-GAP-116..123/958). That is the expected and valuable signal for a feature that has already been through SHB-123 graduation + a Mode-B scanner review (SR-20260527T1700Z, fully-corroborated) + the F-008 / F-007 / F-030 sibling reflections. Two genuinely net-new contributions:
+
+1. The PROMISE LAYER itself (LSN-030): 11 falsifiable operator-facing promises, projected to use_cases on the feature-flow, with use_case_coverage = 0/11 verified. This feature — the platform's single most important security control — has ZERO of its promises guarded by a real test. The matrix test (TEST-GAP-958) and the filter pins (TEST-GAP-116..123) are minted but UNIMPLEMENTED; the only test that touches this surface (BaseIngestionTest) fixes the most-open cell and asserts nothing about auth. This is the highest-value functional-test cluster in the security pillar to actually write.
+
+2. One net-new drift class (s2s_whitelist_short_circuits_before_s2s_filter, H-007) and one net-new test demand not yet minted (the cross-tenant isolation pin, H-009 / F-094-UC-9). The S2S finding sharpens the existing DOC-GAP-038 conflation with the ORDERING insight (whitelist permitAll precedes the S2S addFilterAt), which is why even the doc's own defence-in-depth recommendation does not close the gap.
+
+Severity posture: the live docs were corrected 2026-05-27 (the property-name + whitelist disclosures shipped), so the operator who READS the enable-security page is now informed — the residual risk is the operator who reasons from the property NAME / the auth.type knob / the YAML in isolation, and the absence of any executable or boot-time guard. The maintainer's highest-leverage action is implementing TEST-GAP-958 (the executable matrix), which simultaneously guards the DOC-228 doc matrix against drift and verifies 7 of these 11 promises in one parameterised test.

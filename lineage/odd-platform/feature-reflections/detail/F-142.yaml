@@ -1,0 +1,887 @@
+---
+feature_id: F-142
+pillar_anchored_id: P-01:F-013
+pillar: P-09 Security & Access Control (User-Owner Association) — feature-flow anchors it P-01:F-013; see drift H-000-ANCHOR
+feature_name: |-
+  User-Owner Association Request Workflow — the home-page user-binding
+  surface where an authenticated user without an Owner mapping requests
+  to be associated with one (4-branch state machine: form / pending /
+  declined / approved).
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__Overview.md
+  - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+  - "(feature-flow inline evidence for hops 1-3: OwnerAssociation.tsx / OwnerAssociationForm.tsx / OwnerEntitiesList.tsx — no enriched standalone sidecar; see validation_gaps)"
+  - "(cross-read for dedup) feature-reflections/detail/F-075.yaml (DIRECT_OWNER_SYNC self-mint-then-self-bind backend chain)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Live doc has been UPDATED since the feature-flow + scanner_reviews were captured
+      (commit 9ac6436e / SR-20260527T1900Z). At that time the doc said "modal dialog in
+      the bottom of the main page" and was SILENT on DIRECT_OWNER_SYNC, decline-persistence,
+      free-text owner creation, and disassociation. The CURRENT live doc now: states it is
+      "not a modal dialog and has no overlay" (the F-142d drift is FIXED); documents the
+      declined-banner non-persistence; documents DIRECT_OWNER_SYNC + the "Associate" vs
+      "Send a request" button label; documents free-text owner creation as intentional;
+      and documents the no-self-service-disassociate constraint. Several of the scanner's
+      2026-05-27 doc-gap candidates (F-142a/b/c/d) appear ADDRESSED — see doc_drift_findings.
+hypothesis_summary:
+  total: 12
+  confirmed: 7
+  contradicted: 2
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-011
+    severity: HIGH
+    one_line: |-
+      A misconfigured auth.type (typo / lowercase / whitespace) makes the association
+      form RENDER on a deployment with NO SecurityWebFilterChain wired — a brand-new
+      user "successfully" binds an owner on an unauthenticated platform.
+related_feature_flows: [F-075, F-064, F-011, F-141, F-001, F-003, F-019, F-018, F-171, F-172]
+related_concepts:
+  - user-owner-association
+  - direct-owner-sync
+  - free-solo-autocomplete
+  - permission-provider-non-blocking-pattern
+  - read-collaborative-cross-owner-enumeration-posture
+new_drift_classes_proposed:
+  - association_state_machine_pure_render_switch_no_loading_no_error_branch_falls_through_to_null
+  - declined_banner_local_state_no_persistence_reappears_every_login_no_decline_reason
+related_drift_classes:
+  - owner_association_predicate_string_equality_disabled_no_normalisation_four_misconfiguration_scenarios
+  - free_solo_autocomplete_creates_owner_name_with_no_validation_no_charset_filter_no_length_cap
+  - declined_message_dismissable_via_x_button_no_persistence_user_redismiss_per_session
+  - association_lifecycle_no_revoke_no_re_request_after_approved_or_declined
+  - direct_owner_sync_branch_silently_skips_review_pipeline_on_approval
+  - identity_username_used_as_search_seed_no_explicit_consent_implies_user_knew
+  - debounce_5_hundred_ms_on_open_autocomplete_first_keystroke_can_race_initial_seed_fetch
+---
+
+# User-Owner Association Request Workflow — product-owner reflection
+
+## product_owner_narrative
+
+The User-Owner Association workflow is the **front door to identity in ODD**. ODD Platform
+keeps two separate notions of "who you are": the authentication identity (your OIDC / LDAP /
+login-form username) and the catalog-side **Owner** (a directory entry that data entities,
+alerts, and policies attach to). A freshly-authenticated user is no-one in catalog terms
+until those two are bound. This feature is the screen where the user does the binding: it
+appears as an inline block at the very bottom of the Catalog Overview home page (the live
+doc is explicit — "not a modal dialog and has no overlay … the Owner association widget
+appears inline as the last block on the page", per WebFetch 2026-06-03). It exists because
+without this binding the user's "My Objects" panel is silently empty (companion feature F-064)
+and owner-filtered alerts return nothing — so this workflow is the prerequisite the user must
+complete before the rest of the personalised platform turns on (per F-064 companion_to note;
+Overview.md dependencies_semantic.requires-feature[3]).
+
+A user interacts with it through a **four-branch state machine** rendered conditionally on
+the home page (per feature-flow chain hop:1 — `OwnerAssociation.tsx:32-89`). The component
+reads four Redux selectors (identity, ownership, request-status, supposed-owner-name) and a
+pure render-time switch decides which face the user sees: (1) **no association yet** → a
+request form; (2) **request pending** → a "request being checked" waiting screen; (3) **request
+declined** → a dismissable rejection banner above a fresh form; (4) **already an owner** → the
+populated four-column "Recommended" panel (`OwnerEntitiesList`, hop:3). Any other combination
+(still loading, error, no identity) falls through to `return null` — the block simply does not
+appear (feature-flow chain hop:1 evidence, line 88). The form itself is a MUI Autocomplete in
+`freeSolo` mode: the user can pick an existing owner OR type a brand-new name, and on mount it
+pre-seeds suggestions matching their own username under a "Maybe it's you" hint (feature-flow
+chain hop:2 — `OwnerAssociationForm.tsx:131-142,190,203-222`).
+
+The working parts a product owner would demo: you **search or type an owner name**; if you hold
+the `DIRECT_OWNER_SYNC` permission the button reads **"Associate"** and binding is immediate, and
+if you do not it reads **"Send a request"** and an admin must approve (the live doc documents
+both labels; backend split at `OwnerAssociationRequestServiceImpl.java:60-67` per the controller
+sidecar implicit_adrs[2]). On approval the home page flips to the Recommended panel; on decline
+you get a banner you can dismiss — but the dismissal is per-render-only and the banner returns on
+your next login (feature-flow facet `declined_message…no_persistence`). There is **no
+self-service way to change or revoke** an approved binding — the doc says so plainly ("you have
+no self-service path to change or remove it … ask an administrator with the
+`OWNER_RELATION_MANAGE` permission"), and the state machine has no revoke/re-request branch
+(feature-flow facet `association_lifecycle_no_revoke_no_re_request`).
+
+The integration story: this workflow is the **write side of F-011 (Principal-to-Owner
+Resolution)** — the `user_owner_mapping` row it produces is exactly what F-011 reads at login to
+resolve owner-scoped reads (feature-flow companion_to F-011). It sits inside F-141 (the Catalog
+Overview composition) and is gated by the same `auth.type !== 'DISABLED'` predicate that gates
+the Popular column (F-001 / F-003). On the backend it shares the `OwnerAssociationRequestController`
+with the **admin triage workflow** (F-171, the approve/decline queue) and the **admin direct-bind
+flow** (F-172, `POST /api/owners/mapping`). The security-sensitive backend compositions reachable
+from this same form — minting an Owner row with no `OWNER_CREATE` permission, and the
+`DIRECT_OWNER_SYNC` self-mint-then-self-bind privilege chain — are **already owned by the F-075
+reflection and tracked as PLT-125** (and the orphan-rows-on-owner-delete by PLT-132); this
+reflection treats them as cross-references and concentrates on the **user-facing screen** the
+F-075 backend reflection did not cover.
+
+Edge cases a product owner would flag in a demo: under a **misconfigured `auth.type`** the whole
+block silently mis-gates — hidden when the operator meant to enable auth, or shown on a deployment
+with no security filter wired at all (Overview.md bugs[0], severity HIGH; tracked PLT-077); the
+**"Maybe it's you" seed** only works when usernames look like person-names (opaque OAuth subject
+UUIDs produce noise); the declined user is told nothing about **why** they were declined or whom
+to escalate to; and a user typing a novel name with a typo silently pollutes the shared Owner
+directory with no "this will create a new owner" warning on the form.
+
+## hypotheses
+
+- id: H-000-ANCHOR
+  hypothesis: |-
+    When an operator or maintainer looks up this feature's pillar, it is filed under the
+    Security & Access Control / User-Owner Association surface (where the mission anchors
+    user-owner association), not under a Data Discovery sub-feature.
+  derivation: |-
+    The feature-flow carries pillar_id P-01 and pillar_anchored_id "P-01:F-013" (Data Discovery)
+    while the mission anchors "User-owner association" under P-09 Security & Access Control
+    (system-mission.md P-09 sub-feature seed) and the admin side under P-08 Management
+    (Associations tab). The controller sidecar's related_pillar_features list P-08:F-003 +
+    P-09:F-NN + P-09:F-001 — never P-01.
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The feature is rendered INSIDE the P-01 Catalog Overview home page (F-141), which is why
+      the feature-flow filed it under P-01 — that placement is defensible as "where the surface
+      lives on screen." But the CAPABILITY (binding a user to an Owner; the RBAC/identity
+      lifecycle) belongs to P-09 Security & Access Control per the mission, and the admin half
+      to P-08 Management. The pillar_anchored_id "P-01:F-013" is a render-location anchor, not a
+      capability anchor; a maintainer searching P-09 for "user-owner association" will not find
+      this feature by its anchor id.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "related_pillar_features"
+        cite: "system-mission.md P-09 sub-feature seed 'User-owner association'; P-08 Associations tab"
+        note: "Mission anchors user-owner association under P-09 (capability) + P-08 (admin); controller sidecar lists P-08:F-003 + P-09 — never P-01."
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: "understanding"
+        cite: "Overview.tsx:53-59"
+        note: "The component is rendered inside the P-01 home page — the render-location source of the P-01 anchor."
+    operator_visible_failure: |-
+      Discoverability gap only (not user-runtime). A maintainer doing impact analysis on the
+      P-09 RBAC/identity pillar would miss F-142 because its pillar_anchored_id files it under
+      P-01. Recommend a cross-pillar back-link (P-01:F-013 ALSO P-09 + P-08) so the feature is
+      reachable from the capability pillar, not only the render-location pillar.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: none
+
+- id: H-001
+  hypothesis: |-
+    When an authenticated user with no Owner mapping and no prior request opens the home page,
+    they see the association REQUEST FORM (not a blank space, not the Recommended panel, not a
+    pending screen).
+  derivation: |-
+    The state machine's branch (1) — identity && !ownership && !requestStatus → OwnerAssociationForm
+    (feature-flow chain hop:1, line 35-41); this is the entry state of the workflow.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `OwnerAssociation.tsx:getContent()` (line 32-89) returns the OwnerAssociationForm when
+      identity is present, ownership is absent, and requestStatus is absent (branch 1, lines
+      35-41). The render is a pure switch over four Redux selectors with no useEffect — so the
+      form appears deterministically once identity has loaded and ownership/request are confirmed
+      empty.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:1)"
+        section: "chain hop:1 evidence"
+        cite: "OwnerAssociation.tsx:32-41 (branch 1)"
+        note: "identity && !ownership && !requestStatus → OwnerAssociationForm."
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a user submits a request and it is recorded PENDING, the home page shows a "request
+    being checked" waiting screen on their next visit — not the form again, and not the
+    Recommended panel.
+  derivation: |-
+    State machine branch (2) — identity && !ownership && status=PENDING → pending screen
+    (feature-flow chain hop:1, line 43-59).
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Branch 2 (lines 43-59) renders the "Request being checked" screen when requestStatus is
+      PENDING. The pending state is read from the getAssociationRequestStatus selector, populated
+      after the create call returns status PENDING (the non-DIRECT_OWNER_SYNC backend branch per
+      controller sidecar implicit_adrs[2]).
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:1)"
+        section: "chain hop:1 evidence"
+        cite: "OwnerAssociation.tsx:43-59 (branch 2)"
+        note: "status=PENDING → waiting screen."
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "invariants"
+        cite: "OwnerAssociationRequestServiceImpl.java:64 (PENDING when no DIRECT_OWNER_SYNC)"
+        note: "Backend returns PENDING for the non-direct-sync requester — the status the pending screen keys on."
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a user's request is DECLINED, on their next visit they see a rejection banner ABOVE a
+    fresh request form (so they can immediately retry), and dismissing the banner does NOT
+    persist — it returns on the next page load / login.
+  derivation: |-
+    State machine branch (3) — status=DECLINED → dismissable banner + form (feature-flow chain
+    hop:1, line 61-82); showRejectMsg is local useState(true) at line 28, no persistence. The
+    live doc independently documents the non-persistence.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Branch 3 (lines 61-82) renders the declined banner with an X-dismiss (lines 72-76) above a
+      fresh OwnerAssociationForm. The dismiss is backed by `showRejectMsg` local useState(true)
+      at line 28 — component-local, not persisted; a remount (page refresh or re-login) resets it
+      to true and the banner reappears. The CURRENT live doc confirms this is the intended,
+      documented behaviour ("the dismissal does not persist — refreshing the page or signing in
+      again brings the banner back"; "There is no per-decline-reason surface", WebFetch 2026-06-03)
+      — so the 2026-05-27 scanner finding F-142b is now doc-addressed; it is a test gap, not a
+      doc gap.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:1)"
+        section: "chain hop:1 evidence + facet declined_message…no_persistence"
+        cite: "OwnerAssociation.tsx:28,61-82"
+        note: "showRejectMsg useState(true); branch 3 banner+form; no persistence."
+      - sidecar: "(WebFetch live doc)"
+        section: "decline behaviour"
+        cite: "user-owner-association doc, WebFetch 2026-06-03 status 200"
+        note: "Doc now documents non-persistence + no decline-reason — behaviour confirmed against doc."
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a user's association is approved, the home-page block transitions to the populated
+    four-column Recommended panel (OwnerEntitiesList) — the user is dropped straight into their
+    personalised view with no extra click.
+  derivation: |-
+    State machine branch (4) — identity && ownership → OwnerEntitiesList (feature-flow chain
+    hop:1, line 84-86; hop:3 fires four data fetches on mount).
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Branch 4 (lines 84-86) renders `<OwnerEntitiesList/>` once identity && ownership are both
+      truthy. On mount OwnerEntitiesList fires four dispatches in one useEffect
+      (fetchMyDataEntitiesList + Upstream + Downstream + fetchPopularDataEntitiesList,
+      `OwnerEntitiesList.tsx:58-64`) and renders four DataEntityList columns. For a DIRECT_OWNER_SYNC
+      user, OwnerAssociationForm also dispatches setProfileOwnerName + fetchIdentity on the APPROVED
+      response (feature-flow chain hop:2, lines 121-129), flipping ownership truthy in the same
+      session so the transition happens without a manual refresh.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:1 + hop:3)"
+        section: "chain hop:1 + hop:3 evidence"
+        cite: "OwnerAssociation.tsx:84-86 + OwnerEntitiesList.tsx:58-64"
+        note: "ownership truthy → OwnerEntitiesList; four fetches on mount."
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: "downstream_side_effects"
+        cite: "OwnerEntitiesList.tsx:58-64"
+        note: "Overview sidecar confirms the four-thunk fan-out on the approved branch."
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When the user types a name into the association form's owner field, they can select an
+    existing owner OR submit a brand-new name; submitting a never-seen name creates that owner —
+    and the form is a select-or-create combo-box, which is the intended pattern (NOT a bug),
+    so a getOrCreate-family backend behind it is correct behaviour.
+  derivation: |-
+    Rule 9: a freeSolo Autocomplete is a select-or-create UI control; the request field's meaning
+    is what the control means. The control + backend getOrCreate together are the documented
+    intent. Feature-flow chain hop:2 (freeSolo at line 190; getFilterOptions at 78-91); live doc
+    "the platform creates a new owner with exactly that name when you submit".
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The Autocomplete is `freeSolo` (feature-flow chain hop:2, line 190) and getFilterOptions
+      (lines 78-91) appends the free-typed name as a final selectable option, so the user can
+      either pick an existing owner or commit a new name. On submit the backend routes through
+      OwnerService.getOrCreate (controller sidecar bugs[0]; F-075 H-005). The live doc documents
+      this as intentional ("If no existing owner matches the name you typed, the platform creates
+      a new owner with exactly that name when you submit", WebFetch 2026-06-03). Per Rule 9 the
+      select-or-create combo-box + getOrCreate is the intended pattern — the EXISTENCE of the
+      create path is confirmed-correct. (The SECURITY consequence — minting without OWNER_CREATE,
+      and the typo/charset pollution — is a separate finding owned by PLT-125 / F-075 H-005 and
+      the F-142 freeSolo facet; see H-006 for the UI-side validation gap and cross_references.)
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:2)"
+        section: "chain hop:2 evidence + facet free_solo_autocomplete…"
+        cite: "OwnerAssociationForm.tsx:190 (freeSolo) + 78-91 (getFilterOptions)"
+        note: "Select-or-create combo-box; free-typed name is a committable option."
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "bugs_limitations_corner_cases[0]"
+        cite: "OwnerAssociationRequestServiceImpl.java:57"
+        note: "Backend getOrCreate behind the combo-box — the intended create path."
+      - sidecar: "(WebFetch live doc)"
+        section: "free-text owner creation"
+        cite: "user-owner-association doc, WebFetch 2026-06-03 status 200"
+        note: "Doc documents create-on-submit as intentional."
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When a user types a brand-new owner name into the form, the form warns them that submitting
+    will CREATE a new owner directory entry (so a typo does not silently pollute the shared Owner
+    directory) and applies some client-side validation (length cap / charset / trim) before submit.
+  derivation: |-
+    Senior-product-owner UX seed (is the interaction safe + intuitive?) + the feature-flow
+    free_solo facet (no max length, no charset filter, no normalisation, no "will create"
+    affordance). A product owner expects a destructive-by-accretion action to be signposted.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The freeSolo Autocomplete applies only a `required: true` rule (feature-flow scanner_review
+      F-142a: "only `required: true` rule; no charset / length / format / case normalization").
+      There is NO inline "this will create a new owner" warning, no max-length cap, no charset
+      filter (Unicode emoji / control chars / leading-trailing whitespace all accepted), and no
+      case-normalisation — so "John Smith", "john smith", and "John  Smith" (double space) all
+      mint DISTINCT owners. The user committing a typo gets no signal that they just created a
+      permanent directory entry rather than matched an existing one. (Same shape as F-018 tag
+      input + F-046 custom-metadata input.)
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:2)"
+        section: "facet free_solo_autocomplete… + scanner_review F-142a"
+        cite: "OwnerAssociationForm.tsx:167-172 (only required:true) + :190 (freeSolo)"
+        note: "Only required:true; no charset/length/format/case rule; no create-warning affordance."
+    operator_visible_failure: |-
+      (1) Directory pollution by typo: a user fat-fingers "Dat Eng" instead of selecting the
+      existing "Data Eng" and silently mints a near-duplicate owner; subsequent users searching
+      "Data Eng" miss the typo'd row, and ownership fragments across variants. (2) No undo on the
+      form — the user cannot tell, before submit, that they are about to CREATE vs MATCH. (3) The
+      backend then mints the row with no OWNER_CREATE check (the security half — PLT-125 / F-075
+      H-005). The UI-side gap (no validation, no create-warning) is the part NOT covered by the
+      backend findings; it is the F-142 free_solo facet's UX consequence and was the scanner's
+      F-142a doc-gap candidate (now doc-addressed as intentional, so it converts to a UI-hardening
+      caveat + test demand, not a doc gap).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When the form mounts, the user sees a "Maybe it's you" suggestion section seeded from their
+    own username — and this works as a helpful shortcut for deployments where usernames look like
+    person-names, degrading gracefully (no broken/empty section) where usernames are opaque.
+  derivation: |-
+    Feature-flow chain hop:2 (mount-time seed search on identity?.username, lines 131-142;
+    "Maybe it's you" rendered 203-222) + facet identity_username_used_as_search_seed. Senior-PO
+    UX seed: is the suggestion intuitive across deployment shapes?
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      On mount the form dispatches searchOwners({query: identity?.username}) WITHOUT the debounce
+      and renders matches under a "Maybe it's you" hint (feature-flow chain hop:2, lines 131-142,
+      203-222). The shortcut works well when username is `firstname.lastname`. But where username
+      is an opaque OAuth subject UUID (a common OAUTH2 deployment shape), the seed query matches
+      nothing and the hint section is empty/noise — there is no fallback copy ("we couldn't guess
+      your owner — search above"), and the user's identity string is used as a DB query with no
+      explicit "find matches like me" consent (the facet flags this as a soft, undocumented
+      assumption). So the promise holds for person-name usernames and degrades to silent-empty
+      (not broken, but unhelpful) for opaque usernames.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:2)"
+        section: "facet identity_username_used_as_search_seed + chain hop:2"
+        cite: "OwnerAssociationForm.tsx:131-142 (seed search) + 203-222 ('Maybe it's you')"
+        note: "Username-seeded suggestion; no fallback for opaque usernames; implicit consent."
+    operator_visible_failure: |-
+      In OAUTH2/opaque-subject deployments the "Maybe it's you" panel is permanently empty for
+      every user, so the only intended shortcut is dead and the user must know to type the owner
+      name unaided — with no copy explaining why the suggestion is blank. Minor, but it is the
+      difference between an intuitive first-run and a confusing one for a whole class of
+      deployments. Recommend a fallback empty-state string.
+    severity: LOW
+    confidence: MEDIUM
+    confidence_note: |-
+      MEDIUM because hops 2's component has no enriched standalone sidecar — the line cites come
+      from the feature-flow evidence block, not a file-analyser-verified sidecar (validation_gap).
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a user holds DIRECT_OWNER_SYNC, the form's submit button reads "Associate" (immediate
+    bind) and when they do not, it reads "Send a request" (admin approval) — so the user can tell
+    from the button which outcome to expect.
+  derivation: |-
+    Live doc: "The button label on the form changes from Send a request to Associate to reflect
+    the immediate effect." Feature-flow chain hop:2 (associateImmediately = isAllowedTo(
+    DIRECT_OWNER_SYNC), line 26; APPROVED short-circuit 121-127).
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `associateImmediately = isAllowedTo(DIRECT_OWNER_SYNC)` is read from usePermissions
+      (feature-flow chain hop:2, line 26) and drives both the button label and the post-submit
+      behaviour: on an APPROVED response with associateImmediately true, the form dispatches
+      setProfileOwnerName + fetchIdentity (lines 121-127), binding immediately. The live doc
+      documents the exact label swap ("Send a request" ↔ "Associate", WebFetch 2026-06-03). The
+      label is therefore an honest signal of the two outcomes. NOTE: the permission read here is
+      CLIENT-SIDE (usePermissions over the injected WithPermissionsProvider context, which is
+      non-blocking per Overview.md implicit_adr[3]); the authoritative gate is the backend
+      DIRECT_OWNER_SYNC check (controller sidecar implicit_adrs[2]) — so the label is a UX hint
+      backed by a real server-side decision, not a client-only gate.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:2)"
+        section: "chain hop:2 evidence + facet permission_provider_non_blocking…"
+        cite: "OwnerAssociationForm.tsx:26 (associateImmediately) + 121-127 (APPROVED short-circuit)"
+        note: "DIRECT_OWNER_SYNC drives label + immediate-bind dispatch."
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: "implicit_adrs[3]"
+        cite: "WithPermissionsProvider.tsx:12-49"
+        note: "Provider is context-only (non-blocking); the label is a client hint, authoritative gate is backend."
+      - sidecar: "(WebFetch live doc)"
+        section: "button label"
+        cite: "user-owner-association doc, WebFetch 2026-06-03 status 200"
+        note: "Doc documents the Send-a-request ↔ Associate label swap."
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When a user holding DIRECT_OWNER_SYNC types a brand-new owner name and clicks "Associate",
+    they are immediately bound to a newly-minted owner with no admin review — a self-mint-then-
+    self-bind that the screen presents as a one-click convenience.
+  derivation: |-
+    Feature-flow facet direct_owner_sync_branch_silently_skips_review_pipeline + chain hop:2
+    (121-129). This is the UI face of the F-075 backend privilege chain.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The form's APPROVED-branch short-circuit (feature-flow chain hop:2, lines 121-129) dispatches
+      setProfileOwnerName(ownerName) + fetchIdentity immediately when associateImmediately is true
+      and the backend returns APPROVED — no second-line confirmation ("are you sure you want to
+      associate with `prod-admin`?"), no review notification, no "you used direct-owner-sync"
+      indication. Combined with freeSolo (H-005) the user can type a never-seen name and be bound
+      to a freshly-minted owner in one click. The backend half of this chain (getOrCreate +
+      DIRECT_OWNER_SYNC branch = self-mint-then-self-bind privilege chain, severity HIGH) is
+      ALREADY OWNED by the F-075 reflection and tracked as PLT-125 (with SHB-087 cross-link); this
+      hypothesis confirms the UI presents it as a frictionless convenience with no second-line
+      affordance — the UX half of the same finding.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:2)"
+        section: "facet direct_owner_sync_branch_silently_skips_review_pipeline"
+        cite: "OwnerAssociationForm.tsx:121-129"
+        note: "Immediate setProfileOwnerName+fetchIdentity on APPROVED; no confirm dialog."
+      - sidecar: "(cross-read) feature-reflections/detail/F-075.yaml"
+        section: "H-002 + H-005 (DIRECT_OWNER_SYNC self-mint-then-self-bind)"
+        cite: "OwnerAssociationRequestServiceImpl.java:60-67 + :57"
+        note: "Backend privilege chain owned by F-075 → PLT-125; this is the UI face."
+    operator_visible_failure: |-
+      The screen offers no friction before a high-consequence action: a DIRECT_OWNER_SYNC holder
+      can bind themselves to ANY existing owner (incl. the most-privileged) or mint a new one and
+      self-bind, in one click, with no confirmation and no in-product audit affordance. The
+      backend privilege-escalation consequence is tracked (PLT-125 / F-075). The UI consequence —
+      no confirm step, no "this is immediate and unreviewed" copy — is the part this reflection
+      adds; recommend a confirmation dialog for the Associate (direct-sync) path.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    After a user's association is approved, they have a self-service way on the same screen to
+    change their owner or revoke the binding (a "Disassociate" / "switch owner" / "re-request"
+    affordance) — the lifecycle is not one-shot.
+  derivation: |-
+    Senior-product-owner customisation seed (can the user undo/change?) + feature-flow facet
+    association_lifecycle_no_revoke_no_re_request. Negative-space: a binding a user cannot undo
+    is a notable lifecycle limitation.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The state machine has NO branch for "approved-but-want-to-change" or "declined-and-want-to-
+      retry-with-the-same-name-prefilled". Branch 4 (approved) goes straight to OwnerEntitiesList
+      with no Disassociate / switch-owner / re-request control; branch 3 (declined) shows a fresh
+      form but does NOT pre-populate the previously-submitted name, and there is no history
+      affordance (feature-flow facet association_lifecycle_no_revoke_no_re_request, evidence
+      OwnerAssociation.tsx:32-89). The CURRENT live doc confirms this is the intended constraint
+      ("Once your association is approved, you have no self-service path to change or remove it …
+      ask an administrator with the `OWNER_RELATION_MANAGE` permission to remove the binding",
+      WebFetch 2026-06-03) — so the 2026-05-27 scanner finding F-142c is now doc-addressed; it is
+      a teardown-constraint to TEST and an optional UX enhancement, not a doc gap. Revocation
+      exists only on the ADMIN side (DELETE /api/owners/mapping/{owner_id}, controller sidecar
+      operations) which the end user cannot reach.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:1)"
+        section: "facet association_lifecycle_no_revoke_no_re_request"
+        cite: "OwnerAssociation.tsx:32-89 (no revoke/re-request branch)"
+        note: "One-shot lifecycle; no self-service change/revoke; declined form not prefilled."
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "operations + security.authorization_assertions"
+        cite: "OwnerAssociationRequestController.java:74-79 (DELETE /api/owners/mapping → OWNER_RELATION_MANAGE)"
+        note: "Revoke is admin-only (OWNER_RELATION_MANAGE); not reachable by the end user."
+      - sidecar: "(WebFetch live doc)"
+        section: "post-approval disassociation"
+        cite: "user-owner-association doc, WebFetch 2026-06-03 status 200"
+        note: "Doc confirms no self-service change/remove — admin must do it."
+    operator_visible_failure: |-
+      (1) A user who bound to the wrong owner (typo, or picked the wrong team) is stuck on screen —
+      their only recourse is to find and message an admin holding OWNER_RELATION_MANAGE; the home
+      page offers no hint of this path. (2) A declined user retyping their name starts from scratch
+      with no recollection of what they previously submitted. (3) No "you've previously requested X,
+      declined on <date>" history. The behaviour is documented (doc-addressed) so this is a
+      teardown-constraint to pin with a test + an optional self-service-revoke UX enhancement, not
+      a correctness bug.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When an operator INTENDS to enable authentication but the auth.type value is malformed
+    (lowercase 'disabled', a typo like 'OUATH2', leading whitespace, or empty), the association
+    workflow behaves predictably and safely — it does NOT render an apparently-working binding
+    form on a deployment that has no security filter wired.
+  derivation: |-
+    Feature-flow drift owner_association_predicate_string_equality_disabled… + Overview.md bugs[0]
+    (HIGH). The entry gate is Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED') with
+    no enum validation at either layer.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The gate (Overview.tsx:25-27) is a raw case-sensitive string-equality against the single
+      literal 'DISABLED' with no normalisation and no enum validation, and the backend AppInfo
+      consumer (AppInfoController.java:18) has no @Value default and no enum constraint (Overview.md
+      bugs[0]; PLT-077). The four misconfiguration scenarios produce opposite-and-surprising
+      outcomes: (a) AUTH_TYPE='' → gate false → form HIDDEN even though the operator meant to
+      enable auth (and every @ConditionalOnProperty fails → NO SecurityWebFilterChain wired); (b)
+      AUTH_TYPE='OUATH2' (typo) → gate TRUE → form RENDERS on a deployment with no security filter
+      — a brand-new user "successfully" requests/auto-binds an owner on an unauthenticated platform;
+      (c) AUTH_TYPE='disabled' lowercase / (d) ' DISABLED' whitespace → gate TRUE → form shows even
+      though the operator's clear intent was to DISABLE auth. No console.warn, no fallback render,
+      no diagnostic. The two layers (no backend default + no SPA enum validation) compound.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: "bugs_limitations_corner_cases[0] + invariants"
+        cite: "Overview.tsx:25-27 + AppInfoController.java:18"
+        note: "Case-sensitive string-equality gate; no @Value default; no enum validation — four misconfig outcomes."
+    operator_visible_failure: |-
+      (1) Silent insecure deployment: a typo'd auth.type wires NO SecurityWebFilterChain, yet the
+      association form renders and a user binds an owner — the operator looking at a working-looking
+      home page has no signal the platform is unauthenticated (HIGH; the worst case in the F-001/
+      F-142 gate-mis-gating family). (2) Silent hidden form: empty auth.type hides the workflow
+      entirely, so new users on a deployment the operator MEANT to secure cannot request association
+      and conclude the feature is broken. The root (auth.type unvalidated at both layers) is already
+      tracked as PLT-077; this hypothesis confirms the user-facing consequence ON THIS WORKFLOW
+      (the association form is one of the two surfaces the broken gate flips).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: |-
+    When the autocomplete is opened and the user types within 500ms of the mount-time
+    "Maybe it's you" seed fetch, the dropdown settles deterministically on the user-input results
+    (it does not jitter, flicker the seed results back, or lose the user's typed query to a
+    late-arriving seed response).
+  derivation: |-
+    Feature-flow facet debounce_5_hundred_ms_on_open_autocomplete_first_keystroke_can_race_initial
+    _seed_fetch (ui_unverified=true; timing-dependent) — the mount seed fetch is un-debounced while
+    user input is debounced 500ms, so two fetches race.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The mount-time seed search runs WITHOUT the debounce (feature-flow chain hop:2, lines 131-142)
+      while user-input search is wrapped in useDebouncedCallback(..., 500) (lines 46-63), and the
+      open-useEffect (lines 114-119) re-triggers under the debounce. Two promises (immediate seed +
+      deferred user input) can resolve in either order; the merge/replace behaviour in the dropdown
+      is not defensively coded (feature-flow facet — "if both promises resolve in unexpected order,
+      the dropdown jitters"). Whether the user-visible dropdown actually jitters/loses-query is
+      timing-dependent and cannot be settled from the code alone — it requires running the component
+      with artificial latency injected on the two fetches.
+    evidence:
+      - sidecar: "(feature-flow inline evidence — hop:2)"
+        section: "facet debounce_5_hundred_ms… (ui_unverified=true)"
+        cite: "OwnerAssociationForm.tsx:46-63 (debounce) + 131-142 (un-debounced seed) + 114-119 (open useEffect)"
+        note: "Un-debounced seed races debounced user input; merge order not defensively coded."
+    operator_visible_failure: |-
+      IF the race materialises: the user types a query, the dropdown briefly shows their results,
+      then a late seed response replaces them with "Maybe it's you" suggestions (or vice-versa),
+      and the user either picks the wrong option or re-types — a confusing first-run on the most
+      important field of the form. Severity pending the probe outcome.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-142-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-142-1"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-011
+  severity: HIGH
+  one_line: |-
+    Malformed auth.type (typo/lowercase/whitespace) makes the association form RENDER on a
+    deployment with no SecurityWebFilterChain wired — a user binds an owner on an unauthenticated
+    platform; empty auth.type hides the form on a deployment meant to be secured.
+  dedup_status: already_tracked
+  tracked_as: PLT-077
+  proposed_fix_anchor: |-
+    Root tracked at PLT-077 (AppInfoController.java:18 @Value default + enum validation, and/or
+    Overview.tsx:25-27 normalise+validate authType against the DISABLED|LOGIN_FORM|OAUTH2|LDAP
+    enum). This reflection adds the F-142-workflow consequence as a cross-link, not a new item.
+
+### caveat_candidates
+- hypothesis_id: H-006
+  one_line: |-
+    The home-page association form's freeSolo owner field has no "this will create a new owner"
+    warning, no length/charset/trim validation, and no case-normalisation — a user typo silently
+    mints a near-duplicate Owner.
+  dedup_status: net_new
+  distinct_from: PLT-125
+  distinct_note: |-
+    PLT-125 / F-075 H-005 own the BACKEND security half (getOrCreate mints without OWNER_CREATE;
+    privilege chain). This is the UI-side UX half — no client-side validation + no create-warning
+    affordance on the home-page OwnerAssociationForm. Also distinct from PLT-039 (the MANAGEMENT-
+    side admin direct-bind form OwnerAssociationForm.tsx:62-76, a different file/locus) and PLT-052
+    defect 4 (freeSolo on the filters MultipleFilterItemAutocomplete). The scanner's F-142a was a
+    doc-gap candidate now doc-addressed (doc documents create-on-submit as intentional) → converts
+    to a UI-hardening caveat + functional test demand.
+  recommended_log_as: "caveat in user-owner-association doc (UI validation note) + UI-hardening backlog item; cross-link PLT-125"
+- hypothesis_id: H-007
+  one_line: |-
+    The "Maybe it's you" username-seed suggestion is permanently empty for opaque-subject (OAUTH2
+    UUID) usernames with no fallback copy — the only intended shortcut is dead for a whole class of
+    deployments.
+  dedup_status: net_new
+  recommended_log_as: "caveat in user-owner-association doc (suggestion works only for person-name usernames) + optional empty-state copy"
+- hypothesis_id: H-009
+  one_line: |-
+    The Associate (DIRECT_OWNER_SYNC) path binds immediately on one click with no confirmation
+    dialog and no in-product 'this is immediate and unreviewed' affordance.
+  dedup_status: net_new
+  distinct_from: PLT-125
+  distinct_note: |-
+    PLT-125 / F-075 own the backend self-mint-then-self-bind privilege chain (security). This is
+    the UI-friction half — no confirm step on a high-consequence one-click bind. Recommend a
+    confirmation dialog for the direct-sync Associate action.
+  recommended_log_as: "UI-hardening backlog item (confirm dialog for direct-sync Associate); cross-link PLT-125 / F-075"
+- hypothesis_id: H-010
+  one_line: |-
+    No self-service disassociate / switch-owner / re-request on the home page after approval or
+    decline; declined form is not prefilled; no request history. Documented behaviour (doc-addressed).
+  dedup_status: net_new
+  distinct_from: PLT-132
+  distinct_note: |-
+    PLT-132 owns the orphan-rows-on-owner-delete backend cascade. This is the UI lifecycle gap
+    (no self-service revoke/re-request affordance). The scanner's F-142c was a doc-gap candidate
+    now doc-addressed (doc documents no-self-service-disassociate) → converts to an optional
+    self-service-revoke UX enhancement + functional test demand pinning the documented constraint.
+  recommended_log_as: "optional UX enhancement backlog item (self-service revoke/re-request); behaviour already documented"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — the promise layer. Every CONFIRMED/PARTIAL/CONTRADICTED/PROBE-NEEDED promise
+# with NO test becomes a missing-functional TEST-GAP candidate. F-142 sits at 0/12 verified promises:
+# the form/state-machine components have ZERO .test.tsx (Glob over OwnerAssociation/**/*.test.tsx →
+# none) and the only backend service test (OwnerAssociationRequestServiceImplTest) covers F-171's
+# admin-decline-nonexistent path, NOT any F-142 user-facing promise.
+- use_case_id: F-142-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "New user (identity, no ownership, no request) → home page shows the association request form."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-001)"
+  proposed_test: "RTL test: render OwnerAssociation with identity set, ownership null, requestStatus null → asserts OwnerAssociationForm renders (branch 1)."
+- use_case_id: F-142-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "Request PENDING → home page shows the 'request being checked' waiting screen."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-002)"
+  proposed_test: "RTL test: render with requestStatus=PENDING → asserts waiting screen (branch 2), not form, not panel."
+- use_case_id: F-142-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "Request DECLINED → banner above a fresh form; X-dismiss does NOT persist across remount."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-003)"
+  proposed_test: "RTL test: render with requestStatus=DECLINED → asserts banner+form (branch 3); click X hides banner; remount re-shows banner (showRejectMsg local state)."
+- use_case_id: F-142-UC-004
+  hypothesis_id: H-004
+  kind: render
+  promise: "Approved (identity && ownership) → home page transitions to the 4-column OwnerEntitiesList Recommended panel."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-004)"
+  proposed_test: "RTL test: render with identity && ownership → asserts OwnerEntitiesList (branch 4) renders + the four fetch thunks dispatch on mount."
+- use_case_id: F-142-UC-005
+  hypothesis_id: H-005
+  kind: resolve-later
+  promise: "Owner field is a select-or-create combo-box; submitting a never-seen name creates that owner (intended pattern)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-005)"
+  proposed_test: "RTL test: type a novel name into the freeSolo Autocomplete → the typed value is offered as a committable option and submit carries OwnerFormData{name}."
+- use_case_id: F-142-UC-006
+  hypothesis_id: H-006
+  kind: grammar
+  promise: "Typing a novel owner name warns 'this will create a new owner' and validates length/charset/trim before submit."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-006) — regression guard for the UI-hardening fix"
+  proposed_test: "RTL test: type a name with trailing whitespace / a name matching no owner → asserts a create-warning is shown AND (post-fix) the value is trimmed/length-capped before submit."
+- use_case_id: F-142-UC-007
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "'Maybe it's you' suggestion seeds from username and shows a graceful empty-state when no match (opaque usernames)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-007)"
+  proposed_test: "RTL test: mount with a username that matches no owner → asserts a fallback empty-state copy (post-fix) rather than a blank section."
+- use_case_id: F-142-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "DIRECT_OWNER_SYNC holder sees 'Associate'; everyone else sees 'Send a request'."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-008)"
+  proposed_test: "RTL test: render with usePermissions→isAllowedTo(DIRECT_OWNER_SYNC)=true → button reads 'Associate'; false → 'Send a request'."
+- use_case_id: F-142-UC-009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "DIRECT_OWNER_SYNC Associate path requires a confirmation before an immediate, unreviewed bind."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-009) — guards the confirm-dialog UX fix"
+  proposed_test: "RTL test: with DIRECT_OWNER_SYNC, click Associate on a novel name → asserts a confirmation step (post-fix) before setProfileOwnerName dispatches."
+- use_case_id: F-142-UC-010
+  hypothesis_id: H-010
+  kind: teardown-constraint
+  promise: "After approval, no self-service disassociate/switch/re-request affordance on the home page (documented constraint)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-010) — pins the documented one-shot lifecycle"
+  proposed_test: "RTL test: render branch 4 (approved) → asserts NO Disassociate/switch/re-request control is present (pins current documented behaviour; RED if a self-service revoke is added without updating the doc)."
+- use_case_id: F-142-UC-011
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "Malformed auth.type does not render the association form on an unauthenticated deployment."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-142-UC-011) — regression guard for the PLT-077 fix"
+  proposed_test: "RTL/unit test on the gate: assert isShowOwnerAssociation is false for '', 'disabled', ' DISABLED', and (post-fix) for unrecognised values like 'OUATH2' (with a diagnostic), and true only for LOGIN_FORM|OAUTH2|LDAP."
+- use_case_id: F-142-UC-012
+  hypothesis_id: H-012
+  kind: render
+  promise: "Opening the autocomplete and typing within 500ms of the seed fetch settles deterministically (no jitter)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-142-1 (timing-dependent; local Playwright with injected latency)"
+  proposed_test: "Probe PENDING-F-142-1 — Playwright with artificial latency on the two fetches; assert the dropdown does not flicker the seed results back over user input."
+
+### probes_emitted
+- probe_id: PENDING-F-142-1
+  hypothesis_id: H-012
+  emitted_by: feature-reflector
+  status: pending-reflection-verification
+  local_execution: "local Playwright/Puppeteer against a docker-compose odd-platform with injected network latency on /api/owners search; no remote infra"
+  expected_outcome: |-
+    "When the autocomplete is opened and the user types within 500ms of the mount-time
+    'Maybe it's you' seed fetch, the dropdown settles deterministically on the user-input results
+    (it does not jitter, flicker the seed results back, or lose the user's typed query to a
+    late-arriving seed response)." (H-012 verbatim)
+  note: |-
+    PARALLEL-SAFE MODE: recorded here only; no P-NNN file created. The race is between the
+    un-debounced mount seed fetch (OwnerAssociationForm.tsx:131-142) and the 500ms-debounced
+    user-input fetch (lines 46-63). Inject ~800ms latency on the seed fetch, type immediately on
+    open, observe dropdown order.
+
+### validation_gaps
+- sidecar: "(hops 1-2: OwnerAssociation.tsx / OwnerAssociationForm.tsx)"
+  field_insufficient: "no enriched standalone file-analyser sidecar exists for the state-machine root (hop:1) or the request form (hop:2); both chain hops carry sidecar: unresolved"
+  proposed_refresh: |-
+    Rule 9 note: this is NOT an API-only reflection — the feature-flow's chain hops 1-3 carry
+    verbatim line-cited UI evidence (OwnerAssociation.tsx / OwnerAssociationForm.tsx /
+    OwnerEntitiesList.tsx) and the Overview.md sidecar covers the outer gate richly, so the
+    user-facing surface IS analysed. BUT the two load-bearing components (the 4-branch state
+    machine and the freeSolo form) have no standalone enriched sidecar, so several verdicts
+    (notably H-007, H-012) rest on feature-flow evidence lines rather than file-analyser-verified
+    sidecar fields. Next file-analyser pass should enrich react-component:OwnerAssociation and
+    react-component:OwnerAssociationForm as standalone sidecars (Stress Protocol Category F on the
+    OwnerFormData{name} payload + the debounce/seed race) so hops 1-2 graduate from unresolved.
+- sidecar: "(hop:4 backend) odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md"
+  field_insufficient: "tests_coverage_semantic.gaps states 'no OwnerAssociationRequestControllerTest.java' (captured at commit 9ac6436e); a service-level test (OwnerAssociationRequestServiceImplTest) has since been ADDED but covers only F-171's updateOwnerAssociationRequest-nonexistent path"
+  proposed_refresh: |-
+    Refresh the controller sidecar's tests_coverage_semantic at the current commit: record
+    OwnerAssociationRequestServiceImplTest.updateOwnerAssociationRequest_nonExistentRequest_errorsNotFound
+    (validates F-171) as covered, and re-confirm there is still no @WebFluxTest controller test and
+    no service test of the createOwnerAssociationRequest (PENDING vs DIRECT_OWNER_SYNC) branches —
+    the F-142 user-facing write path remains untested at every layer.
+
+### doc_drift_findings
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "Declined-banner non-persistence + no decline-reason are now documented (WebFetch 2026-06-03)."
+  code_does: "Matches — showRejectMsg local useState(true), no persistence, no decline-reason surface (OwnerAssociation.tsx:28,61-82)."
+  recommended_log_as: "NO doc gap — the live doc has been updated since SR-20260527 (scanner finding F-142b is doc-addressed). Resolve/close F-142b as superseded by the doc update."
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "Free-text owner creation on submit is now documented as intentional (WebFetch 2026-06-03)."
+  code_does: "Matches — freeSolo + getOrCreate creates the owner on submit (OwnerAssociationForm.tsx:190 + OwnerAssociationRequestServiceImpl.java:57)."
+  recommended_log_as: "NO doc gap for the create behaviour itself (F-142a doc-addressed). The UI-side validation/create-warning gap (H-006) remains as a UI-hardening caveat. Resolve F-142a's create-on-submit half; keep the validation caveat."
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "DIRECT_OWNER_SYNC + the 'Send a request' ↔ 'Associate' button label are now documented (WebFetch 2026-06-03)."
+  code_does: "Matches — associateImmediately drives the label + immediate bind (OwnerAssociationForm.tsx:26,121-127)."
+  recommended_log_as: "NO doc gap — the live doc now documents DIRECT_OWNER_SYNC (the controller sidecar's surfaces_new doc-drift on DIRECT_OWNER_SYNC absence is partially resolved for the USER-facing label; the MANUAL-mapping flow + activity-endpoint absences in the controller sidecar remain separate, owned by that sidecar's doc_drift_findings)."
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "No self-service disassociate (admin OWNER_RELATION_MANAGE only) is now documented (WebFetch 2026-06-03)."
+  code_does: "Matches — no revoke/re-request branch; revoke is admin DELETE /api/owners/mapping (OwnerAssociation.tsx:32-89 + controller operations)."
+  recommended_log_as: "NO doc gap — F-142c is doc-addressed. Resolve/close F-142c as superseded by the doc update; the self-service-revoke UX enhancement remains optional."
+- hypothesis_id: H-000-MODAL
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "Now states it is 'not a modal dialog and has no overlay … appears inline as the last block on the page' (WebFetch 2026-06-03)."
+  code_does: "Matches — inline section at the bottom of the Catalog Overview shell (Overview.tsx:53-58), not a modal."
+  recommended_log_as: "NO doc gap — the scanner's F-142d (live doc said 'modal dialog') is doc-FIXED. Resolve/close F-142d as superseded by the doc update."
+
+## maintainer_notes
+
+(none — net-new reflection; no maintainer-curated entries to preserve)

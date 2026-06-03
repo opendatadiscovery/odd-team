@@ -1,0 +1,625 @@
+---
+feature_id: F-121
+pillar_anchored_id: P-08:F-015
+pillar: "P-08 Management & Administration (Platform-Internal Operational Infrastructure — pending-canonicalisation)"
+feature_name: "Scheduled-Job Executor Architecture — four jobs share one thread silently"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__config__config-class__SchedulingConfiguration.md
+  - odd-platform__java__service__service__HousekeepingJobManager.md
+  - odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md   # cited for the partition-retention coupling (cron-misfire blast radius); not the executor itself
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Re-verified live this session (HTTP 200). The five EXECUTOR-ARCHITECTURE facets
+      that define F-121 remain ABSENT from the live page: (1) no `spring.task.scheduling.pool.size`
+      key; (2) no statement that the four @Scheduled jobs share ONE thread / run sequentially;
+      (3) no cron-misfire / queue-behind-long-job behaviour; (4) no graceful-shutdown /
+      await-termination coverage; (5) no Micrometer/Prometheus metrics for ShedLock acquisition
+      or executor queue depth. CONVERSELY, the F-010-family facets the page DID gain via
+      DOC-250 (done) ARE present: the housekeeping section now enumerates "five cleanup
+      tasks" (not three) and DOES carry the session-housekeeping "no @SchedulerLock /
+      no leader-election guard" INFO caveat cross-linking the Advisory-lock registry.
+      Net: the EXECUTOR architecture (this feature) is undocumented; the JOB SEMANTICS
+      (F-010) are documented. The two features cover different boundaries (per F-121
+      notes_for_maintainer: F-010 names WHAT runs, F-121 names HOW the executor schedules).
+hypothesis_summary:
+  total: 11
+  confirmed: 3
+  contradicted: 3
+  partial: 4
+  probe_needed: 1
+  probes_emitted_count: 2   # PENDING-F-121-1 (H-003, verdict probe-needed) + PENDING-F-121-2 (H-006, verdict partial-with-probe)
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "An operator who deploys 4 background jobs expects them to run in parallel; by Spring Boot's default poolSize=1 (no spring.task.scheduling.pool.size, no TaskScheduler bean) all four share ONE thread and serialise — a 14-min housekeeping cycle delays the 10-min status-switch indefinitely, undocumented and unmetered."
+related_feature_flows: [F-010, F-044, F-007, F-021]
+related_concepts:
+  - "housekeeping-ttl-retention"
+  - "202-queue-postgres-advisory-lock-single-sender-pattern"
+  - "activity-table-partitioning"
+related_drift_classes:
+  - single_thread_executor_default_undocumented
+  - cron_misfire_partition_creation_blocked_behind_housekeeping
+  - session_housekeeping_lacks_schedulerlock_asymmetric_pattern
+  - defaultlockatmostfor_one_hour_dead_code
+  - graceful_shutdown_lock_held_for_lockatmostfor_window
+  - no_lockprovider_or_executor_micrometer_metrics
+new_drift_classes_proposed:
+  - partition_creation_double_coverage_boot_postconstruct_plus_nightly_cron_blunts_cron_misfire_blast_radius
+---
+
+# Scheduled-Job Executor Architecture — product-owner reflection
+
+## product_owner_narrative
+
+This feature is not a screen — it is the **scheduled-job executor**: the boot-time wiring (`SchedulingConfiguration`, 26 lines) that turns on the platform's entire background-task subsystem with `@EnableScheduling` + `@EnableSchedulerLock(defaultLockAtMostFor="1h")` + a PostgreSQL-backed `LockProvider` bean, and the four `@Scheduled` jobs that run on top of it: housekeeping (`fixedRate=15min`), data-entity status-switch (`fixedRate=10min`), partition-creation (`cron 0 1 0 * * *`, daily 00:01), and session-housekeeping (`fixedRate=1h`) (per SchedulingConfiguration:12-26). The "user" here is the **platform-operator** audience of pillar P-08 — the engineer sizing a multi-replica Kubernetes deployment, setting Helm values, and reading `/actuator/prometheus`. Their "screen" is `application.yml`, the deployment manifest, and the metrics endpoint; there is no React surface to this feature, which is the correct and complete shape of an operational-infrastructure feature (see the validation_gap below — this is operator-facing, not GUI-facing).
+
+The operator interacts with this feature in three ways. First, by **not touching it**: the executor ships with zero `spring.task.scheduling.*` keys and no `@Bean TaskScheduler`, so Spring Boot's default `ThreadPoolTaskScheduler` (`poolSize=1`) is the deployed reality and every background job runs on one thread (per SchedulingConfiguration invariants; `grep TaskScheduler` and `grep spring.task` against the repo both return zero matches, recorded in the sidecar). Second, by **scaling replicas**: ShedLock arbitrates a PostgreSQL `shedlock`-table row per `@SchedulerLock` name so only one replica runs each guarded job per window, using `.usingDbTime()` to neutralise clock skew between replicas (per SchedulingConfiguration:22 + implicit_adrs[0]). Third, by **tuning retention**: the `housekeeping.ttl.*` and `odd.activity.partition-period` keys govern WHAT the jobs delete/create — but those are F-010's and the Activity-Feed's boundary, not this feature's.
+
+The working parts an operator would want explained: (a) three of the four jobs are ShedLock-guarded with explicit lock windows (housekeeping 14m/14m, status-switch 9m/9m, partition-creation 10m/10m); (b) the fourth — session-housekeeping — has `@Scheduled` but NO `@SchedulerLock`, so it runs on every replica every hour unguarded (per SchedulingConfiguration:34 + HousekeepingJobManager coupling); (c) the platform-level `@EnableSchedulerLock(defaultLockAtMostFor="1h")` is currently DEAD CODE — all three guarded jobs set their own `lockAtMostFor`, so the 1h default applies to zero methods today (per SchedulingConfiguration:43 + bugs_limitations_corner_cases[2]); (d) partition-creation runs not only on the nightly cron but ALSO at boot via `@PostConstruct` behind the leader-election advisory lock (`leaderElectionManager.acquire(activityLockId)`), confirmed by reading `partition/PostgreSQLPartitionCreationJob.java:29-51` and the ADR-0028 pin (`AdrPartitionLifecycleScanTest`) — this is the load-bearing fact that blunts the cron-misfire blast radius the feature-flow headline fears.
+
+The integration story: this executor is the infrastructure beneath F-010 (Housekeeping TTL Enforcement — WHAT the 15-min cycle deletes), the Activity-Feed partition lifecycle (P-07, the daily partition CREATE that keeps `activity`/`message` INSERTs working), and the soft-delete model (ADR-0058 — the 10-min status-switch job advances `isSwitchable` entities to `DELETED`). A failure of the executor's scheduling guarantees is a silent failure of all three: housekeeping that quietly drifts off-cadence, a partition that is created late, a status-switch that is delayed (per cross_pillar_relationships P-07 on the feature-flow + ADR-0058 realises clause).
+
+Edge cases an operator would hit in production and which the docs are silent on: a rolling deployment (`kubectl delete pod`) mid-housekeeping interrupts the in-flight jOOQ transaction (safe — it rolls back) but leaves the `shedlock` row held until `lockAtMostFor` (~14min) expires, so no replica runs housekeeping during that window (per SchedulingConfiguration bugs[3]); a heavy housekeeping backlog that overruns 14 minutes can release the lock before the transaction commits and let a second replica acquire at the 15-minute mark (per HousekeepingJobManager invariants — the 60-second slack); and the complete absence of any Micrometer surface means the operator answering "is replica B failing to acquire because replica A is holding?" has only raw SQL against the `shedlock` table (per SchedulingConfiguration bugs[5] + performance.known_performance_gaps[1]).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator deploys the platform with the four background jobs and does not set any thread-pool configuration, the jobs run on independent threads so a long-running housekeeping cycle does NOT delay the status-switch or partition-creation jobs."
+  derivation: "An operator's default mental model for 'four scheduled jobs' is parallelism; the executor architecture is the feature whose name promises a working scheduler. Tested against the absence of spring.task.scheduling.pool.size and any TaskScheduler bean."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      All four @Scheduled jobs share ONE thread. SchedulingConfiguration declares no
+      `@Bean TaskScheduler`; application.yml ships zero `spring.task.scheduling.*` keys
+      (both verified by grep in the sidecar). Spring Boot's `TaskSchedulerBuilder` therefore
+      builds a `ThreadPoolTaskScheduler` with `poolSize=1`. The four jobs (housekeeping 15m,
+      status-switch 10m, partition-creation daily, session-housekeeping 1h) execute serially:
+      when two are due at the same instant, the second waits for the first to finish. A
+      14-minute housekeeping cycle delays the 10-minute status-switch by up to 14 minutes;
+      under a sustained backlog the status-switch cadence drifts from 10min toward 24min+.
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "concepts.invariants[0] + bugs_limitations_corner_cases[0] + stress_findings.tunables[ThreadPoolTaskScheduler.poolSize]"
+        cite: "SchedulingConfiguration.java:12-26 (no @Bean TaskScheduler) + application.yml (zero spring.task.* keys)"
+        note: "Single-thread default mechanically derived from absence-of-config; grep TaskScheduler + grep spring.task both return zero."
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: "performance.scaling_characteristics + bugs[3]"
+        cite: "HousekeepingJobManager.java:25-26 (fixedRate=15m, lock 14m)"
+        note: "The 14-min cycle is the concrete delayer of the 10-min status-switch on the shared thread."
+    operator_visible_failure: |
+      (1) Cadence drift: an operator who set status-switch to run every 10 minutes finds
+      soft-deletes auto-advancing on a 14-24min cadence instead, because housekeeping holds
+      the only thread. (2) The mitigation is one line — `spring.task.scheduling.pool.size: 4`
+      — but it is documented NOWHERE (live-verified absent 2026-06-03), so an operator
+      cannot discover it without reading Spring Boot internals. (3) No metric exposes the
+      contention, so the drift is invisible until a downstream symptom (late partition,
+      stale soft-delete) appears. The fix proposal is doc + a one-line YAML default, NOT a
+      code redesign — hence routes to BOTH a caveat (document the default + the knob) and
+      a bug-candidate for shipping the explicit pool size.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator scales the platform to N replicas, each ShedLock-guarded background job (housekeeping, status-switch, partition-creation) runs on exactly ONE replica per scheduled window — never concurrently on two replicas."
+  derivation: "@EnableSchedulerLock + the JdbcTemplateLockProvider promise multi-instance coordination; the operator scaling replicas relies on this to avoid duplicate destructive work."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The guarantee holds for the COMMON case via PostgreSQL atomic INSERT-OR-UPDATE on the
+      `shedlock(name)` PK with `.usingDbTime()` (only one replica wins a given lock name;
+      clock skew is neutralised because lock_until comes from PG's now()). BUT the housekeeping
+      job's lock window (`lockAtLeastFor=lockAtMostFor=14m`) is only 60 seconds below its
+      `fixedRate=15m`. A cycle that runs >=14 minutes (a DataEntityHousekeepingJob cascade over
+      a large soft-delete backlog, worsened by the `.block()` on S3 deletes) releases the lock
+      BEFORE the transaction commits; a second replica can acquire at the 15-minute mark while
+      the first is still committing — two concurrent housekeeping runs. Single-thread per
+      replica prevents intra-JVM concurrency; ShedLock prevents inter-replica concurrency ONLY
+      while the lock is held, and the 14m/15m ratio makes the held-window narrowly short.
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "stress_findings.resource_boundaries[lock] + implicit_adrs[0]"
+        cite: "SchedulingConfiguration.java:18-25 (.usingDbTime LockProvider) + V0_0_52__introduce_housekeeping.sql:10-18 (shedlock PK)"
+        note: "Atomic lock acquisition is the confirmed half — only one replica wins per name."
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: "bugs_limitations_corner_cases[3] + performance.scaling_characteristics"
+        cite: "HousekeepingJobManager.java:25-26 (fixedRate=15m vs lockAtMostFor=14m — 60s slack)"
+        note: "The narrow window is the partial-failure half — a >=14m cycle is the breach condition."
+    operator_visible_failure: |
+      For an operator at single-replica or light-load scale: no observable failure (the
+      lock holds for any sub-14-minute cycle). For an operator at multi-replica + heavy
+      soft-delete throughput: a >=14-minute housekeeping cycle can run concurrently on two
+      replicas — AlertHousekeepingJob/SearchFacetsHousekeepingJob DELETEs are idempotent, but
+      DataEntityHousekeepingJob's SELECT-then-cascade-DELETE could read divergent snapshots.
+      The contract silently relies on operators sizing the backlog to keep cycles below 14
+      minutes, which is undocumented. A safer `lockAtMostFor >= 2 x fixedRate` (e.g. 30m) is
+      the fix; document the current fragility as a caveat in the interim.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When two replicas race to acquire the same ShedLock-guarded job at the same wall-clock instant, only one acquires the lock and the loser no-ops cleanly (no error surfaced to the operator)."
+  derivation: "The multi-instance lock-race correctness is the single most load-bearing property of the whole subsystem in a multi-replica deployment; the SchedulingConfiguration sidecar flagged it PROBE-NEEDED (P-182)."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static analysis says PG's atomic INSERT-OR-UPDATE on shedlock(name) PK with usingDbTime
+      guarantees exactly one winner; the loser receives Optional.empty() from the LockProvider
+      and the @SchedulerLock AOP no-ops the method body. But the simultaneous-boot two-JVM race
+      is not exercised by any test and not empirically verified — the SchedulingConfiguration
+      sidecar emitted P-182 specifically to lock in this contract for regression detection.
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "stress_findings.probes_emitted[P-182] + tests_coverage_semantic.uncovered_behaviours"
+        cite: "SchedulingConfiguration.java:18-25"
+        note: "No multi-instance test exists; the contract is asserted statically only."
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-121-1
+    routes_to_finding: validation-gap
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When an operator names the platform-level annotation `@EnableSchedulerLock`, every @Scheduled job in the platform is protected by a distributed lock (so the name 'enable scheduler lock' means what it says)."
+  derivation: "The annotation NAME promises platform-wide lock enablement; Category-F-style name-vs-implementation check on a boot-time annotation."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `@EnableSchedulerLock` imports the ShedLock AOP advisor only — it makes `@SchedulerLock`
+      OPT-IN per method. It does NOT auto-lock bare @Scheduled methods. The
+      PostgreSQLSessionHousekeepingJobHandler.deleteExpiredSessions() job is @Scheduled
+      (fixedRate=1h) with NO @SchedulerLock, so it runs UNLOCKED on every replica every hour,
+      in direct contradiction to the apparent scope of the platform-level annotation. The name
+      promises "enable scheduler lock"; the mechanism is "enable scheduler-lock AOP — opt in
+      per method." (Confirmed by reading PostgreSQLSessionHousekeepingJobHandler.java:10-19.)
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "stress_findings.name_behavior_pairs[@EnableSchedulerLock] (drift: MINOR) + concepts.invariants[1]"
+        cite: "SchedulingConfiguration.java:14 + PostgreSQLSessionHousekeepingJobHandler.java:13-18"
+        note: "The sidecar explicitly classified this as a name-vs-implementation MINOR drift."
+    operator_visible_failure: |
+      An operator (or a future maintainer) reading `@EnableSchedulerLock` at the top of the
+      config class reasonably concludes all scheduled work is leader-elected. It is not: the
+      hourly session purge runs N times on N replicas. Today the DELETE-by-expired-timestamp
+      is idempotent so this is operationally harmless (wasted DB load only), but the
+      inconsistency is a debugger/incident-response trap and a copy-paste hazard for the next
+      @Scheduled method added without @SchedulerLock. This is the SAME defect tracked as
+      PLT-083 Defect 2 (code fix) and DOC-250 Caveat 4 (doc, done) — see dedup below.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: verified
+    test_ref: "config.FeatureGatingDefaultsTest (asserts the gating-default family; session-lock asymmetry is documented via DOC-250 and code-tracked via PLT-083)"
+
+- id: H-005
+  hypothesis: "When an operator runs the session-housekeeping purge on N replicas, the platform purges expired Spring sessions exactly once per hour (coordinated), like the other three scheduled jobs."
+  derivation: "Pillar consistency — the operator's mental model from the documented 'advisory-lock everywhere' pattern is that all scheduled DB-mutating work is coordinated."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Every replica runs `job.runHousekeeping().block()` (DELETE FROM SPRING_SESSION WHERE
+      expiry_time < now()) every hour with no coordination, because the handler has no
+      @SchedulerLock and joins no advisory-lock-id. N replicas = N hourly purge queries.
+      (Confirmed by reading PostgreSQLSessionHousekeepingJobHandler.java:13-18.) The deletes
+      are idempotent so correctness holds; the cost is N-fold redundant DB load, and the
+      contract is inconsistent with the platform's documented advisory-lock registry.
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "security.known_security_gaps[0] + dependencies_semantic.coupling[asymmetric]"
+        cite: "PostgreSQLSessionHousekeepingJobHandler.java:13-18 (no @SchedulerLock)"
+        note: "Source-read confirms the bare @Scheduled; downstream_side_effects records multiplicity=0 lock-provider invocations for this trigger."
+    operator_visible_failure: |
+      Multi-replica `INTERNAL_POSTGRESQL` deployments incur N-fold hourly DELETE load on
+      SPRING_SESSION. With the default `spring.session.timeout: -1` (never-expire) the job is
+      a no-op today, so the cost only surfaces the moment an operator sets a finite timeout —
+      a delayed-onset surprise. SAME defect as H-004 from the load angle; tracked as PLT-083
+      Defect 2 + DOC-250 Caveat 4 (done) + DOC-GAP-227. Dedup: already_tracked.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: verified
+    test_ref: "documented as DOC-250 Caveat 4 (done, live-verified 2026-06-03); code fix tracked PLT-083"
+
+- id: H-006
+  hypothesis: "When a daily partition-creation cron (00:01) is queued behind a long-running housekeeping cycle on the shared single thread and slides past the next day's first-use window, INSERTs against the activity/message tables fail with 'no partition exists for the given key'."
+  derivation: "The feature-flow's headline terminal_side_effect + drift_class cron_misfire_partition_creation_blocked_behind_housekeeping; the SchedulingConfiguration sidecar emitted P-183 for the cron-misfire mechanics."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The cron-misfire MECHANISM is real: Spring's default missed-task behaviour is
+      queue-and-execute-ASAP (not skip), and the single-thread executor means a >00:01 housekeeping
+      overrun queues the partition cron (PROBE-NEEDED P-183 for the empirical timing). HOWEVER
+      the BLAST RADIUS the feature-flow fears (INSERT failures) is materially blunted by a fact
+      the feature-flow chain omits: `PostgreSQLPartitionCreationJob` creates partitions NOT ONLY
+      on the nightly cron but ALSO at boot via `@PostConstruct` behind the leader-election
+      advisory lock, and `ActivityTablePartitionManager` uses `createPartitionsIfNotExists` with a
+      partition WIDTH of `2 x partition-period` (default 60 days). So (a) a fresh boot immediately
+      creates the needed partitions independent of the scheduler, and (b) each partition already
+      spans ~60 days forward — the daily cron is a top-up, not the sole creator of the imminent
+      window. The INSERT-failure scenario requires BOTH a 60-day-forward window to be exhausted
+      AND the cron to be delayed past the boundary AND no replica restart in between — a far
+      narrower corner than "housekeeping ran long once." (Confirmed by reading
+      partition/PostgreSQLPartitionCreationJob.java:29-51 + AdrPartitionLifecycleScanTest + ADR-0028.)
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "stress_findings.tunables[poolSize] (PROBE-NEEDED P-183) + bugs_limitations_corner_cases[0]"
+        cite: "PostgreSQLPartitionCreationJob.java:40 (cron) + HousekeepingJobManager.java:25 (15m cycle)"
+        note: "Cron-misfire mechanism is static-inferred queue-and-delay; empirical timing is P-183."
+      - sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+        section: "dependencies_semantic.requires-config[odd.activity.partition-period] + coupling"
+        cite: "ActivityTablePartitionManager.java:11 (partition-period=30 -> 60-day width)"
+        note: "60-day-forward partition width means the daily cron is a top-up; the imminent window is rarely the one being created tonight."
+    operator_visible_failure: |
+      The catastrophic INSERT-failure-on-activity scenario from the feature-flow headline is
+      a NARROW corner, not the default expectation: it needs the 60-day-forward window
+      exhausted AND the cron delayed past the boundary AND no boot/restart having re-created
+      the window. The realistic operator-visible consequence is milder: partition-creation
+      runs LATE (minutes-to-hours after 00:01) under sustained backlog, with no metric to
+      observe the lateness (P-183 confirms the queueing; H-009 covers the metric gap). The
+      severity downgrade vs the feature-flow headline is itself the finding — the chain
+      omitted the @PostConstruct + 60-day-width safety, which is load-bearing.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-121-2
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a multi-replica deployment runs under clock skew (JVM clocks drifted across nodes), the ShedLock coordination still arbitrates correctly because lock validity is judged by a single authoritative clock."
+  derivation: "implicit_adrs[0] — the explicit `.usingDbTime()` call is the decision; an operator deciding 'do I need chrony on my K8s nodes?' relies on this."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      SchedulingConfiguration:22 explicitly calls `.usingDbTime()` on the JdbcTemplateLockProvider
+      builder, so lock_until / locked_at are written from PostgreSQL's current_timestamp, not from
+      each JVM's Instant.now(). Two replicas with drifted clocks both read PG's authoritative time,
+      so a lock held by replica A is correctly seen as held by replica B regardless of relative
+      clock state. The default (without the call) would use JVM time and be split-brain-vulnerable;
+      the deliberate invocation is the documented intent (implicit ADR, HIGH confidence).
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "implicit_adrs[0] + stress_findings.name_behavior_pairs[lockProvider] + stress_findings.tunables[.usingDbTime]"
+        cite: "SchedulingConfiguration.java:22 (.usingDbTime())"
+        note: "Name and implementation match; clock-skew tolerance is mechanically guaranteed by DB-authoritative time."
+    severity: ~
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a future maintainer adds a new @SchedulerLock-guarded job and omits an explicit lockAtMostFor, the platform-level `defaultLockAtMostFor=1h` caps how long a crash can hold that lock (so the default is a live safety floor)."
+  derivation: "implicit_adrs[1] — the 1h default is a latent safety floor; the operator/maintainer expectation is that the configured default is active."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The 1h default IS the correct safety-floor mechanism for a future omit-the-timing job, BUT
+      it is DEAD CODE today: all three existing @SchedulerLock methods (housekeeping 14m,
+      status-switch 9m, partition-creation 10m) set their own lockAtMostFor explicitly, so the
+      1h default applies to ZERO methods in the current codebase. A reader of SchedulingConfiguration
+      alone cannot tell whether the default is meaningful without reading all three downstream
+      consumers and confirming each overrides it. The hypothesis is true for the FUTURE case
+      (a new omit-the-timing job inherits 1h) and vacuous for the PRESENT (nothing inherits it).
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "implicit_adrs[1] + bugs_limitations_corner_cases[2] + stress_findings.tunables[defaultLockAtMostFor]"
+        cite: "SchedulingConfiguration.java:14 + grep @SchedulerLock returns 3 matches all overriding lockAtMostFor"
+        note: "Dead-code-today, latent-for-future; LOW severity, cosmetic."
+    operator_visible_failure: |
+      No operator-visible failure today (dead code). The latent risk: a future PR that removes
+      an explicit lockAtMostFor from one of the three jobs would silently inherit 1h instead of
+      its current 9-14min, changing the crash-recovery window 4-7x with no test catching it.
+      A one-line Javadoc on SchedulingConfiguration:14 making the dead-code intent explicit is
+      the cheap mitigation. Tracked statically as F-121c (LOW); dedup net_new (no PLT/DOC).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When an operator opens /actuator/prometheus to answer 'is replica B failing to acquire the housekeeping lock because replica A is holding it?', a metric for ShedLock acquisition outcomes and/or scheduled-executor queue depth is present."
+  derivation: "performance.known_performance_gaps[1] + security.known_security_gaps[1] — the operator-observability negative space; the operator's diagnostic screen is the metrics endpoint."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      No metric exists. SchedulingConfiguration registers no Micrometer counter for lock-acquisition
+      success/failure, no histogram for lock-hold duration, no gauge for executor queued-tasks /
+      active-threads. The hypothesis (a metric is present) is FALSE — confirmed by the absence; the
+      operator must inspect the `shedlock` PG table by hand via SQL. (Stated as the confirmed
+      finding: the diagnostic surface the operator expects does not exist.)
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "performance.known_performance_gaps[1] + security.known_security_gaps[1] + bugs[5]"
+        cite: "SchedulingConfiguration.java:17-25 (no MeterBinder); grep Counter|Meter|Gauge in config/ returns no scheduling matches"
+        note: "Absence verified by grep; the operator-facing consequence is no observable lock-contention surface."
+    operator_visible_failure: |
+      An operator diagnosing a stalled or contended scheduled subsystem (housekeeping not running,
+      partition created late) has NO Prometheus signal — `housekeeping_cycle_duration`,
+      `shedlock_acquisition_total{outcome}`, `spring_executor_queued_tasks` all absent. The only
+      recourse is `SELECT * FROM shedlock` + reading partition tables manually. This is the
+      operational blind spot behind H-001's invisible cadence-drift and H-006's invisible
+      late-partition. Tracked statically as F-121d (MEDIUM); dedup net_new.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When an operator performs a rolling deployment (kubectl delete pod) during a housekeeping cycle, the platform drains the in-flight job gracefully so the next replica can resume housekeeping promptly."
+  derivation: "bugs_limitations_corner_cases[3] — graceful_shutdown_lock_held_for_lockatmostfor_window; the operator doing a routine rollout expects no multi-minute housekeeping gap."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      There is no graceful drain. `spring.task.scheduling.shutdown.await-termination` is unset, so
+      Spring's default interrupts the running scheduled thread on SIGTERM. The in-flight jOOQ
+      transaction rolls back (safe via try-with-resources), but the `shedlock` row stays held until
+      `lockAtMostFor` (~14m for housekeeping) expires — so NO replica can run housekeeping during
+      that window. The hypothesis (graceful drain + prompt resume) is contradicted by the absence
+      of await-termination config; confirmed as a real gap.
+    evidence:
+      - sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+        section: "bugs_limitations_corner_cases[3]"
+        cite: "SchedulingConfiguration.java (no TaskScheduler bean with shutdown semantics) + grep shutdown.*await returns zero"
+        note: "Absence verified by grep; the lock-hold-after-interrupt window is ~lockAtMostFor."
+    operator_visible_failure: |
+      Routine rolling deployments on a busy housekeeping cycle introduce up to ~14 minutes of
+      housekeeping pause per restart (the lock-hold window after the interrupted replica dies).
+      For a frequently-redeployed platform this can mean housekeeping rarely completes a full
+      cycle. No data loss (transaction rolls back), but retention silently lags. Mitigation:
+      `spring.task.scheduling.shutdown.await-termination: true` + a termination period — though a
+      14-minute job exceeds any reasonable grace period, so the deeper fix is chunked housekeeping.
+      Tracked statically only as a drift_class; dedup net_new.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When an operator overrides application.yml in a Helm/Kustomize layer and omits the housekeeping block, housekeeping continues to run with safe defaults (because the docs say it is 'on by default')."
+  derivation: "concepts.invariants[strict-opt-in] — the @ConditionalOnProperty has no matchIfMissing; the operator's expectation from 'default true' framing is fail-safe."
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The "on by default" is delivered ONLY by the shipped application.yml:166 (`housekeeping.enabled:
+      true`). The bean is `@ConditionalOnProperty("housekeeping.enabled", havingValue="true")` with
+      NO matchIfMissing, so an override that omits the key produces a SILENT no-op (housekeeping bean
+      not registered, no boot warning). The opposite failure mode is the more dangerous one (F-010 /
+      PLT-083 Defect 1): omitting only the `housekeeping.ttl.*` block while keeping `enabled: true`
+      binds the Java primitive-int TTL fields to 0 and wipes everything on the next cycle. Either
+      partial-override path is a trap. This boundary is THIS feature's executor-config edge but the
+      data-loss half belongs to F-010; cited here for completeness, routed there for the fix.
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: "concepts.invariants[0] + bugs_limitations_corner_cases[6] + implicit_adrs[3]"
+        cite: "HousekeepingJobManager.java:18 (no matchIfMissing) + application.yml:166"
+        note: "Strict opt-in confirmed; the enabled-key-absent no-op is pinned by AdrHousekeepingOptOutScanTest (ADR-0046)."
+    operator_visible_failure: |
+      An operator standardising per-env Helm overlays who drops the housekeeping block gets
+      EITHER silent no-op (key absent -> partitions/rows grow unbounded) OR silent total wipe
+      (only ttl block absent, enabled stays true -> TTL=0 deletes everything in 15 min). Both
+      are LSN-001-shaped. The enabled-absent no-op is pinned by a test (ADR-0046); the TTL=0
+      wipe is tracked as PLT-083 Defect 1 + DOC-250 Caveat 1 (done). Dedup: already_tracked.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: verified
+    test_ref: "config.AdrHousekeepingOptOutScanTest (ADR-0046 — enabled-absent disables; no matchIfMissing) + config.FeatureGatingDefaultsTest (housekeeping ships enabled=true)"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "@EnableSchedulerLock name promises platform-wide locking but session-housekeeping (@Scheduled, no @SchedulerLock) runs unguarded on every replica — name-vs-implementation drift + copy-paste hazard."
+  dedup_status: already_tracked
+  tracked_as: PLT-083
+  recommended_log_as: ~
+  proposed_fix_anchor: "Add @SchedulerLock(name=\"sessionHousekeepingJob\", lockAtMostFor=\"PT55M\") to PostgreSQLSessionHousekeepingJobHandler.java:13 (PLT-083 Defect 2's exact fix)."
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "Four @Scheduled jobs share ONE thread (Spring default poolSize=1, no spring.task.scheduling.pool.size, no TaskScheduler bean) and serialise — a 14-min housekeeping cycle delays the 10-min status-switch; mitigation `spring.task.scheduling.pool.size: 4` is undocumented."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#housekeeping-settings-configuration (new 'Scheduled-executor thread model' note) + doc-gap-NNN"
+- hypothesis_id: H-002
+  one_line: "Housekeeping lockAtMostFor=14m is only 60s below fixedRate=15m; a >=14-min cycle releases the lock before commit and can run concurrently on a second replica — safer to set lockAtMostFor >= 2x fixedRate."
+  dedup_status: net_new
+  distinct_from: PLT-083
+  recommended_log_as: "caveat (operator: size the soft-delete backlog to keep cycles < 14 min) — distinct from PLT-083 (which covers TTL=0 wipe + session-lock, NOT the lock-window-vs-schedule ratio)"
+- hypothesis_id: H-005
+  one_line: "Session-housekeeping runs N-fold on N replicas (no @SchedulerLock); no-op under default session.timeout=-1, surfaces as N× hourly DELETE load once a finite timeout is set."
+  dedup_status: already_tracked
+  tracked_as: DOC-250
+  recommended_log_as: ~
+- hypothesis_id: H-006
+  one_line: "Partition-creation cron CAN be queued behind a long housekeeping cycle on the shared thread, but @PostConstruct boot-time creation behind leader-election + 60-day partition width blunt the INSERT-failure blast radius the feature-flow headline fears — the realistic symptom is a LATE (not missing) partition."
+  dedup_status: net_new
+  recommended_log_as: "caveat (operator: partition-creation is double-covered at boot + nightly; cron lateness under backlog is the real risk, not INSERT failure) — also a feature-flow severity-correction write-back (new drift class proposed)"
+- hypothesis_id: H-008
+  one_line: "@EnableSchedulerLock(defaultLockAtMostFor=1h) is dead code today (all 3 guarded jobs override it); latent safety floor only — surprising if a future PR removes an explicit lockAtMostFor."
+  dedup_status: net_new
+  recommended_log_as: "caveat / one-line Javadoc on SchedulingConfiguration.java:14 (F-121c, LOW)"
+- hypothesis_id: H-009
+  one_line: "No Micrometer metric for ShedLock acquisition outcomes or scheduled-executor queue depth — operator cannot answer 'is replica B failing to acquire because replica A holds?' from /actuator/prometheus."
+  dedup_status: net_new
+  recommended_log_as: "caveat + REFACTOR-NNN candidate (instrument the LockProvider + a custom TaskScheduler bean with Micrometer) (F-121d, MEDIUM)"
+- hypothesis_id: H-010
+  one_line: "No graceful drain of in-flight scheduled jobs (await-termination unset); SIGTERM mid-housekeeping rolls back safely but leaves the shedlock row held ~14m, pausing housekeeping cluster-wide for the lock-hold window."
+  dedup_status: net_new
+  recommended_log_as: "caveat (operator: expect up to ~14m housekeeping pause per rolling restart) — distinct from the lock-window finding H-002"
+- hypothesis_id: H-011
+  one_line: "Partial application.yml override that omits the housekeeping block = silent no-op (key absent) OR silent total wipe (ttl block absent, enabled stays true) — both LSN-001-shaped."
+  dedup_status: already_tracked
+  tracked_as: DOC-250
+
+### functional_test_demands
+# LSN-030 (Rule 11). The executor's promise layer. Every UNVERIFIED promise (use_case) becomes a
+# missing-functional TEST-GAP candidate, INCLUDING the confirmed-but-untested ones (H-007, H-009,
+# H-010) which the pre-v0.3.0 path would have dropped to routes_to_finding: none.
+- use_case_id: F-121-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "The four background jobs run on independent threads (no long job starves another)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — regression guard for the fix"
+  proposed_test: "Spring-context integration test: two @Scheduled beans each sleeping 20s, both due simultaneously; assert the second's start is delayed ~20s under the shipped config, and runs concurrent once spring.task.scheduling.pool.size>=2 is set (documents the single-thread contract + the fix)."
+- use_case_id: F-121-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "A ShedLock-guarded job never runs concurrently on two replicas within its scheduled window."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set)"
+  proposed_test: "Testcontainers + 2 JVMs: inject a 15-min sleep into one housekeeping job on replica A; assert replica B does NOT acquire `housekeepingJob` while A holds it AND surfaces the 14m/15m breach when A overruns (pins lockAtMostFor>=cycle-duration)."
+- use_case_id: F-121-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "On simultaneous two-replica lock race, exactly one wins and the loser no-ops cleanly."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — pairs with probe PENDING-F-121-1 (P-182)"
+  proposed_test: "Testcontainers + 2 JVMs booting simultaneously: assert exactly one acquires `housekeepingJob`, the loser receives empty + no-ops, and the winner's shedlock.lock_until ≈ PG now()+14m (NOT JVM now()+14m — pins usingDbTime)."
+- use_case_id: F-121-UC-004
+  hypothesis_id: H-006
+  kind: resolve-later
+  promise: "The activity/message partition for the next day always exists before INSERTs need it."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — pairs with probe PENDING-F-121-2 (P-183)"
+  proposed_test: "Integration test: boot with @PostConstruct creating partitions behind the leader lock; assert the next-day partition exists at boot independent of the cron; then a contrived long housekeeping past 00:01 — assert INSERT still succeeds because the 60-day-forward window already covers it (documents the double-coverage that blunts the cron-misfire)."
+- use_case_id: F-121-UC-007
+  hypothesis_id: H-007
+  kind: happy-path
+  promise: "Multi-replica ShedLock coordination is correct under JVM clock skew (lock validity judged by PG's clock)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — confirmed-but-untested; the LSN-030 fix (was previously dropped to none)"
+  proposed_test: "Spring-context test asserting the LockProvider bean is a JdbcTemplateLockProvider configured with usingDbTime (regression guard: a refactor to a non-DB-time provider silently reintroduces clock-skew split-brain)."
+- use_case_id: F-121-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "An operator can observe ShedLock acquisition + executor queue depth from /actuator/prometheus."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — confirmed-as-ABSENT; guards a future instrumentation REFACTOR"
+  proposed_test: "Once instrumented: @WebFluxTest / actuator test asserting `shedlock_acquisition_total` + `spring_executor_queued_tasks` are exported. Until then, the demand documents the missing observability surface."
+- use_case_id: F-121-UC-010
+  hypothesis_id: H-010
+  kind: teardown
+  promise: "A rolling restart drains in-flight scheduled work without leaving housekeeping paused cluster-wide."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — confirmed gap (no await-termination); guards a shutdown-config fix"
+  proposed_test: "Integration test: interrupt a holding replica mid-cycle; assert the shedlock row stays held until lockAtMostFor and no second replica acquires before then (pins the rolling-restart pause window an operator must expect)."
+- use_case_id: F-121-UC-011
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "A partial application.yml override that omits the housekeeping block degrades safely."
+  verdict: partial
+  coverage: verified
+  recommended_log_as: "covered (ADR-0046 enabled-absent pin); the TTL=0-wipe half is PLT-083/DOC-250 — no new functional demand for the executor-config half"
+  proposed_test: "(existing) config.AdrHousekeepingOptOutScanTest pins the no-matchIfMissing opt-out; FeatureGatingDefaultsTest pins enabled=true shipped."
+
+### probes_emitted
+- probe_id: PENDING-F-121-1
+  hypothesis_id: H-003
+  one_line: "Multi-instance lock-race correctness (mirrors existing P-182)."
+  full_hypothesis: "When two replicas race to acquire the same ShedLock-guarded job (e.g. `housekeepingJob`, 14m/14m) at the same wall-clock instant under `.usingDbTime()`, only one acquires the lock; the loser receives Optional.empty() from the LockProvider and no-ops with no error surfaced; and the winner's `shedlock.lock_until` is approximately PG's now()+14m, NOT the JVM's Instant.now()+14m. Local-only: Testcontainers Postgres + 2 JVM processes booting simultaneously."
+  local_execution_blocked: false
+  note: "Non-parallel-safe mode would write lineage/odd-platform/probes/P-NNN.yaml; in parallel-safe mode recorded here. Corresponds to the SchedulingConfiguration sidecar's already-emitted P-182 (status pending-stress-protocol)."
+- probe_id: PENDING-F-121-2
+  hypothesis_id: H-006
+  one_line: "Cron-misfire behaviour under single-thread starvation (mirrors existing P-183)."
+  full_hypothesis: "Under Spring Boot's default single-thread TaskScheduler, when a @Scheduled(fixedRate=15min) housekeeping job runs ~14+ minutes across the 00:01 boundary and the @Scheduled(cron=\"0 1 0 * * *\") partition-creation job is due during that window — does the partition-creation cron RUN LATE (queued behind housekeeping, Spring default MissedTaskBehavior) or SKIP (discarded)? AND, given @PostConstruct boot-time creation + 60-day-forward partition width, does any realistic config actually reach an activity/message INSERT failure, or is the worst observable outcome a late-but-eventually-created partition? Local-only: docker-compose with a contrived 30-min housekeeping cycle, observe partition scheduling at the cron boundary."
+  local_execution_blocked: false
+  note: "Corresponds to the SchedulingConfiguration sidecar's already-emitted P-183 (status pending-stress-protocol). This reflection ADDS the blast-radius question (the @PostConstruct + 60-day-width safety the feature-flow chain omitted)."
+
+### validation_gaps
+- sidecar: "(missing) DataEntityStatusSwitchJob"
+  field_insufficient: "No dedicated sidecar exists for service/job/DataEntityStatusSwitchJob.java (a contributing node of F-121). Its behaviour was validated from the SchedulingConfiguration sidecar's cross-citations + ADR-0058's realises clause + a confirming source read."
+  proposed_refresh: "Enrich service/job/DataEntityStatusSwitchJob.java as a scheduled-job sidecar (fixedRate=10m, @SchedulerLock statusSwitchJob 9m/9m, advances isSwitchable entities to DELETED — ADR-0058)."
+- sidecar: "(missing) PostgreSQLPartitionCreationJob"
+  field_insufficient: "No dedicated sidecar for the partition-creation job; the feature-flow primary_subject + chain cite it at `leader_election/PostgreSQLPartitionCreationJob.java:40`, but the file actually lives at `partition/PostgreSQLPartitionCreationJob.java` and creates partitions at BOTH @PostConstruct (behind leader-election advisory lock) AND nightly cron — the @PostConstruct boot-time creation is absent from the F-121 chain and materially changes the cron-misfire severity (H-006)."
+  proposed_refresh: "Enrich partition/PostgreSQLPartitionCreationJob.java; correct the F-121 feature-flow chain path from leader_election/ to partition/; add the @PostConstruct boot-time creation hop (the chain currently shows only the nightly cron). Cross-link ADR-0028 (create-only, boot+nightly double coverage)."
+- sidecar: "(missing) PostgreSQLSessionHousekeepingJobHandler"
+  field_insufficient: "No dedicated sidecar; validated from SchedulingConfiguration cross-citations + a confirming source read (file:13-18). Adequate for this reflection but the node is a contributing node of F-121 without its own enrichment."
+  proposed_refresh: "Enrich auth/session/PostgreSQLSessionHousekeepingJobHandler.java (fixedRate=1h, NO @SchedulerLock, .block() on a Mono<Integer> deleted-count — the asymmetric-pattern node)."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "(silent) The housekeeping section documents the 15-min cadence + ShedLock multi-instance coordination + the five cleanup tasks, but says nothing about the scheduled-executor thread model."
+  code_does: "All four @Scheduled jobs run on a single shared thread (Spring default poolSize=1); a long job starves the others; mitigation `spring.task.scheduling.pool.size: 4` exists but is undocumented."
+  recommended_log_as: doc-gap-NNN
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "(silent) No coverage of graceful shutdown / await-termination of scheduled jobs."
+  code_does: "No await-termination config; SIGTERM mid-housekeeping holds the shedlock row ~14m, pausing housekeeping cluster-wide."
+  recommended_log_as: doc-gap-NNN
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "(silent) No mention of metrics for ShedLock acquisition or executor queue depth."
+  code_does: "No Micrometer instrumentation on the LockProvider or the executor."
+  recommended_log_as: doc-gap-NNN
+
+## maintainer_notes
+
+UI/GUI absence is CORRECT for this feature (Rule 9 validation_gap, recorded below): the executor is
+operator-facing infrastructure whose "user surface" is application.yml + the deployment manifest +
+/actuator/prometheus, not a React screen. This is NOT the F-031 mistake (an API-only reflection of a
+UI-driven feature) — there is no UI hop because the feature has no UI, by design.
+
+VALIDATION_GAP (Rule 9, API/infra-only): F-121 has no enriched UI hop and correctly has none — it is
+a boot-time + scheduled-trigger feature. This reflection is operator-facing (the platform-operator
+audience of P-08), reasoning from the operator's real screens (YAML, Helm values, Prometheus). No
+verdict here judges a GUI because there is no GUI to judge.
+
+Severity correction vs the feature-flow headline (H-006): the feature-flow's terminal_side_effect
+frames the cron-misfire as a likely activity/message INSERT-failure cascade. Reading the actual
+partition-creation source (partition/PostgreSQLPartitionCreationJob.java:29-51 — @PostConstruct boot
+creation behind the leader-election lock) + the 60-day-forward partition width shows the INSERT-failure
+scenario is a NARROW corner, not the default. The realistic operator symptom is a LATE partition under
+sustained backlog. New drift class proposed:
+`partition_creation_double_coverage_boot_postconstruct_plus_nightly_cron_blunts_cron_misfire_blast_radius`.
+This is a feature-flow severity-correction write-back the maintainer should fold into F-121's
+observed_vs_expected (and correct the stale `leader_election/` path).

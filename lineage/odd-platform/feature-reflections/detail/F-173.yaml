@@ -1,0 +1,561 @@
+---
+feature_id: F-173
+pillar_anchored_id: P-08:F-018
+pillar: P-08 Management & Administration
+feature_name: "Active-tab Remove UserOwnerMapping (unbind affordance — the reverse of F-172/F-075-A)"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
+  - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+source_reads_for_validation:
+  # Rule 8 exception: the chain's UI hops (1-3) carry sidecar:unresolved. To reflect this
+  # feature as a senior PO from the SCREEN (Rule 9), the two load-bearing UI files were Read
+  # directly to capture the citations the sidecars omitted. Recorded so the next file-analyser
+  # refresh of these nodes fills the sidecar gap.
+  - file: "odd-platform-ui/src/components/Management/OwnerAssociations/OwnerAssociationsList/OwnerAssociationsActive/ActiveAssociationRequest/ActiveAssociationRequest.tsx:1-101"
+    captured: "handleDelete passes only {ownerId} (L34-39); Remove button gated OWNER_ASSOCIATION_MANAGE (L91); ConfirmationDialog present (L77-94) actionText 'User X will stop being associated with owner Y'"
+  - file: "odd-platform-ui/src/lib/hooks/api/ownerAssociationRequest.ts:86-100"
+    captured: "useRemoveUserOwnerMapping -> deleteActiveUserOwnerMapping({ownerId}); onSuccess toast 'Association removed successfully'; invalidates only ['ownerAssociationRequestList']"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: "Inherited from OwnerAssociationRequestController.md + ReactiveUserOwnerMappingRepositoryImpl.md fetched_excerpts (within stale-probe cadence). WebFetch not re-run this session — the doc-side gaps are already tracked as DOC-222/223; no fresh doc claim needed re-derivation."
+hypothesis_summary:
+  total: 11
+  confirmed: 5
+  contradicted: 2
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "An operator with OWNER_RELATION_MANAGE but not OWNER_ASSOCIATION_MANAGE sees the Remove button DISABLED yet can unbind via direct DELETE /api/owners/mapping — the UI hides a capability the backend grants (PLT-040)."
+related_feature_flows: [F-075, F-171, F-172, F-064, F-011, F-006, F-019]
+related_concepts: ["User-Owner Mapping", "read-collaborative-cross-owner-enumeration-posture", "audit-log-presence-asymmetry-2-tier-audit-story", "provider-null-cross-mode-bleed"]
+related_drift_classes:
+  - unbind_payload_carries_only_ownerid_no_username_or_provider_disambiguation_concern
+  - positive_finding_confirm_dialog_present_for_destructive_unbind
+  - confirm_dialog_silent_on_consequence_no_explanation_what_my_views_will_show
+  - bulk_remove_not_available_one_at_a_time_only
+new_drift_classes_proposed:
+  - ui_backend_permission_gate_disjoint_on_remove_OWNER_ASSOCIATION_MANAGE_vs_OWNER_RELATION_MANAGE
+  - unbind_emits_no_activity_event_audit_trail_silent_on_removal
+  - unbind_idempotency_undefined_204_not_404_on_already_removed_binding
+---
+
+# Active-tab Remove UserOwnerMapping — product-owner reflection
+
+## product_owner_narrative
+
+The **Active associations** tab (Management -> Associations -> Active) is the operator's single place to *undo* a user-to-owner binding. Where the Pending tab triages incoming claims (F-171) and the header "Create association" button binds a user directly (F-172), the Active tab lists every binding that is currently live and gives each row a **Remove** button. Removing a row severs the link between an authenticated principal and the Owner identity they were acting as — which in turn governs what that user can edit, which entities show up in their "My objects" view, and which alerts land in their "My" alerts feed. The audience is the platform operator / steward who holds the owner-relation management permission (per `OwnerAssociationRequestController.md:security` and the P-08 Management pillar, `system-mission.md` P-08).
+
+A user interacts with it by opening the tab, finding the row for the user+owner pair they want to unbind, clicking **Remove**, and confirming in a dialog ("Are you sure you want to remove the association?" / "User X will stop being associated with owner Y" — verbatim from `ActiveAssociationRequest.tsx:77-94`). The list itself is the same `useGetOwnerAssociationRequestList` hook the Pending tab uses, filtered to `status=APPROVED` (per the chain hop-2 evidence + `ownerAssociationRequest.ts:19-39`); the Active-tab semantics are "an APPROVED request whose binding row still exists." Each row shows username, owner name, roles, provider, who last updated the status, and when (`ActiveAssociationRequest.tsx:42-75`).
+
+The working part behind the button is deliberately minimal: `handleDelete` fires `deleteAssociation({ownerId})` carrying **only the ownerId** — no username, no provider — even though the row holds all three (`ActiveAssociationRequest.tsx:10-18, 34-39`, Read this session). That routes through `useRemoveUserOwnerMapping` -> the generated `deleteActiveUserOwnerMapping` client -> `DELETE /api/owners/mapping/{owner_id}`, gated by `OWNER_RELATION_MANAGE` (`SecurityConstants.java:159-162`, per `OwnerAssociationRequestController.md:security`). The service method `OwnerAssociationRequestServiceImpl.deleteActiveUserOwnerMapping` (`OwnerAssociationRequestController.md` op-list L58-59) calls `userOwnerMappingService.deleteActiveUserRelation(ownerId)` -> `ReactiveUserOwnerMappingRepositoryImpl.deleteActiveRelationByOwner(ownerId)`, which is a **soft-delete UPDATE** setting `deleted_at = now()` `WHERE owner_id = ? AND deleted_at IS NULL` (`ReactiveUserOwnerMappingRepositoryImpl.md:operations` L65-74). The ownerId-only payload is unambiguous in practice because the DB carries a partial unique index `unique_deleted_at_per_owner ON user_owner_mapping(owner_id) WHERE deleted_at IS NULL` — there is at most ONE active mapping per owner at any time (`ReactiveUserOwnerMappingRepositoryImpl.md:concepts.entities` + `:invariants`).
+
+This feature is the teardown end of an integration triangle: it reverses all three create branches — the self-request-then-approve flow (F-075-A), the DIRECT_OWNER_SYNC auto-approve (F-075-B), and the admin direct-bind (F-172). Its downstream blast radius lands in other pillars: after the unbind, the same user's owner-scoped reads collapse — Activity "My objects" goes silent-empty, Alerts "My" goes silent-empty (F-064), and any RBAC permissions the user held through that Owner's Role bundles disappear (F-006, F-011). The mapping row is the load-bearing primitive for `AuthIdentityProviderImpl.fetchAssociatedOwner` and every owner-scoped read in the platform (`ReactiveUserOwnerMappingRepositoryImpl.md:upstream_callers`).
+
+In a demo, a senior PO would highlight five things: (1) the Remove sits behind a confirmation dialog — a consistent destructive-op posture across the OwnerAssociations subtree, unlike the Owners CRUD subtree; (2) the dialog explains the *local* effect but not the *downstream* one — the user whose binding is removed gets no warning, and the operator gets no in-product checklist of what will go dark; (3) there is no bulk Remove — decommissioning a departing team member across many owners is one click + one confirm per row; (4) the binding-removal leaves no audit footprint — the activity log has events for created/approved/declined but none for removed; and (5) the permission that lights up the button is not the permission the backend checks — a real operator trap.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator clicks Remove on an Active-tab row and confirms, the underlying user_owner_mapping binding for that owner is severed and the row disappears from the Active list."
+  derivation: "UI label 'Remove' + ConfirmationDialog + handleDelete -> deleteActiveUserOwnerMapping; the Active tab IS the live-binding list (status=APPROVED with an existing mapping row)."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      handleDelete fires deleteAssociation({ownerId}) (ActiveAssociationRequest.tsx:34-39) -> useRemoveUserOwnerMapping
+      -> DELETE /api/owners/mapping/{owner_id} (OWNER_RELATION_MANAGE) -> OwnerAssociationRequestServiceImpl.deleteActiveUserOwnerMapping
+      -> userOwnerMappingService.deleteActiveUserRelation(ownerId) -> ReactiveUserOwnerMappingRepositoryImpl.deleteActiveRelationByOwner(ownerId),
+      a soft-delete UPDATE SET deleted_at = now() WHERE owner_id = ? AND deleted_at IS NULL. The row's binding becomes
+      invisible to every getAssociatedOwner / isOwnerAssociated read. On success the hook invalidates the
+      ['ownerAssociationRequestList'] query so the Active list refetches and the row drops out.
+    evidence:
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: operations
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:65-74"
+        note: "deleteActiveRelationByOwner = UPDATE deleted_at=now() WHERE owner_id=? AND deleted_at IS NULL"
+      - sidecar: OwnerAssociationRequestController
+        section: concepts.operations
+        cite: "OwnerAssociationRequestController.java:74-79 (deleteActiveUserOwnerMapping) -> OwnerAssociationRequestServiceImpl.java:118-122"
+        note: "DELETE /api/owners/mapping/{owner_id} delegates to deleteActiveUserRelation(ownerId)"
+      - sidecar: SOURCE_READ
+        section: ActiveAssociationRequest.tsx
+        cite: "ActiveAssociationRequest.tsx:34-39 + ownerAssociationRequest.ts:86-100"
+        note: "handleDelete -> deleteAssociation({ownerId}); onSuccess invalidates ['ownerAssociationRequestList']"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No backend test (Grep owners/mapping|deleteUserOwnerMapping odd-platform-api/src/test -> 0 files) and no e2e association test (Glob tests/**/*ssociation* -> none). The teardown happy path is unguarded."
+
+- id: H-002
+  hypothesis: "When an operator who holds OWNER_RELATION_MANAGE (the permission the backend actually checks) but NOT OWNER_ASSOCIATION_MANAGE opens the Active tab, the Remove button is enabled and clicking it succeeds."
+  derivation: "Backend gates DELETE /api/owners/mapping on OWNER_RELATION_MANAGE (SecurityConstants:159-162); a UI button enabling on the SAME permission would be the consistent expectation."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Remove button is disabled on OWNER_ASSOCIATION_MANAGE (ActiveAssociationRequest.tsx:91:
+      disabled={!hasAccessTo(Permission.OWNER_ASSOCIATION_MANAGE)}), but the backend DELETE is gated on the
+      semantically-disjoint OWNER_RELATION_MANAGE (SecurityConstants.java:159-162). These are NOT aliases:
+      OWNER_ASSOCIATION_MANAGE is the request-triage permission (PUT /api/owner_association_request/{id});
+      OWNER_RELATION_MANAGE is the direct write+delete permission. So an operator with exactly
+      OWNER_RELATION_MANAGE sees the button DISABLED and concludes they cannot unbind — yet a direct
+      DELETE /api/owners/mapping/{owner_id} (curl / API console / script) succeeds. The mirror trap: an operator
+      with only OWNER_ASSOCIATION_MANAGE sees the button ENABLED, clicks, and the backend returns 403.
+    evidence:
+      - sidecar: SOURCE_READ
+        section: ActiveAssociationRequest.tsx
+        cite: "ActiveAssociationRequest.tsx:91"
+        note: "disabled={!hasAccessTo(Permission.OWNER_ASSOCIATION_MANAGE)} — the UI gate"
+      - sidecar: OwnerAssociationRequestController
+        section: security.authorization_assertions
+        cite: "SecurityConstants.java:159-162"
+        note: "DELETE /api/owners/mapping/{owner_id} -> OWNER_RELATION_MANAGE — the canonical backend gate"
+      - sidecar: OwnerAssociationRequestController
+        section: requires-permission-model
+        cite: "OwnerAssociationRequestController.md:requires-permission-model"
+        note: "OWNER_ASSOCIATION_MANAGE = triage; OWNER_RELATION_MANAGE = direct write+delete — disjoint permissions"
+    operator_visible_failure: |
+      Two stacked operator-trap classes. (1) Holder of OWNER_ASSOCIATION_MANAGE only: UI shows Remove enabled ->
+      click -> 403 -> wasted time, confusion, "the button is broken". (2) Holder of OWNER_RELATION_MANAGE only:
+      UI shows Remove DISABLED -> operator believes they lack the capability -> but they CAN unbind via the raw API.
+      The UI UNDER-states the operator's real privilege on a security-load-bearing permission, which defeats
+      least-surprise on the privilege model and makes "who can unbind users here?" audits wrong if read from the UI.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When two different users were bound to the same owner over time, clicking Remove targets exactly the one CURRENTLY-active binding for that owner — never the wrong row and never multiple rows."
+  derivation: "The unbind payload carries only {ownerId} (drift facet 1) — does ownerId alone unambiguously identify the row to delete?"
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      ownerId alone is sufficient because the schema enforces AT MOST ONE active mapping per owner. The partial
+      unique index unique_deleted_at_per_owner (V0_0_89__update_user_owner.sql:9-11) is ON user_owner_mapping(owner_id)
+      WHERE deleted_at IS NULL. deleteActiveRelationByOwner filters WHERE owner_id=? AND deleted_at IS NULL — which can
+      match at most one row. Older bindings for the same owner are already soft-deleted (createRelation clears the
+      active-by-owner row before inserting a new one). So the Remove resolves the single live binding deterministically;
+      there is no "drop ALL rows" or "drop the wrong row" hazard within the ACTIVE set. This RESOLVES drift facet 1 and the
+      scanner's F-173c "one-to-one unverified" question FROM CODE — the one-to-one claim is enforced by a DB partial unique
+      index, not merely a doc assertion. (Note H-009 for the genuine residual provider edge.)
+    evidence:
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: concepts.entities
+        cite: "V0_0_89__update_user_owner.sql:9-11"
+        note: "unique_deleted_at_per_owner — partial unique index ON (owner_id) WHERE deleted_at IS NULL"
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: invariants
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:65-74"
+        note: "deleteActiveRelationByOwner WHERE owner_id=? AND deleted_at IS NULL matches <=1 active row"
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: invariants
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:47-51"
+        note: "clear-active-then-insert keeps at most one active row per owner across time"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "The at-most-one-active-per-owner invariant the Remove relies on has zero tests (ReactiveUserOwnerMappingRepositoryImpl tests_coverage_semantic.covered_behaviours: []). A DB-constraint pin is the guard."
+
+- id: H-004
+  hypothesis: "When the operator confirms the Remove, a confirmation dialog is shown FIRST, so a destructive unbind cannot fire on a single mis-click."
+  derivation: "Destructive op; consistent-with-platform expectation; the drift summary flags this as a positive finding."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The Remove button is wrapped in a ConfirmationDialog (ActiveAssociationRequest.tsx:77-94): actionTitle
+      "Are you sure you want to remove the association?", actionName "Remove", with the destructive deleteAssociation
+      bound to onConfirm — so the DELETE only fires after explicit confirmation. This is symmetric with F-171's
+      Accept/Reject confirmations and is a genuine positive finding: the OwnerAssociations subtree maintains a
+      consistent confirm-on-destructive posture (contrast F-019 batch-Q empty-roles UPDATE which had none).
+    evidence:
+      - sidecar: SOURCE_READ
+        section: ActiveAssociationRequest.tsx
+        cite: "ActiveAssociationRequest.tsx:77-94"
+        note: "ConfirmationDialog wraps the Remove button; onConfirm=handleDelete"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "Positive UX invariant (confirm-before-destructive) is unguarded; a regression dropping the dialog would ship silently. e2e render+confirm test recommended."
+
+- id: H-005
+  hypothesis: "When the operator confirms the Remove, the confirmation dialog tells them what the user will lose beyond the binding itself (their My-objects/My-alerts views going empty and ownership-scoped permissions disappearing)."
+  derivation: "Pillar P-08 is operator-facing mutation; a senior PO expects a destructive admin action to surface its downstream blast radius."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The dialog text is exactly 'User "X" will stop being associated with owner "Y"' (ActiveAssociationRequest.tsx:80-84).
+      It is locally true but globally under-explained: it says nothing about the downstream effects that the binding
+      removal causes. Per F-064 + F-011 + F-006, severing the mapping makes the affected user's Activity "My objects" view
+      go silent-empty, their Alerts "My" view go silent-empty, and removes the RBAC permissions they held through that
+      Owner's Role bundles. Neither the operator (who initiates) nor the user (who is affected, and gets NO notice at all)
+      is told.
+    evidence:
+      - sidecar: SOURCE_READ
+        section: ActiveAssociationRequest.tsx
+        cite: "ActiveAssociationRequest.tsx:80-84"
+        note: "dialog actionText is binding-local only"
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: downstream_side_effects
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:56-74"
+        note: "soft-delete collapses My-objects/My-alerts/MY_OBJECTS reads to empty for the affected user"
+    operator_visible_failure: |
+      The operator clicks Remove; some time later the affected user reports "my dashboards/alerts are empty" and
+      "I lost edit access" without connecting it to the unbind. The operator has no in-product explanation and no doc to
+      hand them. This is a UX/doc gap rather than a correctness bug — but it is the kind of silent-consequence surprise
+      that erodes trust in an admin surface.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When an operator removes a binding, the removal is recorded in the owner-association activity / History trail, so an auditor can later see that user X was unbound from owner Y and by whom."
+  derivation: "P-08 + the audit-trail expectation for a security-relevant mutation; the OwnerAssociations subtree HAS a dedicated activity table (the positive half of the 2-tier audit story)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The owner_association_request_activity surface records exactly five event types: REQUEST_CREATED, REQUEST_DECLINED,
+      REQUEST_APPROVED, REQUEST_MANUALLY_APPROVED, REQUEST_MANUALLY_DECLINED (OwnerAssociationRequestActivityType.java:3-8,
+      per OwnerAssociationRequestController.md L72-74). There is NO removal/unbind event type. The unbind path
+      (deleteActiveUserOwnerMapping -> deleteActiveUserRelation) soft-deletes the user_owner_mapping row and does NOT
+      touch owner_association_request, and emits no activity entry of its own (ReactiveUserOwnerMappingRepositoryImpl
+      downstream_side_effects: "NO trigger, no audit log, no activity-feed entry"). The History tab continues to show the
+      original APPROVED event; nothing records that the binding was later removed.
+    evidence:
+      - sidecar: OwnerAssociationRequestController
+        section: concepts
+        cite: "OwnerAssociationRequestActivityType.java:3-8"
+        note: "five activity types; none for removal/unbind"
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: downstream_side_effects
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:56-74 + downstream_side_effects[2]"
+        note: "soft-delete UPDATE with NO trigger/audit/activity emission"
+    operator_visible_failure: |
+      An auditor reconstructing "who lost access to owner Y and when" sees the APPROVED grant but no revocation event.
+      The audit trail over-states current access: a user who was granted then removed looks (from the activity log)
+      like they still hold the binding. For a security-governance surface this is a genuine audit-completeness gap.
+      Mitigant: the soft-deleted user_owner_mapping row carries deleted_at, so the fact is recoverable by DB query —
+      but it is not surfaced anywhere in the product.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When an operator needs to unbind a departing team member from many owners at once, the Active tab offers a bulk-remove (multi-select or 'remove all for user X')."
+  derivation: "Operator workflow (decommission a leaver); a senior PO checks whether a repeated admin task is convenient at scale."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No bulk affordance exists. The Active tab is a paginated list of per-row Remove buttons with no multi-select,
+      no select-all, and no bulk-action toolbar (OwnerAssociationsActive list has no multi-select state). The backend
+      confirms there is no batch surface: "All endpoints are single-item per call. No batch surface."
+      (OwnerAssociationRequestController.md performance.throughput_characteristics). Decommissioning a user bound to N
+      owners is N x (click Remove + confirm dialog).
+    evidence:
+      - sidecar: OwnerAssociationRequestController
+        section: performance.throughput_characteristics
+        cite: "OwnerAssociationRequestController.md:performance"
+        note: "All endpoints single-item per call; no batch surface"
+      - sidecar: SOURCE_READ
+        section: ActiveAssociationRequest.tsx
+        cite: "ActiveAssociationRequest.tsx:42-97"
+        note: "per-row Remove structure; no multi-select"
+    operator_visible_failure: |
+      O(rows) clicks+confirms for a heavy decommission. Friction, not incorrectness — but a real convenience gap on an
+      operator surface. (Adjacent to the UX bar, not a data-correctness bug.)
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When an operator clicks Remove on a binding that was already removed (e.g. a second admin removed it, or a double-click), the operation behaves consistently and the operator is told it no longer exists (404)."
+  derivation: "Concurrent-admin / double-click edge on a destructive op; the response contract on already-removed should be defined."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The delete is idempotent at the data layer (the soft-delete UPDATE WHERE deleted_at IS NULL is a no-op when no
+      active row matches) and the call is atomic (@ReactiveTransactional at OwnerAssociationRequestServiceImpl.java:117).
+      BUT there is no .switchIfEmpty(NotFoundException) on the cancel-then-delete chain
+      (OwnerAssociationRequestServiceImpl.java:118-122) — so removing an already-removed binding returns success (204)
+      rather than 404, and the 204-vs-404 distinction is undefined and untested
+      (OwnerAssociationRequestController.md bugs_limitations_corner_cases). The UI would show the success toast
+      "Association removed successfully" even though nothing was removed. Works (no crash, no double-effect); does not
+      tell the operator the row was already gone.
+    evidence:
+      - sidecar: OwnerAssociationRequestController
+        section: bugs_limitations_corner_cases
+        cite: "OwnerAssociationRequestServiceImpl.java:118-122"
+        note: "no .switchIfEmpty(NotFoundException); 204-vs-404 untested"
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: invariants
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:65-74"
+        note: "UPDATE WHERE deleted_at IS NULL is a safe no-op on already-removed rows"
+    operator_visible_failure: |
+      Two admins racing to revoke the same user, or a double-click, both get "Association removed successfully" — the
+      second one removed nothing but is told it succeeded. Harmless to data (idempotent no-op) but the false-positive
+      success toast can mislead an operator into thinking their action took effect when the prior state already held.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a single owner has been bound to two principals that differ only by provider (e.g. alice@null via LOGIN_FORM and alice@github via OAUTH2), clicking Remove unbinds exactly the intended one."
+  derivation: "Drift facet 1 residual: the ownerId-only payload + the provider-null-collapse invariant raise a multi-binding edge the partial unique index may or may not fully cover."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The partial unique index unique_deleted_at_per_owner enforces at most one active row PER OWNER regardless of
+      provider, so under normal flows owner Y cannot simultaneously hold two active mappings (different providers or not) —
+      H-003 holds and this edge cannot arise through the supported create paths. The residual question is whether a
+      direct repository/manual-API path could ever produce two active rows for one owner (the index would reject the
+      second INSERT, but the concurrent-INSERT race documented at ReactiveUserOwnerMappingRepositoryImpl
+      bugs_limitations_corner_cases relies on the index firing across two R2DBC connections without an enclosing
+      transaction). The verdict requires running concurrent createRelation against the same owner to confirm the index
+      rejects the second write before a Remove-by-ownerId could ever face two active rows.
+    evidence:
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: bugs_limitations_corner_cases
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:41-51"
+        note: "no @ReactiveTransactional on createRelation; atomicity relies on the partial unique index across connections"
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-173-1
+    routes_to_finding: none
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: probe
+
+- id: H-010
+  hypothesis: "When an operator removes a user-owner binding, the affected user's live session immediately loses the owner-scoped permissions and views (no stale-binding window where they keep acting as the owner)."
+  derivation: "Security expectation: a revocation should take effect promptly; the reactive resolution path may cache the resolved OwnerPojo per-request."
+  seed_source: cross-pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The repository sidecar documents that in-flight reactive chains that have ALREADY resolved the user->owner mapping
+      for a request CONTINUE with the stale OwnerPojo until completion (no in-memory invalidation)
+      (ReactiveUserOwnerMappingRepositoryImpl downstream_side_effects[2c]). Each NEW request re-resolves via
+      AuthIdentityProviderImpl.fetchAssociatedOwner, so the next request after the unbind sees the binding gone. Whether
+      there is any longer-lived cache (e.g. a session-scoped permission cache in the RBAC evaluator) that would let the
+      user keep elevated access across requests after the unbind requires running the system: bind a user, start an
+      authenticated session, unbind, and observe at which request boundary the owner-scoped reads/permissions drop.
+    evidence:
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: downstream_side_effects
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:56-74 (downstream_side_effects[2c])"
+        note: "in-flight chains keep the stale OwnerPojo; per-request re-resolution otherwise"
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-173-2
+    routes_to_finding: none
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: probe
+
+- id: H-011
+  hypothesis: "When an operator removes the binding, the corresponding owner_association_request stays APPROVED (the request record is not retroactively rewritten) so the History tab still reflects that an approval once happened."
+  derivation: "terminal_side_effect notes the request row is NOT touched on unbind; verify the History/request state stays coherent rather than being deleted/reverted."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The unbind soft-deletes only the user_owner_mapping row; it does not touch owner_association_request. The request
+      remains APPROVED in the DB even though the binding is gone (F-173 terminal_side_effect). The History tab reads
+      owner_association_request_activity (the REQUEST_APPROVED event), not the live binding, so the prior approval stays
+      visible and is not rewritten. This is internally coherent (matches H-006's finding that removal is not recorded) —
+      the request history is append-only and the binding lifecycle is tracked separately on user_owner_mapping.deleted_at.
+    evidence:
+      - sidecar: ReactiveUserOwnerMappingRepositoryImpl
+        section: upstream_callers
+        cite: "OwnerAssociationRequestServiceImpl.java:118-122"
+        note: "deleteActiveUserOwnerMapping touches only user_owner_mapping (via deleteActiveUserRelation)"
+      - sidecar: OwnerAssociationRequestController
+        section: concepts.operations
+        cite: "OwnerAssociationRequestController.md terminal-side-effect cross-ref"
+        note: "owner_association_request row left APPROVED; History reads the activity table"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "The request-record-survives-unbind invariant is untested; a pin guards against a future 'cascade-delete the request on unbind' regression."
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Active-tab Remove: UI gates on OWNER_ASSOCIATION_MANAGE; backend DELETE /api/owners/mapping gates on OWNER_RELATION_MANAGE — two operator-trap classes (enabled-then-403, and hidden-but-allowed)."
+  dedup_status: already_tracked
+  tracked_as: PLT-040
+  recommended_log_as: PLT-040 (already drafted, HIGH)
+  proposed_fix_anchor: "ActiveAssociationRequest.tsx:91 — change disabled gate from OWNER_ASSOCIATION_MANAGE to OWNER_RELATION_MANAGE to match the backend (per PLT-040 suggested fix)."
+  note: "Convergent validation — this top-down reflection independently re-derived the exact mismatch the Mode-B scanner found (PLT-040, from finding F-173b). NOTE: F-173.yaml scanner_reviews block mislabels this as 'PLT-025 candidate'; PLT-025 is actually the Custom Metadata issue. The correct tracking ID is PLT-040 (confirmed via DOC-222 cross-ref L39 + PLT-040.md). Recommend correcting the F-173.yaml scanner_reviews dedup_action."
+
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Binding removal emits no activity/audit event — the owner-association activity log has CREATED/APPROVED/DECLINED types but none for removal; an auditor sees the grant but never the revocation."
+  dedup_status: net_new
+  tracked_as:
+  distinct_from: DOC-223
+  recommended_log_as: PLT (upstream-issue) — audit-completeness gap on the unbind path
+  proposed_fix_anchor: "Add a REQUEST_REMOVED (or MAPPING_DELETED) activity type + emit it from OwnerAssociationRequestServiceImpl.deleteActiveUserOwnerMapping (line 118-122), mirroring the REQUEST_MANUALLY_APPROVED pattern."
+  note: "distinct_from DOC-223 — DOC-223 documents the user-FACING silent-empty CONSEQUENCE (a doc caveat). H-006 is a code-side AUDIT-EMISSION gap (the system records no removal event at all). Different failure mode, different fix surface (code vs doc). net_new."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Remove confirmation dialog states only the local effect ('user X will stop being associated with owner Y') — silent on the downstream My-objects/My-alerts going empty and RBAC loss; affected user gets no notice."
+  dedup_status: already_tracked
+  tracked_as: DOC-223
+  recommended_log_as: DOC-223 (already drafted — 'What happens after an unbind' subsection on user-owner-association.md)
+  note: "DOC-223 covers exactly this consequence on the doc side. An in-product dialog enhancement would be a separate UX item, but the doc caveat is the tracked resolution."
+
+- hypothesis_id: H-007
+  one_line: "No bulk-remove on the Active tab — decommissioning a user bound to N owners is N x (click + confirm); single-item-per-call backend, no batch surface."
+  dedup_status: net_new
+  tracked_as:
+  recommended_log_as: backlog UX item (LOW) — bulk-remove / multi-select on Management -> Associations -> Active
+  note: "Not found in issues/ or backlog/ greps for the Active-tab bulk-remove. UX convenience gap; LOW. net_new."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the promise layer. Every UNVERIFIED promise (use_case) becomes a missing-functional
+# TEST-GAP candidate. The whole F-173 feature sits at 0/9 functional use_cases verified: there is NO backend test
+# for the unbind path (Grep owners/mapping|deleteUserOwnerMapping odd-platform-api/src/test -> 0 files) and NO e2e
+# association test (Glob tests/**/*ssociation* -> none). Confirmed-but-untested promises route HERE, not to none.
+- use_case_id: F-173-UC-001
+  hypothesis_id: H-001
+  kind: teardown
+  promise: "Clicking Remove + confirm severs the live user_owner_mapping binding and the row disappears from the Active list."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-001)"
+  proposed_test: "IT (e2e Playwright): seed an APPROVED binding, open Management->Associations->Active, click Remove + confirm, assert the row disappears AND user_owner_mapping.deleted_at is set (DB assert) AND DELETE /api/owners/mapping fired."
+- use_case_id: F-173-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "The Remove permission gate is consistent between UI and backend (a user who can click can also succeed)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-002) — regression guard for PLT-040 fix"
+  proposed_test: "@WebFluxTest + UI gate test: assert DELETE /api/owners/mapping returns 403 without OWNER_RELATION_MANAGE and 204 with it; assert the UI button enables on the SAME permission once PLT-040 lands."
+- use_case_id: F-173-UC-003
+  hypothesis_id: H-003
+  kind: teardown-constraint
+  promise: "Remove-by-ownerId is unambiguous because at most one active mapping exists per owner (DB partial unique index)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-003)"
+  proposed_test: "Repository/IT pin: insert active mapping for owner X, attempt a second active insert for X -> assert UniqueConstraintException (unique_deleted_at_per_owner); then deleteActiveRelationByOwner(X) -> assert exactly one row soft-deleted."
+- use_case_id: F-173-UC-004
+  hypothesis_id: H-004
+  kind: teardown-constraint
+  promise: "A destructive unbind requires explicit confirmation first (ConfirmationDialog before the DELETE)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-004)"
+  proposed_test: "Component/e2e: click Remove -> assert the DELETE does NOT fire until the dialog's confirm is clicked; cancel -> assert no DELETE."
+- use_case_id: F-173-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "The operator is told what the user loses on unbind (downstream consequence surfaced)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-005) — doc/UX; lower priority than UC-002/006"
+  proposed_test: "Doc-presence check (DOC-223): user-owner-association.md contains a 'What happens after an unbind' subsection enumerating My-objects/My-alerts/RBAC loss."
+- use_case_id: F-173-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "An unbind is recorded in the audit/activity trail so revocation is reconstructable."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-006) — regression guard for the audit-emission fix"
+  proposed_test: "IT: approve a binding, remove it, query owner_association activity -> assert a removal event is present (RED until the H-006 audit-emission bug is fixed; pins the current absence as a known-bug characterization in the interim)."
+- use_case_id: F-173-UC-007
+  hypothesis_id: H-007
+  kind: teardown
+  promise: "An operator can unbind a user from many owners efficiently (bulk)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-007) — LOW; only mint if the bulk-remove UX item is accepted"
+  proposed_test: "e2e (only after a bulk-remove affordance exists): multi-select N rows -> Remove all -> assert N mappings soft-deleted in one flow."
+- use_case_id: F-173-UC-008
+  hypothesis_id: H-008
+  kind: teardown
+  promise: "Removing an already-removed binding behaves consistently and signals the no-op (404)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-008)"
+  proposed_test: "IT: DELETE /api/owners/mapping/{owner_id} twice -> pin the second response (currently 204; assert the CURRENT contract as a characterization, flip to 404 if a .switchIfEmpty is added)."
+- use_case_id: F-173-UC-011
+  hypothesis_id: H-011
+  kind: teardown
+  promise: "The owner_association_request stays APPROVED after unbind (history not retroactively rewritten)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-173-UC-011)"
+  proposed_test: "IT: approve a request, remove the binding, assert owner_association_request row is still APPROVED AND the History activity-list still returns the REQUEST_APPROVED event."
+
+### probes_emitted
+- probe_id: PENDING-F-173-1
+  hypothesis_id: H-009
+  hypothesis_text: "When a single owner has been bound to two principals that differ only by provider (alice@null via LOGIN_FORM and alice@github via OAUTH2), clicking Remove unbinds exactly the intended one — equivalently, the partial unique index unique_deleted_at_per_owner prevents two active mappings for one owner from EVER coexisting, so the ownerId-only Remove never faces an ambiguous active set."
+  local_execution: "Testcontainers + local Postgres: apply migrations through V0_0_89; INSERT one active mapping for owner X; attempt a concurrent second active INSERT for X under a different provider via two R2DBC connections without an enclosing transaction; assert the second raises UniqueConstraintException (the index fires) and that at all times at most one active row exists for owner X. Then deleteActiveRelationByOwner(X) and assert exactly one row soft-deleted."
+  expected_outcome: "At most one active mapping per owner at all times; the ownerId-only Remove is unambiguous; no provider-disambiguation needed at the Remove layer."
+- probe_id: PENDING-F-173-2
+  hypothesis_id: H-010
+  hypothesis_text: "When an operator removes a user-owner binding, the affected user's live session immediately loses the owner-scoped permissions and views — no stale-binding window across request boundaries beyond the in-flight request already resolved."
+  local_execution: "Local docker-compose odd-platform + Postgres under auth.type=LDAP (the only local mode giving per-user roles): bind user alice to owner X with a Role bundle; open an authenticated session for alice; confirm /api/dataentities/my returns X-owned entities and a gated mutation succeeds; from an admin session DELETE /api/owners/mapping/{X}; then re-issue alice's /api/dataentities/my and the same mutation; observe at which request boundary the owner-scoped reads go empty and the permission is denied."
+  expected_outcome: "The first request AFTER the unbind sees the binding gone (per-request re-resolution); no session-scoped cache lets alice keep elevated access across subsequent requests."
+
+### validation_gaps
+- sidecar: "ui_route:/management/associations/active + ui-component:OwnerAssociationsActive + ui-component:ActiveAssociationRequest"
+  field_insufficient: "All four chain hops carry sidecar:unresolved (lib/hooks/ + UI component access was blocked when F-173 was minted). Per Rule 9 this would be an API-only reflection — but the two load-bearing UI files were Read directly this session (source_reads_for_validation), so this reflection IS screen-grounded, not API-only. The GAP is that the UI nodes still have no enriched sidecar in lineage/."
+  proposed_refresh: "Run file-analyser over ActiveAssociationRequest.tsx + OwnerAssociationsActive.tsx + the useRemoveUserOwnerMapping hook to mint enriched UI sidecars; the hops can then be marked resolved and the F-173.yaml chain's ui_unverified flags cleared (the scanner already resolved hop-4's REST shape to DELETE /api/owners/mapping/{owner_id})."
+- sidecar: "F-173.yaml scanner_reviews block"
+  field_insufficient: "F-173b dedup_action says 'NEW PLT issue draft candidate (PLT-025)' — but PLT-025 was actually minted for the unrelated Custom Metadata feature. The real tracking ID for F-173b is PLT-040 (confirmed via DOC-222 L39 + PLT-040.md)."
+  proposed_refresh: "Correct the scanner_reviews F-173b dedup_action to reference PLT-040, not PLT-025."
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "Describes create/approve flows; the live page is silent on removal entirely (per DOC-222) and on the absence of any audit record for removal."
+  code_does: "Unbind soft-deletes the mapping with no activity-event emission; the activity trail records grant but never revocation."
+  recommended_log_as: "Covered doc-side by DOC-222 (Remove affordance) + DOC-223 (unbind consequences); the audit-EMISSION gap is the code-side PLT in bug_candidates H-006."
+
+## maintainer_notes
+
+<!-- Preserved across refreshes. Empty on first reflection (2026-06-03). -->

@@ -1,0 +1,883 @@
+---
+feature_id: F-105
+pillar_anchored_id: P-08:F-015
+pillar: "P-08 — Management & Administration"
+feature_name: |-
+  Management Section Route Gating — every Management sub-area except
+  /management/associations is reachable by deep-link for any authenticated
+  user (or any anonymous caller under auth.type=DISABLED), and renders the
+  FULL CATALOG of that surface; WithPermissionsProvider wrappers provide
+  context but do NOT block rendering — only create/edit/delete buttons hide.
+reflected_at: "2026-06-03T00:00:00Z"
+reflected_at_commit: f328e68
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__routes__route__management.md
+  - odd-platform__ts__react-component__component__PolicyList.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 3
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: |-
+      The /management/integrations sub-area has NO permission context at all;
+      any inner usePermissions().hasAccessTo(<integration permission>) check
+      falls through to the OUTER OWNER_ASSOCIATION_MANAGE context and
+      deny-by-defaults — a permission-gated integration feature ships dead.
+related_feature_flows: [F-006, F-019, F-020, F-026, F-028, F-031, F-033, F-034, F-041, F-161]
+related_concepts:
+  - read-collaborative-posture
+  - management-ui-permission-model
+  - route-level-permission-gate
+  - admin-surface-reconnaissance-leak
+related_drift_classes:
+  - management_section_route_gating_reads_bypass_authorization_only_associations_gated
+  - with_permissions_provider_is_context_only_not_a_rendering_gate
+  - integrations_sub_area_has_no_permission_context_at_all
+  - admin_surface_existence_disclosed_to_non_admin_users_recon_information
+  - docs_do_not_document_management_ui_permission_model_at_all
+new_drift_classes_proposed:
+  - live_doc_now_documents_read_collaborative_posture_feature_flow_doc_gap_facet_is_stale
+---
+
+# Management Section Route Gating — product-owner reflection
+
+## product_owner_narrative
+
+The Management section is the operator's control room inside the running ODD Platform —
+the place where namespaces, datasources, collectors and their tokens, owners, tags, RBAC
+roles, and authorization policies are created, edited, and removed (per system-mission.md
+P-08 "Operator-facing UI for everything an operator configures inside the running
+platform"). It is presented to the user as an admin-tier affordance: a "Management" tab in
+the global toolbar, behind which sit nine vertical sub-area tabs (Owners / Roles / Policies
+/ Namespaces / Tags / Collectors / DataSources / Integrations / Owner-Associations) on a
+single React-Router splat mount (per route__management:understanding — `App.tsx:62` mounts
+`<Route path={managementPath()+'/*'} element={<Management />} />`). A new operator opening
+this section would describe it as "where I administer the platform."
+
+The way the user reaches it is the load-bearing fact of this feature. There is exactly ONE
+URL into the whole section — the wildcard `/management/*` mount — and from there an inner
+`<Routes>` declaration dispatches to each sub-area component, which fetches its catalog on
+mount (per route__management:bugs_limitations_corner_cases — `NamespaceList.tsx:46-48` fires
+`fetchNamespaceList` unconditionally; the same fetch-on-mount shape repeats across the eight
+list components). The operator types or clicks a link, lands on a tab, and the full catalog
+for that surface paints. What the operator can DO on the painted page is then gated: each
+create/edit/delete affordance is wrapped in `<WithPermissions permissionTo={...}>`, which
+renders `null` — the button is invisible, not greyed — when the session lacks the
+permission (per PolicyList:dependencies_semantic — `WithPermissions.tsx:28` returns null,
+and the Create-policy CTA at `PolicyList.tsx:91-98` is the canonical instance).
+
+The working parts the operator perceives as "permission gating" are three peeled layers
+(per route__management:stress_findings.auth_gates): every authenticated user sees the eight
+non-Associations tabs and their rendered lists; a user with `OWNER_ASSOCIATION_MANAGE`
+additionally sees the Associations tab and its route resolves; a user with a sub-area
+permission (e.g. `NAMESPACE_CREATE`) additionally sees that tab's write buttons. Crucially,
+of the nine sub-routes only `/management/associations/*` is wrapped in a `RestrictedRoute`
+that actually redirects an unpermitted user away (per route__management:implicit_adrs —
+`ManagementRoutes.tsx:101-110`, `redirectTo='../namespaces'`). The other eight wrap in a
+`WithPermissionsProvider`, whose name implies a gate but whose implementation returns its
+children unconditionally in every branch (per the feature-flow facet
+`with_permissions_provider_is_context_only_not_a_rendering_gate`, confirmed at
+`WithPermissionsProvider.tsx:12-48` by the ZH/ZI systemic finding). The Integrations
+sub-route has no permission wrapper at all (`ManagementRoutes.tsx:150`).
+
+This feature composes with the rest of P-08: each sub-area's lifecycle feature (F-019
+Owner, F-020 Collector, F-026 Lookup-Tables, F-028 Namespace, F-031 DataSource, F-006 RBAC
+Policy, F-033 Integration Wizard) renders inside this chrome — F-105 is the route-level gate
+that conventionally PRECEDES those features but, except for Associations, does not fire. It
+also shares a boundary with P-09 Security & Access Control: F-006 owns the RBAC policy
+mutation gate (which works — IT-010 pins the 403 on `DELETE /api/owners/{id}`); F-105 owns
+the read-side reachability that lets a non-admin user READ a policy's contents without that
+mutation gate ever being consulted. P-09's own maintainer notes name this the
+"read-collaborative posture" and call it a load-bearing implicit ADR: "every authenticated
+user can enumerate the entire catalog" (per system-mission.md P-09 maintainer notes).
+
+The edge a product owner would flag in a demo: under `auth.type=DISABLED`, the SPA bundle
+is served to any anonymous network caller, `fetchIdentity` returns the anonymous identity,
+and every Management list paints for a visitor who never logged in (per
+route__management:stress_findings.auth_gates — the DISABLED branch). The worst-case payload
+is the Policies tab: `/management/policies` lists policy names and owners, and navigating to
+`/management/policies/{id}` mounts the full policy JSON — the permission grants, the ODDRN
+selectors, the role bindings — in the `AppJSONEditor` (per PolicyList:understanding). No
+mutation is possible (the Save button is gated by `POLICY_UPDATE`), but the disclosure is
+complete. The same product owner would also note that the live Authorization doc — as of
+this reflection's 2026-06-03 WebFetch — now states this posture explicitly ("Read access on
+Management catalogs is collaborative by design ... any authenticated user can view Policies,
+Roles, Owners, Collectors"), which both confirms the implementation and partially
+invalidates the feature flow's `docs_do_not_document_management_ui_permission_model_at_all`
+facet recorded at the 2026-05-26 walk.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user with zero Management-tier permissions deep-links to
+    /management/policies, the response is a redirect or an access-denied screen
+    (the operator's mental model: "Management is admin-only").
+  derivation: |-
+    The pillar (P-08) names Management as the operator-facing administration
+    surface; the outer Management.tsx wraps in WithPermissionsProvider seeded
+    with OWNER_ASSOCIATION_MANAGE, and the toolbar presents Management as an
+    admin affordance (F-041) — all of which imply a route-level gate.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No redirect, no access-denied screen. /management/policies renders the
+      full Policy LIST for any authenticated user. The outer
+      WithPermissionsProvider (Management.tsx:9-12) only provides a React
+      Context; WithPermissionsProvider.tsx:12-48 returns its children
+      unconditionally in every branch. Of the nine sub-routes, only
+      /management/associations/* carries a RestrictedRoute that redirects
+      (ManagementRoutes.tsx:101-110). The eight others — including policies —
+      mount their list component, which fetches on mount (NamespaceList.tsx:46-48
+      is the canonical shape). Only the create/edit/delete BUTTONS hide.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: bugs_limitations_corner_cases
+        cite: "ManagementRoutes.tsx:29-150 + WithPermissionsProvider.tsx:12-48"
+        note: "8 of 9 sub-routes wrap in a non-blocking provider; only associations/* is route-gated."
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: invariants
+        cite: "PolicyList.tsx:109-122"
+        note: "list rendering is unconditional; only the Create CTA is permission-wrapped."
+    operator_visible_failure: |-
+      A user with no Management permissions deep-links to /management/policies and
+      sees every policy NAME plus its owner; clicking through to
+      /management/policies/{id} renders the full policy JSON (permission grants,
+      ODDRN selectors, role bindings) in the editor. The same any-auth read applies
+      to /management/owners, /roles, /namespaces, /datasources, /collectors, /tags,
+      /integrations. The subtle failure: the operator who provisioned a "read-only"
+      user (intending Management to be hidden) has in fact granted that user a full
+      read of the platform's RBAC topology and catalog — the create/edit/delete
+      buttons hiding makes the surface LOOK gated, masking that the read is complete.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a user with OWNER_ASSOCIATION_MANAGE deep-links to
+    /management/associations, the Associations approval inbox renders; when a
+    user WITHOUT it deep-links there, they are redirected away.
+  derivation: |-
+    Associations is the one sub-route wrapped in RestrictedRoute
+    (ManagementRoutes.tsx:101-110); the OWNER_ASSOCIATION_MANAGE permission is
+    documented as "approving or denying user-owner association requests."
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      /management/associations/* is wrapped in
+      <RestrictedRoute isAllowedTo={hasAccessTo(OWNER_ASSOCIATION_MANAGE)}
+      redirectTo='../namespaces' /> (ManagementRoutes.tsx:101-110). A user with
+      the permission resolves the route and sees the inbox; a user without it is
+      redirected to /management/namespaces — the same safe-default landing the
+      empty-path Navigate uses (ManagementRoutes.tsx:151). This is the SOLE
+      working route-level gate in the entire Management section, and it works
+      because it uses RestrictedRoute (a guard), not WithPermissionsProvider
+      (a context).
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: implicit_adrs
+        cite: "ManagementRoutes.tsx:101-110 + 151"
+        note: "RestrictedRoute redirect to ../namespaces; the lone hard gate."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a user navigates to /management/policies/{id} without POLICY-related
+    permissions, they cannot read the policy's authorization grants (the policy
+    JSON: permission codes, ODDRN selectors, role bindings).
+  derivation: |-
+    A policy's JSON contents are the operative authorization rules of the
+    deployment; the negative-space expectation is that the most sensitive admin
+    surface gates its read. PolicyList renders only {id,name}; detail loads JSON
+    on row-click (PolicyList:understanding).
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The policy detail page renders the full JSON regardless of POLICY
+      permissions. PolicyList.tsx shows {id,name} rows; clicking a row routes to
+      PolicyDetails.tsx → PolicyForm.tsx, which mounts AppJSONEditor against the
+      schema from GET /api/policies/schema and the policy's own statements. The
+      only gate is on the Save button (POLICY_UPDATE) and the Create CTA
+      (POLICY_CREATE). For non-ADMIN users the SERVICE layer narrows the visible
+      list to policies attached to the user's own roles (PolicyServiceImpl.java:53-60),
+      but ADMIN users — and any user whose roles include the policy — read the
+      full JSON, and the route itself never blocks navigation.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: understanding
+        cite: "PolicyList.tsx:119 + PolicyServiceImpl.java:53-60,97-100"
+        note: "list = {id,name}; detail mounts full JSON; non-ADMIN list narrowed by role-attachment at the service."
+    operator_visible_failure: |-
+      A non-admin user with at least one role can read the full authorization
+      JSON of every policy attached to any of their roles — including the exact
+      permission codes and ODDRN selectors that define what those policies grant.
+      A security reviewer expecting "policy contents are admin-only" is wrong; an
+      operator auditing separation-of-duties cannot rely on the UI to hide the
+      RBAC topology. The non-ADMIN list-narrowing (role-attachment scoping) is a
+      partial mitigation for the LIST, but provides no protection once the user
+      navigates to a policy id their role touches.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a create/edit/delete action is unavailable to the user, the UI shows
+    the button in a disabled/greyed state so the user understands the action
+    exists but requires a permission.
+  derivation: |-
+    A senior-PO UX question (Rule 9: "does the user understand how to use this
+    from what is on screen?"). The intuitive convention for an unavailable action
+    is disable-with-tooltip, not hide.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The platform's deliberate convention is hide-not-disable: WithPermissions
+      returns null (renders nothing) when hasAccessTo(permissionTo) is false
+      (WithPermissions.tsx:28). The Create-policy button is therefore INVISIBLE,
+      not greyed, to a user without POLICY_CREATE (PolicyList.tsx:91-98). The
+      hypothesis as a UX expectation is contradicted by the convention, BUT the
+      convention is intentional and consistent across every Management write
+      affordance (PolicyList:implicit_adrs documents it as the platform-wide
+      pattern). So the implementation is confirmed-as-deliberate, not a defect —
+      the trade-off (no permission noise vs. no discoverability of gated actions)
+      is an accepted design choice now also stated in the live Authorization doc
+      ("hide-not-disable UI convention").
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: implicit_adrs
+        cite: "PolicyList.tsx:91-98 + WithPermissions.tsx:11-32"
+        note: "hide-not-disable is the consistent platform convention; intentional."
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: docs_link_semantic
+        cite: "WebFetch authorization (2026-06-03, status 200)"
+        note: "live doc now names the hide-not-disable convention explicitly."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When the platform runs under auth.type=DISABLED, an anonymous network caller
+    (never logged in) who navigates to /management/policies is blocked from
+    reading the policy catalog.
+  derivation: |-
+    Negative-space + cross-pillar (P-09): an operator exposing the platform to a
+    network expects the admin surface to require authentication even under
+    DISABLED, OR expects DISABLED to be documented as wide-open.
+  seed_source: cross-pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Static analysis (route__management:stress_findings.auth_gates) reads: under
+      DISABLED the SPA mounts anonymously, fetchIdentity (App.tsx:48) returns
+      whatever the back-end gives anonymous sessions (typically a default identity
+      with empty global permissions), and the Management lists render. Under
+      LOGIN_FORM/OAUTH2/LDAP the Spring Security layer redirects unauthenticated
+      visitors to login BEFORE the SPA is served. IT-009 confirms DISABLED leaves
+      non-whitelisted endpoints anonymously reachable (anyExchange().permitAll()),
+      which makes the DISABLED-read-bypass HIGHLY likely — but IT-009 probes
+      /api/dataentities/classes, not the Management list endpoints, and the exact
+      identity/permission set the back-end injects for anonymous sessions is
+      flagged "verify with P-162" in the sidecar. Running the system is required
+      to confirm the rendered list payload, not just the endpoint reachability.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: stress_findings.auth_gates
+        cite: "App.tsx:48 + ManagementRoutes.tsx:101-110 + PermissionContext.ts:9-13"
+        note: "DISABLED branch renders lists; anonymous identity/permission set marked verify-with-P-162."
+    operator_visible_failure: |-
+      If confirmed: a platform exposed to a public or shared network under
+      auth.type=DISABLED leaks the entire RBAC topology + catalog (policy JSON,
+      collector identities, datasource ODDRNs) to any anonymous caller who can
+      reach the SPA — the REFACTOR-185 19-sidecar cluster anchors the
+      public-exposure shape. The mitigation operators assume ("Management is
+      admin-only") does not exist; the only perimeter is the network itself.
+    severity: HIGH
+    confidence: MEDIUM
+    probe_id: PENDING-F-105-1
+    routes_to_finding: probe-needed
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When an integration feature inside /management/integrations checks an
+    integration-specific permission (e.g. via usePermissions().hasAccessTo),
+    the check evaluates against the user's actual integration permissions.
+  derivation: |-
+    Endpoint-shape / view-mode: /management/integrations is a first-class
+    sub-area; a permission check inside it should resolve against that area's
+    permission context. The feature-flow facet
+    integrations_sub_area_has_no_permission_context_at_all flags a structural risk.
+  seed_source: view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The /management/integrations and /management/integrations/:id routes have NO
+      WithPermissionsProvider wrapping at all (ManagementRoutes.tsx:150). Every
+      other sub-route at least wraps in a context provider that SETS the contextual
+      allowedPermissions used by inner hasAccessTo checks. Without a wrapping
+      provider, any inner usePermissions().hasAccessTo(<integration permission>)
+      inside the Integrations subtree falls back to the OUTER Management.tsx
+      context, whose allowedPermissions = [OWNER_ASSOCIATION_MANAGE] only. Per
+      PermissionProvider.tsx:27-32, hasAccessTo resolves via
+      allowedPermissions.includes(...), so a check for e.g. DATA_SOURCE_UPDATE
+      deny-by-defaults regardless of the user's real grants (OWNER_ASSOCIATION_MANAGE
+      != DATA_SOURCE_UPDATE). Today no Integration component is confirmed to call
+      usePermissions (the grep is a P-162 follow-up), so it is currently latent.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: security
+        cite: "ManagementRoutes.tsx:150 + Management.tsx:9-12 + PermissionProvider.tsx:27-32"
+        note: "no provider on integrations route; inner checks fall through to OWNER_ASSOCIATION_MANAGE context."
+    operator_visible_failure: |-
+      The day a permission-gated integration feature ships (any control wrapped in
+      a hasAccessTo(<integration permission>) check inside the Integrations
+      subtree), it will be DEAD for every user — no admin can use it without being
+      explicitly granted OWNER_ASSOCIATION_MANAGE, which is semantically unrelated
+      to integrations. The failure is silent (hide-not-disable: the control simply
+      never appears) and would present as "the new integration toggle does
+      nothing / isn't there" with no error. This is a future foot-gun baked into
+      the route topology now.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When a user lacks OWNER_ASSOCIATION_MANAGE, the Associations TAB is hidden
+    from the in-page vertical tab strip (consistent with the route redirect).
+  derivation: |-
+    UI-label + consistency (Rule 9): a tab whose route redirects away should not
+    be shown as a clickable tab, or the user clicks a dead affordance. The sidecar
+    references a hideAssociations memo.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      ManagementTabs.tsx:14-17 carries a hideAssociations memo that removes the
+      Associations tab from the rendered strip when the user lacks
+      OWNER_ASSOCIATION_MANAGE (per route__management:stress_findings.auth_gates,
+      DISABLED branch: "the Associations tab HIDDEN per the hideAssociations memo").
+      This is consistent with the RestrictedRoute redirect on the same permission
+      (H-002): the tab is hidden AND the route redirects — the user never sees a
+      dead Associations affordance. This is the single sub-area where tab
+      visibility and route gating agree.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: stress_findings.auth_gates
+        cite: "ManagementTabs.tsx:14-17"
+        note: "hideAssociations memo removes the tab when OWNER_ASSOCIATION_MANAGE absent."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a non-admin user opens /management/policies, the policies-overall count
+    shown in the subtitle reflects the number of policies actually visible to that
+    user (not a larger catalog total they cannot see).
+  derivation: |-
+    Response-shape: the "X policies overall" subtitle is a user-facing count; a
+    user expects it to match what they can see. PolicyList freezes the count to
+    the last unfiltered total (PolicyList:invariants).
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      For the SEARCH case the count is intentionally the unfiltered catalogue size,
+      not the filtered result (PolicyList.tsx:43-45: useEffect [total]: if (!query)
+      setTotalPolicies(total) — frozen during search by design). For the
+      non-ADMIN visibility case, the LIST itself is narrowed at the service layer
+      to role-attached policies (PolicyServiceImpl.java:53-60), and the total
+      returned is filteredPolicies.size() (PolicyServiceImpl.java:115), so the
+      count DOES match the non-admin's visible set on the unfiltered view. The
+      gap is the search-vs-overall ambiguity: a non-admin filtering their already-
+      narrowed list sees e.g. "3 policies overall" alongside 1 visible row, with no
+      caption distinguishing "overall" from "matching" — a careful operator may
+      infer pagination and hit load-more (which carries the query and naturally
+      terminates for non-admins after one page).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: invariants
+        cite: "PolicyList.tsx:43-45,78 + PolicyServiceImpl.java:53-60,115"
+        note: "count = unfiltered catalogue size; non-admin list narrowed by role-attachment; subtitle ambiguous during search."
+    operator_visible_failure: |-
+      A non-admin operator search-filtering the Policies list reads "N policies
+      overall" while seeing fewer rows, with no label clarifying that N is the
+      pre-filter total of THEIR visible set. The consequence is mild confusion
+      (the user may believe rows are hidden by pagination), not a data-integrity
+      or security failure. The non-admin visibility scoping itself is correct;
+      only the subtitle wording is ambiguous.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When the live documentation describes the Management/Authorization surface,
+    it states that READING Management catalogs (Policies, Roles, Owners,
+    Collectors) is open to any authenticated user (matching the code).
+  derivation: |-
+    Doc-claim seed: the feature-flow facet
+    docs_do_not_document_management_ui_permission_model_at_all (recorded
+    2026-05-26) claims the doc is silent; this hypothesis re-tests that claim
+    against the LIVE doc at reflection time.
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      As of the 2026-06-03 WebFetch (status 200), the live Authorization page now
+      states the read-collaborative posture explicitly: "Read access on Management
+      catalogs is collaborative by design. Every GET /api/* Management endpoint
+      (Owners, Datasources, Collectors, Namespaces, Titles, Owner-Association
+      requests, Policies, Roles, IdP providers) falls through to the platform's
+      'any authenticated user' rule," and "read-side authorization is enforced at
+      the deployment perimeter, not by the platform's RBAC." This MATCHES the code
+      (H-001/H-003 contradictions are the code reality; the doc now describes that
+      reality). It also documents the hide-not-disable convention (H-004). This
+      is a DRIFT from the feature-flow facet recorded 2026-05-26
+      ("docs do not document the Management UI permission model at all"): the doc
+      has since been updated. The facet is now STALE — at least for the read-side
+      posture and the hide-not-disable convention.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: docs_link_semantic
+        cite: "WebFetch authorization (2026-06-03, status 200) vs sidecar fetched 2026-05-26"
+        note: "live doc now documents read-collaborative posture; sidecar's doc-silence finding is stale."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When the live documentation describes the Management UI, it states WHICH
+    sub-areas are route-gated (only Associations) so an operator knows the
+    asymmetry between Associations and the other eight tabs.
+  derivation: |-
+    Doc-claim seed: even with the read-collaborative posture documented, the
+    per-tab asymmetry (Associations route-gated; eight others not) is the precise
+    operator-facing surprise; the hypothesis tests whether the doc closes it.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The live Authorization page now documents the GENERAL read-collaborative
+      posture and the hide-not-disable convention, but per the 2026-06-03 WebFetch
+      it does NOT specify which Management sub-areas are admin-only vs visible to
+      any authenticated user, and does not call out that Associations is the sole
+      route-gated tab while the other eight render their full catalog. So the
+      higher-level posture is now documented (H-009 confirmed) but the specific
+      per-tab asymmetry — the exact thing that makes Integrations and Policies
+      behave differently from Associations — is still absent. An operator reading
+      the doc learns "reads are open" but not "the Associations tab uniquely
+      redirects unpermitted users while the other eight do not."
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: docs_link_semantic
+        cite: "WebFetch authorization (2026-06-03, status 200)"
+        note: "doc states general posture; does NOT enumerate per-sub-area route-gating asymmetry."
+    operator_visible_failure: |-
+      An operator who reads the now-improved doc still cannot answer "if I deep-link
+      a no-permission user to /management/associations vs /management/policies, do
+      they behave the same?" — they don't (Associations redirects, Policies
+      renders). The doc's read-collaborative statement implies uniform behaviour,
+      but the route layer is non-uniform. This is a residual Cornerstone-3 caveat
+      gap, narrower than the original facet.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When a non-admin user reads the Management catalogs (the read-collaborative
+    posture), this aligns with how comparable data-catalog platforms (DataHub,
+    Amundsen, OpenMetadata) treat metadata-read access — i.e. metadata reads are
+    conventionally open within an authenticated tenant.
+  derivation: |-
+    The read-collaborative posture is asserted as a deliberate platform stance
+    (P-09 maintainer notes, REFACTOR-024/203/201) and is now in the doc; whether
+    it is industry-canonical or a platform-specific liberty affects whether the
+    H-001/H-003 disclosures are "expected" or "surprising" to a security operator.
+  seed_source: cross-pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The code+doc confirm the platform's stance: metadata reads (catalog,
+      policies, roles) are open to any authenticated user; only mutations and the
+      Associations route are gated. Whether this matches the canonical posture of
+      comparable platforms — and specifically whether RBAC POLICY CONTENTS (not
+      just business metadata) being readable by non-admins is industry-normal or
+      an over-disclosure — is a domain-grounding question this reflection cannot
+      answer from the codebase alone. A platform may treat business metadata as
+      collaborative while still gating authorization-policy internals; the F-105
+      disclosure (H-003) blurs that line. This needs an SME comparison, not a
+      local probe of odd-platform.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: security
+        cite: "system-mission.md P-09 maintainer notes + WebFetch authorization (2026-06-03)"
+        note: "platform stance confirmed; industry-canonical alignment unverified."
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-105-2
+    routes_to_finding: probe-needed
+    sme_consultation_recommended: true
+    sme_consultation_question: |-
+      Do canonical data-catalog platforms (DataHub / Amundsen / OpenMetadata)
+      treat AUTHORIZATION-POLICY contents (permission grants, ODDRN/URN selectors,
+      role bindings) as readable by any authenticated user, or do they gate
+      policy/role internals separately from business metadata reads? Is ODD's
+      "policy JSON readable by non-admins with a touching role" within or beyond
+      the industry-normal read-collaborative posture?
+    sme_consultation_archetype: comparative
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: |-
+    /management/integrations has no WithPermissionsProvider; inner
+    hasAccessTo(<integration permission>) checks fall through to the
+    OWNER_ASSOCIATION_MANAGE context and deny-by-default, so a future
+    permission-gated integration control ships dead for every user.
+  dedup_status: already_tracked
+  tracked_as: "F-105:facet integrations_sub_area_has_no_permission_context_at_all"
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    ManagementRoutes.tsx:150 — wrap the integrations/* route in a
+    WithPermissionsProvider seeded with the integration-relevant allowedPermissions
+    (mirror the eight sibling sub-routes), OR document the fall-through as deliberate.
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: |-
+    Any authenticated user (or anonymous under DISABLED) deep-links to 8 of 9
+    Management sub-areas and reads the full catalog; only buttons hide, only
+    Associations route-redirects.
+  dedup_status: already_tracked
+  tracked_as: "F-105:facet management_section_route_gating_reads_bypass_authorization_only_associations_gated"
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+- hypothesis_id: H-003
+  one_line: |-
+    Policy JSON (permission grants, ODDRN selectors, role bindings) is readable to
+    any non-admin user whose role touches the policy; route never blocks; only
+    Save is gated.
+  dedup_status: already_tracked
+  tracked_as: "F-105:facet admin_surface_existence_disclosed_to_non_admin_users_recon_information"
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+- hypothesis_id: H-004
+  one_line: |-
+    Unavailable Management write actions are HIDDEN (render null), not greyed —
+    intentional hide-not-disable convention; trades permission-noise for
+    discoverability of gated actions.
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+- hypothesis_id: H-008
+  one_line: |-
+    The "X policies overall" subtitle is the unfiltered total (frozen during
+    search) — ambiguous against a smaller visible/filtered row count; mild
+    confusion only.
+  dedup_status: net_new
+  recommended_log_as: "doc-gap-NNN (UI-copy caveat; low priority)"
+
+### functional_test_demands
+- use_case_id: F-105-UC-1
+  hypothesis_id: H-001
+  kind: cross-actor
+  promise: |-
+    A user with zero Management-tier permissions who deep-links to
+    /management/policies (and /owners, /roles, /namespaces, /datasources,
+    /collectors, /tags) sees the full list render — reads are NOT route-gated.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-1)"
+  proposed_test: |-
+    IT (Playwright, odd-ldap stack): log in as alice (USER, no Management perms);
+    navigate to /management/policies; assert the policy list renders >=1 row AND
+    the Create-policy button is absent. Pins the read-bypass-with-buttons-hidden
+    reality (the regression guard if a route gate is ever added).
+- use_case_id: F-105-UC-2
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: |-
+    A user WITH OWNER_ASSOCIATION_MANAGE resolves /management/associations; a user
+    WITHOUT it is redirected to /management/namespaces (the lone working route gate).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-2)"
+  proposed_test: |-
+    IT (Playwright, odd-ldap stack): as alice (no OWNER_ASSOCIATION_MANAGE),
+    navigate to /management/associations; assert final URL is
+    /management/namespaces (RestrictedRoute redirect). Then as an admin user,
+    assert the Associations inbox renders. Guards the one working gate.
+- use_case_id: F-105-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: |-
+    A non-admin user whose role touches a policy can navigate to
+    /management/policies/{id} and read the full policy JSON; only Save is gated.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-3)"
+  proposed_test: |-
+    IT (Playwright, odd-ldap stack): as a non-admin user with a role attached to a
+    seeded policy, open /management/policies/{id}; assert the AppJSONEditor renders
+    the policy statements AND the Save button is absent. Pins the read-disclosure.
+- use_case_id: F-105-UC-4
+  hypothesis_id: H-004
+  kind: render
+  promise: |-
+    A Management write affordance (e.g. Create-policy) is rendered as nothing
+    (absent from the DOM), not as a disabled/greyed button, when the user lacks
+    the permission (hide-not-disable).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-4)"
+  proposed_test: |-
+    Unit/RTL test on PolicyList: render with a usePermissions mock returning
+    hasAccessTo=false; assert the Create-policy button is not in the document
+    (query returns null), not merely disabled. Pins the platform convention.
+- use_case_id: F-105-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: |-
+    Under auth.type=DISABLED an anonymous (never-logged-in) caller who navigates
+    to /management/policies sees the policy list render.
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-5); blocked on PENDING-F-105-1"
+  proposed_test: |-
+    IT (Playwright, odd-minimal/DISABLED stack): with NO session cookie, GET the
+    SPA and navigate to /management/policies; assert the list renders. Confirms
+    the DISABLED anonymous-read posture end-to-end (extends IT-009 from
+    /api/dataentities/classes to the Management surface).
+- use_case_id: F-105-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: |-
+    A permission-gated control inside /management/integrations evaluates against
+    the user's real integration permissions, not the outer OWNER_ASSOCIATION_MANAGE
+    context.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-6); regression guard for the H-006 fix"
+  proposed_test: |-
+    Unit/RTL test: mount an Integrations subtree component that calls
+    hasAccessTo(DATA_SOURCE_UPDATE) under a session that HAS DATA_SOURCE_UPDATE but
+    NOT OWNER_ASSOCIATION_MANAGE; assert the gated control is present. RED today
+    (falls through to OWNER_ASSOCIATION_MANAGE context -> denies); GREEN once a
+    provider wraps the route.
+- use_case_id: F-105-UC-7
+  hypothesis_id: H-007
+  kind: render
+  promise: |-
+    The Associations tab is hidden from the vertical tab strip when the user lacks
+    OWNER_ASSOCIATION_MANAGE (consistent with the route redirect).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-7)"
+  proposed_test: |-
+    Unit/RTL test on ManagementTabs: render with hasAccessTo(OWNER_ASSOCIATION_MANAGE)=false;
+    assert the Associations tab is absent from the strip; render with =true and
+    assert it is present. Pins the hideAssociations memo + its agreement with the route gate.
+- use_case_id: F-105-UC-8
+  hypothesis_id: H-008
+  kind: render
+  promise: |-
+    The non-admin policies list is narrowed to role-attached policies and its
+    overall count reflects that narrowed set (not the global catalog total).
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-8)"
+  proposed_test: |-
+    Backend integration test (PolicyServiceImpl.list non-ADMIN branch): a USER with
+    one role attached to 1 of 3 policies gets a 1-element list with total=1; the
+    UI subtitle then reads "1 policies overall". Pins the service-layer narrowing.
+- use_case_id: F-105-UC-9
+  hypothesis_id: H-009
+  kind: grammar
+  promise: |-
+    The live Authorization doc states that Management catalog READS are open to any
+    authenticated user (matching the code).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-9); doc-coverage assertion, low priority"
+  proposed_test: |-
+    Doc-link verification (Gate 8 style): WebFetch the Authorization page and assert
+    it contains the read-collaborative statement. Guards against the doc silently
+    regressing to the pre-2026-05-26 silence the feature-flow facet recorded.
+- use_case_id: F-105-UC-10
+  hypothesis_id: H-010
+  kind: grammar
+  promise: |-
+    The live doc enumerates which Management sub-areas are route-gated (only
+    Associations) vs render-for-all (the other eight).
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-10); doc-coverage assertion"
+  proposed_test: |-
+    Doc-link verification: assert the Authorization (or a Management UI) page names
+    the Associations-only route-gating asymmetry. Currently RED (the per-tab
+    asymmetry is undocumented) — becomes the acceptance check for the H-010 doc-gap fix.
+- use_case_id: F-105-UC-11
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: |-
+    ODD's read-collaborative posture for AUTHORIZATION-POLICY contents aligns with
+    the industry-canonical posture of comparable catalog platforms.
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-105-UC-11); blocked on SME consultation (comparative)"
+  proposed_test: |-
+    Not locally testable — resolves via an odd-sme comparative consultation, not a
+    probe of odd-platform. If the SME finds policy-content read-openness is beyond
+    industry-normal, H-001/H-003 escalate from caveat to bug.
+
+### probes_emitted
+- probe_id: PENDING-F-105-1
+  hypothesis_id: H-005
+  probe_path: "(parallel-safe mode — not written; orchestrator to mint as P-NNN)"
+  hypothesis_text: |-
+    Under auth.type=DISABLED, an anonymous network caller (no session cookie) who
+    navigates to /management/policies sees the policy list render (the read-bypass
+    extends to unauthenticated callers under DISABLED). Local-only: docker-compose
+    odd-minimal (DISABLED) + Playwright headless with no session; assert the list
+    paints AND fetch the policy detail JSON. Extends IT-009 from
+    /api/dataentities/classes to the Management list endpoints. emitted_by:
+    feature-reflector; status: pending-reflection-verification.
+  local_execution_blocked: false
+- probe_id: PENDING-F-105-2
+  hypothesis_id: H-011
+  probe_path: "(parallel-safe mode — not written; resolves via SME, not a local probe)"
+  hypothesis_text: |-
+    ODD's read-collaborative posture for authorization-POLICY contents (not just
+    business metadata) aligns with canonical catalog platforms. NOT a local probe —
+    requires an odd-sme comparative consultation (DataHub / Amundsen /
+    OpenMetadata policy-read posture). status: pending-reflection-verification.
+  local_execution_blocked: true
+  local_execution_blocked_reason: |-
+    Industry-comparison question; cannot be answered by running odd-platform —
+    routes to odd-sme comparative consultation per Rule 10.
+
+### validation_gaps
+- sidecar: "(feature-flow chain — contributing_nodes)"
+  field_insufficient: |-
+    The F-105 chain lists all five contributing nodes (App.tsx route-mount,
+    Management.tsx, ManagementRoutes.tsx, WithPermissionsProvider.tsx,
+    NamespaceList.tsx) as unresolved: true with sidecar: '(unresolved)'. The
+    actual enriched understanding that this reflection validated against lives in
+    a DIFFERENT node's sidecar — odd-platform__ts__routes__route__management.md
+    (the route module) — plus the PolicyList component sidecar. The chain's own
+    hops therefore point at unresolved sidecars while the load-bearing primary-
+    source walk exists elsewhere.
+  proposed_refresh: |-
+    Enrich the four UI component nodes as first-class sidecars (Management.tsx,
+    ManagementRoutes.tsx, WithPermissionsProvider.tsx, NamespaceList.tsx — and
+    ideally PolicyDetails/PolicyForm for the H-003 JSON-disclosure leaf), then
+    re-point the F-105 chain hops at them. Today the route__management sidecar +
+    PolicyList sidecar carry the full HIGH-confidence walk, so the reflection is
+    NOT API-only (Rule 9 satisfied — the UI surface is in the analysis via these
+    two sidecars and the ui_review_2026_05_26 block), but the chain's own
+    sidecar references are stale and a graph-retriever following the chain would
+    hit '(unresolved)' instead of the evidence. This is the LSN-025 substrate-
+    coverage shape: the UI nodes exist as chain entries but lack their own sidecars.
+- sidecar: odd-platform__ts__routes__route__management.md
+  field_insufficient: |-
+    The Integrations-subtree usePermissions question (H-006) is left as a
+    "follow-up grep" / P-162 follow-up — the sidecar records that IF any
+    Integration component calls usePermissions the gate is broken, but does not
+    resolve WHETHER one does today. The H-006 verdict is contradicted on the
+    structural fact (no provider on the route) but the live-exploitability is latent.
+  proposed_refresh: |-
+    Grep components/Management/Integrations for usePermissions/hasAccessTo and
+    record whether any current control gates on a non-OWNER_ASSOCIATION_MANAGE
+    permission inside the unwrapped subtree; if so, escalate H-006 from
+    latent-foot-gun to live-broken-control.
+
+### doc_drift_findings
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+  doc_says: |-
+    "Read access on Management catalogs is collaborative by design. Every GET
+    /api/* Management endpoint ... falls through to the platform's 'any
+    authenticated user' rule"; "read-side authorization is enforced at the
+    deployment perimeter, not by the platform's RBAC"; plus the hide-not-disable
+    UI convention.
+  code_does: |-
+    Exactly this — 8 of 9 Management sub-areas render the full catalog to any
+    authenticated user; only buttons hide; only Associations route-redirects.
+    The doc now MATCHES the code.
+  recommended_log_as: doc-gap-NNN
+  note: |-
+    This is a REVERSE drift from the feature-flow facet
+    docs_do_not_document_management_ui_permission_model_at_all (recorded
+    2026-05-26 as a HIGH/MEDIUM doc gap). The live doc has since been updated to
+    document the read-collaborative posture + hide-not-disable convention. The
+    facet should be marked PARTIALLY-RESOLVED on the next F-105 feature-flow
+    refresh: the general posture is now documented (close the broad gap); the
+    per-sub-area route-gating asymmetry (Associations-only) is still undocumented
+    (H-010 — the residual narrow gap).
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+  doc_says: |-
+    Does NOT enumerate which Management sub-areas are route-gated vs render-for-all;
+    does not state that Associations is the sole route-gated tab.
+  code_does: |-
+    Only /management/associations/* is route-gated (RestrictedRoute redirect);
+    the other eight render their full catalog and rely on hide-not-disable for
+    writes.
+  recommended_log_as: doc-gap-NNN
+
+## maintainer_notes
+
+(none yet — this block is preserved verbatim across refreshes; only the maintainer edits it)

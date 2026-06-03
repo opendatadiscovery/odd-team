@@ -1,0 +1,849 @@
+---
+feature_id: F-162
+pillar_anchored_id: P-08:F-018
+pillar: Management & Administration
+feature_name: |-
+  Integration Wizard argument-form UX — IntegrationCodeSnippetWithForm
+  compiles a Handlebars template (server-supplied via the integration
+  manifest) and renders a client-only argument-collection form; submit
+  flips to a "Reconfigure" view rendering the compiled template as
+  Markdown for the operator to copy into collector_config.yaml.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read: []   # all three contributing nodes are React components with sidecar: unresolved (see validation_gaps VG-001)
+source_reads_for_validation:
+  # Rule 8 exception — the chain's sidecars are unresolved, so the per-hop claims were
+  # validated directly against the feature-flow facets (UI-read at seeded_from ui-review-2026-05-26)
+  # AND a confirming source read of the three contributing components + the shared Markdown element.
+  - "odd-platform-ui/src/components/Management/Integrations/Integration/IntegrationContent/IntegrationCodeSnippetWithForm/IntegrationCodeSnippetWithForm.tsx:1-135"
+  - "odd-platform-ui/src/components/Management/Integrations/Integration/IntegrationContent/IntegrationContent.tsx:1-27"
+  - "odd-platform-ui/src/components/Management/Integrations/Integration/IntegrationContent/IntegrationCodeSnippet/IntegrationCodeSnippet.tsx:1-16"
+  - "odd-platform-ui/src/components/shared/elements/Markdown/Markdown.tsx:1-127 (copy-affordance + sanitisation question)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: 2026-06-03T00:00:00Z
+    last_verified_status: 200
+    captured_promise: |-
+      "pick an integration template, fill in its parameters, and copy the generated
+      collector_config.yaml snippet." Says nothing about validation, static-value
+      injection, or a Configure/Reconfigure flow.
+  - url: "https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+    last_verified_at: 2026-06-03T00:00:00Z
+    last_verified_status: 200
+    captured_promise: |-
+      "Fill in the form parameters the wizard prompts for (host, port, credentials, ...).
+      The wizard pre-fills any static parameter" — "exactly one parameter is wired up this
+      way: platform_url, read from odd.platform-base-url". "It does not validate the snippet
+      against a target source — credentials, hosts, and ports are typed at face value."
+      "Copy the rendered YAML snippet into the plugins: list of your collector_config.yaml."
+      Describes a linear one-time process; no Reconfigure flow documented; no BOOLEAN/checkbox
+      argument type mentioned.
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 3
+  partial: 3
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: MEDIUM
+    one_line: |-
+      An operator typing an out-of-range/negative/decimal value into an INTEGER field
+      ("number") passes form validation silently — the validate body only checks the
+      string branch — and copies an invalid value into their collector config that fails
+      at deploy time, not at form time.
+related_feature_flows:
+  - F-033   # registry / classpath chain — F-162 is the authoring UI surface on top of it
+  - F-031   # Data Source Lifecycle — the operator's next action after copying the snippet
+  - F-020   # Collector Lifecycle — the credential-issuance surface needed to use the snippet
+related_concepts:
+  - integration-wizard-authoring
+  - handlebars-template-substitution
+  - static-argument-injection
+  - copy-paste-friction
+related_drift_classes:
+  - required_field_validate_only_checks_string_branch_number_fields_skip_validation
+  - static_value_argument_renders_invisible_input_no_disclosure_to_operator
+  - reconfigure_round_trip_loses_typed_values_on_re_show_form_unless_form_state_re_hydrated
+  - handlebars_compile_misuse_via_usecallback_invoked_at_render_time_not_memoised
+  - configured_snippet_no_explicit_copy_button_relies_on_markdown_renderer_copy_affordance
+new_drift_classes_proposed:
+  - arg_name_label_vs_arg_parameter_form_key_divergence_invisible_to_operator
+  - configure_button_disabled_until_valid_blocks_zero_required_arg_or_boolean_only_manifests_unless_static
+---
+
+# Integration Wizard argument-form UX — product-owner reflection
+
+## product_owner_narrative
+
+The Integration Wizard's argument form is the **authoring surface** of the Integrations
+tab under Management (pillar P-08): the screen where an operator who has decided to stand
+up a new pull collector types the connection values for their source — host, port,
+credentials, a database name — and gets back a ready-to-paste `collector_config.yaml`
+snippet (per the live Management doc: "pick an integration template, fill in its
+parameters, and copy the generated collector_config.yaml snippet", WebFetch
+docs.opendatadiscovery.org/features/management). It sits on top of F-033 (the
+classpath manifest registry that supplies the Handlebars templates); F-162 is the part
+the human actually touches and the moment they form their first impression of how much
+ODD respects their time.
+
+A user interacts with it as follows (per IntegrationContent.tsx:12-26 + IntegrationCodeSnippetWithForm.tsx:13-135, source-read for validation). When they open an integration's tab, the parent sorts the integration's code snippets by declared-argument-count descending — so the most-configurable snippet renders first — and dispatches each snippet that has arguments to the form component; arg-less snippets render as plain Markdown. For a snippet with arguments, the operator sees a form (`showForm` defaults to true): one field per declared argument, with the field's visible label coming from `arg.name`. They fill in the values, the `Configure` button (disabled until the form is valid, line 117) becomes enabled, and on submit the panel flips to a second view (`showForm` false) showing a `Reconfigure` button and the compiled template rendered as Markdown (typically a YAML code-fence) — the thing they copy.
+
+The working parts the operator experiences (all per IntegrationCodeSnippetWithForm.tsx,
+source-read for validation): three field types dispatched by `arg.type` — a checkbox for
+`BOOLEAN` (line 38-66), a free-text/number input for everything else (line 80-109, where
+`type='string'` for STRING and `type='number'` for every other non-boolean type), and an
+**invisible** field for any argument carrying a `staticValue` (line 69-77, rendered as
+`<input style={{display:'none'}}>`). Every visible non-boolean field is `required` and
+trim-validated — but only along the string branch (line 86-90). The Handlebars template is
+compiled and invoked with the collected values on every render; substitution is keyed by
+`arg.parameter`, not by the `arg.name` the operator sees on the label. The rendered Markdown
+gets its copy affordance from the shared `Markdown` component, which maps a per-code-fence
+`CopyButton` (Markdown.tsx:41-45, 118-121) — there is no top-level "Copy snippet" button
+specific to this wizard.
+
+The integration story: this feature is the front door into pillar P-10 (Integrations &
+Ingestion) — the cross-pillar relationship "P-08 feeds P-10: Integration Wizard generates
+collector_config.yaml snippets" (system-mission.md). The static-value mechanism is the
+hand-off point: the live Integration Wizard doc states "exactly one parameter is wired up
+this way: platform_url, read from odd.platform-base-url", and warns operators to set
+`odd.platform-base-url` before opening the wizard "so the snippets carry a working URL out
+of the box" (WebFetch docs.opendatadiscovery.org/integrations/integrations/integration-wizard).
+The operator's natural next actions after copying are F-031 (register the resulting
+datasource) and F-020 (issue the collector token the snippet references).
+
+Edge cases a product owner would flag in a demo: what happens when the operator clears a
+field and types `0` into a "number" argument; what happens when they click `Reconfigure`
+to tweak one value; what they see (nothing) when a `staticValue` is baked in under a
+misconfigured `odd.platform-base-url`; and whether a maliciously-authored manifest template
+can inject anything into the rendered Markdown. The live doc is explicit that the wizard
+"does not validate ... credentials, hosts, and ports are typed at face value" — so the
+form's own validation is the only client-side gate, and as the hypotheses below show, that
+gate is string-only.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator opens an integration tab whose snippet declares arguments, they see a
+    form with one labelled field per argument, and the most-configurable snippet appears
+    first on the page.
+  derivation: |-
+    IntegrationContent.tsx sorts snippets by argument-count descending and dispatches
+    arg-bearing snippets to the form component; the form maps one control per declared
+    argument. Pillar P-08 primary action "generate collector_config.yaml snippets via the
+    Integration Wizard".
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      IntegrationContent.tsx:14-22 spreads codeSnippets, sorts `(b.arguments?.length||1) -
+      (a.arguments?.length||0)` (descending by arg count), and renders
+      IntegrationCodeSnippetWithForm for any snippet with arguments.length, else
+      IntegrationCodeSnippet. IntegrationCodeSnippetWithForm.tsx:37-110 maps
+      `snippet.arguments` to one Controller/field per argument. The integration body
+      content renders below (line 23).
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: render
+        cite: "IntegrationContent.tsx:14-23; IntegrationCodeSnippetWithForm.tsx:37-110"
+        note: "sort-descending + one-field-per-argument confirmed by direct source read"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-002
+  hypothesis: |-
+    When an operator types a value into every required text field and the form becomes
+    valid, clicking Configure transitions the panel to show the rendered snippet with the
+    typed values substituted in.
+  derivation: |-
+    Endpoint/handler shape — handleParamsFormSubmit sets snippetArgs then flips showForm
+    to false; templateWithArguments = compiledTemplate(snippetArgs). Doc promise: "fill in
+    its parameters, and copy the generated collector_config.yaml snippet."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      IntegrationCodeSnippetWithForm.tsx:28-31 handleParamsFormSubmit calls
+      setSnippetArgs(data) then setShowForm(false). Line 26 computes
+      templateWithArguments = compiledTemplate(snippetArgs) each render; line 122-130
+      renders <Markdown value={templateWithArguments}> in the !showForm branch. Substituted
+      values therefore appear in the rendered snippet after Configure.
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: handler
+        cite: "IntegrationCodeSnippetWithForm.tsx:26-31, 122-130"
+        note: "Configure → setSnippetArgs + showForm=false → Markdown of compiled template"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-003
+  hypothesis: |-
+    When an operator submits a BOOLEAN argument left unchecked (the value `false`), the form
+    accepts it as a filled value and Configure is enabled — false is a deliberate choice,
+    not a missing value.
+  derivation: |-
+    View-mode dispatch — the BOOLEAN branch renders a Controller with defaultValue=false and
+    NO rules block. Negative-space: operators expect to be able to leave a boolean off.
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      IntegrationCodeSnippetWithForm.tsx:38-66 renders the BOOLEAN argument as a Controller
+      with `defaultValue={false}` and no `rules` (no required, no validate). react-hook-form
+      therefore treats it as always-valid; an unchecked box submits `false` and does not block
+      `formState.isValid`. The boolean is correctly modelled as a tri-non-state (it is always
+      either true or false, never "empty").
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: view-mode
+        cite: "IntegrationCodeSnippetWithForm.tsx:38-66, 117"
+        note: "BOOLEAN Controller has defaultValue=false, no rules → false passes validity"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-004
+  hypothesis: |-
+    When an operator types an invalid value into an INTEGER/number argument (a negative
+    number for a retention-days field, a decimal, an out-of-range value, or pastes a
+    non-numeric string), the form rejects it before allowing Configure — so an invalid value
+    never reaches the copied snippet.
+  derivation: |-
+    Endpoint-shape + negative-space — non-boolean non-static fields carry `required: true`
+    and a `validate` callback; the operator's mental model is that "required + validate"
+    means the value is checked. INTEGER fields render as type='number' (arg.type !== 'STRING').
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The `validate` body at IntegrationCodeSnippetWithForm.tsx:86-90 is
+      `validate: value => { if (typeof value === 'string') return !!value.trim(); }`. For a
+      number-typed input (any non-STRING type, rendered type='number' at line 101), the
+      browser coerces the field value to a number; `typeof value === 'string'` is then FALSE,
+      so the validate function falls through and returns `undefined`. react-hook-form treats
+      an `undefined` validate result as VALID. There is no min/max/step/sign/finiteness/integer
+      check anywhere — the only constraint on a number field is the browser's native
+      type='number' input (which still accepts negatives, decimals, and very large numbers,
+      and yields empty-string when cleared). The live Integration Wizard doc itself states the
+      wizard "does not validate ... typed at face value" — so the contradiction is between the
+      operator's reasonable expectation (a required+validated INTEGER field is checked) and the
+      actual behaviour (numbers bypass the validate body entirely).
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: validation
+        cite: "IntegrationCodeSnippetWithForm.tsx:86-90 (validate string-branch only); :101 (type='number')"
+        note: "validate returns undefined for numbers → treated valid; no range/sign/integer check"
+      - sidecar: "(doc cross-reference)"
+        section: doc
+        cite: "WebFetch docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+        note: "doc confirms no source-side validation; does NOT disclose the string-only client gate"
+    operator_visible_failure: |-
+      (1) An operator typing a negative number into a field that semantically must be
+      positive (retention-days, port, batch-size) passes Configure successfully; the invalid
+      value is substituted verbatim into the YAML; they copy it into collector_config.yaml; the
+      COLLECTOR rejects or misbehaves at deploy/run time — feedback delayed by a full deploy
+      cycle. (2) Pasting a non-numeric string into the number field can yield an empty value or
+      NaN coercion that silently produces a snippet with a blank/garbage parameter. (3) The
+      required+validate UI affordance gives FALSE confidence: the operator believes the form
+      validated their integer because they saw a "required" asterisk-style gate work for the
+      text fields. (4) The number-field cleared-to-empty case: `required: true` should catch an
+      empty number, but because the validate fallthrough returns undefined, the empty handling
+      relies solely on react-hook-form's `required` on a coerced-number field — fragile and
+      untested.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: true
+  sme_consultation_question: |-
+    For a data-catalog integration wizard, do operators of comparable tools (Airbyte / Fivetran
+    connector setup, Meltano) expect client-side range/type validation of connection parameters,
+    or is "typed at face value, validated by the connector at connect time" the industry-canonical
+    posture? Archetype: implicit-requirements.
+
+- id: H-005
+  hypothesis: |-
+    When an operator submits `0` into a number argument (a legitimate value for
+    "disabled"/"no limit" semantics), the form accepts it and `0` appears in the snippet.
+  derivation: |-
+    Negative-space — `0` is falsy in JS; a naive `!!value` check would wrongly reject it.
+    Operators commonly pass 0 for retention-disabled / unlimited semantics.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Because the validate body (line 86-90) only runs its `!!value.trim()` falsy-check on the
+      STRING branch, a numeric `0` never reaches that check — it falls through to `undefined`
+      (valid). `required: true` on a populated number field with value 0 is satisfied (0 is a
+      present value, not an empty input). So `0` passes and is substituted into the template.
+      This is the correct outcome — but it is correct by accident (the string-only validate that
+      causes H-004's bug is the same code that makes `0` pass here). The two hypotheses share a
+      root cause with opposite valence.
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: validation
+        cite: "IntegrationCodeSnippetWithForm.tsx:86-90, 101"
+        note: "0 bypasses the string-only validate → accepted (correct, but incidental)"
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-006
+  hypothesis: |-
+    When a manifest declares a staticValue argument (e.g. platform_url), the operator sees the
+    value that is about to be baked into their snippet, so they can verify it before copying.
+  derivation: |-
+    Negative-space + doc-claim seed — the live Integration Wizard doc says "The wizard pre-fills
+    any static parameter", which a reader takes to mean visibly pre-filled. F-033 cross-link:
+    default platform_url placeholder.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      IntegrationCodeSnippetWithForm.tsx:69-77 renders any staticValue argument as
+      `<input {...register(arg.parameter)} value={arg.staticValue} style={{display:'none'}} />`.
+      The field is registered into the form (so its value reaches the template) but is
+      `display:none` — the operator NEVER sees it. The doc's word "pre-fills" implies a visible
+      pre-populated field; the implementation injects it invisibly. There is no badge, preview,
+      or "static substitutions" disclosure block. This is the platform_url-injection mechanism:
+      the doc confirms "exactly one parameter is wired up this way: platform_url, read from
+      odd.platform-base-url".
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: render
+        cite: "IntegrationCodeSnippetWithForm.tsx:69-77 (display:none registered input)"
+        note: "static arg injected but invisible; no operator-facing disclosure"
+      - sidecar: "(doc cross-reference)"
+        section: doc
+        cite: "WebFetch docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+        note: "doc says 'pre-fills any static parameter' — implies visible; code hides it"
+    operator_visible_failure: |-
+      (1) Under a misconfigured `odd.platform-base-url` (the doc explicitly warns operators to
+      set it before opening the wizard; F-033 records a placeholder default), the operator copies
+      a snippet that silently bakes in a wrong/placeholder platform URL — the collector then
+      cannot reach the platform at run time, and the operator has no on-screen signal at copy
+      time that a URL was even injected. (2) Trust/verifiability gap: an operator who wants to
+      confirm exactly what is in the snippet before pasting cannot see the injected value in the
+      form; they only see it if they read the rendered Markdown carefully, where it is mixed into
+      the YAML. (3) The doc says "pre-fills", the operator looks for a pre-filled field, finds
+      none, and may conclude the static parameter is missing.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-007
+  hypothesis: |-
+    When an operator clicks Reconfigure to change one value, the form reappears pre-populated
+    with the values they just submitted, so they edit one field rather than re-typing all.
+  derivation: |-
+    UI-label — "Reconfigure" (vs "Reset") promises returning to the prior configuration to
+    adjust it. Senior-PO convenience question: is re-editing convenient?
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      IntegrationCodeSnippetWithForm.tsx:124-128 Reconfigure's onClick is only
+      `() => setShowForm(true)`. It does NOT seed the form from snippetArgs. The form is created
+      by `useForm({})` (line 20) with NO defaultValues. On the showForm flip, the non-boolean
+      Controllers re-mount with `defaultValue=''` (line 85) and the BOOLEAN with
+      `defaultValue={false}` (line 44). react-hook-form's retention of values across a conditional
+      unmount/remount with literal `defaultValue` props is not guaranteed to re-show the submitted
+      values — the most likely observed behaviour is empty fields. The snippetArgs state survives
+      (so the rendered Markdown is still correct until re-submit), but the FORM does not reflect it.
+      Whether the fields are truly blank vs retained is the one residue that warrants an empirical
+      probe (see H-007-probe note), but the code path contains no explicit re-hydration, which is
+      the contradiction regardless of react-hook-form's internal retention.
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: handler
+        cite: "IntegrationCodeSnippetWithForm.tsx:20, 44, 85, 124-128"
+        note: "Reconfigure only flips showForm; no re-hydrate from snippetArgs; useForm has no defaultValues"
+      - sidecar: "(doc cross-reference)"
+        section: doc
+        cite: "WebFetch docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+        note: "doc describes a linear one-time process; Reconfigure round-trip is undocumented"
+    operator_visible_failure: |-
+      An operator who configured a Snowflake snippet with 8 parameters, then realises the port is
+      wrong, clicks Reconfigure and is confronted with an empty form — they must re-type all 8
+      values to fix one. This compounds with H-009 (no top-level copy button) to turn what should
+      be a fast configure→copy→tweak→copy loop into a re-typing chore. The label "Reconfigure"
+      sets the wrong expectation (it reads as "adjust", behaves as "start over").
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-008
+  hypothesis: |-
+    The visible field label the operator reads is the same identifier that gets substituted
+    into the snippet — so what they see named on screen is what they are setting.
+  derivation: |-
+    Cross-layer naming drift (Rule 4) — the label uses arg.name; the form registers and
+    Handlebars substitutes under arg.parameter. If name != parameter, the operator sets a field
+    whose template key differs from its label.
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The label is `arg.name` (Typography at line 60 for BOOLEAN, line 95 for text). The form
+      field is registered under `arg.parameter` (line 41 `name={arg.parameter}`, line 73
+      `register(arg.parameter)`, line 83 `name={arg.parameter}`). The compiled Handlebars template
+      substitutes by the form data keys — i.e. by `arg.parameter`. So the operator reads a label
+      derived from `arg.name` but is populating the template variable `arg.parameter`. When the
+      manifest author sets name == parameter (or name is a human-friendly synonym of the same
+      concept) this is invisible and harmless — the intended pattern (a friendly label over a
+      template key). When name and parameter diverge in meaning, the operator's mental model
+      ("I am setting <name>") is mismatched against what the template receives. This is a
+      name-vs-key divergence that is correct-by-convention but undisclosed, hence partial.
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: render
+        cite: "IntegrationCodeSnippetWithForm.tsx:41, 60, 73, 83, 95"
+        note: "label=arg.name; form key + Handlebars substitution=arg.parameter"
+    operator_visible_failure: |-
+      Mostly benign (the friendly-label-over-key pattern is normal). The failure surfaces only if
+      a manifest author authors a label (arg.name) that does not correspond to the template
+      variable (arg.parameter) — the operator then believes they configured X while the snippet
+      received the value under a differently-named key. There is no on-screen disclosure of the
+      underlying parameter key, so an operator debugging a mis-substituted snippet cannot see the
+      mapping from the form alone. This is a manifest-authoring caveat, not a code defect.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-009
+  hypothesis: |-
+    When the snippet is rendered after Configure, the operator has a one-click way to copy the
+    exact snippet text (no manual select), so they cannot drop a backtick or a trailing newline.
+  derivation: |-
+    UI-label / negative-space — a snippet operators are EXPECTED to copy verbatim should have an
+    explicit copy affordance. CopyButton pattern exists elsewhere (CollectorItemToken.tsx:52).
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The configured view renders `<Markdown value={templateWithArguments}>`
+      (IntegrationCodeSnippetWithForm.tsx:130). The shared Markdown component (Markdown.tsx:9,
+      41-45, 118-121) maps the `div` element renderer to `MarkdownCopyButton`, which renders a
+      `CopyButton stringToCopy={node.properties?.dataCode}` — i.e. the @uiw/react-md-editor
+      per-code-fence copy widget IS present on rendered fenced code blocks (unless disableCopy is
+      passed, which this call site does not). So a fenced YAML code-block in the snippet DOES get
+      a per-fence Copy button. What is absent is a single top-level "Copy snippet" button scoped
+      to the whole rendered output. The earlier feature-flow facet
+      (configured_snippet_no_explicit_copy_button) is therefore PARTIALLY correct: copy works for
+      fenced code, but there is no wizard-level copy affordance, and copy depends entirely on the
+      manifest template being authored as a fenced code-block.
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: render
+        cite: "IntegrationCodeSnippetWithForm.tsx:130; Markdown.tsx:41-45, 118-121"
+        note: "per-code-fence CopyButton ships via shared Markdown; no top-level wizard copy button"
+    operator_visible_failure: |-
+      (1) If the manifest template is NOT authored as a fenced code-block (plain text / inline),
+      no Copy button renders and the operator triple-clicks + Ctrl+C, risking dropped leading
+      whitespace or a missing trailing newline in their YAML. (2) Even with a fenced block, copy
+      is per-fence: a template that renders multiple fences or mixes prose + fence forces the
+      operator to copy each fence separately. (3) The affordance is implicit — the operator must
+      hover/notice the md-editor copy widget rather than seeing an obvious wizard-level "Copy"
+      action consistent with CopyButton usage elsewhere in Management.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-010
+  hypothesis: |-
+    A manifest snippet that declares ONLY a BOOLEAN argument (or only static arguments) lets the
+    operator reach Configure and get a snippet — the wizard works for non-text-input manifests.
+  derivation: |-
+    View-mode + negative-space — `disabled={!formState.isValid}` on Configure. If a manifest has
+    no required text fields, is the form valid immediately so Configure is clickable?
+  seed_source: view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      Configure is `disabled={!formState.isValid}` (line 117). The BOOLEAN branch (line 38-66)
+      and the staticValue branch (line 69-77) attach NO `rules`, so they impose no validity
+      constraint; only the non-boolean non-static text branch attaches `required: true`
+      (line 86-90). For a manifest whose arguments are all BOOLEAN and/or staticValue, the form
+      has no required fields, formState.isValid is true from the start, and Configure is
+      immediately clickable — the wizard works. For a manifest that mixes a required text field
+      with booleans, the operator must fill the text field first (correct). The partial verdict:
+      the happy path (boolean-only / static-only manifest) works, but react-hook-form's initial
+      `isValid` for a form with a `required` field that has not been touched can be `false` until
+      the field registers — meaning for a manifest WITH required text fields, Configure starts
+      disabled (correct) but the exact initial-validity timing across mount is an
+      implementation-internal of react-hook-form (mode defaults to onSubmit; isValid may lag).
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: view-mode
+        cite: "IntegrationCodeSnippetWithForm.tsx:38-77, 86-90, 117"
+        note: "boolean/static impose no rules → boolean-only manifest is valid immediately"
+    operator_visible_failure: |-
+      For boolean-only / static-only manifests the feature behaves correctly. The residual risk:
+      react-hook-form's default validation mode is onSubmit, so `formState.isValid` may not update
+      until a field interaction or submit attempt — for a required-text manifest this could leave
+      Configure disabled in a way that feels stuck if isValid does not recompute on first input,
+      or enabled prematurely. This is the same uncertainty surfaced as a probe in H-012.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+  sme_consultation_recommended: false
+
+- id: H-011
+  hypothesis: |-
+    The rendered snippet shows the operator a safe view of the template — a maliciously- or
+    carelessly-authored manifest template cannot execute script or inject markup into the
+    operator's browser when the snippet is rendered as Markdown.
+  derivation: |-
+    Negative-space / security — the template is server-supplied (manifest YAML), compiled by
+    Handlebars on the client, and rendered through MDEditor.Markdown. No client-side sanitisation
+    of the compiled output is visible at this call site.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The compiled Handlebars output (templateWithArguments) is passed to `<Markdown>` →
+      `MDEditor.Markdown source={value}` (Markdown.tsx:113-124). Handlebars HTML-escapes
+      double-mustache `{{ }}` interpolations by default, but the TEMPLATE TEXT itself (the
+      manifest-authored body) is rendered as-is by the Markdown renderer. @uiw/react-md-editor
+      uses react-markdown/rehype under the hood, which by default does NOT render raw HTML unless
+      rehype-raw is enabled — but whether this Markdown wrapper enables raw HTML / what sanitiser
+      schema @uiw applies is NOT determinable from this call site alone. The threat model: a
+      manifest is authored by P-10 integration developers (trusted-ish, classpath-loaded per
+      F-033), not by end users — so the practical exposure is low. But "the manifest is trusted"
+      is an assumption, not a verified control, and a stored-template → client-render path that
+      trusts the server template entirely warrants an empirical check of what the renderer does
+      with embedded HTML/script in a code-snippet template.
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: security
+        cite: "IntegrationCodeSnippetWithForm.tsx:22-26, 130; Markdown.tsx:113-124"
+        note: "compiled template → MDEditor.Markdown; sanitiser schema not determinable from call site"
+    probe_id: PENDING-F-162-1
+    confidence: LOW
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-162-1"
+  sme_consultation_recommended: false
+
+- id: H-012
+  hypothesis: |-
+    When an operator fills the last required field, the Configure button enables promptly (no
+    extra click), so the configure step feels responsive.
+  derivation: |-
+    Senior-PO convenience/intuitive question (Rule 9 mandatory UX seed) — Configure is gated on
+    formState.isValid; react-hook-form's default validation mode affects when isValid flips.
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      `useForm({})` (line 20) uses react-hook-form defaults — `mode: 'onSubmit'`,
+      `reValidateMode: 'onChange'`. With `mode: 'onSubmit'`, `formState.isValid` is NOT eagerly
+      computed before the first submit in some react-hook-form versions; the Configure button's
+      `disabled={!formState.isValid}` may therefore stay disabled until the user attempts submit
+      or until reValidate fires. The exact UX (does Configure enable on the keystroke completing
+      the last field, or only after a submit attempt?) depends on the react-hook-form version
+      pinned in odd-platform-ui and cannot be asserted from the component source alone. This is a
+      responsiveness/intuitiveness question a senior PO must answer empirically.
+    evidence:
+      - sidecar: "(unresolved — source_read_for_validation)"
+        section: ui-behaviour
+        cite: "IntegrationCodeSnippetWithForm.tsx:20, 117"
+        note: "useForm({}) default mode=onSubmit; isValid timing for the disabled gate is version-dependent"
+    probe_id: PENDING-F-162-1
+    confidence: LOW
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-162-1 (e2e — same wizard stack covers H-007/H-010/H-012 timing)"
+  sme_consultation_recommended: false
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    INTEGER/number wizard fields bypass the validate body (string-branch only) — negatives,
+    decimals, out-of-range, and NaN-on-paste pass Configure silently and reach the copied
+    collector config, failing at deploy time.
+  dedup_status: already_tracked
+  tracked_as: F-162a
+  recommended_log_as: "already filed — findings/docs-coverage-undocumented-features/2026-05-27-batch-8.md#finding-f-162a (scanner SR-20260527T2300Z); reflection corroborates as a CODE bug not only a missing-caveat"
+  proposed_fix_anchor: |-
+    IntegrationCodeSnippetWithForm.tsx:86-90 — extend validate to branch on typeof number
+    (finiteness + optional manifest-supplied min/max/integer), OR consume per-argument
+    validation hints from the manifest schema; otherwise document the client-trusted posture.
+
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |-
+    Reconfigure does not re-hydrate the form from the just-submitted values — the operator
+    re-types every field to change one; the label "Reconfigure" reads as "adjust" but behaves
+    as "start over".
+  dedup_status: already_tracked
+  tracked_as: F-162c
+  recommended_log_as: "already filed — findings/docs-coverage-undocumented-features/2026-05-27-batch-8.md#finding-f-162c; reflection raises severity to MEDIUM (UX defect, not only a caveat) and pairs it with a re-hydrate fix"
+  proposed_fix_anchor: |-
+    IntegrationCodeSnippetWithForm.tsx:124-128 — on Reconfigure, reset the form with snippetArgs
+    as defaultValues (react-hook-form reset(snippetArgs)) so prior values are editable.
+
+### caveat_candidates
+- hypothesis_id: H-006
+  one_line: |-
+    staticValue arguments (platform_url) render as display:none — the operator never sees the
+    server-injected value being baked into their snippet; under a misconfigured
+    odd.platform-base-url the placeholder URL is copied silently.
+  dedup_status: already_tracked
+  tracked_as: F-162b
+  recommended_log_as: "already filed — findings/docs-coverage-undocumented-features/2026-05-27-batch-8.md#finding-f-162b; reflection adds the live-doc 'pre-fills' wording mismatch (doc implies visible) as a doc-drift cross-link"
+
+- hypothesis_id: H-009
+  one_line: |-
+    No wizard-level Copy button; copy depends on the shared Markdown per-code-fence CopyButton,
+    which only appears if the manifest template is authored as a fenced code-block.
+  dedup_status: already_tracked
+  tracked_as: F-162d
+  recommended_log_as: "already filed — findings/docs-coverage-undocumented-features/2026-05-27-batch-8.md#finding-f-162d; reflection REFINES it — a per-code-fence copy DOES exist (Markdown.tsx:41-45), so the finding is 'no top-level copy + fence-dependent', not 'no copy at all'"
+
+- hypothesis_id: H-008
+  one_line: |-
+    Field label is arg.name but the form key + Handlebars substitution is arg.parameter — a
+    manifest author who diverges name from parameter creates an undisclosed label-vs-key
+    mismatch the operator cannot see from the form.
+  dedup_status: net_new
+  distinct_from: F-162b
+  recommended_log_as: "doc-gap-NNN — document the arg.name (label) vs arg.parameter (template key) contract in the manifest-authoring guide; net-new vs F-162b (that is static-value disclosure, this is name/key divergence)"
+
+### functional_test_demands
+- use_case_id: F-162-UC-1
+  hypothesis_id: H-001
+  kind: render
+  promise: "Arg-bearing snippet renders one labelled field per declared argument; most-configurable snippet first."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-1)"
+  proposed_test: |-
+    e2e (Playwright, integration-tests/e2e): open an integration tab whose manifest declares N
+    args; assert N labelled fields render and snippets are ordered by arg-count descending.
+- use_case_id: F-162-UC-2
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Fill required fields → Configure → rendered snippet contains the substituted values."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-2)"
+  proposed_test: |-
+    e2e: fill a known integration's (e.g. Snowflake) fields, click Configure, assert the rendered
+    Markdown YAML contains each typed value at its template position. This is the headline
+    happy-path promise of the whole feature and is currently UNVERIFIED.
+- use_case_id: F-162-UC-3
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "Unchecked BOOLEAN submits false and does not block Configure."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-3)"
+  proposed_test: |-
+    e2e/unit: a manifest with a BOOLEAN arg — leave unchecked, Configure enabled, snippet carries
+    the false value.
+- use_case_id: F-162-UC-4
+  hypothesis_id: H-004
+  kind: edit-reconcile
+  promise: "Invalid INTEGER input (negative/decimal/out-of-range/NaN) is rejected before Configure."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-4) — regression guard for the H-004 fix"
+  proposed_test: |-
+    unit (component test): type -1 / 3.14 / a pasted string into a number arg; assert Configure
+    stays disabled (post-fix) — pins the current bug RED the instant validate gains a number branch.
+- use_case_id: F-162-UC-5
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "Numeric 0 is accepted (disabled/no-limit semantics) and appears in the snippet."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-5)"
+  proposed_test: |-
+    unit: type 0 into a number arg; assert Configure enabled + snippet carries 0 (guards the
+    falsy-zero edge that the H-004 fix must preserve).
+- use_case_id: F-162-UC-6
+  hypothesis_id: H-006
+  kind: render
+  promise: "Operator can see/verify the static value being baked into the snippet before copying."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-6) — guard for a static-substitutions disclosure fix"
+  proposed_test: |-
+    e2e: a manifest with a platform_url staticValue under a known odd.platform-base-url; assert the
+    injected value is disclosed on screen (post-fix) and present in the rendered snippet.
+- use_case_id: F-162-UC-7
+  hypothesis_id: H-007
+  kind: edit-reconcile
+  promise: "Reconfigure re-shows the form pre-populated with the just-submitted values."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-7) — regression guard for the re-hydrate fix"
+  proposed_test: |-
+    e2e: Configure with values, click Reconfigure, assert the fields show the prior values
+    (post-fix). Pins the current lose-values behaviour until reset(snippetArgs) lands.
+- use_case_id: F-162-UC-8
+  hypothesis_id: H-008
+  kind: render
+  promise: "What the operator sets by label (arg.name) is the value substituted into the template."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-8)"
+  proposed_test: |-
+    unit: a manifest where arg.name != arg.parameter; assert the field labelled arg.name populates
+    the arg.parameter template key (documents the convention as an executable contract).
+- use_case_id: F-162-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "Operator can one-click copy the exact rendered snippet text."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-9)"
+  proposed_test: |-
+    e2e: render a fenced-code snippet, assert a Copy control is present and copies the snippet text
+    (and that a non-fenced template surfaces the gap).
+- use_case_id: F-162-UC-10
+  hypothesis_id: H-010
+  kind: empty/no-match
+  promise: "A boolean-only / static-only manifest reaches Configure with no required text fields."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-10)"
+  proposed_test: |-
+    unit: a manifest with only BOOLEAN + staticValue args; assert formState.isValid true at mount
+    and Configure enabled.
+- use_case_id: F-162-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "A malicious/careless manifest template cannot inject script/markup when rendered."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-security, use_case_id F-162-UC-11) — pending probe PENDING-F-162-1"
+  proposed_test: |-
+    probe/e2e: render a snippet template containing an HTML/script payload; assert it is
+    escaped/not executed by MDEditor.Markdown.
+- use_case_id: F-162-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "Configure enables promptly when the last required field is filled."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-162-UC-12) — pending probe PENDING-F-162-1"
+  proposed_test: |-
+    e2e: fill the last required field, assert Configure becomes enabled without a submit attempt.
+
+### probes_emitted
+- probe_id: PENDING-F-162-1
+  hypothesis_id: H-011
+  also_covers: [H-012, H-007, H-010]
+  probe_kind: "ui-e2e (Playwright) — local-only per Rule 6/12; reuses integration-tests/e2e harness"
+  local_execution_blocked: false
+  expected_outcome: |-
+    H-011: a snippet template containing an embedded <script>/<img onerror> payload renders
+    escaped/inert (no script execution, no raw HTML injection) through MDEditor.Markdown.
+    H-012: filling the last required text field enables Configure without requiring a submit
+    attempt (react-hook-form isValid timing under useForm({}) default mode).
+    H-007: after Configure then Reconfigure, observe whether the form fields are blank or retain
+    the submitted values (empirically resolve react-hook-form retention across the showForm flip).
+    H-010: a boolean-only / static-only manifest reaches Configure at mount.
+  probe_note: |-
+    PARALLEL-SAFE: recorded here only; no P-NNN file created. One wizard e2e stack (a manifest
+    fixture + the Integrations tab) covers all four behaviours; the maintainer mints it as an
+    IT-NNN protocol with an e2e:specs spec when scheduling.
+
+### validation_gaps
+- sidecar: "(all three contributing nodes — IntegrationContent, IntegrationCodeSnippetWithForm, IntegrationCodeSnippet)"
+  field_insufficient: "sidecar: unresolved (no understanding/*.md exists for any contributing node)"
+  proposed_refresh: |-
+    VG-001 (Rule 9 — API/UI sidecar-absent disclosure): this is a UI-CENTRIC feature whose three
+    contributing nodes are React components, ALL marked `sidecar: unresolved` in the feature-flow
+    chain. No enriched UI sidecar exists. Per APPROACH Rev-12/Rule-20, ~530 React components have
+    no substrate node. This reflection is therefore grounded NOT in sidecars but in (a) the
+    feature-flow's own observed_vs_expected facets (authored from a direct UI read at
+    seeded_from=ui-review-2026-05-26) and (b) a Rule-8-exception source read of the three
+    components + the shared Markdown element. The reflection IS UI-grounded (the screen + the
+    interaction flow were read), so it is NOT API-only — but the SIDECAR layer is missing. Next
+    file-analyser pass should enrich IntegrationCodeSnippetWithForm.tsx (a Type-3.5 substrate
+    surface-coverage candidate) so the chain stops carrying three unresolved hops and the next
+    reflection refresh can cite sidecars rather than source-reads.
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+  doc_says: |-
+    "The wizard pre-fills any static parameter" — implies a visibly pre-populated field.
+  code_does: |-
+    Static arguments render as <input style={{display:'none'}}> — injected but never visible to
+    the operator (IntegrationCodeSnippetWithForm.tsx:69-77).
+  recommended_log_as: "doc-gap-NNN — correct 'pre-fills' to disclose the value is injected invisibly, OR add a UI disclosure (this pairs with caveat F-162b)"
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+  doc_says: |-
+    "It does not validate the snippet against a target source — credentials, hosts, and ports are
+    typed at face value."
+  code_does: |-
+    The form DOES enforce required + non-empty (trim) on STRING fields (line 86-90), so the doc
+    understates the client-side gate for strings; and it is accurate that number/INTEGER fields
+    receive no value validation (the validate body skips them).
+  recommended_log_as: "doc-gap-NNN — clarify the actual client-side posture: required+non-empty for text, NO type/range validation for numbers (matches the H-004 bug)."
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+  doc_says: |-
+    Describes a linear, one-time process (open → fill → copy); no Reconfigure flow documented.
+  code_does: |-
+    The UI has a Reconfigure button that returns to the form (without re-hydrating values).
+  recommended_log_as: "doc-gap-NNN — document the Reconfigure round-trip and its current re-typing behaviour (pairs with bug F-162c)."
+
+## maintainer_notes
+
+(Preserved across refreshes — only block the maintainer hand-edits.)
+
+This reflection's findings CONVERGE with scanner run SR-20260527T2300Z (batch-8): four of the
+five scanner findings (F-162a/b/c/d) are independently re-derived here — high-confidence
+corroboration per the reflection-dedup-and-convergence memory. F-162e (useCallback misuse) is a
+real LOW code-quality item the scanner caught and is NOT separately re-hypothesised here (it is a
+performance/code-quality fact, not a user-facing promise — correctly left to the scanner finding
+and the feature-flow facet). The one NET-NEW finding from reflection is H-008 (arg.name vs
+arg.parameter label/key divergence), routed as a doc-gap candidate.

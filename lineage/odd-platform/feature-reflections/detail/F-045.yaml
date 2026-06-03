@@ -1,0 +1,695 @@
+---
+feature_id: F-045
+pillar_anchored_id: P-01:F-009
+pillar: Data Discovery
+feature_name: "Dataset Schema Revision History — per-dataset Structure tab + diff surface against dataset_version rows monotonically auto-incremented by the ingestion pipeline"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataSetController__controller-class__DataSetController.md   # hop 1 — full Stress Protocol; traces hops 2-4 by file:line
+  # hop 2 service:DatasetVersionServiceImpl — sidecar UNRESOLVED on disk; behaviour captured inside the hop-1 sidecar Stress Protocol (DatasetVersionServiceImpl.java:56-71,156-180 cited)
+  # hop 3 repository:ReactiveDatasetVersionRepositoryImpl — sidecar UNRESOLVED on disk; behaviour captured inside the hop-1 sidecar (ReactiveDatasetVersionRepositoryImpl.java:97-217 cited)
+  # hop 4 ingestion:DatasetStructureIngestionRequestProcessor — sidecar UNRESOLVED on disk; behaviour captured inside the hop-1 sidecar (DatasetStructureIngestionRequestProcessor.java:167-178 cited)
+  # UI hops (DatasetStructureOverview / View / Header / Compare family) — NO enriched sidecar on disk; evidence is the F-045 batch-extension ui-review-2026-05-26-K narrative (file:line cited there)
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/schema-diff"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      MAJOR FINDING — the live doc has been SUBSTANTIALLY UPDATED since the F-045
+      flow was seeded (2026-05-26) and since the DataSetController sidecar was
+      enriched (2026-05-25, where it flagged the schema-diff page as SILENT on these
+      caveats). The page now states verbatim: "'Latest version' means the highest
+      `version` integer, not the most recently created"; "any authenticated caller
+      who can guess a `version_id` reads any dataset's schema"; "the underlying
+      repository query filters only on `dataset_version.id` — no `data_entity_id`
+      predicate is added"; "the diff endpoint returns 500 for missing-version-id and
+      400 for identical-version-id — operators cannot distinguish 'wrong input' from
+      'platform broken'". This is the DOC-192 caveat-set shipped (DOC-311 batch).
+      CONSEQUENCE: most code-vs-doc contradictions the sidecar predicted are now
+      CLOSED on the doc side — the behaviour is documented as a known limitation,
+      not silently misrepresented. The drifts remain CODE bugs (tracked PLT-028)
+      until the fix ships; the doc is now accurate-about-the-bug.
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling/relationships"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      SELF-CONTRADICTING page. Opening line still implies role-based visibility ("The
+      list page shows every relationship the user can see across all data sources"),
+      but a danger admonition now corrects it verbatim: "There is no RBAC gate on the
+      Relationships endpoints — any authenticated caller can list every relationship
+      in the catalog ... including relationships on entities flagged as hidden from
+      search" and advises perimeter enforcement under DISABLED. The per-dataset
+      Relationships tab is documented as showing "only the relationships in which the
+      current entity participates as Parent or Child". Net: the overstatement and the
+      correction co-exist on one page — a residual editorial drift (PARTIAL), not a
+      silent one.
+hypothesis_summary:
+  total: 12
+  confirmed: 3
+  contradicted: 5
+  partial: 3
+  probe_needed: 1
+  note: "11 of the 12 hypotheses are user-facing falsifiable promises and project 1:1 to use_cases F-045-UC-001..011 on the feature-flow; H-000 is a Rule-9 reflection-confidence meta-hypothesis (verdict partial) that routes to a validation_gap, not a use_case."
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "GET /api/datasets/{X}/structure/{V} where V belongs to dataset Y returns Y's full schema with HTTP 200 — the path component data_entity_id is descriptive-only, so any authenticated user (anonymous under DISABLED) reads any dataset's schema by enumerating bigserial version_ids."
+related_feature_flows: [F-001, F-008, F-018, F-191]
+related_concepts:
+  - dataset-version
+  - schema-diff
+  - read-collaborative-posture
+new_drift_classes_proposed: []
+related_drift_classes:
+  - cross_dataset_version_id_leak_path_component_is_documentation_only
+  - cross_dataset_diff_returns_200_with_nonsensical_diff_body
+  - latest_means_max_version_not_max_created_at_silent_divergence_on_replay
+  - diff_500_vs_400_asymmetric_error_model
+  - no_securityrule_for_structure_endpoints_falls_through_to_authenticated
+  - diff_in_memory_load_no_pagination_no_row_count_guard
+  - relationships_page_overstates_role_based_visibility
+---
+
+# Dataset Schema Revision History — product-owner reflection
+
+## product_owner_narrative
+
+Dataset Schema Revision History is a Data Discovery (P-01) sub-feature and one of the platform's highest-leverage operator surfaces: the audit trail of how a dataset's *shape* has changed over time. The promise to a customer is concrete — *every time a collector re-ingests a dataset and its structure has changed, ODD captures a new revision; you can open any dataset, see its current columns (names, types, descriptions, tags, glossary terms, lookup-table definitions), browse the list of past revisions, and pick any two revisions to see exactly which fields were added, removed, or changed* (per the live schema-diff doc page and `DataSetController` sidecar `understanding`). The audience is the data-engineer/analyst doing downstream-impact analysis after a breaking change and the platform UI end-user browsing a dataset (per system-mission.md P-01 audiences). It is the read-side companion of Batch Ingestion (F-008): the `DatasetStructureIngestionRequestProcessor` is the only writer of `dataset_version` rows, monotonically incrementing `version` by +1 on each structure-changing re-ingest (`DatasetStructureIngestionRequestProcessor.java:171-178`, per `DataSetController.md` invariants).
+
+The user reaches it from the per-dataset detail page's **Structure** tab and its **Revision compare** sub-tab (UI route `/dataentities/{id}/structure[/{versionId}]` and `.../structure/compare`, per the F-045 batch-extension ui-review-2026-05-26-K). Four wire-level endpoints back the surface, all `GET /api/datasets/{data_entity_id}/...`: get-latest-structure, get-structure-by-version-id, diff-two-versions, and list-relationships (`DataSetController.java:22-59`, per the hop-1 sidecar). On first mount with no version in the URL, the UI dispatches `fetchDataSetStructureLatest`, then silently rewrites the URL to pin the resolved version id (`DatasetStructureOverview.tsx:32-37`, batch-extension facet 1). The compare viewer seeds its two pickers with the oldest and newest version ids and reads the actual ids from URL query-params (`DatasetStructureCompareHeader.tsx:69-73` + `DatasetStructureCompare.tsx:24-26`).
+
+The working parts a product owner would demo: (a) **latest** — open the Structure tab, see the current schema; (b) **revision pick** — choose an older revision from a dropdown, the table re-renders that revision's columns; (c) **compare** — pick two revisions, see a per-field CREATED / DELETED / UPDATED / NO_CHANGES diff with a client-side "show changes only" filter; (d) **relationships** — a sibling tab listing ERD/foreign-key and graph edges the dataset participates in. The diff is computed server-side by loading both versions' full field lists into memory and walking the nested-field tree to convergence (`DatasetVersionServiceImpl.java:156-180`).
+
+The integration story: Schema Revision History reads what Batch Ingestion (F-008) writes; the schema payload it returns carries the tags and glossary terms applied via Manual Object Tagging (F-018) — so the leak surface (below) is wider than column metadata. It sits inside the data-entity detail page that Detail-Page View Tracking (F-001) enters. Schema changes also feed Alerting (P-07): a backwards-incompatible structure change at ingestion raises a `BACKWARDS_INCOMPATIBLE_SCHEMA` alert (system-mission.md P-05→P-07 edge) — the same revision data, surfaced as an event.
+
+Edge cases a senior product owner would flag in a demo, all load-bearing here: what does the URL's dataset id actually scope (it turns out: nothing, on three of four endpoints — the headline finding)? What does "Latest" mean after an operator replays an old version (it returns the highest version *number*, which may not be the most recent)? What does the user see when they paste a stale or wrong compare URL (an undifferentiated error page, or worse, a 200 nonsensical diff)? And — the question that frames the whole feature for a security reviewer — *can a user see the schema of a dataset their team does not own?* The answer (yes, any authenticated user, anonymous under DISABLED) is the spine of this reflection.
+
+## hypotheses
+
+- id: H-000
+  hypothesis: "(Rule 9 meta) The feature's user experience can be judged as a senior product owner would — from the screen and the flow the user lives through — with the same evidentiary confidence as its API behaviour."
+  derivation: "Rule 9 / APPROACH.md §0.2 — a UI-driven feature with no enriched UI sidecar cannot be reflected from its API alone at full confidence."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      This is an API-tier reflection STRENGTHENED by the F-045 batch-extension
+      ui-review-2026-05-26-K narrative — NOT a sidecar-grounded UI reflection. The
+      ten UI components that compose the Structure + Compare surface
+      (DatasetStructureOverview / View / Header / TypeCounts / List / Item /
+      Compare / CompareHeader / CompareList / CompareListItem) were named and
+      file:line-cited in the batch extension, but NONE has an enriched sidecar on
+      disk (Glob understanding/*DatasetStructure* is empty; the hop-1 sidecar lists
+      every UI caller as `unresolved: true`). UX hypotheses below (H-009..H-011)
+      trace through the batch-extension evidence, which is concrete and citeable but
+      not Stress-Protocol-interrogated. Verdicts on UI experience therefore carry
+      MEDIUM confidence at best, never HIGH.
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: upstream_callers
+        cite: "DatasetStructureOverview.tsx (unresolved sidecar)"
+        note: "Hop-1 sidecar records all four UI callers as unresolved:true — no enriched UI node exists."
+      - sidecar: "(feature-flow batch extension)"
+        section: "batch_extensions[ui-review-2026-05-26-K]"
+        cite: "F-045.yaml:271-403"
+        note: "10 UI components described with file:line citations + 2 new UI-tier drift facets; this is the UI evidence base."
+    operator_visible_failure: |
+      Not an operator failure — a reflection-confidence gap. The risk is the
+      reflection-layer equivalent of the F-031 mistake (LSN-023): emitting confident
+      UX verdicts for a UI feature whose UI is not in the ontology. Surfaced as the
+      primary validation_gap below so a UI file-analyser pass enriches these nodes.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-001
+  hypothesis: "When a user opens GET /api/datasets/{X}/structure/{V} (or the UI revision view) where version V belongs to a DIFFERENT dataset Y, the system returns 404 — the path component {X} scopes the lookup, so a version that is not X's is not found."
+  derivation: "The path /api/datasets/{data_entity_id}/structure/{version_id} names data_entity_id as the owning dataset; a user reading the URL assumes containment. OpenAPI: 'Get DataSet structure ... by DataSet's id and version'."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The implementation returns dataset Y's full schema with HTTP 200. The
+      by-version-id path filters on DATASET_VERSION.ID.eq(datasetVersionId) ONLY
+      (ReactiveDatasetVersionRepositoryImpl.java:129); the data_entity_id is consumed
+      by the controller and used solely inside the not-found error message — it never
+      reaches SQL (DatasetVersionServiceImpl.java:39-45). DATASET_VERSION.DATASET_ODDRN
+      is available and already JOINed in the latest-path but is omitted from the WHERE
+      on the by-id and diff paths. version_id is a sequential bigserial, so the leak
+      is enumerable.
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.request_inputs[dataEntityId]
+        cite: "ReactiveDatasetVersionRepositoryImpl.java:129"
+        note: "TRANSLATES_SILENTLY — by-id path filters version_id only; dataEntityId discarded."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.request_inputs[dataEntityId].Q5
+        cite: "ReactiveDatasetVersionRepositoryImpl.java:163-168"
+        note: "Available-but-unused: DATASET_VERSION.DATASET_ODDRN is JOINed in the latest path; the by-id/diff WHERE skips it — a one-line fix per path."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: security.data_exposure
+        cite: "DatasetController.java:22-50 + ReactiveDatasetVersionRepositoryImpl.java:97-157"
+        note: "Schema payload (fields + types + descriptions + tags + terms + lookup-table defs) returned across owners."
+    operator_visible_failure: |
+      (1) Cross-tenant schema disclosure: any authenticated user enumerating version_ids
+      reads every dataset's full schema metadata — column names, types, descriptions,
+      tags, glossary terms, lookup-table definitions — independent of dataset-level
+      ownership. (2) Under auth.type=DISABLED (dev/demo default) the leak is anonymous.
+      (3) The URL pattern actively misleads: an operator who sees /api/datasets/{X}/...
+      reasonably assumes containment that does not exist, so the leak is invisible in
+      a casual security review of the route table. (4) The tags+terms in the payload
+      mean the leak crosses into F-018 (Manual Object Tagging) data, not just raw schema.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When a user requests GET /api/datasets/{X}/structure/diff?first_version_id=V1&second_version_id=V2 where V1 and V2 belong to DIFFERENT datasets, the system returns 400 or 404 — a diff across unrelated datasets is a malformed request."
+  derivation: "The diff endpoint is named/documented 'difference between two dataset structure versions' of THE dataset {X}; two versions from different bags is not a meaningful diff."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The endpoint returns HTTP 200 with a structurally-valid but semantically
+      nonsensical diff. getDatasetVersionDiff passes only the two version ids to
+      getDatasetVersionWithFields(List.of(first, second)) which filters
+      DATASET_VERSION.ID.in(...) with no dataset predicate
+      (ReactiveDatasetVersionRepositoryImpl.java:147-157); dataEntityId is discarded
+      entirely (not even used in an error message). The per-field CREATED/DELETED
+      statuses are computed against the higher-version row regardless of which dataset
+      it belongs to, so a cross-dataset diff renders as "every field created / every
+      field deleted" with a 200.
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.request_inputs[firstVersionId / secondVersionId]
+        cite: "DatasetVersionServiceImpl.java:56-64 + ReactiveDatasetVersionRepositoryImpl.java:147-157"
+        note: "TRANSLATES_SILENTLY x2 — both version ids bypass dataset containment."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.name_behavior_pairs[getDataSetStructureDiff]
+        cite: "DatasetController.java:43-50 + DatasetVersionServiceImpl.java:56-64"
+        note: "DRIFT_NAME_VS_BEHAVIOR — accepts any two version ids platform-wide."
+    operator_visible_failure: |
+      (1) Same cross-tenant schema disclosure as H-001, via the diff endpoint, doubled
+      (two version ids leak two datasets' schemas in one call). (2) The compare viewer
+      is a TRUSTED audit surface — an operator reasoning about "what changed between V1
+      and V2" can be handed a forged or stale URL (from chat, docs, a bookmark) and shown
+      a confident but meaningless diff with no error signal. (3) No 400/404 to alert the
+      caller that the request was nonsensical.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user opens GET /api/datasets/{X}/structure (no version_id) — or the Structure tab with no revision selected — the system shows the MOST RECENTLY INGESTED revision of dataset X."
+  derivation: "The doc and UI label this the 'latest'/current structure; a user expects 'latest' to mean most-recent-in-time."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      "Latest" is computed as max(DATASET_VERSION.VERSION) via a subquery joined back
+      to the row with that version number (ReactiveDatasetVersionRepositoryImpl.java:160-217);
+      created_at exists in the table but is never referenced. Under NORMAL ingestion the
+      version number is monotonically +1 per re-ingest
+      (DatasetStructureIngestionRequestProcessor.java:171-178), so max(version) ==
+      most-recently-created and the promise holds. Under manual SQL fixup, collector
+      replay of an older version, or restore-from-backup, the highest-version row can
+      have an older created_at than another row — and "Latest" returns the
+      higher-numbered-but-older row. So: TRUE in the common case, FALSE under
+      replay/fixup. dataEntityId DOES correctly scope this endpoint (the only one of the
+      four that uses it).
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.name_behavior_pairs[getLatestDatasetVersion]
+        cite: "ReactiveDatasetVersionRepositoryImpl.java:160-217 + DatasetStructureIngestionRequestProcessor.java:171-178"
+        note: "drift MINOR — max(version) diverges from max(created_at) only under non-monotonic ingestion."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.request_inputs[dataEntityId].Q3
+        cite: "ReactiveDatasetVersionRepositoryImpl.java:166-167"
+        note: "getLatestDatasetVersion MATCHES — datasetId reaches SQL and filters DATA_ENTITY.ID.eq(datasetId)."
+    operator_visible_failure: |
+      An operator who has just replayed/restored an older version (or done a manual SQL
+      fixup) opens the Structure tab expecting the most-recently-applied schema and is
+      shown the highest-version row, which may be the OLDER one. The divergence is silent
+      — no banner, no timestamp warning. The UI compounds it (see H-010): on latest-fetch
+      success the URL is rewritten to pin that max-version id with replace:true, so the
+      operator's URL bar now carries a version they did not pick and which may not be the
+      newest by time.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a user requests a diff with a version_id that does not exist, the system returns 404 (the version was not found) — a typed, distinguishable error."
+  derivation: "Negative-space: a not-found id is the canonical 404 case; the identical-id case already returns a typed 400, so a missing id should be equally typed."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      A missing version_id yields HTTP 500. When the id-list query returns size != 2,
+      buildDataSetVersionDiffList throws a bare RuntimeException("Query returned %s rows
+      for diff request") (DatasetVersionServiceImpl.java:69-71) which ControllerAdvice
+      maps to 500. The identical-version-id case, by contrast, throws a typed
+      BadUserRequestException → 400 (DatasetVersionServiceImpl.java:59-61). The error
+      model is asymmetric: 400 for "you sent the same id twice", 500 for "you sent an id
+      that doesn't exist".
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "DatasetVersionServiceImpl.java:56-71"
+        note: "Missing id → bare RuntimeException → 500; identical id → BadUserRequestException → 400."
+    operator_visible_failure: |
+      A caller (or the UI behind it) cannot distinguish "I typed a wrong/stale version id"
+      (a 4xx user error) from "the platform is broken" (a 5xx outage) by the status code
+      alone — the debugging workflow is defeated. 500s also tend to page on-call / inflate
+      error-rate dashboards for what is actually user input error.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a user views or diffs a dataset's structure, the system enforces per-dataset visibility — a user can only read the schema of datasets they (or their team/role) are entitled to see."
+  derivation: "Pillar P-01 + the relationships doc page's opening line ('every relationship the user can see') imply role/owner-scoped visibility on the dataset-read surface."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No layer enforces per-dataset visibility. The four endpoints carry no @PreAuthorize,
+      no programmatic permissionService check, and SecurityConstants declares no rule for
+      /api/datasets/*/structure* or /api/datasets/*/relationships; they fall through to the
+      catch-all .pathMatchers('/**').authenticated() (AuthorizationCustomizer.java:29-30).
+      Every authenticated user — any role, any owner association, or none — reads every
+      dataset's structure. Under DisabledAuthSecurityConfiguration (auth.type=DISABLED)
+      anyExchange().permitAll(), so it is anonymous. This is the read-collaborative posture
+      shared with REFACTOR-024/REFACTOR-203 across the catalog read surface.
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.auth_gates
+        cite: "AuthorizationCustomizer.java:20-32 + SecurityConstants.java:243-289 + DisabledAuthSecurityConfiguration.java:13-17"
+        note: "All four endpoints: any authenticated user 200; DISABLED → anonymous 200; no role gating."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: security.owner_scoping
+        cite: "DatasetController.java:1-60"
+        note: "BYPASSES — dataset owner has no bearing on visibility."
+    operator_visible_failure: |
+      (1) A multi-team / multi-tenant deployment CANNOT restrict schema visibility by team
+      or role — the platform has no mechanism to do so on this surface; operators must
+      enforce at the network perimeter. (2) A "read-only viewer" role and an "admin" role
+      see identical responses. (3) Combined with H-001/H-002, the enumeration of bigserial
+      version_ids turns "no per-dataset gate" into "full-catalog schema disclosure to any
+      account". The live doc now documents this honestly (see doc cross-reference) — so the
+      contradiction is code-vs-expectation, not code-vs-doc.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When a user diffs two ADJACENT revisions of one dataset (the common case), the system returns a correct per-field diff: added fields as CREATED, removed fields as DELETED, unchanged fields as NO_CHANGES — including for nested struct/list fields."
+  derivation: "Endpoint shape + response shape — this is the feature's central happy path, the demo a product owner leads with."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The same-dataset adjacent-version diff produces the correct field-level statuses,
+      including for nested fields (parent/child reparenting). The diff is computed by a
+      structure-hash comparison (DatasetVersionHashCalculator, DatasetVersionServiceImpl.java:218-224)
+      and a recursive parent-oddrn walk over both versions' fields. This is the ONE
+      behaviour with a real automated test: DatasetVersionDiffTest.datasetVersionDiff
+      ingests v1, mutates fields (delete name + first_child + second_child, add new_parent,
+      reparent), re-ingests v2, then asserts the diff endpoint returns the expected
+      NO_CHANGES/DELETED/CREATED set via recursive comparison.
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: tests_coverage_semantic.covered_behaviours[0]
+        cite: "DatasetVersionDiffTest.java:39-76"
+        note: "Happy-path same-dataset diff over nested fields — GREEN integration test."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: concepts.invariants
+        cite: "DatasetVersionServiceImpl.java:218-224"
+        note: "Field diff is structure-hash-based via DatasetVersionHashCalculator."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "DatasetVersionDiffTest.datasetVersionDiff"
+    test_demand: none
+
+- id: H-007
+  hypothesis: "When a user requests a diff with the SAME version_id for both first and second, the system rejects it with a clear 'cannot diff identical versions' message rather than returning an empty/meaningless diff."
+  derivation: "Endpoint shape — diffing a version against itself is a degenerate input the implementation visibly handles."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      getDatasetVersionDiff rejects identical version ids up front with a typed
+      BadUserRequestException ("Couldn't show diff for identical versions") which
+      ControllerAdvice maps to HTTP 400 (DatasetVersionServiceImpl.java:59-61). This is a
+      deliberate design choice (implicit ADR in the sidecar). The UI also prevents picking
+      the same revision in both pickers via disabled dropdown options
+      (DatasetStructureCompareHeader.tsx:99,129).
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: implicit_adrs[1]
+        cite: "DatasetVersionServiceImpl.java:59-61"
+        note: "Typed BadUserRequestException on identical ids → 400 by design."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: stress_findings.auth_gates
+        cite: "DatasetStructureCompareHeader.tsx:99,129"
+        note: "UI disables same-revision selection in both pickers."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a collector re-ingests a dataset whose structure has NOT changed, the system does NOT create a spurious new revision — the revision list reflects real structural changes, not every ingestion run."
+  derivation: "Response/pillar — a revision history that grows on every no-op ingest would be useless for audit; the doc promises a revision per structure CHANGE."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The hop-4 ingestion processor (DatasetStructureIngestionRequestProcessor) is the
+      sole writer and increments version by +1, and the doc states "every re-ingest that
+      CHANGES the structure creates a new revision" — implying a structure-hash gate that
+      suppresses no-op revisions. The hop-1 sidecar cites the increment
+      (DatasetStructureIngestionRequestProcessor.java:171-178) and a
+      DatasetVersionHashCalculator (used in diff), but the ingestion-side
+      sidecar is UNRESOLVED on disk, so whether the +1 is gated on a structure-hash change
+      (suppressing identical re-ingests) versus fired unconditionally per ingest is NOT
+      traceable from the available sidecar evidence. This needs the running system or the
+      enriched hop-4 sidecar.
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: concepts.invariants
+        cite: "DatasetStructureIngestionRequestProcessor.java:171-178"
+        note: "+1 increment is cited; the change-detection gate around it is not in any enriched sidecar."
+    operator_visible_failure: |
+      If unconditional, the revision list would accumulate duplicate-structure revisions on
+      every scheduled collector run (e.g. hourly), making the audit trail noisy and the
+      compare pickers unwieldy — and inflating dataset_version row counts. Verdict deferred
+      to a probe rather than asserted, per Rule 3 / no-banned-hedge.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-045-1
+    routes_to_finding: validation-gap
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "A first-time user landing on the Structure tab understands how to browse past revisions and start a comparison from what is on screen — the revision picker and the 'Revision compare' affordance are discoverable without documentation."
+  derivation: "Rule 9 senior-PO UX seed — intuitiveness/discoverability of the on-screen flow."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The header exposes an explicit revision selector that re-dispatches fetchDataSetStructure
+      and navigates to the chosen version URL (DatasetStructureHeader.tsx:46-53), plus a
+      labelled "Revision compare" button that builds the compare URL pre-seeded with the
+      oldest vs newest version ids (DatasetStructureHeader.tsx:69-73). Pre-seeding the
+      compare with a meaningful default (first vs last) is a good intuitiveness choice — the
+      user gets a non-empty diff on the first click without having to understand the id
+      model. Confidence MEDIUM (no enriched UI sidecar; per H-000).
+    evidence:
+      - sidecar: "(feature-flow batch extension)"
+        section: "batch_extensions[ui-review-2026-05-26-K]"
+        cite: "DatasetStructureHeader.tsx:46-53,69-73"
+        note: "Explicit revision selector + labelled compare button seeded oldest-vs-newest."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When the Structure tab resolves 'latest', the URL the user sees stays stable / reflects what they intended — the user is not silently handed a URL pointing at a version they did not choose."
+  derivation: "Rule 9 UX seed (consistency / no surprise) + batch-extension NEW UI-tier facet 1."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      On first mount with no version_id, DatasetStructureOverview dispatches
+      fetchDataSetStructureLatest and, on success, calls navigate(datasetStructurePath(id,
+      resolvedVersionId), {replace:true}) — silently rewriting the URL to embed the
+      resolved (max-version) id (DatasetStructureOverview.tsx:32-37). This is partly good
+      UX (a now-shareable deep link) but the replace is silent and, combined with H-003's
+      max(version)≠max(created_at) divergence, pins the URL to the highest-version row with
+      NO signal that it might not be the most-recent-by-time revision. The user's URL bar
+      now carries a version they never selected.
+    evidence:
+      - sidecar: "(feature-flow batch extension)"
+        section: "batch_extensions[ui-review-2026-05-26-K] facet 1"
+        cite: "DatasetStructureOverview.tsx:32-37"
+        note: "replace:true URL rewrite on latest-resolve; no replay-divergence signal."
+    operator_visible_failure: |
+      An operator who copies the URL after landing on "latest" shares a link pinned to a
+      specific (max-version) revision, not a "give me latest" link — so a colleague opening
+      it later, after a newer ingest, sees the OLD revision and may not realise it. Under
+      the replay/fixup case the pinned version can be the older-by-time row. UX surprise +
+      a correctness trap, not a crash.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a compare request fails, the user sees an error that tells them what went wrong (wrong/stale version id vs platform outage) so they can self-correct."
+  derivation: "Rule 9 UX seed (intuitive error recovery) + batch-extension NEW UI-tier facet 2."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      DatasetStructureCompare renders a single undifferentiated <AppErrorPage> whenever the
+      diff hook returns ANY error (DatasetStructureCompare.tsx:46-51). It does not branch on
+      4xx vs 5xx. Paired with H-004's backend asymmetry (missing id → 500, identical id →
+      400) and H-001/H-002's cross-dataset 200s, every failure mode collapses to the same
+      full-page error: "wrong id" looks identical to "platform down". Worse, the most
+      dangerous case (cross-dataset 200 nonsense diff) is NOT an error at all and renders as
+      a normal diff. The UI also does not validate URL-supplied firstVersionId/secondVersionId
+      against the loaded datasetVersions list (DatasetStructureCompare.tsx:24-26), so the
+      URL-paste attack of H-002 reaches the backend unchecked.
+    evidence:
+      - sidecar: "(feature-flow batch extension)"
+        section: "batch_extensions[ui-review-2026-05-26-K] facet 2 + corroboration 3"
+        cite: "DatasetStructureCompare.tsx:24-26,46-51"
+        note: "One AppErrorPage for all errors; no 4xx/5xx branch; no client-side version-id validation."
+    operator_visible_failure: |
+      (1) A user who pastes a stale/wrong compare URL sees a full-page outage-style error and
+      cannot tell it was their input — they may escalate to support thinking the platform is
+      down. (2) The no-validation gap is the client-side half of the H-002 cross-dataset leak:
+      the compare viewer faithfully renders a 200 nonsense diff from a forged URL with no
+      warning, which is the more damaging failure because it looks legitimate.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "Cross-dataset version-id leak: GET /api/datasets/{X}/structure/{V} returns dataset Y's schema with 200; data_entity_id is descriptive-only (filter is version_id-only)."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "Add .and(DATASET_VERSION.DATASET_ODDRN.eq(datasetOddrn)) to the by-id WHERE in ReactiveDatasetVersionRepositoryImpl.java:129 (PLT-028 Thread A)."
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Cross-dataset diff: structure/diff with version ids from two datasets returns 200 with a nonsensical CREATED/DELETED diff; dataEntityId discarded."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "Same predicate doubled on the diff path ReactiveDatasetVersionRepositoryImpl.java:147-157 (PLT-028 Thread A) + client-side validation (Thread B)."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "Diff endpoint returns 500 (bare RuntimeException) for non-existent version_ids; identical ids return a typed 400 — asymmetric, operator cannot distinguish wrong-id from platform-broken."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "Typed NotFoundException at DatasetVersionServiceImpl.java:69-71 → ControllerAdvice maps to 404 (PLT-028 Thread C)."
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "No per-dataset/role visibility on structure or relationships endpoints — falls through to .authenticated() catch-all; any authenticated user (anonymous under DISABLED) reads any dataset's schema."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "Per-dataset scoping (PLT-028 Thread A) closes the enumeration vector; a true role gate is a larger read-collaborative-posture decision (cross-ref REFACTOR-024/REFACTOR-203, DOC-192)."
+- hypothesis_id: H-011
+  severity: MEDIUM
+  one_line: "Compare viewer renders one undifferentiated AppErrorPage for all errors (no 4xx/5xx branch) AND does not validate URL version-ids against the loaded list — the client-side half of the cross-dataset leak."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "Branch AppErrorPage on status + validate firstVersionId/secondVersionId ∈ datasetVersions before fetch (PLT-028 Threads B + D)."
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: "'Latest' = max(version), not max(created_at): under collector replay / manual SQL fixup / restore, the Structure tab shows the highest-version row, which may be older-by-time than another row."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  recommended_log_as: "caveat already shipped on documentation/docs/data-discovery/schema-diff.md (verified live 2026-06-03 — 'Latest version means the highest version integer, not the most recently created'); the doc-side companion is DOC-192. Code fix is PLT-028 Thread E."
+- hypothesis_id: H-010
+  one_line: "Structure tab silently URL-rewrites (replace:true) to pin the resolved max-version id on latest-fetch; a copied 'latest' URL is actually a pinned-version URL with no replay-divergence signal."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  recommended_log_as: "UI-tier facet captured in PLT-028 (url_replace_on_latest_resolve...) context; doc caveat is DOC-192's max(version) admonition."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — the net-new contribution of this reflection. PLT-028 + DOC-192
+# track the DEFECTS and DOC caveats, but NONE of the F-045 promises has a regression
+# guard except the single happy-path diff (H-006). Every other promise — including the
+# confirmed ones (H-007/H-009) — is unverified. The 4 contradicted defects need
+# regression guards FOR THE FIX (so PLT-028 cannot silently regress), and the happy
+# paths need contract/e2e guards. This is the use_case_coverage frontier: 1/11 verified.
+- use_case_id: F-045-UC-001
+  hypothesis_id: H-001
+  kind: cross-actor
+  promise: "GET /api/datasets/{X}/structure/{V} where V belongs to dataset Y returns 404, not Y's schema."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-001) — security/regression"
+  proposed_test: "Integration (BaseIngestionTest): ingest datasets A and B; assert GET /api/datasets/{A.id}/structure/{B.versionId} returns 404 (RED today: returns 200 with B's schema) — the regression guard for PLT-028 Thread A."
+- use_case_id: F-045-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "structure/diff with version ids from two different datasets returns 400/404, not a 200 nonsense diff."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-002)"
+  proposed_test: "Integration: ingest A and B; assert GET /api/datasets/{A.id}/structure/diff?first_version_id={A.v1}&second_version_id={B.v1} returns 400/404 (RED today: 200). Regression guard for PLT-028 Thread A."
+- use_case_id: F-045-UC-003
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "GET /api/datasets/{X}/structure returns the most-recently-created revision (latest = newest by time)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-003)"
+  proposed_test: "Integration: ingest versions 1,2,3 then INSERT a row with version=999, created_at=now()-1y; assert /structure returns the newest-by-created_at row (RED today: returns version=999). Verifies PLT-028 Thread E intent (mirrors proposed probe P-shb-007-003)."
+- use_case_id: F-045-UC-004
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "A diff request with a non-existent version_id returns a typed 404, distinguishable from a 5xx outage."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-004)"
+  proposed_test: "Integration/@WebFluxTest: assert GET /structure/diff?first_version_id={valid}&second_version_id={nonexistent} returns 404, not 500 (RED today: 500). Regression guard for PLT-028 Thread C. Also assert identical-id returns 400 (pins the existing typed-400 behaviour, H-007)."
+- use_case_id: F-045-UC-005
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "A user without entitlement to dataset X cannot read X's structure/relationships (per-dataset visibility)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-005) — security"
+  proposed_test: "Security IT (auth-mode matrix): with LOGIN_FORM/LDAP, a user with no owner association on dataset X — characterization test pinning current behaviour (200, read-collaborative posture) per LSN-029, flips RED if/when per-dataset gating lands. Cross-ref REFACTOR-024/203."
+- use_case_id: F-045-UC-006
+  hypothesis_id: H-006
+  kind: happy-path
+  promise: "Diffing two adjacent revisions of one dataset returns correct per-field CREATED/DELETED/NO_CHANGES, incl. nested fields."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "DatasetVersionDiffTest.datasetVersionDiff"
+  recommended_log_as: "none — already guarded by DatasetVersionDiffTest (the single verified promise)."
+  proposed_test: "(none — verified)"
+- use_case_id: F-045-UC-007
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "Diffing a version against itself is rejected with a typed 400 + clear message."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-007)"
+  proposed_test: "Integration: assert GET /structure/diff?first_version_id={V}&second_version_id={V} returns 400 with the identical-versions message — a confirmed-but-untested promise (LSN-030: guard the behaviour the implicit ADR relies on)."
+- use_case_id: F-045-UC-008
+  hypothesis_id: H-008
+  kind: resolve-later
+  promise: "A no-op re-ingest (unchanged structure) does NOT create a spurious new revision."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-008) — blocked on PENDING-F-045-1 / hop-4 sidecar enrichment"
+  proposed_test: "Integration: ingest a dataset twice with IDENTICAL field lists; assert getVersionList size stays 1 (or grows — locks whichever the probe confirms). Resolve PENDING-F-045-1 first."
+- use_case_id: F-045-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "A first-time user can discover the revision picker + 'Revision compare' affordance from the Structure tab UI."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-009) — e2e"
+  proposed_test: "Playwright (extend tests/ui/pages/data_entity/structure.ts): open Structure tab, assert revision selector + 'Revision compare' button visible; click compare, assert a diff table renders (oldest-vs-newest seed). Today structure.ts only models label-add; no revision/compare coverage."
+- use_case_id: F-045-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: "The Structure tab's URL reflects user intent; a copied URL behaves predictably across re-ingests."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-010) — e2e"
+  proposed_test: "Playwright: open /dataentities/{id}/structure with no version; assert URL is replaced to .../structure/{resolvedVersionId}; document the pin behaviour as expected-or-bug per PLT-028."
+- use_case_id: F-045-UC-011
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "A failed compare shows a differentiated, self-correctable error (wrong id vs outage); a forged cross-dataset URL is rejected client-side."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-045-UC-011) — e2e + component"
+  proposed_test: "Playwright/component: navigate compare with a version-id not in datasetVersions; assert an inline 'invalid version' message (not the outage AppErrorPage) and that no /diff request fires. Regression guard for PLT-028 Threads B + D."
+
+### probes_emitted
+- probe_id: PENDING-F-045-1
+  hypothesis_id: H-008
+  full_hypothesis: "When a collector re-ingests a dataset whose structure has NOT changed, the system does NOT create a spurious new revision — the revision list reflects real structural changes, not every ingestion run. (Verdict requires the running system or the enriched hop-4 DatasetStructureIngestionRequestProcessor sidecar: is the version +1 at DatasetStructureIngestionRequestProcessor.java:171-178 gated on a structure-hash change, or fired unconditionally per ingest?)"
+  local_execution_blocked: false
+  note: "Parallel-safe mode — recorded here only; no P-NNN file created. Local probe shape: ingest a dataset twice with identical field lists against the local docker-compose stack; observe dataset_version row count. Overlaps with the existing flow-level proposed probe P-shb-007-003 family."
+
+### validation_gaps
+- sidecar: "(UI components — DatasetStructureOverview / View / Header / TypeCounts / List / Item / Compare / CompareHeader / CompareList / CompareListItem)"
+  field_insufficient: "no enriched sidecar exists on disk (Glob understanding/*DatasetStructure* empty); the hop-1 sidecar lists every UI caller as unresolved:true"
+  proposed_refresh: |
+    PRIMARY GAP (Rule 9). The feature's UI surface — the screens the user actually
+    lives through — is not in the ontology. This reflection's UX verdicts (H-009..H-011)
+    lean on the F-045 batch-extension narrative (concrete file:line, but not
+    Stress-Protocol-interrogated), so they are MEDIUM-confidence at best. A file-analyser
+    pass should enrich the 10 DatasetStructure* components as react-component sidecars,
+    in particular DatasetStructureOverview (URL-replace), DatasetStructureCompare
+    (AppErrorPage + no client-side version validation), and DatasetStructureCompareHeader
+    (picker disable logic). This converts the UI-tier verdicts from MEDIUM to HIGH.
+- sidecar: "service:DatasetVersionServiceImpl / repository:ReactiveDatasetVersionRepositoryImpl / ingestion:DatasetStructureIngestionRequestProcessor"
+  field_insufficient: "hops 2-4 marked `unresolved` in the F-045 chain; their behaviour is captured only inside the hop-1 DataSetController sidecar's Stress Protocol"
+  proposed_refresh: |
+    The hop-1 sidecar traced these three downstream nodes by file:line (well enough to
+    validate H-001..H-007), but they have no standalone enriched sidecar. The specific
+    gap blocking a verdict is the ingestion-side change-detection gate (H-008 /
+    PENDING-F-045-1): whether the version +1 is conditioned on a structure-hash change.
+    Enriching DatasetStructureIngestionRequestProcessor would resolve H-008 without a probe.
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/relationships"
+  doc_says: "Opening line implies role-based visibility ('every relationship the user can see across all data sources'), while a danger admonition on the SAME page states there is no RBAC gate and any authenticated caller lists every relationship."
+  code_does: "No role/owner filter on /api/datasets/*/relationships; falls through to .authenticated() (any authenticated user, anonymous under DISABLED) — matching the danger admonition, contradicting the opening line."
+  recommended_log_as: "doc-gap (residual editorial drift): reconcile the relationships-page opening sentence with its own danger admonition — the overstatement and the correction co-exist. The schema-diff page, by contrast, is now fully reconciled (DOC-192/DOC-311 shipped). PARTIAL doc drift, low severity."
+
+## maintainer_notes

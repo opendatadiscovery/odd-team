@@ -1,0 +1,931 @@
+---
+feature_id: F-065
+pillar_anchored_id: P-08:F-005
+pillar: Management & Administration
+feature_name: |-
+  Postgres advisory-lock-id registry — four hand-numbered IDs across
+  notification / partition / data-collaboration subsystems with no
+  central enum, no boot-time collision check, no Prometheus health gauge
+reflected_at: '2026-06-03T00:00:00Z'
+reflected_at_commit: ede5d277be6251b0826026035707c1fb6dbb24b6
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md
+  - odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md
+  - odd-platform__java__notification__class__NotificationSubscriber.md
+  - odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md
+source_reads_for_validation:
+  - file: "odd-platform-api/.../leaderelection/PostgreSQLLeaderElectionManagerImpl.java:14-29"
+    reason: |-
+      Rule-8 exception. Feature-flow hop 2 is unresolved (the manager has no
+      dedicated sidecar). Read the single class to confirm the load-bearing
+      facts every hypothesis turns on: (a) the method signature
+      `acquire(long advisoryLockId, boolean replicationConnection)` — the
+      boolean is the REPLICATION-CONNECTION flag, NOT a blocking/non-blocking
+      flag; (b) the SQL is the BLOCKING `SELECT pg_advisory_lock(%d)` with no
+      timeout and no pg_try_advisory_lock fast-path; (c) the lock id is the
+      ONLY argument to the lock function (int-interpolated). Routed back as a
+      validation_gap so the next file-analyser refresh enriches this node.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      MATERIAL CHANGE since the contributing sidecars were captured
+      (2026-05-10/12/20). The page NOW documents all FOUR advisory-lock-id
+      keys INCLUDING partition.advisory-lock-id (default 90), AND carries an
+      "Advisory-lock registry" section: "Operators overriding any of these
+      IDs in a deployment overlay must treat them as a single flat namespace
+      across the platform — collisions are not detected at startup and
+      produce silent feature wedges." This is the DOC-259 doc-side work
+      (paired to PLT-089) having landed. It supersedes feature-flow facet
+      `partition_advisory_lock_id_undocumented_in_live_docs_operator_may_remove_as_unused`
+      (now LOW→resolved on the doc side) and confirms the code-side facets
+      from the OTHER direction (the docs now warn about exactly the silent
+      wedge the code still does not prevent).
+hypothesis_summary:
+  total: 11
+  confirmed: 6
+  contradicted: 3
+  partial: 2
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      An operator who overrides one advisory-lock-id to a value already held
+      by another subsystem (or another app on the same Postgres) gets a
+      SILENT forever-wedge of one subsystem — boot succeeds, /actuator/health
+      stays UP, no log, no metric — because acquisition is the blocking
+      pg_advisory_lock with no startup collision check.
+related_feature_flows: [F-009, F-038, F-010, F-021]
+related_concepts:
+  - 202-queue-postgres-advisory-lock-single-sender-pattern
+  - advisory-lock-id-collision-risk-across-subsystems
+  - postgres-leader-election
+  - single-leader-elected-background-subsystem-pattern
+  - poison-message-wal-replay-loop
+related_drift_classes:
+  - hand_numbered_advisory_lock_ids_no_central_registry_no_collision_validator
+  - pg_advisory_lock_blocks_forever_no_timeout_no_fail_fast
+  - collision_silent_deadlock_no_log_no_metric_no_readiness_probe_degradation
+  - cross_subsystem_share_by_intent_is_legal_naive_validator_would_be_wrong
+  - compound_with_poison_message_replay_silent_subsystem_loss_at_two_layers
+new_drift_classes_proposed:
+  - replication_connection_flag_vs_blocking_flag_naming_ambiguity_in_acquire_signature
+---
+
+# Postgres advisory-lock-id registry — product-owner reflection
+
+## product_owner_narrative
+
+The "feature" here is not a screen — it is an **operational contract the platform makes
+with itself and exposes to operators through `application.yml` / environment variables /
+`/actuator/configprops`**. ODD runs four background subsystems that must each elect a single
+leader across horizontally-scaled replicas: the notification WAL subscriber (one replica reads
+the Postgres logical-replication stream and fans alerts out), the partition orchestrator (one
+replica appends the next rolling partition to the `activity` and `message` tables), and the two
+Data-Collaboration workers (one drains the outbound Slack queue, one ingests inbound Slack
+events). The elected-leader mechanism is a single **Postgres advisory lock** per subsystem,
+identified by a hand-assigned integer: `partition=90`, `notifications.wal=100`,
+`datacollaboration.receive-event=110`, `datacollaboration.sender-message=120`
+(per application.yml:177,197-198,201-202, cited across all four contributing sidecars). The
+"registry feature" is the (currently implicit) promise that those four integers form a
+coherent, collision-free namespace and that an operator tuning any of them stays inside the
+rails. The audience is the **platform-operator** persona (P-08 Management &
+Administration / "Platform-Internal Operational Infrastructure" canonicalisation candidate);
+there is NO end-user UI and none is expected — this is intentionally backend-only
+(per feature-flow status_reason).
+
+An operator interacts with this contract in exactly one way: they set or override the four
+`*.advisory-lock-id` keys. Typically they leave the shipped defaults (which are disjoint and
+correct). The realistic failure path is the enterprise-hygiene one: per-environment overrides
+in a Helm overlay, a copy-paste of one key's value into another, or running ODD alongside a
+second Postgres-using application that already holds one of these IDs on the shared instance.
+The product question this reflection forces is: *when the operator does that, does the platform
+keep them safe — does it tell them they collided, refuse to boot, degrade a readiness probe, or
+at minimum surface a metric?* The single source the whole answer turns on is
+`PostgreSQLLeaderElectionManagerImpl.acquire(...)` — feature-flow hop 2, which the flow itself
+marks `unresolved` (no sidecar). I read that one class (Rule-8 exception): it executes the
+**blocking** `SELECT pg_advisory_lock(%d)` with no timeout and no `pg_try_advisory_lock`
+fast-path (PostgreSQLLeaderElectionManagerImpl.java:22-23), confirming the feature-flow's
+central facet from primary source rather than from SHB-065 hearsay.
+
+The working parts, described as the operator experiences them: (1) at boot and on failover each
+subsystem calls `acquire(lockId, replicationConnection)` and **blocks** until it owns the lock;
+(2) the four IDs are bound across THREE different `@ConfigurationProperties` classes
+(`NotificationsProperties.wal`, the partition properties, `DataCollaborationProperties`) plus
+raw `@Value` reads — there is no single class, no `AdvisoryLockId` enum, no `LockIdRegistry`
+(Grep across the platform for both names returns zero matches, re-confirmed this run); (3) the
+ONLY validation anywhere near these values is `DataCollaborationProperties`'s `@PostConstruct`
+checking `sendingMessagesRetryCount >= 0` — which does NOT touch the lock IDs at all
+(DataCollaborationProperties.java:14-20, per its sidecar); (4) the partition lock (90) is
+**deliberately shared** between `ActivityTablePartitionManager` and `MessageTablePartitionManager`
+(ActivityTablePartitionManager sidecar dependencies_semantic.coupling[0]) — which is the load-bearing
+reason a naive "all four must be pairwise distinct" validator would be wrong and would falsely
+reject a legal deployment.
+
+The integration story is what makes a single collided integer a severe failure rather than a
+cosmetic one. Three of the four locks sit inside P-07 Active Platform Features — a notifications
+collision silently kills alert delivery (F-009); a data-collaboration collision silently kills
+Slack send or receive (F-038). The partition lock sits inside F-010 Housekeeping and underwrites
+F-021 Activity Feed's partition lifecycle — a partition-lock collision silently stops new
+`activity`/`message` partitions from being created, and once the current rolling window is
+exhausted, every `INSERT` into the audit table fails with `no partition of relation found for
+row` (ActivityTablePartitionManager sidecar bugs[1]). Worse, the notifications-collision
+failure is **operationally indistinguishable** from the separately-filed poison-message WAL
+replay loop (PLT-139 / NotificationSubscriber sidecar bugs[0]): both present as "alerts stopped,
+health is green, nothing in the logs." Two distinct root causes, one observable — the canonical
+example of why the missing observability multiplies operator diagnostic burden.
+
+A product owner demoing this would highlight the edge cases that a senior operator would
+actually hit: the empty/no-collision happy path (defaults work, and IT-012 now PROVES the
+notifications election + failover behaves correctly under two replicas); the deliberate-share
+case (partition managers coexisting on lock 90 is legal and must stay legal); and the three
+genuinely dangerous negative-space cases — silent wedge on collision, no readiness degradation,
+no Prometheus gauge. The live docs were updated since the sidecars were captured and now carry
+an "Advisory-lock registry" table plus an explicit warning that "collisions are not detected at
+startup and produce silent feature wedges" (WebFetch 2026-06-03, 200) — meaning the
+documentation now correctly DESCRIBES the trap that the code still does not PREVENT. That gap
+between the doc's honest warning and the code's silent behaviour is the spine of this reflection.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator leaves the four advisory-lock-id keys at their shipped defaults
+    (partition=90, notifications.wal=100, datacollaboration.receive-event=110,
+    datacollaboration.sender-message=120), each of the four background subsystems acquires
+    its own distinct Postgres advisory lock and elects a single leader without contention.
+  derivation: |-
+    The four defaults in application.yml:177,197-198,201-202 are pairwise distinct, and each
+    subsystem's acquire callsite passes its own id (NotificationSubscriber.java:47 → 100,
+    DataCollaborationMessageSenderJob.java:94 → 120, ...EventProcessor.java:148 → 110,
+    PostgreSQLPartitionCreationJob.java:31 → 90).
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The shipped defaults are disjoint (verified across all four contributing sidecars and
+      re-read from PostgreSQLLeaderElectionManagerImpl callsites this run). Each subsystem calls
+      `leaderElectionManager.acquire(<its own id>, <replication flag>)` which runs
+      `pg_advisory_lock(<id>)` on a dedicated connection; with distinct ids the four locks never
+      contend. IT-012 (notifications-wal-failover) demonstrates the election works for lock 100
+      under two real replicas: exactly one GRANTED, one WAITING.
+    evidence:
+      - sidecar: odd-platform__java__notification__class__NotificationSubscriber.md
+        section: implicit_adrs[2] (leader-elected single-writer)
+        cite: "NotificationSubscriber.java:47"
+        note: "acquire(walProperties.getAdvisoryLockId(), true) — id 100, blocking acquire"
+      - sidecar: odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md
+        section: performance.scaling_characteristics
+        cite: "application.yml:177,197-202 + PostgreSQLPartitionCreationJob.java:26-27"
+        note: "the four lock-id defaults are disjoint; managed by convention, not a registry"
+      - sidecar: source_read_for_validation
+        section: PostgreSQLLeaderElectionManagerImpl
+        cite: "PostgreSQLLeaderElectionManagerImpl.java:18-29"
+        note: "acquire runs pg_advisory_lock(<id>) on a per-subsystem connection — distinct ids do not contend"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      The happy-path "four disjoint defaults → four independent leaders, no contention" is NOT
+      directly tested. IT-012 proves intra-subsystem election/failover for lock 100 ONLY; no
+      test boots all four subsystems and asserts four distinct GRANTED advisory locks with zero
+      WAITING. Confirmed-but-untested → functional-test-demand (the regression guard for the
+      default registry).
+
+- id: H-002
+  hypothesis: |-
+    When an operator overrides one advisory-lock-id to a value already in use by another ODD
+    subsystem (e.g. NOTIFICATIONS_WAL_ADVISORY_LOCK_ID=120, colliding with the
+    datacollaboration sender), the platform detects the collision at startup and surfaces it
+    (fail-fast boot error, WARN log, or readiness-probe degradation) rather than silently
+    wedging one of the two subsystems forever.
+  derivation: |-
+    The keys are named `*-advisory-lock-id` and the registry feature promises a coherent
+    collision-free namespace; an operator overriding env-specific values would expect the
+    platform to guard the invariant it depends on. Negative-space + the "registry" framing of
+    the feature name itself.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      There is NO startup collision detection of any kind. Grep for `AdvisoryLockId` /
+      `LockIdRegistry` returns zero matches (re-confirmed this run); the only @PostConstruct
+      validator in scope (DataCollaborationProperties.java:14-20) checks ONLY retry-count >= 0
+      and never inspects the lock ids. Acquisition is the BLOCKING `SELECT pg_advisory_lock(%d)`
+      (PostgreSQLLeaderElectionManagerImpl.java:22-23, source-read this run) — no timeout, no
+      pg_try_advisory_lock. On a collision the SECOND subsystem's acquire thread enters the
+      Postgres lock-wait state forever: bean construction already returned, so /actuator/beans
+      and /actuator/health both report the platform "UP", and the wedged subsystem emits no
+      error (it is waiting, not failing). The operator's first signal is "one feature stopped
+      working", diagnosable only by `SELECT * FROM pg_locks WHERE locktype='advisory'` — a
+      Postgres-DBA skill. Note the live docs now WARN about exactly this ("collisions are not
+      detected at startup and produce silent feature wedges", WebFetch 2026-06-03) — the doc
+      describes the trap the code does not prevent.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: PostgreSQLLeaderElectionManagerImpl
+        cite: "PostgreSQLLeaderElectionManagerImpl.java:22-23"
+        note: "blocking pg_advisory_lock(%d), no timeout, no try-variant — the wedge mechanism"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "DataCollaborationProperties.java:10-11 + application.yml:177,198,201-202"
+        note: "zero startup assertion that lock ids stay non-overlapping; collision is operator-discoverable only after it manifests"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "NotificationsProperties.java:13 + application.yml:177"
+        note: "advisory-lock-id collision risk — subscriber never gets leadership / collides silently"
+    operator_visible_failure: |-
+      (a) Inter-app collision: ODD shares a Postgres with another app already holding the
+      overridden id → ODD boots green, the affected subsystem (e.g. notifications) silently
+      never works; discovery takes hours-to-days. (b) Intra-platform collision: a Helm-overlay
+      copy-paste sets two ODD subsystems to the same id → one of the two (whichever loses the
+      race to acquire first) wedges forever; the other works, masking the problem. (c) The
+      wedged-notifications variant is INDISTINGUISHABLE from the PLT-139 poison-replay loop —
+      same observable ("alerts stopped, health green, no logs"), different root cause, so even a
+      seasoned operator who knows one shape may misdiagnose the other. (d) A wedged PARTITION
+      lock stops new partition creation; once the rolling window is exhausted every audit-log
+      INSERT fails with "no partition of relation found for row", which surfaces far from the
+      true cause.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      No test exercises the collision path. The three Adr*ScanTest files are STRUCTURAL
+      source-scans (Files.readString + .contains) — they assert the acquire call EXISTS, not
+      what happens on collision. The regression guard for PLT-089's fix is a missing-functional
+      demand: boot two subsystems on the same id and assert fail-fast / readiness degradation.
+
+- id: H-003
+  hypothesis: |-
+    When the partition orchestrator runs, the activity-table partition manager and the
+    message-table partition manager BOTH operate under the single shared partition advisory
+    lock (90) — i.e. the deliberate cross-subsystem share is honoured, and a collision
+    validator (if one existed) would treat lock 90 as legitimately shared rather than a defect.
+  derivation: |-
+    ActivityTablePartitionManager sidecar dependencies_semantic.coupling[0] states the two
+    partition managers share the boot-time advisory lock for serial CREATE PARTITION; the
+    feature-flow facet `cross_subsystem_share_by_intent_is_legal` makes this load-bearing for
+    any future validator.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Both managers are discovered into one `List<PartitionManager>` by
+      PostgreSQLPartitionCreationJob, which acquires lock 90 ONCE
+      (PostgreSQLPartitionCreationJob.java:31, acquire(activityLockId, false)) and runs every
+      manager inside that single lock-holding connection. The two tables are coupled through the
+      shared scheduler + shared lock but independent in their CREATE semantics. The share is
+      intentional and structural — a "pairwise-distinct" validator would falsely reject it,
+      exactly as the feature-flow warns. PLT-089's proposed fix (b) explicitly encodes the
+      partition share as legal.
+    evidence:
+      - sidecar: odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md
+        section: dependencies_semantic.coupling
+        cite: "PostgreSQLPartitionCreationJob.java:22,26-27 + MessageTablePartitionManager.java:17,19"
+        note: "both partition managers discovered into one List, share advisory-lock-id 90 + ShedLock name + cron"
+      - sidecar: source_read_for_validation
+        section: PostgreSQLLeaderElectionManagerImpl
+        cite: "PostgreSQLPartitionCreationJob.java:31"
+        note: "acquire(activityLockId, false) — single acquisition of lock 90 wraps all partition managers"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      AdrPartitionLifecycleScanTest pins (structurally) that creation runs behind
+      `leaderElectionManager.acquire(activityLockId` at boot — it does NOT assert that BOTH
+      partition managers run under the ONE lock, nor that the share is legal. Confirmed-but-
+      untested → functional-test-demand: this is the exact case a future collision validator
+      must not break, so it needs a guard before the validator is written.
+
+- id: H-004
+  hypothesis: |-
+    When the platform boots, an operator can read a single authoritative enumeration of the
+    resolved advisory-lock-id values (e.g. a startup INFO log line, or one place in
+    /actuator/configprops) to confirm what each subsystem actually bound — without chasing
+    three different @ConfigurationProperties classes.
+  derivation: |-
+    The "registry" in the feature name promises a single coherent view; an operator who just
+    overrode values via env vars would expect to verify the resolved set. Pillar (operator
+    self-service) + negative-space.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      There is no boot-time enumeration log and no single registry view. The four values are
+      scattered across NotificationsProperties.wal (100), the partition properties (90), and
+      DataCollaborationProperties (110/120), with no startup line listing them together (Grep
+      for a registry class returns zero matches; no sidecar reports such a log). An operator can
+      read each value individually via /actuator/configprops or /actuator/env (the values are
+      low-sensitivity ints and are NOT masked — DataCollaborationProperties sidecar
+      data_exposure), but must know all three prefixes and assemble the picture themselves. The
+      live doc now provides the authoritative table on the docs site — but that is documentation,
+      not a runtime self-report of the operator's OWN resolved overrides.
+    evidence:
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "DataCollaborationProperties.java:1-21 + DataCollaborationConfiguration.java:21 + FeatureResolverImpl.java:17"
+        note: "the datacollaboration.* prefix has no single owning class; keys split across four files"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md
+        section: understanding
+        cite: "NotificationsProperties.java:11-17"
+        note: "wal.advisoryLockId lives on a nested WalProperties; no cross-subsystem view"
+    operator_visible_failure: |-
+      An operator overriding lock ids per environment has no single runtime confirmation that
+      their overrides resolved as intended. To audit "what did each subsystem actually bind?"
+      they query three separate configprops prefixes; a mistake in one overlay (wrong prefix,
+      typo) produces a value the operator cannot easily cross-check against the other three. The
+      absence of a boot enumeration also means there is no log artefact to grep after an
+      incident to learn the resolved values at the time of the wedge.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      No test asserts the presence/absence of a registry enumeration. PLT-089 fix (e) proposes
+      exactly this boot INFO log; the functional-test-demand is the guard that the enumeration
+      lists all four resolved values.
+
+- id: H-005
+  hypothesis: |-
+    When a collided / wedged subsystem is in the forever-blocked state, an operator monitoring
+    the platform sees a degraded signal in their normal observability surface (a Prometheus
+    gauge such as subsystem_leader_state{subsystem=X}=0, or an /actuator/health indicator going
+    DOWN/DEGRADED) without having to inspect Postgres pg_locks directly.
+  derivation: |-
+    Feature-flow facet `collision_silent_deadlock_no_log_no_metric_no_readiness_probe_degradation`
+    + SHB-066; an operator of a system of this class expects leader-state to be observable.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No metric and no readiness degradation exist. Across the notification, partition, and
+      data-collaboration sidecars there is no Micrometer/Prometheus instrumentation of
+      leader-state (NotificationSubscriber sidecar known_performance_gaps[4]: "no Prometheus
+      gauge ... operators must shell into Postgres"; ActivityTablePartitionManager sidecar
+      performance.known_performance_gaps[1]: grep for MeterRegistry/Counter/Timer/Gauge in the
+      partition package returns zero matches). /actuator/health does not register a
+      per-subsystem leader indicator. A wedged subsystem is invisible to dashboards.
+    evidence:
+      - sidecar: odd-platform__java__notification__class__NotificationSubscriber.md
+        section: performance.known_performance_gaps[4] + bugs_limitations_corner_cases[9]
+        cite: "NotificationSubscriber.java:1-159 (no Micrometer imports)"
+        note: "no notification_wal_last_applied_lsn gauge, no messages-processed counter; progress observable only via pg_replication_slots"
+      - sidecar: odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md
+        section: performance.known_performance_gaps[1]
+        cite: "grep partition package for MeterRegistry|Counter|Timer|Gauge → zero matches"
+        note: "no metric for partition-creation success/last-success/count — silent failure for 30 days is undetectable from telemetry"
+    operator_visible_failure: |-
+      An operator running ODD in Kubernetes with Prometheus/Grafana dashboards has no panel that
+      would turn red when a subsystem wedges on a collided lock. Alerting silence (notifications),
+      Slack silence (data collaboration), or partition-creation silence (audit-log INSERT
+      failures days later) all happen with a green health probe and no metric. This is the
+      observability-gap half of the same incident H-002 describes, and it is what turns a
+      mis-set integer into a multi-day outage.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      No test asserts a leader-state metric or a health indicator. PLT-089 fix (c)+(d) propose
+      the gauge + readiness degradation; the functional-test-demand is the guard that a wedged
+      subsystem flips the gauge to 0 / the health indicator to DOWN.
+
+- id: H-006
+  hypothesis: |-
+    When two ODD replicas share one Postgres and the notifications subsystem is enabled, exactly
+    one replica holds the notifications WAL advisory lock (the leader, reading the WAL and
+    sending alerts) and the other blocks; if the leader dies, the standby acquires the lock and
+    takes over — so a single pod restart does not permanently stop alerting.
+  derivation: |-
+    NotificationSubscriber sidecar implicit_adrs[2] (leader-elected single-writer via blocking
+    acquire on lock 100); the blocking pg_advisory_lock is the failover primitive. Pillar
+    (HA delivery) + cross-pillar (F-009).
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The subscriber's first action is the blocking acquire of lock 100
+      (NotificationSubscriber.java:47), so exactly one replica leads and others block. On leader
+      death the JDBC connection closes, Postgres releases the advisory lock, and a blocked
+      standby's acquire returns — it becomes the new leader. This is directly and behaviorally
+      verified by the integration suite, not merely inferred.
+    evidence:
+      - sidecar: odd-platform__java__notification__class__NotificationSubscriber.md
+        section: implicit_adrs[2] + scaling_characteristics
+        cite: "NotificationSubscriber.java:47 + PostgreSQLLeaderElectionManagerImpl.java:22"
+        note: "blocking acquire(advisoryLockId, true) → single leader; lock auto-released on connection close enables failover"
+      - sidecar: integration-test
+        section: IT-012 notifications-wal-failover (enforces ADR-0043)
+        cite: "integration-tests/e2e/specs/notifications-wal-failover.spec.ts:37-63"
+        note: "asserts exactly one GRANTED advisory lock + >=1 WAITING before kill; after killLeader, a DIFFERENT non-null backend holds the lock"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/notifications-wal-failover.spec.ts (IT-012)"
+    test_demand: null
+    coverage_note: |-
+      VERIFIED by IT-012 (real two-replica HA stack, observes pg_locks GRANTED/WAITING + failover
+      to a new backend). This is the ONE advisory-lock promise in the feature with a genuine
+      behavioral test — and it covers the notifications subsystem (lock 100) only. Routes to
+      none because a real test guards it; the analogous gap for the OTHER three subsystems is
+      captured as test demands under H-007 / H-003.
+
+- id: H-007
+  hypothesis: |-
+    When two ODD replicas run with Data Collaboration enabled, exactly one replica drains the
+    outbound Slack queue (holds lock 120) and exactly one ingests inbound Slack events (holds
+    lock 110) — i.e. the single-sender / single-receiver guarantee holds across replicas the
+    same way it does for notifications.
+  derivation: |-
+    DataCollaborationProperties sidecar implicit_adrs[2] + scaling_characteristics: both DC
+    workers use the same PostgreSQLLeaderElectionManager with blocking acquire; the feature is a
+    P-07 consumer of two of the four locks. Cross-pillar (F-038).
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      DataCollaborationMessageSenderJob.java:94 acquires lock 120 and ...EventProcessor.java:148
+      acquires lock 110, both via `leaderElectionManager.acquire(<id>, true)` — the same blocking
+      primitive as notifications. AdrDataCollabDeliveryScanTest structurally pins that the sender
+      job drains "behind a BLOCKING leader-election advisory lock (acquire(..., true))". Each is
+      a single-leader thread per deployment; horizontal scaling adds redundancy not throughput
+      (DataCollaborationProperties sidecar scaling_characteristics).
+    evidence:
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md
+        section: implicit_adrs[2] + performance.scaling_characteristics
+        cite: "DataCollaborationMessageSenderJob.java:94 + DataCollaborationMessageEventProcessor.java:148"
+        note: "two single-leader threads (send=120, receive=110) via blocking acquire; one active per cluster"
+      - sidecar: test (structural)
+        section: AdrDataCollabDeliveryScanTest.senderJobDrainsBehindBlockingLeaderElectionLock
+        cite: "odd-platform-api/src/test/.../config/AdrDataCollabDeliveryScanTest.java:46-52"
+        note: "asserts source CONTAINS acquire(...getSenderMessageAdvisoryLockId(), true) — structural pin only, no runtime election test"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      Coverage is STRUCTURAL only (AdrDataCollabDeliveryScanTest reads the source and asserts the
+      acquire(..., true) substring is present). There is NO behavioral two-replica election test
+      for the DC sender/receiver locks analogous to IT-012's notifications coverage. Confirmed-
+      but-untested-behaviorally → functional-test-demand (an IT-012-shaped DC failover test).
+
+- id: H-008
+  hypothesis: |-
+    When an operator removes the partition.advisory-lock-id key from a customised application.yml
+    (treating it as unused because the live docs do not mention it), the platform either supplies
+    a safe default or fails fast with a clear message — it does not break partition creation
+    obscurely.
+  derivation: |-
+    Feature-flow facet `partition_advisory_lock_id_undocumented_in_live_docs_operator_may_remove_as_unused`
+    (per ActivityTablePartitionManager sidecar bugs[5]); doc-claim + negative-space.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      TWO independent facts, both verified, that net to partial:
+      (1) DOC SIDE — RESOLVED. The live configuration page now documents partition.advisory-lock-id
+      (default 90) and the full four-key registry table (WebFetch 2026-06-03, 200). So the original
+      premise ("docs don't mention it, operator removes it as unused") no longer holds — an operator
+      reading current docs would NOT treat it as unused. This supersedes the feature-flow's LOW
+      facet on the doc side.
+      (2) CODE SIDE — STILL UNSAFE. If an operator DOES delete the key, `@Value("${partition.advisory-lock-id}")`
+      at PostgreSQLPartitionCreationJob.java:26 has NO `:default` fallback (unlike partition-period's
+      `:30`), so Spring fails bean wiring at boot with "Could not resolve placeholder" — a hard boot
+      failure rather than a graceful default. That is arguably safer than a silent wedge (it does
+      fail fast), but the message is a generic Spring placeholder error, not a registry-aware
+      "you removed a required advisory-lock-id" message.
+    evidence:
+      - sidecar: odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md
+        section: bugs_limitations_corner_cases[5]
+        cite: "PostgreSQLPartitionCreationJob.java:26 (no :default) + application.yml:197-198"
+        note: "partition.advisory-lock-id has no code-side default; removing the key fails bean wiring at boot"
+      - sidecar: WebFetch
+        section: configuration-and-deployment/odd-platform (Advisory-lock registry)
+        cite: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+        note: "live page now documents partition.advisory-lock-id=90 + the four-key registry table (2026-06-03, 200)"
+    operator_visible_failure: |-
+      Residual gap: an operator who removes the key gets a Spring `IllegalArgumentException:
+      Could not resolve placeholder 'partition.advisory-lock-id'` at boot — fail-fast (good) but
+      the message does not explain that this is an advisory-lock-registry key with a recommended
+      default of 90, so the operator must trace the placeholder back to source. The doc-side
+      removal-risk is now mitigated by the updated docs.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      No test asserts the boot behaviour when partition.advisory-lock-id is absent. The unmet
+      part (generic placeholder error rather than a registry-aware message) routes to a
+      functional-test-demand + a caveat; the doc-side is resolved.
+
+- id: H-009
+  hypothesis: |-
+    When a data-collaboration operator sets the sender and receiver advisory-lock-ids to the
+    SAME value (senderMessageAdvisoryLockId == receiveEventAdvisoryLockId), the platform rejects
+    the configuration at boot — because the two DC workers cannot both lead on one lock.
+  derivation: |-
+    DataCollaborationProperties sidecar bugs[0]: the two DC lock ids have NO @PostConstruct
+    invariant; only retry-count is validated. Endpoint-shape (two distinct keys) +
+    negative-space.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No such validation exists. DataCollaborationProperties.java:14-20's @PostConstruct checks
+      ONLY `sendingMessagesRetryCount >= 0`; it never compares the two lock ids. Setting both to
+      the same int silently lets whichever DC worker acquires first hold the lock while the other
+      blocks forever on the same id — Slack flow stops in one direction (send OR receive) with no
+      signal. This is the within-subsystem instance of the same missing-validator class as H-002.
+    evidence:
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md
+        section: bugs_limitations_corner_cases[0] + tests_coverage_semantic.uncovered_behaviours[4]
+        cite: "DataCollaborationProperties.java:14-20"
+        note: "validator covers only retry-count; receiveEventAdvisoryLockId == senderMessageAdvisoryLockId is unchecked"
+    operator_visible_failure: |-
+      An operator who (e.g. via a copy-paste) sets both DC lock ids to 110 sees Slack inbound
+      events processed but outbound messages never delivered (or vice versa), with the platform
+      green. Because the two ids live on the same properties class, this is the most likely
+      single-class collision an operator can introduce, and the class already has a validator
+      hook (@PostConstruct) that simply does not check it.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      DataCollaborationProperties sidecar explicitly lists this as an uncovered behaviour
+      (uncovered_behaviours[4]); zero tests reference the class. functional-test-demand: a
+      @PostConstruct-rejection test asserting equal sender/receiver ids fails context startup.
+
+- id: H-010
+  hypothesis: |-
+    When the notifications WAL subscriber is the elected leader and one ALERT row cannot be
+    translated (poison message), only that delivery is affected — subsequent alerts continue to
+    be delivered.
+  derivation: |-
+    The reflection's scope is the registry, but the feature-flow facet
+    `compound_with_poison_message_replay_silent_subsystem_loss_at_two_layers` ties the two; an
+    operator expects one bad alert not to take down the whole channel. Negative-space.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      A poison ALERT row blocks ALL subsequent alert delivery cluster-wide. The inner
+      `messageProcessor.process(...)` (NotificationSubscriber.java:80) is NOT wrapped in
+      try/catch; on a RuntimeException from the translator the LSN is NOT advanced, the outer
+      loop releases the lock, sleeps 10s, re-acquires, re-delivers the SAME message, and throws
+      again — forever. The presenting observable ("alerts stopped, health green, no logs") is
+      identical to the advisory-lock-collision wedge (H-002/H-005), which is the load-bearing
+      compound: two distinct root causes, one indistinguishable symptom, and the missing
+      observability (H-005) is what prevents an operator from telling them apart. Tracked
+      separately as PLT-139.
+    evidence:
+      - sidecar: odd-platform__java__notification__class__NotificationSubscriber.md
+        section: bugs_limitations_corner_cases[0] (poison-message WAL replay loop)
+        cite: "NotificationSubscriber.java:77-91 + AlertNotificationMessageProcessor.java:23-24"
+        note: "no try/catch around process; LSN advances only after success → un-advanced LSN re-delivers the poison row forever"
+    operator_visible_failure: |-
+      One malformed alert (unknown alert-type code, missing alerted-entity row) pins ALL
+      notification delivery at zero until the operator manually deletes the bad row or runs
+      pg_drop_replication_slot (which loses all in-flight undelivered alerts). With no metric to
+      distinguish it from a lock-collision wedge, the operator cannot even tell which of the two
+      failure modes they are in — they must inspect both pg_locks AND the replication slot.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      NotificationSubscriber sidecar gaps[2] names this as the load-bearing missing regression
+      test (inject a processor that throws once then succeeds; assert the message delivers
+      twice). IT-012's helper explicitly UN-WEDGES PLT-139 before testing failover, so no test
+      currently exercises the replay loop itself. functional-test-demand for the replay guard.
+
+- id: H-011
+  hypothesis: |-
+    When a developer reads the leader-election entry point, the second argument to
+    `acquire(advisoryLockId, <flag>)` clearly communicates whether the call is blocking — so a
+    maintainer adding a fifth subsystem knows whether acquisition can wedge.
+  derivation: |-
+    Cross-layer naming check (Rule 4). The feature-flow narrates the boolean as if it might be a
+    blocking flag (partition passes false, notifications/DC pass true); the actual semantics
+    matter for the wedge analysis. Negative-space / maintainer-facing.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The boolean is NOT a blocking flag — it is `replicationConnection`
+      (PostgreSQLLeaderElectionManagerImpl.java:18, source-read this run): it selects whether
+      PGConnectionFactory opens a replication-mode connection (true for the WAL subscriber and
+      the two DC workers, false for the partition job). The acquisition is ALWAYS blocking
+      regardless of the flag — every caller runs `pg_advisory_lock(%d)` and can wedge. The
+      partial: the parameter name is accurate at the declaration site, but a reader skimming the
+      callsites (`acquire(id, false)` vs `acquire(id, true)`) could easily MISREAD the boolean
+      as "non-blocking vs blocking" — which would lead them to believe the partition job's
+      `false` is a safe non-blocking acquire when it is exactly as wedge-prone as the others.
+      The feature-flow hop-2 evidence text itself flirts with this ambiguity by foregrounding the
+      blocking behaviour next to the boolean.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: PostgreSQLLeaderElectionManagerImpl
+        cite: "PostgreSQLLeaderElectionManagerImpl.java:18-23"
+        note: "acquire(long advisoryLockId, boolean replicationConnection); pg_advisory_lock is unconditionally blocking — the flag only picks the connection type"
+      - sidecar: odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md
+        section: tests_coverage_semantic.gaps[4]
+        cite: "PostgreSQLPartitionCreationJob.java:31 (acquire(activityLockId, false))"
+        note: "partition path passes false (regular connection) yet still blocks on the same pg_advisory_lock"
+    operator_visible_failure: |-
+      Maintainer-facing, not operator-facing: a future maintainer adding a single-leader
+      subsystem could misread the `false`/`true` argument as a blocking toggle and wrongly assume
+      one acquisition mode is wedge-safe, propagating the silent-wedge hazard to the new
+      subsystem. The risk is documentation/naming clarity, not a runtime defect today — hence
+      partial.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    coverage_note: |-
+      No test or javadoc disambiguates the flag. Routes to a caveat (clarify the param /
+      add javadoc that acquisition is always blocking) + a light functional-test-demand only if
+      the registry refactor (PLT-089) renames or wraps acquire.
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    Advisory-lock-id collision silently wedges a subsystem forever — blocking pg_advisory_lock,
+    no central registry, no @PostConstruct collision validator, no boot enumeration; boot
+    succeeds and /actuator/health stays UP.
+  dedup_status: already_tracked
+  tracked_as: PLT-089
+  recommended_log_as: null
+  proposed_fix_anchor: |-
+    PostgreSQLLeaderElectionManagerImpl.java:22 (try-variant + timeout) + a @PostConstruct
+    cross-validator across the three @ConfigurationProperties classes (modelling the partition
+    deliberate-share). PLT-089 already specifies fix (a)+(b)+(c).
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |-
+    No Prometheus leader-state gauge and no /actuator/health degradation when a subsystem wedges
+    on a collided lock — the wedge is invisible to dashboards.
+  dedup_status: already_tracked
+  tracked_as: PLT-089
+  recommended_log_as: null
+  proposed_fix_anchor: |-
+    PLT-089 fix (d) subsystem_leader_state{subsystem=X} gauge + (c) readiness-probe degradation.
+    Cross-links SHB-066 observability cluster.
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    No boot-time INFO enumeration / single registry view of the four resolved advisory-lock-id
+    values; operator must assemble from three @ConfigurationProperties prefixes.
+  dedup_status: already_tracked
+  tracked_as: PLT-089
+  recommended_log_as: null
+  proposed_fix_anchor: "PLT-089 fix (e) — @PostConstruct boot INFO log enumerating the registry."
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: |-
+    DataCollaborationProperties has a @PostConstruct hook but does NOT reject
+    senderMessageAdvisoryLockId == receiveEventAdvisoryLockId — the most likely single-class
+    collision an operator can introduce.
+  dedup_status: net_new
+  distinct_from: PLT-089
+  recommended_log_as: "fold into PLT-089 as a sub-defect (intra-class DC lock-id equality check), OR a small standalone PLT"
+  proposed_fix_anchor: |-
+    DataCollaborationProperties.java:14-20 — extend the existing @PostConstruct validate() to
+    assert the two DC lock ids differ. Distinct from PLT-089's CROSS-class validator: this is a
+    same-class check on a hook that already exists, lands in a different file, and is a strictly
+    smaller fix that could ship independently.
+
+### caveat_candidates
+- hypothesis_id: H-010
+  one_line: |-
+    A single poison ALERT row blocks ALL notification delivery cluster-wide (LSN never advances,
+    10s replay loop) — operationally indistinguishable from an advisory-lock collision wedge.
+  dedup_status: already_tracked
+  tracked_as: PLT-139
+  recommended_log_as: null
+- hypothesis_id: H-008
+  one_line: |-
+    Removing partition.advisory-lock-id from a customised application.yml fails bean wiring at
+    boot with a generic Spring placeholder error (no :default fallback) rather than a
+    registry-aware message; doc-side removal risk now mitigated by the updated live docs.
+  dedup_status: already_tracked
+  tracked_as: DOC-259
+  recommended_log_as: null
+- hypothesis_id: H-011
+  one_line: |-
+    acquire(id, boolean)'s second arg is replicationConnection (NOT a blocking flag); acquisition
+    is ALWAYS blocking — callsites acquire(id,false)/acquire(id,true) can be misread by a future
+    maintainer as a wedge-safety toggle.
+  dedup_status: net_new
+  distinct_from: PLT-089
+  recommended_log_as: |-
+    fold into PLT-089 as a javadoc/clarity note on the acquire signature (the registry refactor
+    touches this method anyway), OR a trivial doc-comment commit. Distinct from PLT-089's
+    runtime fixes — this is a naming/javadoc clarity item, not a behavioural defect.
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise (confirmed / partial / contradicted) becomes a
+# missing-functional TEST-GAP candidate carrying its use_case_id. The confirmed-but-untested
+# promises (H-001, H-003, H-007) are the highest-value NEW guards: hand-proven behaviours with
+# no test. NONE of these routes to "none".
+- use_case_id: F-065-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Four disjoint default advisory-lock-ids → four independent leaders, zero contention."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-1"
+  proposed_test: |-
+    Integration: boot all four subsystems on a single Postgres with shipped defaults; assert
+    exactly four distinct GRANTED rows in pg_locks WHERE locktype='advisory' and zero WAITING.
+- use_case_id: F-065-UC-2
+  hypothesis_id: H-002
+  kind: empty/no-match
+  promise: "A lock-id collision is detected at startup (fail-fast / WARN / readiness) — never a silent forever-wedge."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-2 (regression guard for PLT-089)"
+  proposed_test: |-
+    Integration: set NOTIFICATIONS_WAL_ADVISORY_LOCK_ID == a datacollaboration lock id; assert
+    the context FAILS to start (post-PLT-089) OR — characterization pin pre-fix — assert the
+    second subsystem's lock stays WAITING and /actuator/health is still UP (pins the current
+    silent-wedge as a known bug, flips RED when PLT-089 lands).
+- use_case_id: F-065-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "Both partition managers run under the ONE shared lock 90 — the deliberate cross-subsystem share is legal."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-3 (must-not-break guard before any pairwise-distinct validator)"
+  proposed_test: |-
+    Integration: with both partition managers active, assert exactly ONE GRANTED advisory lock
+    on id 90 and that both Activity and Message partitions are created in the same boot cycle —
+    the legal-share case a future collision validator must accept.
+- use_case_id: F-065-UC-4
+  hypothesis_id: H-004
+  kind: render
+  promise: "Operator can read one authoritative enumeration of the resolved advisory-lock-id values at boot."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-4"
+  proposed_test: |-
+    Unit/slice: after PLT-089 fix (e), assert a boot INFO log line enumerates all four resolved
+    values (partition / notifications.wal / dc.receive / dc.sender).
+- use_case_id: F-065-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "A wedged subsystem flips an observable signal (leader-state gauge=0 / health DEGRADED)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-5"
+  proposed_test: |-
+    Integration: after PLT-089 fix (c)+(d), induce a collision and assert
+    subsystem_leader_state{subsystem=...}=0 and the corresponding health indicator is DOWN.
+- use_case_id: F-065-UC-7
+  hypothesis_id: H-007
+  kind: happy-path
+  promise: "DC sender (120) and receiver (110) each elect a single leader across replicas; failover works."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-7 (IT-012-shaped for DC)"
+  proposed_test: |-
+    Integration (HA): two replicas, Data Collaboration enabled; assert exactly one GRANTED lock
+    on 120 and one on 110 + one WAITING each; kill the leader and assert failover — the DC analogue
+    of IT-012.
+- use_case_id: F-065-UC-8
+  hypothesis_id: H-008
+  kind: teardown-constraint
+  promise: "Removing partition.advisory-lock-id fails fast with a registry-aware message (not a bare placeholder error)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-8 (unmet part only)"
+  proposed_test: |-
+    Slice: boot with partition.advisory-lock-id unset; assert the failure message names the
+    advisory-lock registry key (post-fix) rather than a generic placeholder error.
+- use_case_id: F-065-UC-9
+  hypothesis_id: H-009
+  kind: empty/no-match
+  promise: "Equal DC sender/receiver lock-ids are rejected at @PostConstruct."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-9"
+  proposed_test: |-
+    Unit: bind datacollaboration.sender-message-advisory-lock-id == receive-event-advisory-lock-id;
+    assert Spring context startup fails with IllegalStateException naming both keys.
+- use_case_id: F-065-UC-10
+  hypothesis_id: H-010
+  kind: resolve-later
+  promise: "One poison ALERT row affects only its own delivery; subsequent alerts still deliver."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-10 (regression guard for PLT-139)"
+  proposed_test: |-
+    Integration: inject a processor that throws on message 1, succeeds on 2; pin CURRENT behaviour
+    (message 1 re-delivered forever, 2 never reached) as a known-bug characterization, RED on
+    PLT-139 fix.
+- use_case_id: F-065-UC-11
+  hypothesis_id: H-011
+  kind: grammar
+  promise: "The acquire(id, flag) signature unambiguously communicates that acquisition is always blocking."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-065-UC-11 (low priority; clarity)"
+  proposed_test: |-
+    None behavioral; satisfied by javadoc on acquire() + (if registry refactor renames the
+    method) a structural pin. Lowest-priority demand.
+
+### probes_emitted
+[]
+
+### validation_gaps
+- sidecar: PostgreSQLLeaderElectionManagerImpl (HOP 2 — NOT ENRICHED)
+  field_insufficient: |-
+    The feature-flow's load-bearing hop (the leader-election manager itself) has no dedicated
+    sidecar (feature-flow hop 2 unresolved: true). Every advisory-lock hypothesis turns on this
+    one class's behaviour. I read it under the Rule-8 single-class exception
+    (PostgreSQLLeaderElectionManagerImpl.java:14-29) to confirm: (a) signature
+    acquire(long, boolean replicationConnection); (b) BLOCKING pg_advisory_lock(%d), no timeout,
+    no try-variant; (c) lock-id int-interpolated via String.formatted. These facts should be in
+    a sidecar, not re-derived per reflection.
+  proposed_refresh: |-
+    Enrich PostgreSQLLeaderElectionManagerImpl as a dedicated file-analyser sidecar (axis:
+    leaderelection). Capture the blocking-acquire ADR, the replicationConnection-flag semantics
+    (Rule-4 naming clarity — it is NOT a blocking flag), the absence of timeout/try-variant, and
+    the lock-id-interpolation note. This unblocks every future reflection of F-009 / F-038 /
+    F-010 / F-065 from the Rule-8 exception.
+- sidecar: F-065 feature-flow (UI surface)
+  field_insufficient: |-
+    Rule-9 note (API/config-only reflection, NOT an F-031-class error). This feature has NO UI
+    hop and the feature-flow correctly classifies it `status: active` (backend-only by intent,
+    operator-facing via application.yml / env / /actuator/configprops), NOT `ui-incomplete`. I
+    therefore did not generate the mandatory UX-seed hypotheses (understand-from-screen /
+    convenient / intuitive / customisable / cross-device) — they are N/A for an
+    operational-infrastructure contract with no screen. This is recorded so the absence is
+    deliberate and audited, not an oversight.
+  proposed_refresh: |-
+    None — the no-UI classification is correct for this feature. If a future "Operational
+    Infrastructure" admin surface is built (the canonicalisation candidate in system-mission.md),
+    re-reflect with UX seeds at that time.
+
+### doc_drift_findings
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: |-
+    The live page NOW documents all four advisory-lock-id keys including partition.advisory-lock-id
+    (default 90) and carries an "Advisory-lock registry" section warning that collisions are not
+    detected at startup and produce silent feature wedges (WebFetch 2026-06-03, 200).
+  code_does: |-
+    The code still does NOT detect collisions, does NOT degrade readiness, and has no
+    registry/enum. The docs now correctly DESCRIBE a trap the code does not PREVENT — a
+    doc-leads-code state (the inverse of the usual doc-drift direction). This SUPERSEDES the
+    feature-flow facet partition_advisory_lock_id_undocumented_in_live_docs (LOW) on the doc side.
+  recommended_log_as: |-
+    Update feature-flow F-065 facet 4 provenance to LIVE-DOC-RESOLVED (2026-06-03); confirm
+    DOC-259 has landed and close the DOC-GAP-043/044 partition-key-undocumented thread as
+    resolved. The remaining work is purely the CODE-side PLT-089. (Documented here for the
+    coherence-sweep / doc-gap-finder; no new DOC item required.)
+
+## maintainer_notes
+
+(none — net-new reflection; v0.3.0; no maintainer-curated hypotheses to preserve)

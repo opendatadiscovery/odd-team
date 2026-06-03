@@ -126,6 +126,93 @@ observed_vs_expected:
         from metrics.
       evidence:
         - "SchedulingConfiguration.java (entire — no MeterBinder)"
+use_cases:
+  # LSN-030 / feature-reflector v0.3.0 (Rule 11) — the executor's PROMISE LAYER, projected from the
+  # F-121 reflection (lineage/odd-platform/feature-reflections/detail/F-121.yaml, hypotheses H-001..H-011).
+  # The "actor" is the platform-operator (P-08); there is no UI surface (infra feature — Rule 9). The full
+  # hypothesis + validation lives in the reflection; this is the compact projection the test-coverage-mapper
+  # Step 2b reads. coverage=verified ONLY where a real test for the promise exists.
+  - uc_id: F-121-UC-001
+    kind: render
+    promise: "The four background jobs run on independent threads — a long housekeeping cycle does not starve the status-switch or partition-creation jobs."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java:12-26 (no @Bean TaskScheduler) + application.yml (no spring.task.scheduling.pool.size) -> Spring default poolSize=1 -> the four @Scheduled jobs serialise"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint): two @Scheduled beans sleeping 20s, both due at once; assert the second is delayed ~20s under shipped config and runs concurrent once pool.size>=2"
+  - uc_id: F-121-UC-002
+    kind: cross-actor
+    promise: "A ShedLock-guarded job never runs concurrently on two replicas within its scheduled window."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java:18-25 (.usingDbTime LockProvider) confirms atomic acquisition; HousekeepingJobManager.java:25-26 (lockAtMostFor=14m vs fixedRate=15m, 60s slack) is the breach condition for a >=14m cycle"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint): Testcontainers + 2 JVMs; inject a 15-min sleep into one housekeeping job on replica A; assert replica B does not acquire while A holds AND surfaces the 14m/15m overrun breach"
+  - uc_id: F-121-UC-003
+    kind: cross-actor
+    promise: "On a simultaneous two-replica lock race, exactly one wins and the loser no-ops cleanly with no error."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java:18-25 (atomic INSERT-OR-UPDATE on shedlock PK + usingDbTime) — PROBE-NEEDED (sidecar P-182 / reflection PENDING-F-121-1)"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint) + probe PENDING-F-121-1: 2 JVMs boot simultaneously; assert one wins, loser no-ops, winner lock_until ≈ PG now()+14m (pins usingDbTime)"
+  - uc_id: F-121-UC-004
+    kind: resolve-later
+    promise: "The activity/message partition for the next day always exists before INSERTs need it."
+    actor: platform-operator
+    trace: "partition/PostgreSQLPartitionCreationJob.java:29-51 (@PostConstruct boot creation behind leader-election lock + nightly cron) + 60-day-forward partition width (ActivityTablePartitionManager.java:11) blunt the cron-misfire INSERT-failure blast radius — PROBE-NEEDED (sidecar P-183 / reflection PENDING-F-121-2)"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint) + probe PENDING-F-121-2: assert next-day partition exists at boot independent of cron; then a long housekeeping past 00:01 — assert INSERT still succeeds via the 60-day-forward window"
+  - uc_id: F-121-UC-005
+    kind: cross-actor
+    promise: "Expired Spring sessions are purged exactly once per hour cluster-wide (coordinated like the other three jobs)."
+    actor: platform-operator
+    trace: "PostgreSQLSessionHousekeepingJobHandler.java:13-18 (NO @SchedulerLock) — CONTRADICTED: runs N-fold on N replicas; tracked PLT-083 Defect 2 + DOC-250 Caveat 4 (done)"
+    coverage: verified
+    test_ref: "DOC-250 Caveat 4 (done, live-verified 2026-06-03) documents the asymmetry; code fix PLT-083"
+  - uc_id: F-121-UC-006
+    kind: grammar
+    promise: "@EnableSchedulerLock means every @Scheduled job in the platform is leader-elected."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java:14 + PostgreSQLSessionHousekeepingJobHandler.java:13-18 — CONTRADICTED: @SchedulerLock is opt-in per method; the session job is unguarded; tracked PLT-083"
+    coverage: verified
+    test_ref: "config.FeatureGatingDefaultsTest (gating-default family) + DOC-250 Caveat 4; code fix PLT-083"
+  - uc_id: F-121-UC-007
+    kind: happy-path
+    promise: "Multi-replica ShedLock coordination is correct under JVM clock skew (lock validity judged by PostgreSQL's clock)."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java:22 (.usingDbTime()) — CONFIRMED; lock_until/locked_at written from PG current_timestamp, neutralising cross-replica clock drift"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint): Spring-context test asserting the LockProvider is a JdbcTemplateLockProvider configured with usingDbTime (guards a silent refactor to a non-DB-time provider)"
+  - uc_id: F-121-UC-008
+    kind: grammar
+    promise: "A future @SchedulerLock job that omits lockAtMostFor inherits the platform default (1h crash-recovery cap)."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java:14 (defaultLockAtMostFor=1h) — PARTIAL: true for a future omit-the-timing job, DEAD CODE today (all 3 guarded jobs override it)"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint, LOW): a test @Component declaring @SchedulerLock without timing attrs asserting shedlock.lock_until ≈ now()+1h (locks the inheritance contract; cosmetic today)"
+  - uc_id: F-121-UC-009
+    kind: render
+    promise: "An operator can observe ShedLock acquisition outcomes + scheduled-executor queue depth from /actuator/prometheus."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java:17-25 (no MeterBinder); grep Counter|Meter|Gauge in config/ no scheduling matches — CONFIRMED ABSENT; operator must read the shedlock table via SQL"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint): once instrumented, actuator test asserting shedlock_acquisition_total + spring_executor_queued_tasks export; until then, documents the missing observability surface"
+  - uc_id: F-121-UC-010
+    kind: teardown
+    promise: "A rolling restart drains in-flight scheduled work without pausing housekeeping cluster-wide."
+    actor: platform-operator
+    trace: "SchedulingConfiguration.java (no await-termination config); grep shutdown.*await zero — CONFIRMED gap: SIGTERM mid-cycle holds the shedlock row ~lockAtMostFor (14m), no replica runs housekeeping during the window"
+    coverage: unverified
+    test_demand: "functional (TEST-GAP pending mint): interrupt a holding replica mid-cycle; assert the shedlock row stays held until lockAtMostFor and no second replica acquires before then (pins the rolling-restart pause window)"
+  - uc_id: F-121-UC-011
+    kind: empty/no-match
+    promise: "A partial application.yml override that omits the housekeeping block degrades safely."
+    actor: platform-operator
+    trace: "HousekeepingJobManager.java:18 (no matchIfMissing) — PARTIAL: enabled-key-absent = silent no-op (pinned by ADR-0046); ttl-block-absent-while-enabled-true = TTL=0 total wipe (PLT-083 Defect 1 / DOC-250 Caveat 1)"
+    coverage: verified
+    test_ref: "config.AdrHousekeepingOptOutScanTest (ADR-0046 enabled-absent disables) + config.FeatureGatingDefaultsTest (enabled=true shipped); TTL=0-wipe half is PLT-083/DOC-250"
+use_case_coverage:
+  verified: 3
+  total: 11
+  note: "SECOND COVERAGE FRONTIER (verified promises / total promises), distinct from line/method coverage and the test_matrix cells. 3/11 verified are the THREE already covered by existing pins/docs (UC-005 + UC-006 via DOC-250/PLT-083, UC-011 via ADR-0046 AdrHousekeepingOptOutScanTest). The other 8 promises — INCLUDING 3 confirmed-but-untested (UC-007 usingDbTime, UC-009 metrics-absent, UC-010 no-graceful-drain) that pre-v0.3.0 would have dropped to none — are functional TEST-GAP demands (pending mint). 2 are probe-gated (UC-003 -> P-182, UC-004 -> P-183). A user-facing infra feature at 3/11 verified promises is itself a finding: the executor's scheduling guarantees are almost entirely unguarded by behavioral tests (the two existing tests AdrHousekeepingPartitionScanTest / AdrPartitionLifecycleScanTest are STRUCTURAL @enforces-ADR source-scans, not behavioral)."
 test_matrix:
   unit: GAP
   integration: GAP
@@ -161,6 +248,20 @@ notes_for_maintainer: |-
   flagged. F-010 names WHAT runs in the housekeeping cycle; this feature
   names HOW the executor schedules across the four-job set. The two cover
   different boundaries and should remain distinct.
+
+  feature-reflector v0.3.0 (2026-06-03) severity-correction write-back (H-006):
+  reading partition/PostgreSQLPartitionCreationJob.java:29-51 shows partitions
+  are created at BOTH @PostConstruct (boot, behind the leader-election advisory
+  lock — ADR-0028) AND the nightly cron, and each partition spans 2×partition-period
+  (~60 days forward). This materially BLUNTS the cron-misfire INSERT-failure blast
+  radius in terminal_side_effect: a fresh boot re-creates the window independent of
+  the scheduler, and the imminent window is rarely the one being created tonight.
+  Realistic symptom is a LATE partition under sustained backlog, not an INSERT
+  failure. Proposed new drift class:
+  partition_creation_double_coverage_boot_postconstruct_plus_nightly_cron_blunts_cron_misfire_blast_radius.
+  Also correct the stale chain path: the job lives at partition/PostgreSQLPartitionCreationJob.java,
+  NOT leader_election/ (primary_subject + contributing_nodes + chain hop 3 carry the wrong path),
+  and the chain omits the @PostConstruct boot-creation hop. See the reflection's validation_gaps.
 provenance: |-
   Graduated from SHB-176 by feature-flow-builder on 2026-05-26 (parallel
   triage slice H2). Evidence rich: SchedulingConfiguration + 4 @Scheduled

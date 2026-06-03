@@ -1,0 +1,707 @@
+---
+feature_id: F-152
+pillar_anchored_id: P-06:F-005
+pillar: P-06 Data Glossary
+feature_name: |-
+  Term Linked-Terms Tab — paginated reverse-lookup of every Term linked
+  to the current Term, with hardcoded error responses, copy-paste empty
+  state, and tanstack-query usage diverging from the redux pattern used
+  elsewhere
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__service__service__TermServiceImpl.md
+  - odd-platform__java__TermController__controller-class__TermController.md
+  - odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+  - "(UI hop LinkedTermsList.tsx — NO sidecar; see validation_gaps[0])"
+source_reads_for_validation:
+  - "LinkedTermsList.tsx:1-100 (Rule-8 single-source confirmation read — the UI hop had no sidecar; read to capture the exact citations for the hardcoded status:500/FIXME, the copy-paste empty-state, the no-debounce search, and the hasMore={hasNextPage} wiring that the backend's hardcoded hasNext=false defeats)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: "Inherited from TermServiceImpl + TermController sidecars (batch-K WebFetch 2026-05-19, in-window). Not re-fetched this reflection (no WebFetch permission asserted this session); the page does not describe term-to-term reverse-lookup browsing, the [[ns:term]] syntax verbatim, or any pagination/limit ceiling."
+  - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/glossary"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: "Inherited from TermController sidecar. Documents POST /api/terms/{term_id}/term (link write) + DELETE; does NOT document GET /api/terms/{term_id}/term as a reverse-lookup LIST endpoint or its broken pagination shape."
+hypothesis_summary:
+  total: 11
+  confirmed: 1
+  contradicted: 7
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "The Linked-Terms tab endpoint GET /api/terms/{id}/term returns 500/405 at runtime (maintainer IT-035 probe) AND the tab page hangs on the 500 — the reverse-lookup the tab promises does not render at all."
+related_feature_flows: [F-002, F-024, F-056, F-151, F-153]
+related_concepts:
+  - term-reverse-lookup
+  - term-to-term-linkage
+  - state-management-pattern-drift
+related_drift_classes:
+  - ui_synthesises_bogus_error_response
+  - ui_copy_paste_label_mismatch
+  - ui_search_input_no_debounce_explicit_trigger_only
+  - ui_renders_unguarded_reverse_lookup_surface
+  - ui_pattern_inconsistency_state_management_diverges_within_sibling_tabs
+new_drift_classes_proposed:
+  - ui_infinite_scroll_defeated_by_backend_hardcoded_hasnext_false
+  - reverse_lookup_list_endpoint_overloaded_with_link_write_path
+---
+
+# Term Linked-Terms Tab — product-owner reflection
+
+## product_owner_narrative
+
+The **Linked-Terms tab** is one of the reverse-lookup surfaces of the Business Glossary (pillar P-06, "operator-curated term entities … link terms to each other"; `system-mission.md:184-186`). A user who has opened a Term's detail page (say `finance/Customer`) and switches to the "Linked terms" tab expects to see, paginated, every OTHER term that has been linked to this one — `finance/Account`, `finance/Invoice`, and so on — so they can navigate the glossary's term-to-term graph from either end (per the pillar's "reverse-look-up every entity tied to a Term" primary action, and the chain's `terminal_side_effect`: "every Term whose id appears in `term_to_term.linked_term_id` matching the current `term_id` surfaces here", `feature-flows/detail/F-152.yaml:57-62`).
+
+The user reaches the tab at the route `/terms/:termId/linked-terms`, which renders `LinkedTermsList` (`LinkedTermsList.tsx:15-100`). The component fires the tanstack-query infinite hook `useGetTermLinkedTerms({termId, size: 50, query})` (`LinkedTermsList.tsx:28-32`), which calls `termApi.getTermLinkedTerms({page, size, termId, query})` (UI hook `terms.ts:75-84`) → the HTTP operation `GET /api/terms/{term_id}/term` handled by `TermController.getTermLinkedTerms` (`TermController.java:121-127`) → `TermServiceImpl.listByTerm` (`TermServiceImpl.java:281`) → `ReactiveTermRepositoryImpl.listByTerm` (`ReactiveTermRepositoryImpl.java:457-499`). The user sees a two-column table — **Name** and **Namespace** (`LinkedTermsList.tsx:52-59`) — with a search box above it and infinite-scroll below.
+
+The working parts a product owner would demo: (1) a **search box** that filters the linked-terms list by name; (2) **infinite scroll** that auto-loads the next 50 rows as the user scrolls; (3) an **empty state** for terms with no links; (4) an **error page** when the fetch fails. In practice every one of these four parts is defective — and the most fundamental defect is that the endpoint backing the whole tab does not return successfully at all. The maintainer's own integration-test build-out recorded F-152 as **non-viable to test** because `GET /api/terms/{id}/term` returns 500/405 and "the tab page also hangs on the 500" (`integration-tests/PHASE3-BUILDOUT.md:298-300`). That is the headline: the reverse-lookup the tab promises does not render.
+
+This feature shares a pillar and a parent component (`TermDetailsRoutes`) with three sibling reverse-lookup surfaces — Linked Entities (term→data-entity, F-002/F-153, the IT-033 GREEN path), Linked Columns (term→dataset-field, F-153), and Query Examples (F-155, IT-034 GREEN). The dual-surface relationship with F-151 matters to the user: the Overview tab carries a `TermLinkedTerms` mini-panel WITH Add/Delete affordances, while THIS tab shows the same data with search but NO manage affordances (`feature-flows/detail/F-152.yaml:140-145`; PLT-058 Defect 3). A user who learns "add a linked term" on Overview cannot do it on the tab where they go to browse.
+
+Edge cases a product owner would flag in a demo: a Term with **51+ linked terms** (does page 2 ever load?); a Term whose linked term was later **deleted** (does the deleted term still appear?); the **error flash** on initial mount before the first fetch completes; and the fact that, because the backend at `TermController.addLinkedTermToTerm`/`deleteLinkedTermFromTerm` has **no SecurityRule** (`TermController.java:237-249`; DOC-033), any authenticated user can have shaped this graph — so the reverse-lookup is a read-collaborative window onto an unguarded write surface.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens /terms/{termId}/linked-terms for a term that HAS linked terms, the tab renders a paginated table listing each linked term's Name and Namespace."
+  derivation: "Route ui_route:/terms/:termId/linked-terms + LinkedTermsList renders a Name/Namespace table (LinkedTermsList.tsx:52-59) fed by useGetTermLinkedTerms; pillar primary action 'reverse-look-up every entity tied to a Term'."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The UI wiring to render the table exists and is correct in shape: the
+      InfiniteScroll maps termLinkedList over a LinkedTerm row component
+      (LinkedTermsList.tsx:65-78), and the backend listByTerm query selects the
+      linked TermRefDto rows (ReactiveTermRepositoryImpl.java:457-499). BUT the
+      maintainer's IT-035 survey records that GET /api/terms/{id}/term "returns
+      500/405" and "the tab page also hangs on the 500"
+      (integration-tests/PHASE3-BUILDOUT.md:298-300). Whether a correctly-seeded
+      term-to-term link renders on this tab in a running stack is therefore NOT
+      established — the one empirical attempt hit a 500. The verdict requires a
+      local run that first resolves WHY the endpoint 500/405s (the maintainer
+      notes the /term path is overloaded as both the link/unlink MUTATION path
+      and ostensibly the list GET — see H-002).
+    evidence:
+      - sidecar: "(UI source read)"
+        section: render
+        cite: "LinkedTermsList.tsx:65-78"
+        note: "InfiniteScroll maps LinkedTerm rows — render path exists."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+        section: operations
+        cite: "ReactiveTermRepositoryImpl.java:457-499"
+        note: "listByTerm builds the linked-term row projection the tab consumes."
+      - sidecar: "(maintainer integration-test build-out)"
+        section: plateau
+        cite: "integration-tests/PHASE3-BUILDOUT.md:298-300"
+        note: "Empirical: the endpoint 500/405s and the tab hangs."
+    severity: HIGH
+    confidence: MEDIUM
+    probe_id: PENDING-F-152-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When the Linked-Terms tab loads, GET /api/terms/{term_id}/term returns 200 with the paginated linked-term list (the reverse-lookup read succeeds)."
+  derivation: "useGetTermLinkedTerms → termApi.getTermLinkedTerms → GET /api/terms/{term_id}/term (terms.ts:75-84 + TermController.java:121); a list endpoint must 200 for the tab to show data."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The maintainer's integration-test plateau note records, from a live stack,
+      that "GET /api/terms/{id}/term returns 500/405" and "the linked-terms LIST
+      API shape is non-trivial (the /term path is the link/unlink mutation, not
+      the list)" and "the tab page also hangs on the 500"
+      (integration-tests/PHASE3-BUILDOUT.md:298-300). The TermController sidecar
+      independently shows the /api/terms/{term_id}/term surface is the term-to-term
+      LINK family: addLinkedTermToTerm is POST /api/terms/{term_id}/term
+      (TermController.java:237) and deleteLinkedTermFromTerm is DELETE on
+      /api/terms/{term_id}/term/{linked_term_id} (line 246). The reverse-lookup
+      GET that getTermLinkedTerms maps to (TermController.java:121) shares the
+      /term path stem — so the same path stem carries both the link-write verbs
+      and the list-read verb (drift_class reverse_lookup_list_endpoint_overloaded_
+      with_link_write_path). At runtime the tab's GET does not return a usable 200.
+    evidence:
+      - sidecar: "(maintainer integration-test build-out)"
+        section: plateau
+        cite: "integration-tests/PHASE3-BUILDOUT.md:298-300"
+        note: "Live-stack probe: GET /api/terms/{id}/term 500/405; tab hangs."
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: operations
+        cite: "TermController.java:121, 237, 246"
+        note: "The /term path stem carries getTermLinkedTerms (GET list) AND addLinkedTermToTerm (POST) AND deleteLinkedTermFromTerm (DELETE) — path overload."
+    operator_visible_failure: |
+      The Linked-Terms tab does not work. A user clicking "Linked terms" on any
+      term's detail page is shown the synthesised error page (the hardcoded
+      status:500 from H-003) and the page hangs — the reverse-lookup graph the
+      pillar promises as a primary action is unreachable from the UI. Operators
+      cannot navigate term→term links from the target side at all. Worse, because
+      the empty-state and the error-state are both gated on !isLinkedListFetched
+      (H-003 / H-005), a user cannot distinguish "this endpoint is broken" from
+      "this term genuinely has no linked terms" — both look like a broken/empty
+      surface. This also makes the feature impossible to integration-test (the
+      maintainer's own conclusion), so no regression guard can be built until the
+      endpoint is fixed.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When the backend returns a non-500 error (e.g. 403 Forbidden or 404 Not Found) for the linked-terms fetch, the tab shows the user an error page reflecting that ACTUAL status."
+  derivation: "Response-shape: a user-facing error surface communicates the real failure; AppErrorPage takes a status/statusText."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The error object is hardcoded: AppErrorPage is rendered with
+      `error={{ status: 500, statusText: error?.message ?? 'Unknown Error',
+      url: query, message: error?.message ?? 'Unknown Error' }}`
+      (LinkedTermsList.tsx:88-93), with a literal `// FIXME` on line 87 confirming
+      author awareness. The status is the integer literal 500 regardless of the
+      real HTTP code, and `url: query` puts the user's SEARCH STRING where a URL
+      belongs. Every failure renders as "Internal Server Error 500".
+    evidence:
+      - sidecar: "(UI source read)"
+        section: error-handling
+        cite: "LinkedTermsList.tsx:85-95"
+        note: "Hardcoded {status:500, url:query} + // FIXME on line 87 — confirmed verbatim in source."
+      - sidecar: "(feature-flow facet)"
+        section: observed_vs_expected
+        cite: "F-152.yaml facet=hardcoded_status_500_for_any_error"
+        note: "Same finding, scanner-confirmed (F-152a) and routed to PLT-058 Defect 5."
+    operator_visible_failure: |
+      A 403 (the term is RBAC-protected for this user) renders as "Internal
+      Server Error" — the user believes the platform is broken when in fact they
+      lack permission; an operator reading server logs / an APM tool scraping the
+      DOM sees a 500 that never occurred server-side, polluting error dashboards
+      and misdirecting incident response. The `url: query` field means the error
+      page displays the user's typed search text in the URL slot, which is
+      incoherent and can leak the search term into screenshots / bug reports.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a user types a term name into the search box on the Linked-Terms tab, the list filters to matching linked terms as they type (type-to-search), consistent with the rest of the platform's search inputs."
+  derivation: "ui-label: the Input has placeholder 'Search'; the platform convention is type-to-search (TermSearch debounced auto-fire; sibling LinkedEntitiesList fires on Enter)."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Input updates `query` state on every keystroke (onChange → setQuery,
+      LinkedTermsList.tsx:44-46) but the refetch fires ONLY when the user clicks
+      the search icon (`handleSearchClick={() => refetch()}`, line 48). There is
+      no debounce on the state change and NO onKeyDown/Enter handler. Typing does
+      nothing visible until the icon is clicked. The sibling LinkedEntitiesList
+      fires on Enter (per F-152 facet evidence LinkedEntitiesList.tsx:62-68) and
+      TermSearch debounces auto-fire — so this tab is inconsistent with both.
+    evidence:
+      - sidecar: "(UI source read)"
+        section: search-input
+        cite: "LinkedTermsList.tsx:40-49"
+        note: "onChange sets state; refetch only via handleSearchClick; no Enter/no debounce — confirmed in source."
+      - sidecar: "(feature-flow facet)"
+        section: observed_vs_expected
+        cite: "F-152.yaml facet=search_no_debounce_only_on_enter_or_click_refetch"
+        note: "Scanner-confirmed (F-152c), routed to PLT-058 Defect 7."
+    operator_visible_failure: |
+      A user types a linked-term name, sees no change, and concludes either that
+      the term is not linked or that search is broken — when in fact they simply
+      had to click the magnifying-glass icon. This is a discoverability + trust
+      hazard that compounds with H-002/H-003: on a tab that already hangs on a
+      500, a search box that silently does nothing on keystroke is a second dead
+      affordance.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a user opens the Linked-Terms tab for a term that has ZERO linked terms, the empty state reads 'No linked terms' (naming the surface the user is on)."
+  derivation: "negative-space + ui-label: an empty reverse-lookup view names the entity it lists (terms), consistent with EmptyContentPlaceholder usage elsewhere."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The EmptyContentPlaceholder text is the literal string 'No linked entities'
+      on the LINKED TERMS tab (LinkedTermsList.tsx:80-84) — a copy-paste from the
+      sibling LinkedEntitiesList (which legitimately says "No linked entities").
+      A user with zero linked TERMS is told there are no linked ENTITIES — wrong
+      noun. The placeholder is also gated on isContentLoaded={isLinkedListFetched}
+      / isContentEmpty={!total}; combined with H-002's 500, an unfetched state
+      shows the error page rather than this empty state.
+    evidence:
+      - sidecar: "(UI source read)"
+        section: empty-state
+        cite: "LinkedTermsList.tsx:80-84"
+        note: "text='No linked entities' on the linked-TERMS tab — confirmed verbatim."
+      - sidecar: "(feature-flow facet)"
+        section: observed_vs_expected
+        cite: "F-152.yaml facet=copy_paste_empty_state_no_linked_entities_in_linked_terms_view"
+        note: "Scanner-confirmed (F-152b), routed to PLT-058 Defect 6."
+    operator_visible_failure: |
+      Operators with zero linked terms see 'No linked entities' — semantically
+      wrong and confusing; a non-expert user may believe they are on the wrong
+      tab. One-line fix (text={t('No linked terms')}), but it is a published
+      cosmetic-correctness defect on a P-06 surface.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When a term has MORE than 50 linked terms, scrolling the Linked-Terms tab auto-loads page 2 (and beyond) via infinite scroll, so the user can reach every linked term."
+  derivation: "endpoint-shape: size:50 page param + InfiniteScroll next={fetchNextPage} hasMore={hasNextPage} (LinkedTermsList.tsx:66-69) promises unbounded paging."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The UI is wired correctly — InfiniteScroll uses next={fetchNextPage} and
+      hasMore={hasNextPage} (LinkedTermsList.tsx:66-69), and total reads from
+      pageInfo.total (line 34). But the BACKEND defeats it: TermServiceImpl.listByTerm
+      wraps the repository result with a hardcoded paginator —
+      `Page.builder()...total(items.size())...hasNext(false)` (per the TermServiceImpl
+      + repository sidecars; TermServiceImpl.java:283-285), because
+      ReactiveTermRepositoryImpl.listByTerm applies limit/offset on the outer query
+      WITHOUT pageifyResult (ReactiveTermRepositoryImpl.java:480-499) so it cannot
+      surface a real total/hasNext. hasNextPage is therefore ALWAYS false →
+      fetchNextPage never fires → linked terms #51+ are silently unreachable.
+      This is the SAME silent-truncation FAILURE as the sibling LinkedColumnsList
+      (PLT-058 Defect 4 / F-153a, LSN-024 class) but at a DIFFERENT locus: there
+      the UI's next() is a noop; HERE the UI is correct and the BACKEND paginator
+      is hardcoded. PLT-058 explicitly cites LinkedTermsList.tsx:24-31 as the
+      "working" comparison pattern — that label is wrong once the backend is traced.
+    evidence:
+      - sidecar: "(UI source read)"
+        section: pagination
+        cite: "LinkedTermsList.tsx:34, 66-69"
+        note: "total=pageInfo.total; hasMore={hasNextPage}; next={fetchNextPage} — UI wiring is correct."
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "TermServiceImpl.java:283-285"
+        note: "listByTerm hardcodes total=items.size(), hasNext=false."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+        section: invariants
+        cite: "ReactiveTermRepositoryImpl.java:480-499"
+        note: "listByTerm applies limit/offset on outer query, no pageifyResult — cannot produce real total/hasNext."
+    operator_visible_failure: |
+      A glossary with a hub term linked to 51+ other terms (e.g. a top-level
+      'Customer' concept linked to dozens of finance/marketing/support terms)
+      silently shows only the first 50 on the Linked-Terms tab; the user has no
+      indication more exist (hasNext=false hides the scroll trigger and the
+      count display shows 50). This is the LSN-024 silent-empty/silent-truncate
+      class: the missing rows ARE the failure mode, invisible to the user. A
+      compliance audit of "which terms reference X" under-reports. Critically,
+      PLT-058 (the existing tracking item) labels THIS component the working
+      reference for fixing the sibling — so a maintainer fixing LinkedColumnsList
+      by "mirroring LinkedTermsList" would copy a backend-broken pagination
+      contract.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When term B (linked to term A) is later DELETED, term B stops appearing on term A's Linked-Terms tab."
+  derivation: "negative-space: a deleted term disappears from reverse-lookup; soft-delete of term sets deleted_at and every term read filters TERM.DELETED_AT IS NULL."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Two competing facts. (1) listByTerm joins the TERM table and every term
+      read filters TERM.DELETED_AT IS NULL (ReactiveTermRepositoryImpl invariant,
+      verified at line 461 among the 13 sites) — so a SOFT-DELETED term B would
+      be excluded by the term-side filter. BUT (2) TermServiceImpl.delete does
+      NOT clean up term_to_term rows (it cleans data_entity_to_term +
+      dataset_field_to_term only; TermServiceImpl.java:155-164; implicit_adr LOW
+      + bugs_limitations_corner_cases MEDIUM), AND the term_to_term reads do NOT
+      filter term_to_term.deleted_at IS NULL (the V0_0_91-vs-V0_0_76 schema
+      asymmetry — 7+ unfiltered read sites). So whether deleted term B disappears
+      depends on the JOIN: if listByTerm's join to TERM (with DELETED_AT IS NULL)
+      drops the row, B disappears; the orphan term_to_term edge remains in the
+      table but points at a now-invisible term. The reverse case — A is deleted
+      while B's tab shows the link — leaves a dangling edge that the term-side
+      filter on the OTHER term's read may or may not hide depending on which
+      end is soft-deleted. The behaviour is correct for the common soft-delete
+      path but the orphan-edge cleanup is absent, leaving a latent inconsistency.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+        section: invariants
+        cite: "ReactiveTermRepositoryImpl.java:461 (TERM.DELETED_AT.isNull on listByTerm)"
+        note: "Term-side filter excludes a soft-deleted linked term via the JOIN."
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "TermServiceImpl.java:155-164"
+        note: "delete cleans data_entity_to_term + dataset_field_to_term but NOT term_to_term — orphan edges left."
+    operator_visible_failure: |
+      Orphan term_to_term edges accumulate when terms with term-to-term links are
+      deleted: the edge row survives though it points at a soft-deleted term.
+      If any future read site drops the TERM join filter (or a sibling reverse
+      read like getLinkedTermsByTargetTermId is used directly), the deleted term
+      reappears in a linked-terms list. This is a latent correctness/consistency
+      defect, not an active one on THIS read path — but it is the exact class
+      the term_to_term schema-drift caveat (batch-N) describes.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When term A is linked to term B from term A's Overview panel, term B immediately appears on term A's Linked-Terms tab (the Overview manage-panel and the browse-tab show the same data)."
+  derivation: "cross-feature (F-151 dual-surface): Overview TermLinkedTerms panel has Add/Delete; the tab browses the same term_to_term relation."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Both surfaces read the same term_to_term relation (Overview panel via
+      TermLinkedTerms; tab via getTermLinkedTerms → listByTerm), so the DATA is
+      consistent. But the user EXPERIENCE diverges: the Overview panel carries
+      Add/Delete affordances (Overview.tsx:65-72; PLT-058 Defect 3) while the
+      Linked-Terms TAB has search but NO Add/Delete (LinkedTermsList.tsx renders
+      only Input + table + empty/error states — confirmed in source). And the tab
+      uses tanstack-query while the Overview's sibling LinkedEntitiesList uses
+      redux (state-pattern drift, H-009), so a mutation on one surface does not
+      necessarily invalidate the other's cache. So: same data, asymmetric
+      affordances, and cross-cache invalidation is not guaranteed — an add on
+      Overview may not refresh an already-open tab.
+    evidence:
+      - sidecar: "(feature-flow facet)"
+        section: observed_vs_expected
+        cite: "F-152.yaml facet=term_to_term_reverse_lookup_inherits_security_gap_from_f_002 + F-151 dual-surface"
+        note: "Overview panel = manage; tab = browse-only — dual-surface asymmetry."
+      - sidecar: "(UI source read)"
+        section: render
+        cite: "LinkedTermsList.tsx:36-96"
+        note: "Tab renders Input + table + empty/error only — no Add/Delete affordance."
+    operator_visible_failure: |
+      A user who adds a linked term on the Overview panel and then switches to the
+      Linked-Terms tab may not see the new link until a manual refresh (cross-cache
+      invalidation not guaranteed across the redux/tanstack split). A user who
+      goes to the tab expecting to manage links (the natural place to look for
+      bulk operations) finds only browse + search. Dual-surface confusion +
+      potential stale-view.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "The Linked-Terms tab and its two sibling reverse-lookup tabs (Linked Entities, Linked Columns) behave consistently — same loading, error, empty, and pagination behaviour — because they are the same kind of surface in the same parent component."
+  derivation: "ui-label/consistency (senior-PO 'consistent with how the same task is done elsewhere'): three sibling tabs in TermDetailsRoutes."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The three sibling tabs use TWO different state-management patterns:
+      LinkedTermsList uses tanstack-query useInfiniteQuery (LinkedTermsList.tsx:20-33);
+      LinkedColumnsList uses tanstack-query but a single-page hook with a NOOP
+      next() (PLT-058 Defect 4); LinkedEntitiesList uses redux thunks
+      (fetchTermLinkedList + selectors). Three siblings, two paradigms, three
+      different pagination behaviours (working-UI-but-broken-backend here;
+      noop-next there; redux there). Error/empty handling also diverges
+      (hardcoded 500 here vs real error state on LinkedEntitiesList per F-152
+      facet). They are NOT consistent.
+    evidence:
+      - sidecar: "(feature-flow facet)"
+        section: observed_vs_expected
+        cite: "F-152.yaml facet=divergent_state_pattern_tanstack_query_vs_redux_in_sibling_lists"
+        note: "Scanner-confirmed (F-152d); routed to PLT-058 Defect 8 + an ADR-draft candidate."
+    operator_visible_failure: |
+      Operator-invisible in the steady state but a maintenance defect that
+      MANIFESTS as the per-tab UX divergence the user DOES see (different error
+      pages, different empty messages, different pagination reliability across
+      three tabs that look identical). The team is mid-migration redux→tanstack;
+      the drift is the cause of Defects 4/5/6/7 clustering on these tabs.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When an unprivileged authenticated user views term A's Linked-Terms tab, they see the same term-to-term graph as any other user (the reverse-lookup is read-collaborative)."
+  derivation: "pillar/security: read endpoints inherit the read-collaborative posture (system-mission.md:267); TermController read endpoints have no per-namespace/per-owner scoping."
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      getTermLinkedTerms is a read endpoint with no SecurityRule beyond the
+      catch-all pathMatchers("/**").authenticated() (TermController invariant:
+      read endpoints inherit the read-collaborative posture; no per-owner/
+      per-namespace scoping at the controller, and TermServiceImpl/repository
+      apply no owner filter on reads). Every authenticated user sees every
+      term-to-term link regardless of namespace or ownership — consistent with
+      the platform-wide read-collaborative posture (system-mission.md:267,
+      P-09 maintainer note). This MATCHES the hypothesis. (Caveat: under
+      auth.type=DISABLED the surface is anonymously reachable — dev-only per docs.)
+    evidence:
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: security
+        cite: "TermController.java:121 + owner_scoping: BYPASSES (read-collaborative)"
+        note: "getTermLinkedTerms read returns the graph to every authenticated user; no owner/namespace filter."
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: invariants
+        cite: "AuthorizationCustomizer.java:29-30 (catch-all .authenticated())"
+        note: "Read endpoints fall through to authenticated() — confirmed read-collaborative."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a user links or unlinks two terms (shaping what this reverse-lookup tab shows), the action is recorded in the Activity Feed so an auditor can later see who changed the term graph."
+  derivation: "cross-pillar (P-07 Activity Feed): term-link mutations on the sibling relations emit @ActivityLog(TERM_ASSIGNMENT_UPDATED); an auditor expects symmetric coverage."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The term-to-term link/unlink family (linkTermWithTerm /
+      removeTermToLinkedTermRelation, TermServiceImpl.java:288-301; controller
+      addLinkedTermToTerm/deleteLinkedTermFromTerm, TermController.java:237-249)
+      is NOT annotated with @ActivityLog — UNLIKE every sibling linkage operation
+      (linkTermWithDataEntity, removeTermFromDataEntity, linkTermWithDatasetField,
+      removeTermFromDatasetField all carry @ActivityLog(TERM_ASSIGNMENT_UPDATED)).
+      So the very mutations that SHAPE the reverse-lookup graph this tab displays
+      are invisible to the Activity Feed. (Compounded by H-002's unguarded
+      term-to-term write endpoints — any authenticated user can shape this graph
+      with neither RBAC nor an audit trail.)
+    evidence:
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: requires-runtime
+        cite: "TermServiceImpl.java:288-301 (no @ActivityLog) vs 169,183,211,225 (siblings have it)"
+        note: "term-to-term link/unlink is invisible to the Activity Feed."
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: bugs_limitations_corner_cases
+        cite: "TermController.java:237-249"
+        note: "the write endpoints feeding this tab's data are also un-RBAC'd (DOC-033)."
+    operator_visible_failure: |
+      An auditor investigating "who linked term A to term B" (or who removed a
+      link) has NO audit trail — the Activity Feed records term-to-DATA-ENTITY
+      assignment changes but not term-to-TERM changes. Combined with the unguarded
+      write surface, the term-to-term graph can be reshaped by any authenticated
+      user silently and untraceably. For a governance feature (glossary
+      stewardship), missing audit on the term graph is a real gap.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "GET /api/terms/{term_id}/term (the Linked-Terms tab's reverse-lookup read) returns 500/405 at runtime and the tab hangs — the path stem is overloaded with the link/unlink write verbs."
+  dedup_status: net_new
+  distinct_from: PLT-058
+  note: "PLT-058 covers the 4 UI-layer facets of this tab (status:500 synth, empty-state, debounce, state-pattern) but does NOT cover the endpoint itself returning 500/405. This is a backend/routing failure (the GET list verb sharing the /term link path) surfaced empirically by the maintainer's IT-035 survey — a distinct failure mode from PLT-058's UI defects."
+  recommended_log_as: PLT-NNN (new) OR a Defect-9 amendment to PLT-058 + an upstream-issue
+  proposed_fix_anchor: "TermController.getTermLinkedTerms (TermController.java:121) — verify/repair the GET routing for /api/terms/{term_id}/term vs the POST/DELETE on the same stem; the GET list verb shares the /term path stem with the POST/DELETE link verbs (TermController.java:121, 237, 246) — the operation->verb mapping needs to disambiguate the list GET from the link writes."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Linked-Terms infinite scroll never loads page 2 because the backend hardcodes hasNext=false / total=items.size() in TermServiceImpl.listByTerm — terms #51+ are silently unreachable (LSN-024-class silent truncation)."
+  dedup_status: net_new
+  distinct_from: PLT-058
+  note: "PLT-058 Defect 4 is the SIBLING LinkedColumnsList (UI next() noop). PLT-058 explicitly cites LinkedTermsList.tsx:24-31 as the WORKING reference pattern — but a backend trace proves LinkedTermsList is ALSO broken, at the backend paginator (TermServiceImpl.java:283-285 + ReactiveTermRepositoryImpl.java:480-499), not the UI. Distinct locus, and it invalidates PLT-058's 'working comparison' premise."
+  recommended_log_as: PLT-NNN (new backend pagination bug) cross-linked to PLT-058
+  proposed_fix_anchor: "ReactiveTermRepositoryImpl.listByTerm (lines 480-499) — apply pageifyResult with a real countByTerm so total/hasNext are honest; remove the TermServiceImpl.java:283-285 hardcoded paginator."
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "Linked-Terms tab synthesises status:500 for ALL errors (403/404 render as Internal Server Error) and puts the search query in the url field; FIXME on line 87."
+  dedup_status: already_tracked
+  tracked_as: PLT-058
+  note: "PLT-058 Defect 5 (filed from finding F-152a, same scanner run). Convergent validation — reflection re-derived it top-down via the response-shape seed. Recorded, not re-filed."
+- hypothesis_id: H-004
+  severity: LOW
+  one_line: "Linked-Terms search fires only on icon click — no Enter handler, no debounced auto-fire; inconsistent with sibling tabs and TermSearch."
+  dedup_status: already_tracked
+  tracked_as: PLT-058
+  note: "PLT-058 Defect 7 (finding F-152c). Convergent validation; recorded, not re-filed."
+- hypothesis_id: H-005
+  severity: LOW
+  one_line: "Linked-Terms empty state reads 'No linked entities' (copy-paste from the sibling) on the linked-TERMS tab."
+  dedup_status: already_tracked
+  tracked_as: PLT-058
+  note: "PLT-058 Defect 6 (finding F-152b). Convergent validation; recorded, not re-filed."
+
+### caveat_candidates
+- hypothesis_id: H-007
+  one_line: "Deleting a term with term-to-term links leaves orphan term_to_term edges (delete cleans the entity/field link tables but not term_to_term; the term_to_term.deleted_at column exists but is never filtered)."
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-glossary/business-glossary OR doc-gap-NNN — cross-links the existing term_to_term schema-drift caveat (batch-N / DOC-230)
+- hypothesis_id: H-008
+  one_line: "Overview panel (manage: Add/Delete) and Linked-Terms tab (browse + search, no manage) show the same data via different state stacks (redux vs tanstack) — affordance asymmetry + cross-cache-invalidation not guaranteed."
+  dedup_status: already_tracked
+  tracked_as: PLT-058
+  note: "PLT-058 Defect 3 (dual-surface) + Defect 8 (state-pattern). Doc-side already at DOC-233. Convergent; recorded."
+- hypothesis_id: H-009
+  one_line: "Three sibling reverse-lookup tabs use two state-management paradigms (redux vs tanstack) with divergent error/empty/pagination behaviour — maintenance defect + the root of the per-tab UX divergence."
+  dedup_status: already_tracked
+  tracked_as: PLT-058
+  note: "PLT-058 Defect 8 + the ui-state-management ADR-draft candidate. Convergent; recorded."
+- hypothesis_id: H-011
+  one_line: "Term-to-term link/unlink is NOT recorded in the Activity Feed (no @ActivityLog), unlike every sibling term-linkage op — the mutations that shape this reverse-lookup graph are unauditable, and the write endpoints are also un-RBAC'd."
+  dedup_status: net_new
+  recommended_log_as: caveat/doc-gap-NNN cross-linked to DOC-033 (term-to-term API) + DOC-230 (term-link side-channel); the audit-silence intersects the P-07 'Audit-log Presence Asymmetry' canonicalisation candidate
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every unverified promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# F-152 sits at 0/11 verified promises: NO test (unit, @WebFluxTest, or IT) covers ANY behaviour of this
+# tab anywhere (Java test tree, UI tests, odd-team integration-tests all return zero for linked-terms).
+# The maintainer's IT-035 survey could not even build an IT because the endpoint 500s (H-002) — so the
+# functional happy-path guard is blocked on the bug fix.
+- use_case_id: F-152-UC-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "GET /api/terms/{term_id}/term returns 200 with the paginated linked-term list and the tab renders it."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-002) — REGRESSION GUARD for the H-002 fix; blocked until the endpoint 500/405 is resolved"
+  proposed_test: "IT (Playwright + raw seed): seed term A linked to term B, goto /terms/{A}/linked-terms, assert B's name+namespace render — this is the IT the maintainer attempted and could not build because of the 500."
+- use_case_id: F-152-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A term with linked terms renders a paginated Name/Namespace table on the Linked-Terms tab."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-001) — same IT as UC-002, gated on the endpoint fix"
+  proposed_test: "Folded into F-152-UC-002's IT once the endpoint returns 200."
+- use_case_id: F-152-UC-006
+  hypothesis_id: H-006
+  kind: happy-path
+  promise: "A term with 51+ linked terms loads page 2 via infinite scroll (no silent truncation at 50)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-006) — REGRESSION GUARD for the backend paginator fix"
+  proposed_test: "@JooqTest/IT: insert 51 term_to_term rows for term A; assert listByTerm page 2 returns rows 51+ AND pageInfo.hasNext is true on page 1 (currently hardcoded false at TermServiceImpl.java:283-285)."
+- use_case_id: F-152-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "A non-500 backend error (403/404) renders an error page reflecting the actual status, not a hardcoded 500."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-003) — guards the PLT-058 Defect-5 fix"
+  proposed_test: "RTL/unit on LinkedTermsList: mock useGetTermLinkedTerms to error with status 403; assert AppErrorPage receives status=403 (not the literal 500)."
+- use_case_id: F-152-UC-004
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "Typing in the Linked-Terms search filters the list (type-to-search or Enter), consistent with sibling tabs."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-004) — guards the PLT-058 Defect-7 fix"
+  proposed_test: "RTL/unit: type into the search Input, press Enter; assert refetch fires (currently only handleSearchClick triggers it)."
+- use_case_id: F-152-UC-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "A term with zero linked terms shows the empty state 'No linked terms'."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-005) — guards the PLT-058 Defect-6 one-line fix"
+  proposed_test: "RTL/unit OR IT: a term with no linked terms renders EmptyContentPlaceholder text 'No linked terms' (pins the copy-paste fix)."
+- use_case_id: F-152-UC-007
+  hypothesis_id: H-007
+  kind: teardown
+  promise: "Deleting a linked term removes it from the reverse-lookup tab and does not leave orphan term_to_term edges."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-007)"
+  proposed_test: "@JooqTest: link A-B, soft-delete B, assert listByTerm(A) excludes B AND assert the orphan term_to_term edge cleanup behaviour (pins the current absence per TermServiceImpl.java:155-164)."
+- use_case_id: F-152-UC-010
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "Any authenticated user sees the same term-to-term graph on the Linked-Terms tab (read-collaborative)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-010) — CONFIRMED-BUT-UNTESTED promise (the LSN-030 fix: a hand-proven behaviour with no guard)"
+  proposed_test: "IT under LDAP: user without TERM perms opens another owner's term linked-terms tab; assert the graph is visible (pins the read-collaborative posture)."
+- use_case_id: F-152-UC-011
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: "Linking/unlinking terms is recorded in the Activity Feed for audit."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-011) — guards adding @ActivityLog to the term-to-term family"
+  proposed_test: "Mockito/IT: linkTermWithTerm fires an activity event of a TERM_TO_TERM type (currently none exists — pins the gap)."
+- use_case_id: F-152-UC-008
+  hypothesis_id: H-008
+  kind: edit-reconcile
+  promise: "Adding a linked term on the Overview panel refreshes the open Linked-Terms tab (cross-surface cache consistency)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-008)"
+  proposed_test: "IT: add a linked term on Overview, switch to the Linked-Terms tab, assert it appears without manual refresh (pins the redux/tanstack cross-cache invalidation)."
+- use_case_id: F-152-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "The three sibling reverse-lookup tabs behave consistently (loading/error/empty/pagination)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-152-UC-009) — paired with the ui-state-management ADR (PLT-058 Defect 8)"
+  proposed_test: "Cross-component RTL: assert all three Linked* tabs share an error/empty/pagination contract (currently divergent)."
+
+### probes_emitted
+# PARALLEL-SAFE MODE: recorded here only; no P-NNN file created.
+- probe_id: PENDING-F-152-1
+  hypothesis_id: H-001
+  probe_path: "(deferred — record only)"
+  hypothesis_text: "When a user opens /terms/{termId}/linked-terms for a term that HAS linked terms (correctly seeded term_to_term row), the tab renders a paginated table listing each linked term's Name and Namespace — REQUIRES the H-002 endpoint 500/405 to be resolved first; local Playwright + raw-seed probe per the existing odd-team integration-tests harness (run-suite.sh)."
+  local_execution_blocked: false
+- probe_id: PENDING-F-152-2
+  hypothesis_id: H-002
+  probe_path: "(deferred — record only)"
+  hypothesis_text: "GET /api/terms/{term_id}/term returns 200 with the paginated linked-term list. Probe: curl the running platform GET /api/terms/{seeded_term_id}/term and capture the actual status (maintainer's IT-035 survey observed 500/405); local docker-compose stack, no remote dependency."
+  local_execution_blocked: false
+
+### validation_gaps
+# Rule 9 (senior-PO from the screen) — FIRST output: the UI hop has no enriched sidecar.
+- sidecar: "odd-platform ts react-component:LinkedTermsList (UNRESOLVED — no sidecar exists)"
+  field_insufficient: "entire sidecar — the feature flow's UI hop (chain hop 1) is sidecar: unresolved. The feature-flow's observed_vs_expected facets carry rich UI evidence (and I performed a Rule-8 single-source read of LinkedTermsList.tsx:1-100 to confirm citations), so this reflection is NOT API-only — but per Rule 9 the absence is recorded: there is no file-analyser sidecar capturing LinkedTermsList's render/state/interaction semantics, so the per-component mental model + Stress-Protocol interrogation behind hops H-001/H-003/H-004/H-005/H-006/H-008 rests on the feature-flow facets + a one-off source read, not an enriched node."
+  proposed_refresh: "Run file-analyser on LinkedTermsList.tsx (and its sibling LinkedColumnsList/LinkedEntitiesList) to enrich the UI hop: capture the tanstack useInfiniteQuery state machine, the hasNextPage->backend-hasNext binding (H-006), the AppErrorPage gating on !isLinkedListFetched (H-003), and the no-manage-affordance render (H-008). This would make the LSN-023 UI-axis coverage real for the Term Detail reverse-lookup cluster."
+- sidecar: odd-platform__java__TermController__controller-class__TermController.md
+  field_insufficient: "operations[getTermLinkedTerms] — the sidecar documents getTermLinkedTerms as a working read delegating to listByTerm with broken pagination, but does NOT capture that the GET verb at runtime returns 500/405 (H-002). The OpenAPI operation->path mapping for GET /api/terms/{term_id}/term vs the POST/DELETE link verbs on the same stem is the missing fact."
+  proposed_refresh: "Next TermController refresh: verify the actual OpenAPI operationId + verb mapping for getTermLinkedTerms and record whether the GET list verb collides with addLinkedTermToTerm/deleteLinkedTermFromTerm on /api/terms/{term_id}/term (the maintainer's IT-035 hypothesis that '/term is the link/unlink mutation, not the list')."
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/glossary"
+  doc_says: "Documents POST /api/terms/{term_id}/term (link) + DELETE; does not document a GET reverse-lookup list endpoint or any pagination ceiling."
+  code_does: "GET /api/terms/{term_id}/term is the reverse-lookup list (getTermLinkedTerms), but its pagination is hardcoded broken (hasNext=false) so it silently caps at 50 — and at runtime it 500/405s (H-002)."
+  recommended_log_as: doc-gap-NNN (cross-link DOC-033 term-to-term API + DOC-154 api-reference/glossary content-home)
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: "Describes term-to-term linking as a Business Glossary capability; silent on whether it is audited or RBAC-gated."
+  code_does: "Term-to-term link/unlink is neither RBAC-gated (DOC-033 / TermController.java:237-249) nor Activity-Feed-audited (no @ActivityLog, TermServiceImpl.java:288-301)."
+  recommended_log_as: doc-gap-NNN (cross-link DOC-033 + DOC-230 + the P-07 audit-asymmetry canonicalisation candidate)
+
+## maintainer_notes
+
+<!-- preserved across refreshes — only block the maintainer hand-edits -->

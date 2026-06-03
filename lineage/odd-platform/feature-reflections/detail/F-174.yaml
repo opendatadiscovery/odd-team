@@ -1,0 +1,665 @@
+---
+feature_id: F-174
+pillar_anchored_id: P-08:F-019
+pillar: P-08 — Management & Administration
+feature_name: |-
+  Owner-Association History tab — the Management → Associations "History" tab consumes
+  GET /api/owner_association_request/activity via useGetOwnerAssociationActivityList and
+  renders a paginated read-only list of OwnerAssociationRequestActivity rows (username /
+  ownerName / role / provider / resolvedBy / status / resolvedAt). The only operator-visible
+  audit surface inside the Associations UI subtree.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+  - odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 2
+  partial: 3
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-007
+    severity: HIGH
+    one_line: "GET /api/owner_association_request/activity (the full forensic audit log) is reachable by ANY authenticated user, while the LESS-sensitive pending-list GET requires OWNER_ASSOCIATION_MANAGE — the more sensitive surface is the LESS protected one."
+related_feature_flows: [F-074, F-075, F-171, F-172, F-173, F-019, F-011, F-006]
+related_concepts:
+  - audit-log-presence-asymmetry-2-tier-audit-story
+  - read-collaborative-cross-owner-enumeration-posture
+  - provider-null-cross-mode-bleed
+  - permission-bypass-via-owner-auto-create-side-door-write-path
+related_drift_classes:
+  - read_collaborative_posture_history_tab_reachable_to_any_authed_user_per_f074
+  - request_status_component_silent_fallback_to_pending_for_unknown_status_values
+  - audit_trail_no_search_filter_only_status_resolved_or_pending
+  - resolved_by_column_only_owner_name_or_identity_username_no_disambiguation
+new_drift_classes_proposed:
+  - history_tab_DOES_audit_direct_bind_and_unbind_seeded_primary_drift_OVERTURNED
+  - unbind_audit_declined_row_only_when_a_matching_APPROVED_request_row_exists_orphan_mapping_unbind_is_silent
+---
+
+# Owner-Association History tab — product-owner reflection
+
+## product_owner_narrative
+
+The **Owner-Association History tab** is the audit surface of ODD's user-to-owner binding
+workflow. An operator who needs to answer "who associated Alice with the `data-platform`
+owner, and who approved it, and when?" opens Management → Associations → History and reads a
+reverse-chronological, read-only list of every *resolved* association event — every request
+that was approved or declined, every admin direct-bind, every unbind. It is the human-readable
+projection of the `owner_association_request_activity` table — a dedicated, typed audit table
+that exists *only* for this workflow (five event types: REQUEST_CREATED, REQUEST_APPROVED,
+REQUEST_DECLINED, REQUEST_MANUALLY_APPROVED, REQUEST_MANUALLY_DECLINED), distinct from the
+platform's 27-value global ActivityEventType enum (per
+`OwnerAssociationRequestController` sidecar implicit_adrs[0]; OwnerAssociationRequestActivityType.java:3-8).
+
+A user interacts with it by navigating to the History sub-tab (route `/management/associations/history`)
+and optionally typing a free-text term into the page's single search box; the tab issues
+`GET /api/owner_association_request/activity?query=<text>&status=RESOLVED&size=30` and renders
+seven columns per row: username, ownerName, role, provider, resolvedBy, status, resolvedAt
+(per F-174 chain hop 2-3 evidence; ResolvedAssociationRequest.tsx:30-69). There are no action
+buttons — this surface is purely a forensic read. The `RESOLVED` status filter resolves at the
+repository layer to `OWNER_ASSOCIATION_REQUEST_ACTIVITY.STATUS.ne(PENDING)` — i.e. "show every
+non-pending entry" — which means it surfaces APPROVED *and* DECLINED entries together, including
+the manual-approval and manual-decline entries (ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:128-138,
+verified this session).
+
+The working part operators most need to trust is *completeness*: does the History tab show
+**every** way a user-owner binding can be created or destroyed? The platform offers four such
+write-paths — (A) user self-request then admin-approve, (B) auto-approve under DIRECT_OWNER_SYNC,
+(C) admin direct-bind via "+ Create association", and (D) admin unbind via the Active-tab Remove
+button. F-174 was seeded with the suspicion that paths C and D *bypass* this audit table (because
+they call a different hook, `useCreateUserOwnerMapping` / `useRemoveUserOwnerMapping`, against
+`POST/DELETE /api/owners/mapping`). Tracing the actual service implementation overturns that
+suspicion: `createUserOwnerMapping` routes through `createManualAssociationRequest`
+(OwnerAssociationRequestServiceImpl.java:109-114, 131-148), which DOES create an
+`owner_association_request` row stamped APPROVED and DOES emit a REQUEST_MANUALLY_APPROVED
+activity entry (line 209-210, verified this session). The unbind path likewise emits
+REQUEST_MANUALLY_DECLINED — but only for request rows currently in STATUS=APPROVED
+(ReactiveOwnerAssociationRequestRepositoryImpl.java:164-170). The completeness story is therefore
+mostly *correct* with one precise gap, captured below.
+
+This feature integrates tightly with the Security & Access-Control pillar (P-09): it is one of
+the seven Management read endpoints enumerated by F-074's read-collaborative posture, and it is
+the **positive half** of the platform's bifurcated audit story (per concept
+`audit-log-presence-asymmetry-2-tier-audit-story`; PLT-062) — the OwnerAssociationRequest
+workflow has forensic recording, while the parallel RBAC mutation paths (role/policy/owner-rename)
+have none. The `resolvedBy` column joins to `USER_OWNER_MAPPING` for display-name resolution,
+inheriting the provider-null cross-mode bleed class documented for the global activity feed
+(PLT-065 / ReactiveUserOwnerMappingRepositoryImpl sidecar doc_drift_findings).
+
+In a demo, the product owner would highlight: the History tab has **no date-range filter and no
+per-actor filter** — an operator investigating an audit question across thousands of resolved
+entries must scroll or remember the exact username/ownerName to type into the single search box;
+and the live documentation (WebFetched 2026-06-03, status 200) now describes the History tab and
+its four write-path coverage *accurately* — a notable doc-vs-code agreement — except it makes one
+blanket claim ("a removal appears as a Declined row") that holds only when a matching APPROVED
+request row exists.
+
+## hypotheses
+
+- id: H-000-UI-GAP
+  hypothesis: "The operator can understand and conveniently drive the History audit investigation from what is on screen — scan, locate a specific actor/owner, narrow to a time window, and read who-did-what — without leaving the tab."
+  derivation: "Rule 9 — this is a user-facing feature whose entire value is the on-screen audit experience; the feature flow's UI hops (1-4) are ALL sidecar:unresolved."
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Every UI hop in the F-174 chain (route /management/associations/history, OwnerAssociationsResolved,
+      ResolvedAssociationRequest, RequestStatus) is sidecar:unresolved — no enriched UI component sidecar
+      exists in the chain. This reflection can validate the API + audit-backend behaviour (what the endpoint
+      returns and what the audit table records) but CANNOT judge what the operator actually experiences on
+      screen: whether the InfiniteScroll paginates correctly, whether the single search box is discoverable,
+      whether the seven columns are legible, whether the absence of date/actor filters is a friction the
+      operator feels. Per Rule 9 this reflection is API-and-audit-backend-only; the on-screen audit-investigation
+      experience is not in the chain.
+    evidence:
+      - sidecar: F-174 feature-flow chain
+        section: "chain hops 1-4"
+        cite: "lineage/odd-platform/feature-flows/detail/F-174.yaml:33-68 (all four UI hops sidecar: unresolved)"
+        note: "No enriched UI component sidecar; the .tsx evidence in the chain is raw line-citation, not an enriched sidecar with UX assertions."
+    operator_visible_failure: |
+      Not a failure verdict — a scoping declaration. The reflection cannot confirm the on-screen audit
+      experience (legibility, filter discoverability, pagination correctness, the felt friction of no
+      date/actor filter) because no UI sidecar is in the chain. A future ui-review slice on the
+      OwnerAssociations subtree (the .tsx files exist and are partially line-cited) would close this gap.
+    severity: MEDIUM
+    confidence: HIGH
+    probe_id: PENDING-F-174-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-174-1 (ui-review) — defer the on-screen UX verdict to an enriched UI slice + an IT-NNN that drives the History tab"
+
+- id: H-001
+  hypothesis: "When an admin uses '+ Create association' to directly bind a user to an owner (Branch C, POST /api/owners/mapping), that bind appears in the History tab as an Approved row attributed to the admin who performed it."
+  derivation: "F-174's SEEDED PRIMARY DRIFT suspected the opposite (direct-bind bypasses the audit table). The live doc (2026-06-03) claims the bind DOES appear. The truth is whichever the code does — traced through the service."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The direct-bind path is NOT a separate audit-silent controller. createUserOwnerMapping
+      (OwnerAssociationRequestServiceImpl.java:109-114) calls createManualAssociationRequest (line 131-148),
+      which builds an OwnerAssociationRequestPojo, stamps it status=APPROVED (line 140), sets statusUpdatedBy
+      to the current admin (line 141), and calls createOwnerAssociationRequestWithActivity(..., isManual=true,
+      ...) (line 146). That writes BOTH an owner_association_request row AND, via createActivity (line 205-221),
+      a REQUEST_MANUALLY_APPROVED activity entry (line 209-210, because isManual=true and status=APPROVED).
+      The History tab's RESOLVED filter is STATUS.ne(PENDING) (activity repo line 137), so the APPROVED
+      manual entry IS surfaced. The seeded primary drift
+      `history_tab_only_audits_owner_association_request_flow_not_direct_user_owner_mapping_writes` is
+      OVERTURNED: direct-bind events DO appear in History.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: OwnerAssociationRequestServiceImpl
+        cite: "OwnerAssociationRequestServiceImpl.java:109-114 (createUserOwnerMapping → createManualAssociationRequest), :131-148 (status=APPROVED + createOwnerAssociationRequestWithActivity isManual=true), :205-221 (createActivity → REQUEST_MANUALLY_APPROVED)"
+        note: "isManual=true + status=APPROVED → REQUEST_MANUALLY_APPROVED activity row written. source_read_for_validation: true — the controller sidecar described this in implicit_adrs[1] but the exact line-level emission was confirmed by Read this session."
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestActivityRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:128-138 (RESOLVED → STATUS.ne(PENDING) surfaces APPROVED entries)"
+        note: "Confirms the manual-approved (APPROVED) entry passes the RESOLVED filter the History tab applies."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an admin unbinds a user via the Active-tab Remove button (Branch D, DELETE /api/owners/mapping/{owner_id}), that removal appears in the History tab as a Declined row attributed to the admin."
+  derivation: "Live doc (2026-06-03) claims 'a removal appears as a Declined row, attributed to the administrator who performed them'. F-173's terminal_side_effect suspected the unbind may be audit-silent. Traced through the service + repository."
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      deleteActiveUserOwnerMapping (OwnerAssociationRequestServiceImpl.java:118-122) calls
+      cancelAssociationByOwnerId(ownerId) (line 119) THEN userOwnerMappingService.deleteActiveUserRelation
+      (line 120). cancelAssociationByOwnerId (private, line 157-172) flips matching owner_association_request
+      rows to DECLINED and emits REQUEST_MANUALLY_DECLINED per row (line 168-169). BUT the repository query
+      cancelAssociationByOwnerId (ReactiveOwnerAssociationRequestRepositoryImpl.java:164-170) updates ONLY
+      rows where STATUS = APPROVED (line 170). So: for a binding that has a corresponding APPROVED
+      owner_association_request row (the normal case for Branch A approved / Branch B auto-approved / Branch C
+      direct-bind — all leave an APPROVED row), the unbind DOES write a REQUEST_MANUALLY_DECLINED activity
+      entry → appears in History as Declined. The doc claim holds for these cases. BUT the user_owner_mapping
+      soft-delete (deleteActiveRelationByOwner) ALWAYS runs (per ReactiveUserOwnerMappingRepositoryImpl sidecar
+      invariant) regardless of whether any APPROVED request row matched. If a user_owner_mapping row exists
+      with NO matching APPROVED owner_association_request row (e.g. the request was already cancelled by a
+      later collision-decline, or the mapping was created by some path that left no APPROVED row), the unbind
+      removes the binding but cancelAssociationByOwnerId matches zero rows → NO activity entry → the removal is
+      AUDIT-SILENT and does NOT appear in History.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: OwnerAssociationRequestServiceImpl
+        cite: "OwnerAssociationRequestServiceImpl.java:118-122 (deleteActiveUserOwnerMapping), :157-172 (cancelAssociationByOwnerId emits REQUEST_MANUALLY_DECLINED at :168-169)"
+        note: "Activity emission is downstream of the repository query matching at least one APPROVED row."
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestRepositoryImpl.java:164-170 (UPDATE ... WHERE OWNER_ID=id AND STATUS=APPROVED)"
+        note: "The .and(STATUS.eq(APPROVED)) clause at line 170 is the load-bearing scope: only APPROVED rows are declined-and-audited; if none match, the unbind is audit-silent."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
+        section: downstream_side_effects
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:65-74 (deleteActiveRelationByOwner UPDATE deleted_at=now, NO audit log)"
+        note: "The binding soft-delete always runs; it carries no audit emission of its own — the History entry depends entirely on cancelAssociationByOwnerId matching an APPROVED row."
+    operator_visible_failure: |
+      (1) Common case — CORRECT: removing a binding that traces to an approved/direct-bound request leaves a
+      Declined History row; the doc claim holds. (2) Edge case — SILENT: removing a binding whose
+      owner_association_request row is NOT in APPROVED status (already declined by a prior collision, or a
+      mapping with no live APPROVED request) soft-deletes the user_owner_mapping with NO History entry. An
+      operator auditing "when did Alice lose access to owner-X?" via History will MISS this removal and may
+      conclude the binding is still active. (3) The doc's blanket "a removal appears as a Declined row" is
+      true-for-the-common-case but over-broad — it does not warn that the History-as-Declined behaviour is
+      conditional on a live APPROVED request row.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an auto-approve binding occurs under DIRECT_OWNER_SYNC (Branch B), it appears in the History tab as an Approved row, even though no admin ever reviewed the request."
+  derivation: "Live doc (2026-06-03): 'it lands directly on History as APPROVED with no human reviewer.' The DIRECT_OWNER_SYNC branch is the auto-approve path; traced through createActivity."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The DIRECT_OWNER_SYNC auto-approve branch (OwnerAssociationRequestServiceImpl.java:60-67 per the
+      controller sidecar + F-075 chain) reaches the same mapToApprovedRequest + createActivity machinery as
+      the standard approve path. createActivity (line 205-221) with status=APPROVED and isManual=false writes
+      REQUEST_APPROVED (line 209-210). That entry has STATUS=APPROVED → passes the History RESOLVED filter
+      (STATUS.ne(PENDING)). The auto-approved binding appears in History as Approved exactly as the doc states.
+      NOTE: the binding NEVER appears on the New-requests (PENDING) sub-tab because it was never PENDING — also
+      consistent with the doc.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: implicit_adrs
+        cite: "OwnerAssociationRequestServiceImpl.java:60-67 (DIRECT_OWNER_SYNC → auto-approve) + controller sidecar implicit_adrs[2]"
+        note: "Auto-approve branch reaches the APPROVED createActivity path; isManual=false → REQUEST_APPROVED."
+      - sidecar: source_read_for_validation
+        section: OwnerAssociationRequestServiceImpl
+        cite: "OwnerAssociationRequestServiceImpl.java:205-221 (createActivity APPROVED → REQUEST_APPROVED) + ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:137 (RESOLVED = STATUS.ne(PENDING))"
+        note: "Confirms the auto-approved entry is surfaced by the History tab's RESOLVED filter."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When the History tab is loaded (status=RESOLVED), the response contains both APPROVED and DECLINED entries (every non-pending event), in reverse-chronological order by resolved-at."
+  derivation: "OwnerAssociationsResolved.tsx:30-35 passes status: RESOLVED; the audit table has APPROVED/DECLINED/PENDING typed statuses; order is a user expectation for an audit log."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The RESOLVED status param resolves at ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:128-138
+      to the default switch branch: STATUS.ne(PENDING) (line 137) — i.e. every entry that is APPROVED or
+      DECLINED (or any future non-PENDING value). The query orders by STATUS_UPDATED_AT DESC (the sibling
+      request repository confirms this ordering at ReactiveOwnerAssociationRequestRepositoryImpl.java:104, 131;
+      the activity repository builds the same reverse-chronological page). So the History tab shows all resolved
+      events newest-first — matching the doc's "resolved requests — both APPROVED and DECLINED — in reverse
+      chronological order."
+    evidence:
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestActivityRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:128-138 (RESOLVED → STATUS.ne(PENDING))"
+        note: "RESOLVED is the default switch arm = not-pending = APPROVED ∪ DECLINED."
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestRepositoryImpl.java:104, 131 (OrderByField STATUS_UPDATED_AT DESC)"
+        note: "Reverse-chronological ordering by resolved-at, consistent across the request + activity repositories."
+    severity: null
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an operator types a name into the History search box, the response is filtered to activity rows whose requester username OR owner name contains that text (case-insensitive)."
+  derivation: "OwnerAssociationsHeader free-text search input passes `query`; the user expects the box to match what they can see (username + owner name columns)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The query parameter is applied at ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:124-127
+      (via getConditions): when query is non-empty it adds
+      OWNER_ASSOCIATION_REQUEST.USERNAME.containsIgnoreCase(query) .or(OWNER.NAME.containsIgnoreCase(query)).
+      So the search matches the requester username column OR the owner name column, case-insensitively — exactly
+      the two name-bearing columns the operator sees. It does NOT match resolvedBy, role, or provider — typing
+      an approver's name into the box does not find rows that person resolved (see H-008 for the resolvedBy gap).
+    evidence:
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestActivityRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:124-127 (USERNAME.containsIgnoreCase OR OWNER.NAME.containsIgnoreCase)"
+        note: "Free-text search scoped to requester-username + owner-name only; resolvedBy/role/provider are NOT searchable."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When an operator needs to find every association event within a date window (e.g. 'all bindings approved last Tuesday'), the History tab lets them filter by date range and/or by the acting user."
+  derivation: "Pillar P-08 audit-trail capability + every typical audit surface offers at-minimum a date-range filter; F-174 drift facet audit_trail_no_search_filter_only_status_resolved_or_pending."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The endpoint accepts only `query` (free-text on username/owner-name), `status` (PENDING/APPROVED/DECLINED/RESOLVED),
+      `page`, and `size` (per the activity repository getConditions at line 121-141 and the controller method
+      signature). There is NO begin-date/end-date parameter, NO per-actor (resolvedBy) parameter, NO per-owner-id
+      or per-username structured filter. An operator investigating "what association changes happened in this
+      window" cannot express the question; they must scroll the full reverse-chronological list (page size 30 per
+      OwnerAssociations.tsx:23) and visually scan the resolvedAt column.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestActivityRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:121-141 (getConditions handles ONLY query + status; no date/actor predicate)"
+        note: "No structured filter beyond free-text-name + status; date-range and per-actor filtering are absent."
+      - sidecar: WebFetch
+        section: user-owner-association doc
+        cite: "https://docs.opendatadiscovery.org/.../user-owner-association (2026-06-03) — 'does not mention date-range filtering or user-based filtering options for the History view'"
+        note: "Live doc confirms the absence — this is a known limitation, not a doc-vs-code contradiction."
+    operator_visible_failure: |
+      (1) Forensic friction at scale: a deployment with thousands of resolved association events forces the
+      auditor to scroll the entire list to find events in a date window — no server-side date filter exists.
+      (2) No actor-centric audit: an operator cannot ask "show me everything admin-Bob approved" — resolvedBy is
+      neither a filter nor (per H-008) part of the free-text search. (3) Performance compounding: because there is
+      also no page-size upper bound (controller sidecar performance.known_performance_gaps[0]), an operator
+      trying to "see everything at once" can request a very large page and stall the audit-list query.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "Only an operator holding an appropriate management permission can read the full owner-association audit log; a brand-new zero-permission user cannot enumerate who-bound-whom-to-what across the whole deployment."
+  derivation: "Pillar P-09 least-privilege expectation; the audit log is forensic data; the sibling pending-list GET requires OWNER_ASSOCIATION_MANAGE — an operator would expect the audit view to be at least as protected."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      GET /api/owner_association_request/activity has NO entry in SecurityConstants.SECURITY_RULES — it falls
+      through to the catch-all .authenticated() (F-074 chain hop 3; controller sidecar security.known_security_gaps[1]).
+      Any authenticated user — holding zero RBAC permissions — can read the entire forensic audit trail: every
+      requester username, every owner name, every approver (resolvedBy), every timestamp, across all users and all
+      owners. The asymmetry is the load-bearing defect: the LESS-sensitive pending-request LIST endpoint
+      (GET /api/owner_association_request) IS gated by OWNER_ASSOCIATION_MANAGE (SecurityConstants.java:148-150),
+      while the MORE-sensitive historical activity log (a superset in sensitivity) is ungated. Under
+      auth.type=DISABLED (the shipped default) the activity log is reachable by an anonymous network caller.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: security.known_security_gaps
+        cite: "SecurityConstants.java:148-162 (no entry for /api/owner_association_request/activity) + OwnerAssociationRequestController.java:47-53"
+        note: "controller sidecar marks this exact gap HIGH: 'the activity view is strictly a superset of the list view in sensitivity' — the asymmetry is unintended."
+      - sidecar: F-074 feature-flow
+        section: observed_vs_expected
+        cite: "lineage/odd-platform/feature-flows/detail/F-074.yaml:110-118 (owner_association_activity_log_full_forensic_dataset_anonymous_reachable)"
+        note: "F-074 independently enumerates this endpoint in the read-collaborative posture."
+    operator_visible_failure: |
+      (1) Forensic data exposure: any authenticated user (and any anonymous caller under DISABLED) can read the
+      full who-approved-whose-binding-to-which-owner-and-when record — useful for reconnaissance (which owners are
+      privileged, which admins approve bindings). (2) Least-privilege silent failure: an operator who withholds
+      OWNER_ASSOCIATION_MANAGE believing it gates the audit view is wrong — the pending-list is gated but the
+      richer historical view is not. (3) Privacy: owner names and usernames frequently carry PII; the audit log
+      is a PII-bearing surface readable by every authenticated session.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "The 'Resolved by' column identifies WHO performed the resolution durably — an operator can always tell which human (or service identity) approved/declined an association, even after the corresponding Owner is renamed."
+  derivation: "Audit-trail capability requires durable actor identity; F-174 drift facet resolved_by_column_only_owner_name_or_identity_username_no_disambiguation; resolvedBy joins to USER_OWNER_MAPPING for display-name resolution."
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The resolvedBy cell renders `statusUpdatedBy?.owner?.name || statusUpdatedBy?.identity.username`
+      (ResolvedAssociationRequest.tsx:50-58 per F-174 chain). The activity row stores statusUpdatedBy as a
+      durable oidc_username string (OwnerAssociationRequestServiceImpl.java:141 sets it to user.username()); the
+      activity repository LEFT JOINs USER_OWNER_MAPPING on OWNER_ID to resolve a display owner name
+      (ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:107-108). Two gaps: (1) when an owner.name is
+      present it is shown INSTEAD of the username — so if that Owner is later renamed (F-019), the audit row
+      retroactively displays the NEW owner name, even though the durable actor key is the username; the identity
+      is hidden whenever an owner mapping exists. (2) The owner-name resolution inherits the provider-AGNOSTIC
+      USER_OWNER_MAPPING join class (PLT-065): the join keys on owner_id here (not username), so this specific
+      locus is less exposed than the global activity feed's username-only join — but the underlying durable
+      identity is still the username, which the UI suppresses when an owner name is available. The actor IS
+      durably stored; it is the DISPLAY that can drift to a renamed owner name.
+    evidence:
+      - sidecar: F-174 feature-flow
+        section: observed_vs_expected
+        cite: "lineage/odd-platform/feature-flows/detail/F-174.yaml:150-165 (resolved_by_column_only_owner_name_or_identity_username_no_disambiguation)"
+        note: "owner.name shown instead of identity.username when present; renamed Owner retroactively rewrites the displayed actor."
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestActivityRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:107-108 (LEFT JOIN statusUpdatedOwner ON USER_OWNER_MAPPING.OWNER_ID)"
+        note: "Display owner resolved by owner_id join; the stored actor key is the username (statusUpdatedBy) which is durable."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "ReactiveUserOwnerMappingRepositoryImpl sidecar doc_drift_findings (provider-agnostic display-name JOIN class; PLT-065)"
+        note: "The display-name-resolution join class; this locus joins on owner_id, distinct from the username-only global-activity join."
+    operator_visible_failure: |
+      (1) Actor display drift on Owner rename: an auditor reading 'Resolved by: data-platform-team' sees the
+      CURRENT owner name, not the name as it was when the resolution happened; if Owner-X was renamed from
+      'Alice' to 'data-platform-team', a historical approval Alice performed now reads as the team name. The
+      durable username exists in the row but is suppressed whenever an owner name resolves. (2) Disambiguation:
+      when the same human acts both as an owner-mapped identity and bare username, only the owner name surfaces
+      — the operator cannot see the underlying identity that is the real audit key.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When the audit row's status is a value the status badge does not recognise (a future enum value, or undefined), the badge renders something diagnostic rather than silently mislabelling it."
+  derivation: "RequestStatus.tsx three-way switch falls back to lowercase 'pending'; F-174 drift facet request_status_component_silent_fallback_to_pending_for_unknown_status_values."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      RequestStatus.tsx:9-15 (per F-174 chain hop 4) is a 3-way if-chain: APPROVED → 'Approved', DECLINED →
+      'Declined', otherwise → lowercase 'pending' with no i18n key. Any status value that is neither APPROVED nor
+      DECLINED — including a future enum value (SUPERSEDED, EXPIRED, REVOKED) or undefined — is silently labelled
+      'pending'. An operator viewing the History tab (which is filtered to RESOLVED = non-PENDING) would NEVER
+      legitimately see a 'pending' badge there; so any 'pending' badge on the History tab is actually a
+      MISLABELLED unknown status, with no diagnostic affordance and inconsistent casing (the other two are
+      capitalised). This is already tracked as PLT-041.
+    evidence:
+      - sidecar: F-174 feature-flow
+        section: observed_vs_expected
+        cite: "lineage/odd-platform/feature-flows/detail/F-174.yaml:107-122 (request_status_component_silent_fallback_to_pending_for_unknown_status_values) + RequestStatus.tsx:9-15"
+        note: "3-way if-chain, lowercase 'pending' fallback for any non-APPROVED/non-DECLINED value."
+    operator_visible_failure: |
+      (1) On the History tab specifically (RESOLVED-filtered), a row can only be APPROVED or DECLINED; if a future
+      enum value or a data anomaly produces something else, it renders as lowercase 'pending' — which is doubly
+      confusing because History never contains genuine pending entries. (2) Casing inconsistency ('Approved' /
+      'Declined' / 'pending'). (3) No console warning or fallback marker — a silent mislabel.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When two activity entries share the same resolved-at timestamp, paginating the History list (page size 30) returns each entry exactly once — no entry is skipped or duplicated at a page boundary."
+  derivation: "InfiniteScroll over a server-paginated list ordered by STATUS_UPDATED_AT DESC; ties on the order key are a classic skip/duplicate hazard at page boundaries."
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The activity list is ordered by STATUS_UPDATED_AT DESC (ReactiveOwnerAssociationRequestRepositoryImpl.java:104,
+      131 for the sibling request feed; the activity feed builds the same page). The ordering key is a single
+      timestamp column with no documented tiebreaker (e.g. activity.id) in the citations available. Whether two
+      entries with an identical STATUS_UPDATED_AT (plausible for a bulk cascade-decline that stamps many rows in
+      one transaction at the same generateNow() instant — see the cancel-collision fan-out at
+      OwnerAssociationRequestServiceImpl.java:192-203) are stably ordered across offset-based pages cannot be
+      determined from the citations alone — offset pagination over a non-unique sort key can skip or duplicate a
+      boundary row. This requires running the system (bulk-approve an owner with many pending colliders, then
+      paginate the History tab across the boundary) to know.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: ReactiveOwnerAssociationRequestRepositoryImpl
+        cite: "ReactiveOwnerAssociationRequestRepositoryImpl.java:104, 131 (OrderByField STATUS_UPDATED_AT DESC — single-column order key, no id tiebreaker visible)"
+        note: "Single timestamp order key; a same-instant cascade-decline (service :192-203) can produce ties; offset pagination tie behaviour is runtime-dependent."
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: performance
+        cite: "OwnerAssociationRequestServiceImpl.java:192-203 (cancel-collision fan-out writes N+1 activity rows in one transaction — same-instant timestamps)"
+        note: "The bulk-decline path is the realistic source of timestamp ties on the audit feed."
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-174-2
+    routes_to_finding: probe-needed
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_ref: null
+    test_demand: "probe PENDING-F-174-2"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "GET /api/owner_association_request/activity (full forensic audit log) is ungated — any authenticated user / anonymous under DISABLED reads the entire who-bound-whom record, while the LESS-sensitive pending-list GET requires OWNER_ASSOCIATION_MANAGE."
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: "F-074 facet owner_association_activity_log_full_forensic_dataset_anonymous_reachable (a feature-flow DRIFT FACET + DOC-GAP-082/187 doc-side caveats that DOCUMENT the read-collaborative posture) and the F-074 reflection's own H-006 (routed to a functional_test_demand, not a filed bug). Grep of issues/ found NO PLT item proposing to GATE this specific endpoint — PLT-030 is the unrelated Activity-Feed userIds→OWNER_ID mislabel; PLT-031 is the per-entity Activity tab. This is net_new for the authz FIX (the asymmetry where the activity superset is ungated while the pending-list subset is gated)."
+  recommended_log_as: "PLT-NNN (bug) — gate GET /api/owner_association_request/activity, cross-link F-074 + DOC-GAP-082/187. NOTE: the maintainer may instead RATIFY the ungated posture as an explicit read-collaborative ADR (consistent with the other six F-074 endpoints), making this a caveat not a bug. The asymmetry-with-the-gated-pending-list is the load-bearing argument that THIS one is unintended."
+  proposed_fix_anchor: "Add a SecurityConstants.SECURITY_RULES entry for GET /api/owner_association_request/activity gating on OWNER_ASSOCIATION_MANAGE (mirror the pending-list rule at SecurityConstants.java:148-150) — OR ratify-and-document the ungated posture if deliberate."
+- hypothesis_id: H-009
+  severity: LOW
+  one_line: "RequestStatus.tsx silently labels any non-APPROVED/non-DECLINED status as lowercase 'pending' with no i18n key; on the RESOLVED-filtered History tab a 'pending' badge is always a mislabel."
+  dedup_status: already_tracked
+  tracked_as: PLT-041
+  distinct_from: null
+  recommended_log_as: null
+  proposed_fix_anchor: "Replace the 3-way if-chain with an exhaustive switch + a diagnostic default (console.warn + visible 'unknown' marker); align casing + i18n."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "Unbind via Active-tab Remove appears in History as a Declined row ONLY when a matching APPROVED owner_association_request row exists; an unbind of an orphan mapping (no live APPROVED request) soft-deletes the binding with NO History entry — the doc's blanket 'a removal appears as a Declined row' is over-broad."
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: "PLT-062 (PLT-062 is the RBAC/Owner-rename audit silence — the NEGATIVE half of the bifurcated audit story; THIS is the conditional-audit edge on the unbind path, which IS in the positive-half owner_association_request_activity table when an APPROVED row matches and silent only at the orphan-mapping edge)."
+  recommended_log_as: "caveat in user-owner-association doc-page (refine the 'removal appears as a Declined row' sentence) + doc-gap-NNN."
+- hypothesis_id: H-006
+  one_line: "History tab has no date-range filter and no per-actor (resolvedBy) filter; forensic investigation across thousands of resolved events requires scrolling the full reverse-chronological list (page size 30, no page-size upper bound)."
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: null
+  recommended_log_as: "caveat in user-owner-association doc-page (History view limitations) + a PLT enhancement candidate for server-side date/actor filtering on GET /api/owner_association_request/activity."
+- hypothesis_id: H-008
+  one_line: "'Resolved by' shows owner.name in preference to identity.username; after an Owner rename (F-019) a historical resolution retroactively displays the NEW owner name — the durable username actor key is suppressed whenever an owner name resolves."
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: "PLT-065 (PLT-065 is the provider-agnostic USERNAME-only JOIN row-duplication bleed in the GLOBAL ReactiveActivityRepositoryImpl; THIS locus joins on owner_id in ReactiveOwnerAssociationRequestActivityRepositoryImpl and the failure mode is owner-name-display-drift-on-rename, not row duplication)."
+  recommended_log_as: "caveat in user-owner-association doc-page (Resolved-by display semantics) + doc-gap-NNN."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# This feature sits at use_case_coverage 0/11 verified — every promise (confirmed, partial, contradicted,
+# and probe) is currently unguarded. The four CONFIRMED promises (H-001, H-003, H-004, H-005) are the
+# highest-value functional tests to write: they hand-prove subtle behaviour real, and have NO guard.
+- use_case_id: F-174-UC-1
+  hypothesis_id: H-001
+  kind: cross-actor
+  promise: "Admin direct-bind (POST /api/owners/mapping) appears in History as a REQUEST_MANUALLY_APPROVED (Approved) row attributed to the admin."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-1)"
+  proposed_test: "@WebFluxTest / service IT — call createUserOwnerMapping, then assert GET activity?status=RESOLVED returns a REQUEST_MANUALLY_APPROVED row with statusUpdatedBy = the admin."
+- use_case_id: F-174-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "DIRECT_OWNER_SYNC auto-approve appears in History as a REQUEST_APPROVED (Approved) row with no PENDING phase."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-3)"
+  proposed_test: "Service IT — self-request as a DIRECT_OWNER_SYNC holder, assert no PENDING entry and one REQUEST_APPROVED activity row surfaced by RESOLVED."
+- use_case_id: F-174-UC-4
+  hypothesis_id: H-004
+  kind: render
+  promise: "status=RESOLVED returns APPROVED ∪ DECLINED entries, newest-first by resolved-at."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-4)"
+  proposed_test: "Repository IT (extend ReactiveOwnerAssociationRequestActivityRepository* coverage) — seed APPROVED+DECLINED+PENDING activity rows, assert RESOLVED returns the first two ordered by STATUS_UPDATED_AT DESC, excludes PENDING."
+- use_case_id: F-174-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "The free-text query matches requester-username OR owner-name (case-insensitive); it does NOT match resolvedBy/role/provider."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-5)"
+  proposed_test: "Repository IT — assert query='ali' matches a row with username 'alice' and a row with ownerName 'Alibaba', and does NOT match a row whose only 'ali' is in resolvedBy."
+- use_case_id: F-174-UC-2
+  hypothesis_id: H-002
+  kind: teardown
+  promise: "Unbind appears in History as a Declined row WHEN a matching APPROVED request row exists; the orphan-mapping unbind (no APPROVED row) must not be silently un-audited (the part to guard / surface)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-2)"
+  proposed_test: "Service IT — (a) bind via approve then unbind → assert a REQUEST_MANUALLY_DECLINED row; (b) create a user_owner_mapping with no APPROVED owner_association_request row then unbind → characterize: assert the mapping is gone AND assert whether any activity row is written (pins the silent-edge)."
+- use_case_id: F-174-UC-6
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "An operator can narrow the audit log to a date window / acting user (the unmet capability)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-6)"
+  proposed_test: "Contract test pinning the CURRENT parameter set (query+status+page+size only) so adding date/actor filters is a deliberate, test-visible change; doubles as the regression guard for the H-006 enhancement."
+- use_case_id: F-174-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "The activity audit log requires OWNER_ASSOCIATION_MANAGE (the regression guard for the H-007 fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-7) — characterization pin NOW (asserts the current ungated 200) + flip-on-fix"
+  proposed_test: "Security IT (extend AdrSecurityRulesContractTest family) — assert a zero-permission authenticated principal currently GETs the activity log with 200 (characterization pin of the bug); flips RED when the fix gates it on OWNER_ASSOCIATION_MANAGE."
+- use_case_id: F-174-UC-8
+  hypothesis_id: H-008
+  kind: render
+  promise: "Resolved-by identifies the durable actor; an Owner rename must not silently rewrite who-resolved in history (the part to guard / surface)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-8)"
+  proposed_test: "Repository/mapper IT — seed an activity row resolved by an owner-mapped admin, rename the Owner, assert the resolvedBy DISPLAY changes (pins the drift) while statusUpdatedBy (the durable key) is unchanged."
+- use_case_id: F-174-UC-9
+  hypothesis_id: H-009
+  kind: grammar
+  promise: "The status badge renders a diagnostic value for unknown statuses, not a silent lowercase 'pending' (regression guard for the PLT-041 fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-174-UC-9) — UI unit test, pairs with PLT-041"
+  proposed_test: "RequestStatus.test.tsx — assert APPROVED→'Approved', DECLINED→'Declined', and an unknown value renders a diagnostic marker (RED today: it renders 'pending')."
+
+### probes_emitted
+- probe_id: PENDING-F-174-1
+  hypothesis_id: H-000-UI-GAP
+  probe_path: "(parallel-safe mode — not written; recorded here)"
+  hypothesis_text: "The operator can understand and conveniently drive the History audit investigation from what is on screen — scan, locate a specific actor/owner, narrow to a time window, and read who-did-what — without leaving the tab. (Requires an enriched UI sidecar + an IT-NNN that drives the History tab; the chain's UI hops are all unresolved.)"
+- probe_id: PENDING-F-174-2
+  hypothesis_id: H-010
+  probe_path: "(parallel-safe mode — not written; recorded here)"
+  hypothesis_text: "When two activity entries share the same resolved-at timestamp (e.g. a same-instant bulk cascade-decline via OwnerAssociationRequestServiceImpl.java:192-203), paginating the History list (page size 30, offset-based, ordered by STATUS_UPDATED_AT DESC with no id tiebreaker) returns each entry exactly once — no boundary skip or duplicate. Probe locally: bulk-approve an owner with >30 pending colliders, then page through History across the boundary and assert no row is skipped or duplicated."
+
+### validation_gaps
+- sidecar: F-174 feature-flow chain (UI hops 1-4)
+  field_insufficient: "All four UI hops (route /management/associations/history, OwnerAssociationsResolved, ResolvedAssociationRequest, RequestStatus) are sidecar: unresolved — no enriched UI component sidecar exists, so the on-screen audit experience (legibility, filter discoverability, InfiniteScroll correctness, the felt friction of no date/actor filter) cannot be validated."
+  proposed_refresh: "A ui-review slice on the OwnerAssociations subtree should enrich OwnerAssociationsResolved + ResolvedAssociationRequest + RequestStatus into sidecars with UX assertions; then re-run this reflection's H-000-UI-GAP as a confirmable hypothesis and mint an IT-NNN driving the History tab end-to-end."
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "A binding created with Create association appears in History as an Approved row, and a removal appears as a Declined row — both attributed to the administrator who performed them."
+  code_does: "The 'removal appears as a Declined row' is conditional: the unbind path (deleteActiveUserOwnerMapping → cancelAssociationByOwnerId) writes REQUEST_MANUALLY_DECLINED only for owner_association_request rows in STATUS=APPROVED (ReactiveOwnerAssociationRequestRepositoryImpl.java:170). An unbind of a binding with no live APPROVED request row soft-deletes the mapping with NO History entry."
+  recommended_log_as: doc-gap-NNN
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "(does not mention date-range or user-based filtering for the History view)"
+  code_does: "Endpoint accepts only query (free-text username/owner-name) + status + page + size — confirms the absence; this is a doc-silent limitation, candidate for an explicit caveat rather than a contradiction."
+  recommended_log_as: doc-gap-NNN
+
+## maintainer_notes
+
+(Reserved for maintainer hand-edits — preserved across refreshes.)
+
+The headline of this reflection is that F-174's SEEDED PRIMARY DRIFT
+(`history_tab_only_audits_owner_association_request_flow_not_direct_user_owner_mapping_writes`)
+is OVERTURNED by primary-source reading: the admin direct-bind (Branch C) and the
+DIRECT_OWNER_SYNC auto-approve (Branch B) both route through createManualAssociationRequest /
+the shared createActivity path and DO write owner_association_request_activity entries that the
+History tab surfaces (REQUEST_MANUALLY_APPROVED / REQUEST_APPROVED, both APPROVED-status → passed
+by the RESOLVED filter STATUS.ne(PENDING)). The live doc (2026-06-03) describes this correctly.
+The real, narrower finding on the audit-completeness axis is H-002: the UNBIND is audited as a
+Declined row ONLY when a matching APPROVED owner_association_request row exists; an orphan-mapping
+unbind is audit-silent. The highest-SEVERITY finding is H-007: the activity log is ungated (HIGH)
+— net_new as a bug-candidate FIX (no PLT proposes gating it today; F-074 only documents the
+posture as DOC-GAP-082/187 + drift facets). The maintainer may instead ratify it as an explicit
+read-collaborative ADR; the asymmetry with the gated pending-list is the argument that THIS
+endpoint is unintended.

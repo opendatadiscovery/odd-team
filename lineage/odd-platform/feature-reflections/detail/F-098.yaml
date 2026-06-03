@@ -1,0 +1,898 @@
+---
+feature_id: F-098
+pillar_anchored_id: P-10:F-005
+pillar: "P-10 Integrations & Ingestion (inbound boundary) — cross-anchored P-07 Active Platform Features (Data Collaboration / Discussions sub-feature, the user-visible effect surface)"
+feature_name: |-
+  Slack Events Webhook Inbound Integration Security — `POST /api/slack/events`
+  accepts forged events from any internet host because Slack signing-secret
+  HMAC verification is not implemented
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__EventApiController__controller-class__EventApiController.md
+  - odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      FRESH FETCH (this reflection) supersedes the EventApiController sidecar's
+      2026-05-25 fetch. The live page NOW carries a "Known limitations" section
+      that documents (a) no X-Slack-Signature verification ("Any caller on the
+      network that can reach the platform's events endpoint can submit
+      Slack-shaped payloads"), (b) at-least-once delivery → duplicate messages
+      on the Discussions tab, and (c) recommends network-layer controls as
+      mitigation. The published manifest now requests only `channels:history,
+      channels:read, chat:write, users:read` — `incoming-webhook` has been
+      DROPPED. This is a material doc-state change vs the substrate: DOC-204
+      shipped and DOC-GAP-032/033 closed since F-098 was seeded.
+  - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration"
+    last_verified_at: "2026-05-29T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Per doc-gaps.md DOC-GAP-033 closure note (2026-05-29 status 200): the
+      api-reference page now documents the unauthenticated forge, missing
+      X-Slack-Signature, at-least-once duplicate delivery, DISABLED
+      reachability, and the reverse-proxy HMAC remediation. Cross-referenced
+      from doc-gaps.md, not re-fetched this session.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 1
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: |-
+      A user/operator believing "/api/slack/events is a Slack callback" actually
+      operates an unauthenticated public POST endpoint that accepts any
+      Slack-shaped JSON from any internet host — no X-Slack-Signature HMAC
+      verification exists anywhere in the codebase.
+related_feature_flows:
+  - F-038   # Data Collaboration product feature — F-098 is the INBOUND-WEBHOOK-SECURITY angle of the same surface; the two characterization pins are tagged to F-038 H-002 / H-005
+  - F-094   # Ingestion auth coverage matrix — same `unauthenticated_under_every_supported_configuration` class
+  - F-097   # Swagger UI surface — exposes /api/slack/events in the spec, aiding attack-surface discovery
+  - F-039   # GenAI endpoint — sibling `no dedicated authz rule` pin in the same SecurityRulesAuthzGapsKnownBugsTest (PLT-020)
+related_concepts:
+  - "Slack Events Webhook"
+  - "Data Collaboration"
+related_drift_classes:
+  - inbound_webhook_signature_unverified
+  - unauthenticated_under_every_supported_configuration
+  - at_least_once_delivery_no_dedup
+  - endpoint_existence_enumeration_via_unsigned_challenge
+new_drift_classes_proposed:
+  - forged_payload_to_user_visible_surface  # forged event → message_provider_event JSONB → materialised child message → Discussions tab render: a forged-input-reaches-rendered-UI chain, distinct from the pure-auth drift classes
+---
+
+# Slack Events Webhook Inbound Integration Security — product-owner reflection
+
+## product_owner_narrative
+
+The Data Collaboration feature lets a catalog user hold a conversation about a
+data entity in Slack and have that conversation mirrored onto the entity's
+**Discussions** tab inside ODD. The half of that feature this reflection covers
+is the **inbound receiver**: `POST /api/slack/events`, the webhook Slack calls
+whenever a message is posted in a workspace channel the bot is in. An operator
+turns the feature on with `datacollaboration.enabled=true`, supplies a Slack bot
+OAuth token, and — following the live deployment docs — pastes
+`https://<ODD_PLATFORM_BASE_URL>/api/slack/events` into their Slack app's Event
+Subscriptions "request_url" field (per EventApiController:understanding +
+WebFetch 2026-06-03 status 200). From the operator's seat this reads as "I have
+wired up a private Slack callback." That mental model is the load-bearing
+assumption this reflection tests.
+
+A user never types into this endpoint — it is machine-to-machine, called by
+Slack's delivery infrastructure, not by a browser form. So there is no UI input
+control feeding it (the UI surface of Data Collaboration — the channel-picker
+combobox, the "post message" form, the "Open in Slack" button — lives on the
+*outbound* `DataCollaborationController` sibling, a different flow, F-038). What
+the inbound receiver does have is a **user-visible OUTPUT**: a successfully
+accepted event is parsed (`SlackEventParser.parse`), enqueued into the
+`message_provider_event` table, and later materialised by a leader-elected
+processor thread into a child `message` row that renders on the affected data
+entity's Discussions tab (per EventApiController:downstream_side_effects[0,1]).
+That output path is where a forged or duplicated inbound event becomes something
+a real ODD user sees on a real screen.
+
+The working parts, as a product owner would demo them: the receiver classifies
+every inbound payload into one of four cases — a one-shot URL-verification
+**challenge** (echo the `challenge` value back so Slack registers the callback),
+a **filter**-ack (200 OK with no action, for events ODD does not care about, so
+Slack does not retry), an **error** (400, only for a structurally-broken
+payload), and a **payload** (a thread-reply `message` event on a thread ODD is
+tracking — the only case that writes to the database)
+(EventApiController:understanding + implicit_adrs[1,2]). The receiver is
+deliberately whitelisted from authentication in every auth mode — it has to be,
+because Slack cannot present an ODD login (EventApiController:security.auth_gates).
+
+The integration story crosses two pillars. The receiver is the inbound boundary
+of P-10 (Integrations & Ingestion) but its effect lands in P-07's Data
+Collaboration / Discussions surface; the sibling outbound half (channel-picker,
+post-message form, the Slack-permalink redirect) is the same DataCollaboration
+package, and the two share the `message_provider_event` / `message` tables and
+the `datacollaboration.*` config namespace
+(DataCollaborationController:understanding + concepts).
+
+The edge cases a product owner would flag in a demo are exactly the security
+ones the substrate already surfaced and that this reflection re-derives from the
+user's seat: there is no proof the caller IS Slack (no signature check), no
+protection against the same Slack event being delivered twice (no `(provider,
+event_id)` dedup — the schema confirms it, V0_0_59:25-39), and no forensic trail
+to tell a forged event from a real one after an incident. The live docs as of
+2026-06-03 now disclose the first two of these as "Known limitations" and
+recommend reverse-proxy HMAC verification — a material change since the feature
+was seeded, and one this reflection reconciles below.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator configures `/api/slack/events` as their Slack Event
+    Subscriptions callback, only Slack can successfully POST events to it — a
+    request from any other internet host that does not carry a valid Slack
+    signature is rejected (401).
+  derivation: |-
+    The endpoint name and the docs-published `request_url` promise a "Slack
+    callback"; Slack's own protocol mandates the receiver validate
+    `X-Slack-Signature` HMAC-SHA256 over `v0:{timestamp}:{body}` using the app
+    signing-secret. A "callback for Slack" implies "from Slack".
+  seed_source: endpoint-shape + name-behavior (EventApiController name_behavior_pairs[handleSlackEvent])
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No signature verification exists anywhere in the codebase. The controller
+      method signature binds ONLY `@RequestBody Mono<String>` and reads no
+      header — X-Slack-Signature / X-Slack-Request-Timestamp are available on
+      the ServerWebExchange but never bound (EventApiController:stress_findings.
+      request_inputs — "available-but-unused"). `SlackEventParser.parse(final
+      String rawJson)` takes only the body. A grep across the whole repo for
+      X-Slack-Signature / signing.secret / signingSecret / verifySignature /
+      HMAC.SHA256 returns ZERO matches (re-verified this session against
+      src/test; the only references are in the WHITELIST + LoginForm config).
+      The endpoint is additionally whitelisted from auth in all four modes
+      (H-003). Any internet host that can reach the platform port can POST a
+      Slack-shaped JSON and the receiver processes it as genuine.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "EventApiController.java:22-27 + SlackEventParser.java:22-23"
+        note: "raw body only; no header binding; parse() takes only rawJson"
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: stress_findings.request_inputs
+        cite: "EventApiController.java:22-25 (no @RequestHeader, no ServerWebExchange parameter)"
+        note: "the Slack signature headers are available-but-unused — the canonical fix anchor"
+      - source_read_for_validation: true
+        cite: "grep X-Slack-Signature|signing.secret|signingSecret|verifySignature|HmacSha256|HMAC across odd-platform/**/src/test/** — 3 files match only as KNOWN-BUG PIN docstrings (DataCollabEventDedupKnownBugTest, SecurityRulesAuthzGapsKnownBugsTest, AdrContractScanTest), none implement verification"
+        note: "confirms no verification implementation AND no behavioral test of forgery rejection"
+    operator_visible_failure: |-
+      The obvious failure: an operator who pastes the request_url into Slack
+      believes they have a private callback, but they have published an
+      unauthenticated write endpoint to the public internet — any host that can
+      reach the port can forge events. The subtle failure: a forged thread-reply
+      whose `thread_ts` matches a tracked ODD message's `provider_message_id`
+      is enqueued and materialised into a child `message` row that renders
+      attacker-controlled text + author on a real data entity's Discussions tab
+      (EventApiController:security.data_exposure[1]) — forged content reaches a
+      real ODD user's screen. There is no audit column to distinguish the
+      forgery afterward (H-009).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    sme_consultation_recommended: false
+
+- id: H-002
+  hypothesis: |-
+    When Slack sends the one-shot URL-verification challenge during callback
+    setup, the platform echoes back the `challenge` value with 200 OK so the
+    subscription registers successfully.
+  derivation: |-
+    Slack's documented URL-verification handshake is the only contract by which
+    a callback registers; the receiver MUST echo the challenge. A product owner
+    expects "setup just works" when the operator clicks Verify in Slack.
+  seed_source: view-mode (the CHALLENGE branch) + doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The CHALLENGE branch returns 200 with body `{"challenge":"<echoed-value>"}`
+      via the SlackEventResponse record's single `challenge` field — matching
+      Slack's url_verification contract exactly
+      (EventApiController:stress_findings.name_behavior_pairs[SlackEventResponse]
+      drift: NONE). This is the happy-path that makes setup work.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: stress_findings.name_behavior_pairs
+        cite: "EventApiController.java:44-56 + EventApiController.java:29"
+        note: "challengeResponse returns 200 + {challenge}; CHALLENGE branch at line 29"
+    operator_visible_failure: |-
+      None for the happy path. NOTE the coupled risk surfaced as H-010: the same
+      echo, because it is unsigned (H-001), doubles as an endpoint-existence
+      oracle for any unauthenticated caller.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      The EventApiController sidecar flags this exact behaviour as the
+      CRITICAL-criticality uncovered integration test: "If this regresses, Slack
+      rejects the event subscription and the entire data-collaboration
+      thread-reply ingest is silently dead." A confirmed happy-path promise with
+      NO test guarding it (covered_behaviours: []) — the canonical LSN-030 case.
+
+- id: H-003
+  hypothesis: |-
+    When the operator picks a real authentication mode (LOGIN_FORM / OAUTH2 /
+    LDAP), the Slack events endpoint is protected by that auth like the rest of
+    the platform API — an anonymous caller is rejected.
+  derivation: |-
+    A product owner reasoning from "the platform has auth modes" expects every
+    write endpoint to sit behind the chosen mode. P-09's mission states auth
+    gates every mutation.
+  seed_source: pillar (P-09 primary user action "pick a UI auth mode") + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `/api/slack/events` is in SecurityConstants.WHITELIST_PATHS (line 95-96),
+      consumed by AuthorizationCustomizer (OAUTH2 + LDAP, line 22-23) and listed
+      in LoginFormSecurityConfiguration.permittedPaths (line 49-51); DISABLED
+      permits everything anyway. The endpoint accepts unauthenticated POSTs in
+      ALL FOUR modes (EventApiController:stress_findings.auth_gates). This is
+      structurally INTENDED (Slack cannot authenticate as an ODD user), but the
+      compensating control the whitelist presumes — a signature check — does not
+      exist (H-001), so "whitelisted" here means "wide open", not "open-but-
+      signature-gated".
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: security.known_security_gaps[1]
+        cite: "SecurityConstants.java:95-96 + AuthorizationCustomizer.java:22-23 + LoginFormSecurityConfiguration.java:49-51 + DisabledAuthSecurityConfiguration.java:13-17"
+        note: "all four modes whitelist the path"
+      - source_read_for_validation: true
+        cite: "SecurityRulesAuthzGapsKnownBugsTest.java:48-55 (slackEventsWebhookIsAuthWhitelisted_knownBug_PLT054) asserts the path IS in WHITELIST_PATHS"
+        note: "a GREEN characterization pin proving the whitelist is present — guards the bug, not the user promise"
+    operator_visible_failure: |-
+      The operator selects OAUTH2 expecting a uniformly-protected API, but one
+      write endpoint is anonymously reachable regardless. Combined with the
+      missing signature check (H-001), enabling Data Collaboration in any mode
+      publishes an unauthenticated write path. Under DISABLED, the
+      `datacollaboration.enabled` flag is the ONLY thing standing between the
+      network and the receiver.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When the same Slack event is delivered twice (Slack's at-least-once retry),
+    the platform recognises it as a duplicate and the affected Discussions tab
+    shows the message exactly once.
+  derivation: |-
+    Slack documents at-least-once delivery; a product owner expects exactly-once
+    user-visible results (a message appearing twice in a thread is a visible
+    defect). Exactly-once-display is the implicit promise of any webhook
+    consumer.
+  seed_source: negative-space + response-shape (the Discussions-tab output)
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The `message_provider_event` table has NO unique constraint on `(provider,
+      event_id)` and no `event_id` column at all — only a BIGSERIAL PK and a
+      parent-message FK (V0_0_59:25-39, re-read this session). The INSERT issues
+      no `ON CONFLICT` (ReactiveMessageRepositoryImpl.java:136-155). A duplicated
+      delivery inserts N rows; the processor materialises N child `message` rows
+      with N distinct uuids but the same `provider_message_id`; downstream
+      `getUUIDByProviderInfo` (line 188-195) has no LIMIT 1 and returns an
+      arbitrary uuid under multi-row. Operator-observable: the same message
+      appears multiple times on the Discussions tab.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "ReactiveMessageRepositoryImpl.java:136-155 + V0_0_59__data_collaboration.sql:25-39 + ReactiveMessageRepositoryImpl.java:188-195"
+        note: "no UNIQUE, no ON CONFLICT, no LIMIT 1"
+      - source_read_for_validation: true
+        cite: "V0_0_59__data_collaboration.sql:25-39 (message_provider_event: id BIGSERIAL PK + parent FK only; no event_id; no UNIQUE)"
+        note: "schema confirms the absence directly"
+      - source_read_for_validation: true
+        cite: "DataCollabEventDedupKnownBugTest.java:37-54 (messageProviderEventHasNoDedupConstraint_knownBug_PLT054) asserts the SQL doesNotContain UNIQUE / event_id / ON CONFLICT"
+        note: "GREEN characterization pin proving the bug is present (schema-level); NOT a behavioral duplicate-delivery test"
+    operator_visible_failure: |-
+      A real Slack message double-delivered under load shows up twice (or N times)
+      on the entity's Discussions tab — users reading the discussion see a
+      duplicated conversation. Worse with H-001: an attacker who captures one
+      genuine event payload can replay it N times to flood the thread, and there
+      is no event_id to dedup on. The arbitrary-uuid return from
+      getUUIDByProviderInfo can also mis-target a subsequent message_changed
+      UPDATE.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When a thread-reply `message` event arrives for a thread that ODD is NOT
+    tracking (no parent `message` row whose `provider_message_id` equals the
+    event's `thread_ts`), the platform ignores it and writes nothing.
+  derivation: |-
+    A product owner expects ODD to mirror only the conversations it started, not
+    every message in every channel the bot can read (the bot holds
+    `channels:history`). Scoping the mirror to tracked threads is the privacy-
+    sane default.
+  seed_source: view-mode (FILTER / switchIfEmpty) + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Two-stage filter: (1) parser-level — a message event with `thread_ts ==
+      null` is FILTERed and 200-acked, never enqueued; (2) service-level —
+      `SlackMessageProviderEventHandler` does `switchIfEmpty(Mono.empty())` when
+      the thread_ts does not map to a tracked parent message, and the controller
+      still ack-200s (EventApiController:implicit_adrs[2] + requires-runtime).
+      So a reply on an untracked thread writes nothing.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: implicit_adrs[2]
+        cite: "SlackEventParser.java:65-74, 86-95 + SlackMessageProviderEventHandler.java:31-35"
+        note: "two-stage thread_ts filter; untracked thread → Mono.empty, ack 200"
+    operator_visible_failure: |-
+      None for the happy case — the scoping behaves as a user expects. The
+      caveat (not a failure): the structural thread_ts match is the ONLY gate,
+      and it is not an authorization gate — a forged event (H-001) whose
+      thread_ts is guessed/observed to match a tracked thread passes this filter
+      and DOES write. So the filter scopes honest traffic correctly but provides
+      no defence against forgery.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When Slack sends an event type ODD does not handle (anything other than a
+    `message.channels` thread reply), the platform acknowledges it with 200 and
+    does not error — so Slack does not enter a retry storm.
+  derivation: |-
+    Slack retries on non-2xx. A product owner expects unhandled events to be
+    silently accepted, not to trigger repeated redelivery that loads the
+    endpoint.
+  seed_source: view-mode (FILTER branch) + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Every unknown / unsupported outer or inner event type routes to
+      ParseResultType.FILTER, which the controller acks with 200; only a
+      structurally-broken `event_callback` with a null inner event returns 400
+      (EventApiController:implicit_adrs[1]). The ack-200-on-filter is the
+      explicit choice to avoid Slack-side retry storms.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: implicit_adrs[1]
+        cite: "EventApiController.java:30-37 + SlackEventParser.java:38-43, 56-60, 107-110"
+        note: "unknown types → FILTER → 200; only null-inner-event → 400"
+    operator_visible_failure: |-
+      None for the retry-avoidance intent. Coupled caveat (surfaced separately as
+      a LOW substrate finding): an operator who subscribes additional Slack
+      event types in the Slack UI sees them silently dropped at log.debug with
+      no DLQ / metric / operator-visible signal — correct for retry-avoidance,
+      surprising for observability.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When a caller sends a malformed JSON body (or a payload where `event` is a
+    string/number rather than an object), the platform returns a clean 4xx
+    rather than a 5xx server error.
+  derivation: |-
+    A product owner expects bad input to produce a client-error, not to look
+    like the server broke (5xx invites Slack retry per H-006's contract, and a
+    5xx on garbage input is a robustness smell).
+  seed_source: negative-space + endpoint-shape (the raw-body input)
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      `JSONSerDeUtils.deserializeJson` is called inside `.map(slackEventParser::
+      parse)` with no try/catch (SlackEventParser.java:23); an IOException-class
+      failure propagates as a reactive error and the response shape is
+      determined by the global Spring WebFlux error handler — untested. Likewise
+      the unchecked `(Map<String,Object>) requestMap.get("event")` cast
+      (SlackEventParser.java:45) throws ClassCastException on a non-object
+      `event`. Whether the global handler renders 400 or 500 cannot be
+      determined from the sidecars; it requires running the endpoint.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: bugs_limitations_corner_cases[5]
+        cite: "SlackEventParser.java:22-23 (no try/catch on deserializeJson) + SlackEventParser.java:45 (unchecked cast)"
+        note: "response shape depends on the global reactive error handler — untested"
+    operator_visible_failure: |-
+      If the global handler renders 5xx, Slack interprets it as "retry this
+      event" (per H-006's contract) and the malformed payload is redelivered,
+      compounding load — and a forged malformed payload (H-001) becomes a cheap
+      way to trigger repeated server-error processing. Confirm the actual status.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-098-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-098-1"
+
+- id: H-008
+  hypothesis: |-
+    When an attacker floods `/api/slack/events` with forged events, the platform
+    bounds the damage — a request-body size cap and/or a rate limit prevents the
+    `message_provider_event` JSONB column from being filled without limit.
+  derivation: |-
+    A product owner running an internet-facing endpoint expects basic DoS
+    hygiene (body-size cap, rate limit) on an unauthenticated surface.
+  seed_source: negative-space + pillar (operator-facing robustness)
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      No request-body size limit is applied at the controller level (only Spring
+      WebFlux defaults govern; a large JSON is read into memory by
+      `@RequestBody Mono<String>` before dispatch); no rate-limit / interceptor /
+      filter exists on the path (EventApiController:performance.
+      known_performance_gaps). The JSONB `event` column stores the full payload
+      with no size cap (V0_0_59:32). The static facts are clear; the realised
+      backlog-growth rate and the processor-backlog behaviour under sustained
+      forged-event volume require a load probe to quantify.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: performance.known_performance_gaps
+        cite: "EventApiController.java:23-24 (no DataBuffer size cap) + V0_0_59__data_collaboration.sql:32 (unbounded JSONB)"
+        note: "no body cap, no rate limit, unbounded JSONB"
+    operator_visible_failure: |-
+      An attacker fills the partitioned `message_provider_event` table at attacker
+      rate; the single-leader processor backlog grows (adding controller
+      instances does not add processing throughput — the processor holds
+      advisory-lock 110); legitimate Slack events queue behind the flood and the
+      Discussions tab stops updating in near-real-time. Quantify the fill rate
+      and backlog growth.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-098-2
+    routes_to_finding: validation-gap
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: "probe PENDING-F-098-2"
+
+- id: H-009
+  hypothesis: |-
+    After a suspected forged-event incident, an operator can tell which
+    `message_provider_event` rows were forged versus genuine — the platform
+    records the caller IP and/or signature-validity for each inbound event.
+  derivation: |-
+    A product owner / security reviewer expects a forensic trail on an
+    internet-facing write endpoint, so an incident is investigable after the
+    fact.
+  seed_source: negative-space + pillar (P-09 security posture)
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `message_provider_event` rows carry no `created_by_caller_ip` and no
+      `signature_valid_at_receipt` column — only id, parent FK, provider, action,
+      the event JSONB, created_at, state, error_message (V0_0_59:25-39, re-read
+      this session). There is no audit table and no log.info capturing the
+      caller on the receive path. Post-incident, a forged row is structurally
+      indistinguishable from a genuine one.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: observed_vs_expected (feature-flow facet no_forensic_trail_on_inbound_webhook)
+        cite: "V0_0_59__data_collaboration.sql:25-39"
+        note: "no caller-IP / signature-validity columns on the event row"
+      - source_read_for_validation: true
+        cite: "V0_0_59__data_collaboration.sql:25-39 (column list confirms absence)"
+        note: "direct schema confirmation"
+    operator_visible_failure: |-
+      An operator who notices a suspicious message on a Discussions tab cannot
+      determine whether it came from Slack or from a forger, cannot scope the
+      blast radius, and cannot prove to stakeholders which conversations are
+      trustworthy. This compounds H-001 + H-004: forgery is possible AND
+      unattributable.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    The platform does not let an unauthenticated caller use `/api/slack/events`
+    as a fingerprinting oracle to confirm "this host is an ODD platform."
+  derivation: |-
+    A product owner expects an unauthenticated endpoint not to leak the
+    platform's identity to scanners. The URL-verification echo is a candidate
+    oracle.
+  seed_source: negative-space + the CHALLENGE response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The URL-verification challenge echo (H-002) is REQUIRED by Slack's protocol
+      and cannot be removed — any caller can POST `{type:url_verification,
+      challenge:X}` and receive `{challenge:X}` with 200, confirming an
+      `/api/slack/events` endpoint is alive and echoes arbitrary content
+      (EventApiController:security.data_exposure[0]). So the fingerprinting
+      oracle genuinely exists and is partly unavoidable. BUT it would be
+      substantially mitigated by signature verification (H-001): with a
+      signing-secret check, the echo would only fire for correctly-signed
+      challenges, closing the oracle to unauthenticated scanners. The hypothesis
+      is partly honoured (the platform behaves per Slack's contract) and partly
+      violated (the absence of signature verification leaves the oracle open to
+      anyone, not just Slack).
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: security.data_exposure[0]
+        cite: "EventApiController.java:44-56 (challenge echo) + bugs_limitations_corner_cases[0] (no signature gate)"
+        note: "echo is protocol-mandated; the gap is that it is ungated"
+    operator_visible_failure: |-
+      A network scanner can distinguish ODD installations from other HTTP hosts
+      at scale by POSTing a url_verification probe and matching the echoed
+      challenge — useful reconnaissance for an attacker selecting targets,
+      especially given the forge-able write path behind the same endpoint
+      (H-001). Mitigation is the same signing-secret check that fixes H-001:
+      Slack mandates validating the signature BEFORE responding to the
+      url_verification challenge.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    An operator following the live deployment docs to enable Slack Data
+    Collaboration is told, on that page, that the events endpoint has no
+    signature verification and that duplicate messages can appear — so they can
+    decide to put a reverse-proxy HMAC check in front of it.
+  derivation: |-
+    A product owner holds the docs to the duty of disclosing load-bearing
+    security caveats next to the enabling instructions (the workspace's
+    "caveat-next-to-the-default" bar). The substrate recorded the docs as SILENT
+    on these gaps at seed time — this hypothesis tests whether that is still true.
+  seed_source: doc-claim + pillar (operator-facing)
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      FRESH WebFetch 2026-06-03 (status 200): the live "Enable Data
+      Collaboration" section now carries a "Known limitations" block that states
+      "ODD Platform does not verify Slack's X-Slack-Signature header on incoming
+      /api/slack/events callbacks. Any caller on the network that can reach the
+      platform's events endpoint can submit Slack-shaped payloads...", documents
+      Slack's at-least-once delivery surfacing as duplicate messages on the
+      Discussions tab, and recommends network-layer controls. The manifest now
+      requests only channels:history / channels:read / chat:write / users:read
+      (the previously-requested `incoming-webhook` scope has been DROPPED). This
+      is a MATERIAL improvement over the substrate's seed-time assumption that
+      the docs were silent — DOC-204 shipped and DOC-GAP-032 / DOC-GAP-033 are
+      CLOSED (per doc-gaps.md). The code gaps (H-001, H-004, H-009) remain; the
+      DOC gap is now closed.
+    evidence:
+      - sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+        section: docs_link_semantic.doc_drift_findings[0]
+        cite: "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-06-03 status 200"
+        note: |-
+          SUPERSEDES the sidecar's 2026-05-25 finding that the section was silent.
+          The doc-silence finding (and F-098's doc-silence facets) are now STALE.
+      - source_read_for_validation: false
+        cite: "doc-gaps.md:50-51 (DOC-GAP-032 + DOC-GAP-033 both CLOSED) + issues/odd-platform/PLT-054.md (DOC-204 ships the caveats)"
+        note: "the doc-side mitigation is tracked + shipped"
+    operator_visible_failure: |-
+      None remaining on the doc axis — the caveat now exists where the operator
+      reads it. The residual is purely on the CODE axis (the platform still ships
+      no in-app signature verification); that is H-001's bug-candidate, and the
+      reconciliation is recorded in doc_drift_findings below so the STALE F-098
+      doc-silence facets get corrected on the next /enrich.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      The user-facing PROMISE here ("the operator IS warned") is now delivered by
+      docs, but no test guards the docs-vs-code reconciliation. The functional
+      demand is a doc-link assertion (live page contains the limitations block) —
+      lower-leverage than the code-side demands, recorded for completeness.
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: |-
+    `/api/slack/events` implements no X-Slack-Signature HMAC verification — any
+    internet host can forge Slack events that materialise into messages on a
+    real entity's Discussions tab.
+  dedup_status: already_tracked
+  tracked_as: PLT-054
+  recommended_log_as: n/a (PLT-054 Defect 1 — drafted upstream-issue)
+  proposed_fix_anchor: |-
+    Bind @RequestHeader X-Slack-Signature + X-Slack-Request-Timestamp on
+    EventApiController; add a WebFilter / verifier computing HMAC-SHA256 over
+    `v0:{timestamp}:{body}` against `datacollaboration.slack-signing-secret`;
+    reject 401 + reject stale timestamps (>5min). (PLT-054 carries the exact
+    code sketch.)
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |-
+    Slack at-least-once delivery has no platform-side dedup — duplicate events
+    materialise duplicate child messages on the Discussions tab.
+  dedup_status: already_tracked
+  tracked_as: PLT-054
+  recommended_log_as: n/a (PLT-054 Defect 2; also overlaps PLT-035)
+  proposed_fix_anchor: |-
+    Add an `event_id` column + UNIQUE(provider, event_id) via a new Flyway
+    migration AND `.onConflict(...).doNothing()` on the
+    ReactiveMessageRepositoryImpl INSERT; add LIMIT 1 to getUUIDByProviderInfo.
+  distinct_from: PLT-035  # PLT-035 is the parallel-session dedup draft; PLT-054 Defect 2 is the canonical, consolidate on PR per PLT-054 "Possible overlap"
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    The Slack events endpoint is whitelisted from auth in all four modes — under
+    DISABLED the feature flag is the sole defence.
+  dedup_status: already_tracked
+  tracked_as: PLT-054
+  recommended_log_as: n/a (PLT-054 Defect 1 + DOC-204 caveat already document the whitelisting/DISABLED reachability — confirmed live)
+- hypothesis_id: H-009
+  one_line: |-
+    No forensic trail on inbound events — forged rows are indistinguishable from
+    genuine ones post-incident (no caller-IP / signature-validity column).
+  dedup_status: net_new
+  distinct_from: PLT-054
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration (extend the "Known limitations" block with the no-audit-trail dimension) OR a PLT follow-up for an audit column
+  note: |-
+    PLT-054 covers signature + dedup + UX; it does NOT cover the
+    no-forensic-trail dimension (no audit column). This is a distinct facet
+    (feature-flow drift_class no_forensic_trail_on_inbound_webhook) not enumerated
+    in PLT-054's four defects.
+- hypothesis_id: H-010
+  one_line: |-
+    The url_verification challenge echo is an unauthenticated endpoint-existence
+    fingerprinting oracle; mitigated by the same signing-secret check as H-001.
+  dedup_status: net_new
+  distinct_from: PLT-054
+  recommended_log_as: caveat folded into the H-001 signature-verification fix (validate signature before answering url_verification, per Slack's requirement) — note on PLT-054 Defect 1 acceptance criteria
+
+### functional_test_demands
+# LSN-030 / Rule 11 — EVERY promise (use_case) is unverified: the two existing
+# @pins PLT-054 tests are STRUCTURAL source/schema scans asserting the bug is
+# present (GREEN-while-broken characterization), NOT behavioral tests of the
+# user-facing promise. So even the "covered" bug facets have an unverified
+# user-facing promise. No confirmed hypothesis routes to none.
+- use_case_id: F-098-UC-001
+  hypothesis_id: H-001
+  kind: cross-actor
+  promise: "A request without a valid Slack signature is rejected (401); only Slack can write events."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-001)"
+  proposed_test: |-
+    @WebFluxTest / integration: POST /api/slack/events with a forged body and no
+    (or wrong) X-Slack-Signature → assert 401 once the verifier ships; today this
+    is the RED regression guard for the PLT-054 Defect-1 fix. (Pair with a
+    valid-signature → 200 case.)
+- use_case_id: F-098-UC-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "URL-verification challenge → 200 with {challenge:<echoed>} so the subscription registers."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-002)"
+  proposed_test: |-
+    Integration: POST {type:url_verification, challenge:X} → assert 200 +
+    body {"challenge":"X"}. CRITICAL per the sidecar: regression = silent death
+    of the entire thread-reply ingest. This is the highest-value confirmed-but-
+    untested promise to guard.
+- use_case_id: F-098-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "Under LOGIN_FORM/OAUTH2/LDAP the endpoint is anonymously reachable (whitelisted); DISABLED relies on the feature flag."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-003)"
+  proposed_test: |-
+    Auth-matrix integration: anonymous POST /api/slack/events returns 2xx (not
+    401) in each of LOGIN_FORM/OAUTH2/LDAP — pins the whitelist behaviorally
+    (the existing PLT-054 pin only asserts the path is in the WHITELIST string).
+- use_case_id: F-098-UC-004
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "A duplicate Slack delivery shows the message exactly once on the Discussions tab."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-004)"
+  proposed_test: |-
+    Integration: enqueue the same event twice → assert exactly one child message
+    once dedup ships (today: assert two rows, the behavioral counterpart to the
+    DataCollabEventDedupKnownBugTest schema pin). RED regression guard for
+    PLT-054 Defect 2.
+- use_case_id: F-098-UC-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "A reply on a thread ODD is not tracking writes nothing and acks 200."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-005)"
+  proposed_test: |-
+    Integration: PAYLOAD event whose thread_ts matches no tracked parent →
+    assert 200 + zero message_provider_event rows written.
+- use_case_id: F-098-UC-006
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "An unhandled Slack event type is acked 200 (no retry storm), only a null-inner-event is 400."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-006)"
+  proposed_test: |-
+    Integration: unknown outer/inner event type → 200; event_callback with null
+    inner event → 400.
+- use_case_id: F-098-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "A malformed JSON body returns a clean 4xx, not a 5xx."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-098-1 (then mint TEST-GAP if 5xx confirmed)"
+  proposed_test: |-
+    Integration: POST malformed JSON and POST event:"string" → assert the actual
+    status; if 5xx, that is a bug + a RED guard for the fix.
+- use_case_id: F-098-UC-008
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "A forged-event flood is bounded (body-size cap / rate limit) and does not fill the table or starve the processor."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-098-2"
+  proposed_test: |-
+    k6 / load probe: sustained forged-event volume → measure message_provider_event
+    growth + processor backlog; local-only (Testcontainers Postgres + the app).
+- use_case_id: F-098-UC-009
+  hypothesis_id: H-009
+  kind: teardown-constraint
+  promise: "An operator can distinguish forged vs genuine events after an incident."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-009)"
+  proposed_test: |-
+    Once an audit column ships: assert each inbound event row records caller IP +
+    signature-validity. Today: the absence is the finding (H-009 caveat).
+- use_case_id: F-098-UC-010
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "The url_verification echo does not serve as an unauthenticated platform-fingerprinting oracle."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-010)"
+  proposed_test: |-
+    Once signature-gating ships: assert an UNSIGNED url_verification probe is
+    rejected (401) and does NOT echo the challenge.
+- use_case_id: F-098-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: "The live deployment docs warn the operator about the no-signature + duplicate-message limitations."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-098-UC-011) — doc-link assertion, low leverage"
+  proposed_test: |-
+    Doc-link check (live-site verification gate): assert the "Enable Data
+    Collaboration" page contains the X-Slack-Signature 'Known limitations' block.
+
+### probes_emitted
+- probe_id: PENDING-F-098-1
+  hypothesis_id: H-007
+  full_hypothesis: |-
+    When a caller sends a malformed JSON body (or a payload where `event` is a
+    string/number rather than an object) to POST /api/slack/events, does the
+    platform return a clean 4xx, or does the unhandled deserialization
+    exception / unchecked cast surface as a 5xx through the global WebFlux error
+    handler (which Slack would interpret as "retry this event")?
+  local_execution_blocked: false
+  note: |-
+    Local-runnable per Rule 6: Testcontainers Postgres + the app with
+    datacollaboration.enabled=true; POST malformed bodies; observe status. NO
+    P-NNN file created (parallel-safe mode) — record only.
+- probe_id: PENDING-F-098-2
+  hypothesis_id: H-008
+  full_hypothesis: |-
+    Under sustained forged-event volume against the unauthenticated
+    /api/slack/events (no body cap, no rate limit), what is the
+    message_provider_event table growth rate and the single-leader processor
+    backlog growth, and at what point does the Discussions tab stop updating in
+    near-real-time?
+  local_execution_blocked: false
+  note: |-
+    Local-runnable per Rule 6: k6/wrk against a local docker-compose ODD + Postgres.
+    NO P-NNN file created (parallel-safe mode) — record only.
+
+### validation_gaps
+- gap_kind: chain-sidecar-link
+  one_line: |-
+    F-098's chain marks hops 1-4 `sidecar: unresolved`, but an enriched sidecar
+    for the load-bearing node DOES exist
+    (odd-platform__java__EventApiController__controller-class__EventApiController.md,
+    enrichment_status: complete, confidence HIGH on security/bugs). The chain
+    should link hops 1 (controller), 2 (parser, covered in the same sidecar's
+    chain trace), 3 (WHITELIST, covered in security.auth_gates), and the db-write
+    of hop 4 to that sidecar rather than leaving them unresolved.
+  proposed_refresh: |-
+    feature-flow-builder: resolve F-098 chain hops to the EventApiController
+    sidecar; optionally add a node for SecurityConstants.WHITELIST_PATHS and the
+    V0_0_59 migration as their own sidecars.
+- gap_kind: ui-surface-absent
+  one_line: |-
+    Rule 9 (senior-product-owner-from-the-screen): this feature's chain has NO
+    enriched end-user UI input hop — `/api/slack/events` is a machine-to-machine
+    webhook with no screen/form/control feeding it. This reflection is therefore
+    API/webhook-only by nature (NOT a missed UI axis). The user-VISIBLE surface
+    of the effect (the Discussions tab render of the materialised child message)
+    lives downstream and is covered by the DataCollaboration UI sidecars
+    (CreateMessageForm.tsx, Message.tsx) on the SIBLING outbound flow F-038, not
+    on this inbound chain. Verdicts here are correctly traced through the effect
+    on that surface (H-001, H-004 operator_visible_failure) but the inbound
+    endpoint itself has no UI to judge.
+  proposed_refresh: |-
+    None required — this is the correct shape for an inbound webhook. Recorded
+    per Rule 9 so the API-only nature is explicit and not mistaken for an F-031-
+    style backend-only blind spot.
+
+### doc_drift_findings
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration"
+  doc_says: |-
+    "Known limitations" block (live 2026-06-03 status 200): ODD does NOT verify
+    X-Slack-Signature; any network caller can submit Slack-shaped payloads;
+    at-least-once delivery surfaces as duplicate messages on Discussions;
+    network-layer controls recommended. Manifest requests channels:history /
+    channels:read / chat:write / users:read (NO incoming-webhook).
+  code_does: |-
+    Code matches the disclosed limitations: no signature verification (H-001),
+    duplicate-prone (H-004). The doc is now ACCURATE about the gaps.
+  recommended_log_as: |-
+    NOT a new doc-gap — DOC-GAP-032 + DOC-GAP-033 are CLOSED and DOC-204 shipped.
+    The finding is a SUBSTRATE-RECONCILIATION: F-098's facets
+    `requested_scope_unused` (+ scanner-review finding F-098b) and the
+    doc-silence framing in facets `unauthenticated_under_every_supported_
+    configuration` / `inbound_webhook_signature_unverified`.expected are now
+    STALE — the docs disclose the limitations and the manifest dropped
+    incoming-webhook. Queue an /enrich refresh of F-098 to (a) mark F-098b
+    resolved/closed, (b) update the doc-silence `expected` text to reflect the
+    shipped "Known limitations" block, (c) keep the CODE-side facets (no
+    signature, no dedup, no audit column) open — those remain true.
+
+## maintainer_notes
+
+<!-- preserved across refreshes — only block the maintainer hand-edits -->
+- 2026-06-03 (auto, v0.3.0 first reflection): F-098 had `related_test_gaps: []`,
+  `related_retrospectives: []` and a chain with every hop `unresolved` despite a
+  complete HIGH-confidence EventApiController sidecar existing — flagged as a
+  chain-link validation gap. Two `@pins PLT-054` characterization tests
+  (DataCollabEventDedupKnownBugTest, SecurityRulesAuthzGapsKnownBugsTest) GREEN-pin
+  the schema + whitelist facets but verify NO user-facing promise behaviorally;
+  all 11 promises are `coverage: unverified`. Convergent validation: this
+  reflection independently re-derived PLT-054 Defects 1+2 and the DISABLED
+  reachability — corroboration, not new findings (dedup_status: already_tracked).
+  Net-new: H-009 (no forensic trail) and H-010 (fingerprinting oracle) are facets
+  PLT-054 does not cover. Live-doc state has MOVED past the substrate (DOC-204
+  shipped; DOC-GAP-032/033 closed; manifest dropped incoming-webhook) — F-098's
+  doc-silence facets + finding F-098b are now stale; reconciliation queued for
+  /enrich.

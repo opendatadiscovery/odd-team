@@ -1,0 +1,594 @@
+---
+feature_id: F-156
+pillar_anchored_id: P-06:F-156
+pillar: P-06 Data Glossary
+feature_name: |-
+  Term Overview Right-Rail — Tag chips with importance-sort visible-limit
+  ordering bug, plus Owner ownership list with per-row create/edit/delete
+  affordances gated by TERM_OWNERSHIP_* permissions
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__service__service__TermServiceImpl.md
+  # UI hops (OverviewTags / OverviewGeneral / OwnershipForm / TagsEditForm) have
+  # sidecar: unresolved in the chain — see validation_gaps VG-1. UI-tier verdicts
+  # rest on the feature-flow chain.evidence + the ui-review-2026-05-26 walk + the
+  # Rule-8 single-line confirming reads recorded per-verdict (source_read_for_validation).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 2
+  partial: 3
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "Important tag chips are silently hidden beneath 'View All' on a heavily-tagged term because the right-rail slices the FIRST 20 by backend id-order BEFORE applying the importance sort."
+related_feature_flows: [F-002, F-024, F-151, F-154, F-155, F-018, F-019]
+related_concepts:
+  - tag-term-linkage
+  - owner-term-ownership
+  - tag-create-side-channel
+  - owner-create-side-channel
+  - ui-sort-correctness
+related_drift_classes:
+  - ui_slice_before_sort_bug_visible_limit_hides_top_items
+  - ui_authors_tag_create_bypass_per_f_002_batch_k
+  - ui_pure_helper_function_recreated_each_render_no_memoisation
+  - ui_useCallback_empty_deps_captures_initial_closure
+new_drift_classes_proposed:
+  - owner_create_side_channel_disabled_at_ui_but_open_at_backend_getOrCreate
+---
+
+# Term Overview Right-Rail — Tag chips + Owner ownership list — product-owner reflection
+
+## product_owner_narrative
+
+The Term **Overview** tab is the page an operator lands on when they open a glossary term — the in-app Business Glossary's "About"-style home for a single concept (per `system-mission.md` P-06; per WebFetch business-glossary 2026-06-03 which frames the Overview as "the user-friendly functionality found on Wikipedia — an About section"). Down the right rail of that page sit two operator affordances this feature covers: a **Tags** panel of chips and an **Owners** ownership list. Both are read-first surfaces with inline edit affordances — a steward reads the term, and from the same screen can re-tag it or change who owns it without leaving the page (per F-156 chain hops 1a/1b; `OverviewTags.tsx:15-103`, `OverviewGeneral.tsx:22-110`).
+
+A user interacts with the Tags panel by reading the chips and, if they hold `TERM_TAGS_UPDATE`, clicking "Edit tags" / "Add tags" to open the `TagsEditForm` dialog where they type tag names (per `OverviewTags.tsx:32-43, 94-98`). The chips are meant to be a *prioritised* list: the panel sorts "important" tags first, then alphabetically (`tagsCompare`, `OverviewTags.tsx:20-26`), and shows the first 20, hiding the rest behind a "View All (N)" collapse (`visibleLimit = 20`, `OverviewTags.tsx:17, 58-81`). A user interacts with the Owners list by reading the assigned owners with their roles and, if they hold the right `TERM_OWNERSHIP_*` permission, deleting an owner (per-row `ConfirmationDialog`), editing an owner's role (`OwnershipForm`), or adding a new owner at the bottom (per F-156 chain hop 1b; `OverviewGeneral.tsx:22-110`). The three ownership affordances are independently gated by `TERM_OWNERSHIP_CREATE` / `UPDATE` / `DELETE` — fine-grained separation a product owner would call out as a strength (per hop 1b evidence; corroborated by WebFetch business-glossary which names all three with "Assign / Update / Remove" verbs).
+
+The working parts are: an importance-then-alphabetic client-side sort with a 20-chip visible limit and a "View All" reveal; a tag-edit dialog backed by `TermServiceImpl.upsertTags` (a delete-then-recreate that calls `tagService.getOrCreateTagsByName`, per `TermServiceImpl.java:253-264`); and a term-ownership CRUD trio backed by `TermOwnershipServiceImpl`, each affordance permission-gated in the UI. Two of these parts carry the load-bearing concerns this reflection exists to surface: the tag panel's sort is applied to a pre-sliced window, so the prioritisation it visually promises is not the prioritisation it computes; and both the tag-edit dialog and the owner-add affordance feed `getOrCreate`-family backends that mint catalog rows (tags, owners) without consulting the dedicated `*_CREATE` permission.
+
+This feature sits inside the Data Glossary pillar (P-06) but reaches across three others: tag-create touches P-08 Management's Tag directory (the global tag taxonomy, per `system-mission.md` P-08 Tags tab); owner-create touches P-08's Owners tab and P-09's RBAC owner identity; and the read posture inherits P-09's read-collaborative stance (every authenticated user sees every term's tags and owners — there is no per-namespace scoping at the service or repository tier, per `TermServiceImpl.md` security.owner_scoping). The tag-chip surface is a sibling of F-018's Catalog-Overview "Top Tags" tile and of the data-entity Overview tag panel (F-018 / IT-020), but its ordering defect is its own — F-018's is a backend SQL slice-before-aggregate (`listMostPopular`, PLT-026); F-156's is a *client-side* slice-before-sort with no backend involvement.
+
+In a demo, the product owner would highlight the empty states ("Not created." with an inline Add-tags button when a term has no tags, per `OverviewTags.tsx:84-99`), and would warn about the heavy-term edge case: on a term with 50+ tags, the right-rail's 20-chip window is the typical view, so any importance-marked tag that the backend happened to return after the 20th position never appears in the prioritised strip — it is reachable only by clicking "View All", which an operator scanning for "the important tags" would not think to do.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a term has more than 20 tags and a tag marked `important` sits past the 20th position in the backend payload's id-order, opening the Term Overview shows that important tag among the visible chips (because the panel promises an importance-first prioritised list)."
+  derivation: "The panel sorts by `important` first (`tagsCompare`, OverviewTags.tsx:20-26) and shows `visibleLimit=20` chips — the visual contract is 'the most important tags are shown first'."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The panel slices BEFORE it sorts: `tags.slice(0, visibleLimit).sort(tagsCompare)`
+      (OverviewTags.tsx:47-49) takes the FIRST 20 tags by the backend payload's order
+      (term tag payload is id/insertion-order, NOT importance-order) and THEN sorts only
+      those 20 by importance + alphabet. An `important` tag at payload position 25 is never
+      in the sliced window, so it is sorted into the COLLAPSED "View All" path
+      (`tags?.slice(visibleLimit).sort(tagsCompare)`, OverviewTags.tsx:62-64) — which has
+      the identical slice-then-sort bug. The importance ordering is applied within an
+      already-arbitrary 20-element window; it does not select the 20 most-important tags.
+    evidence:
+      - sidecar: "(feature-flow F-156 chain hop 1a + observed_vs_expected facet tags_slice_then_sort_ordering_bug)"
+        section: chain.hop-1a / observed_vs_expected
+        cite: "OverviewTags.tsx:47-49"
+        note: "slice(0, visibleLimit).sort(tagsCompare) — slice before sort, primary path"
+      - sidecar: "(source_read_for_validation — UI sidecar unresolved)"
+        section: source
+        cite: "OverviewTags.tsx:62-64"
+        note: "the collapsed 'View All' path has the identical slice-then-sort bug — sorting the leftovers does not recover the hidden important tag"
+    operator_visible_failure: |
+      (1) On a heavily-tagged term (50+ tags — the typical case for a mature glossary concept),
+      an operator scanning the prioritised chip strip for the important tags sees a strip that
+      LOOKS definitive but is actually "20-arbitrary-then-sorted". (2) An important tag is
+      silently hidden beneath "View All" — and clicking "View All" does NOT surface it at the
+      top of the expanded set either, because the collapsed path re-applies the same
+      slice-then-sort, so the important leftover tag is mixed into the alphabetical tail. (3) The
+      prioritisation the UI visually promises (important-first) is broken in exactly the
+      condition where prioritisation matters most (many tags). The defect is deterministic, not
+      flaky — it triggers for every term whose important tag is not among the first 20 returned.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-002
+  hypothesis: "When a term has 20 or fewer tags, the Tag chips render with all `important` tags first, then alphabetically (the importance sort is honoured)."
+  derivation: "At <=20 tags the slice is a no-op, so the slice-then-sort defect cannot bite; `tagsCompare` runs over the full set."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `tags.slice(0, 20)` over a <=20-element array returns the whole array, so
+      `.sort(tagsCompare)` (OverviewTags.tsx:47-49, comparator at 20-26) sorts the complete
+      tag set: `important === important ? name.localeCompare : (important ? -1 : 1)` — important
+      tags first, then alphabetic. For the common small-term case the visual contract holds.
+    evidence:
+      - sidecar: "(source_read_for_validation — UI sidecar unresolved)"
+        section: source
+        cite: "OverviewTags.tsx:20-26, 47-49"
+        note: "comparator + slice-then-sort; slice is a no-op at <=20 tags"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-003
+  hypothesis: "When an operator holding `TERM_TAGS_UPDATE` but NOT `TAG_CREATE` types a brand-new tag name in the term's tag-edit dialog and submits, the platform refuses to create the new tag (because `TAG_CREATE` is the permission that gates minting new entries into the global Tag directory)."
+  derivation: "Endpoint shape + RBAC: `TAG_CREATE` is the named permission for `POST /api/tags`; an operator would expect tag-CREATION to require it regardless of which dialog they typed in."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `TermServiceImpl.upsertTags` (TermServiceImpl.java:253-264) calls
+      `tagService.getOrCreateTagsByName(names)` (line 257), which returns existing tags by name
+      OR silently creates new tag rows for novel names — `TAG_CREATE` is never consulted on this
+      path. The UI `TagsEditForm` provides no signal that typing a novel name will mint a tag.
+      The dialog itself is gated only by `TERM_TAGS_UPDATE` (OverviewTags.tsx:32, 94). This is
+      one of five side-channels into the Tag directory (per DOC-190: POST /api/tags, data-entity
+      tags, term tags, dataset-field tags, collector ingestion).
+    evidence:
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: bugs_limitations_corner_cases / dependencies_semantic
+        cite: "TermServiceImpl.java:257"
+        note: "getOrCreateTagsByName mints novel tags without TAG_CREATE — explicit in sidecar bugs[12] + security.known_security_gaps[4]"
+      - sidecar: "(feature-flow F-156 chain hop 2a + facet tag_create_bypass_via_tagsEditForm_authoring_entry)"
+        section: chain.hop-2a
+        cite: "TagsEditForm.tsx (authoring entry)"
+        note: "the UI authoring entry point for the bypass; no TAG_CREATE consultation in the form"
+    operator_visible_failure: |
+      (1) An operator restricting `TAG_CREATE` to vocabulary stewards (a real separation-of-duties
+      posture) discovers any user with per-term tag-update on a single term can mint arbitrary new
+      tag names that become globally visible via `GET /api/tags` and pollute the "Top Tags" tile
+      and the Tag search facet. (2) The UI gives no warning, so the operator does not even know a
+      novel tag was created versus an existing one reused. (3) The bypass is multiplied across the
+      sibling data-entity / dataset-field tag-edit surfaces — closing it at one form does not close
+      the class. NOTE: this behaviour is now DOCUMENTED as a caveat (business-glossary Caveat 13,
+      DOC-199, live-verified) — so the contradiction is a known, disclosed posture, but the doc
+      discloses it as a defect-to-fix, not as intended design (upstream fix PLT-060 Defect 4).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When the same operator (lacking `TAG_CREATE`) types a tag name that ALREADY exists and submits, the existing tag is linked to the term (no new tag is created, no permission error) — re-using an existing tag is the expected, allowed path."
+  derivation: "Response/endpoint shape: `getOrCreateTagsByName` is select-or-create; the SELECT branch (existing name) is the legitimate happy path a tag-edit dialog is designed for."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `getOrCreateTagsByName(names)` resolves existing tags by name and only creates rows for
+      names with no match (TermServiceImpl.java:257; sidecar operations.upsertTags). When every
+      typed name already exists, no row is created and `upsertTags` (delete-then-reinsert the
+      tag-to-term relations inside one `@ReactiveTransactional`, lines 253-264) simply re-links
+      the existing tags. A select-or-create backend behind a select-or-create combo-box is the
+      intended pattern (Rule 9): re-using an existing tag is correct and requires only
+      `TERM_TAGS_UPDATE`. The defect of H-003 is confined to the CREATE branch.
+    evidence:
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: concepts.operations / dependencies_semantic
+        cite: "TermServiceImpl.java:253-264, 257"
+        note: "upsertTags = delete-then-recreate relations; getOrCreate SELECT branch reuses existing tags atomically"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an operator holding `TERM_OWNERSHIP_CREATE` (but NOT `OWNER_CREATE`) opens the Add-owner form on the Term Overview and types a brand-new owner name, the form prevents creating a new platform Owner (the owner-create side-channel is closed at this surface)."
+  derivation: "UI label + endpoint shape: `OwnershipForm` wires `OwnerAutocomplete` with `disableOwnerCreating={!createOwner}` where `createOwner` is the OWNER_CREATE flag — the UI appears to gate owner-create."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The UI side IS gated: `OwnershipForm.tsx:27-132` passes
+      `disableOwnerCreating={!createOwner}` to `OwnerAutocomplete`, so an operator without
+      OWNER_CREATE cannot trigger the create-owner affordance through this combo-box (per F-156
+      chain hop 1c). HOWEVER the backend `TermOwnershipServiceImpl` create path follows the same
+      `OwnerService.getOrCreate(owner_name)` architectural class flagged platform-wide (per
+      F-156 hop 1c cross-link to F-002 batch K; concepts.yaml createOwnership facet — Owner
+      auto-create via getOrCreate bypasses OWNER_CREATE). The gate is a UI-only disable, not a
+      service-tier permission check — a programmatic API caller (or a future UI surface) that
+      submits a novel owner name to the term-ownership-create endpoint would still mint an Owner.
+      VERDICT IS partial because the UI affordance is correctly gated (the screen the operator
+      uses is safe) but the underlying contract is not enforced at the tier that actually owns it.
+    evidence:
+      - sidecar: "(feature-flow F-156 chain hop 1c + facet on OwnershipForm)"
+        section: chain.hop-1c
+        cite: "OwnershipForm.tsx:27-132"
+        note: "disableOwnerCreating={!createOwner} — UI gate against OWNER_CREATE side-channel"
+      - sidecar: "(feature-flow F-156 chain hop 2b — TermOwnershipServiceImpl, sidecar unresolved)"
+        section: chain.hop-2b
+        cite: "TermOwnershipServiceImpl (referenced from F-002 batch K coupling)"
+        note: "backend term-ownership CRUD; getOrCreate-class owner-create per F-002 batch K — sidecar unresolved (VG-2)"
+    operator_visible_failure: |
+      (1) For a UI operator, the screen behaves correctly — no owner-create affordance without
+      OWNER_CREATE. (2) The risk is at the API boundary: an `odd-api-consumer` (programmatic
+      caller) with TERM_OWNERSHIP_CREATE but not OWNER_CREATE can still mint Owner rows by
+      submitting a novel owner name to the term-ownership endpoint, because the enforcement lives
+      in the React component, not the service. (3) A future UI surface that re-uses the
+      term-ownership-create endpoint without replicating the disableOwnerCreating prop would
+      silently re-open the side-channel. This needs a probe (P-PENDING) to confirm the backend
+      term-ownership-create endpoint's actual behaviour against a novel owner name, since
+      hop-2b's TermOwnershipServiceImpl sidecar is unresolved.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When an operator deletes an owner from the Term Overview ownership list, only that owner's ownership row is removed and the term's other owners remain (per-row delete is scoped to the row)."
+  derivation: "UI shape: each owner row has its own ConfirmationDialog for delete, gated by TERM_OWNERSHIP_DELETE (per hop 1b evidence)."
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The UI fires a per-owner `ConfirmationDialog` (OverviewGeneral.tsx:22-110, hop 1b), so the
+      delete is row-scoped at the UI. The backend `TermOwnershipServiceImpl.delete` is per
+      F-002 batch U flagged as "HARD-DELETE in practice but lacks the DELETED_AT filter as a
+      latent regression vector" (F-156 hop 2b evidence) — but hop-2b's sidecar is UNRESOLVED, so
+      whether the delete is correctly scoped to the single ownership row (vs. a name-set
+      delete-then-recreate like the tag path's upsertTags) cannot be verified from the chain.
+      The tag path (upsertTags, TermServiceImpl.java:255-260) IS a delete-ALL-then-recreate; if
+      term-ownership reused that shape the per-row promise would be violated. This requires a
+      probe.
+    evidence:
+      - sidecar: "(feature-flow F-156 chain hop 2b — sidecar unresolved)"
+        section: chain.hop-2b
+        cite: "TermOwnershipServiceImpl delete path (F-002 batch U facet)"
+        note: "delete shape unverifiable from chain — TermOwnershipServiceImpl sidecar unresolved (VG-2)"
+    operator_visible_failure: |
+      If the backend delete were a delete-then-recreate of the whole owner set (the tag-path
+      shape) rather than a row-scoped delete, a concurrent owner-add could be lost, or an
+      activity/audit consumer could see a spurious full-set churn. Cannot confirm or contradict
+      without running it.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-156-1
+    routes_to_finding: validation-gap
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: PENDING-F-156-1
+
+- id: H-007
+  hypothesis: "When an operator who lacks `TERM_TAGS_UPDATE` opens the Term Overview, the 'Edit tags' / 'Add tags' affordance is not shown (they can read the chips but cannot mutate)."
+  derivation: "Pillar mission + UI shape: the edit affordance is wrapped in `WithPermissions permissionTo={Permission.TERM_TAGS_UPDATE}`."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Both the populated-state edit button and the empty-state "Add tags" button are wrapped in
+      `<WithPermissions permissionTo={Permission.TERM_TAGS_UPDATE}>` (OverviewTags.tsx:32-43,
+      94-98). A caller without that permission renders the chips (read) but not the affordance.
+      Consistent with the platform's per-feature permission-gated affordance pattern.
+    evidence:
+      - sidecar: "(source_read_for_validation — UI sidecar unresolved)"
+        section: source
+        cite: "OverviewTags.tsx:32, 94"
+        note: "WithPermissions wraps both edit-tags affordances"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-008
+  hypothesis: "When a term has no tags, the Tags panel shows an empty state ('Not created.') with an inline Add-tags affordance, rather than a blank or broken panel."
+  derivation: "Negative-space / empty-state: a product owner expects a usable empty state, and the component branches on `tags?.length`."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `OverviewTags.tsx:84-99` renders the `tags?.length` falsy branch: a `Typography`
+      "Not created." plus a `TagsEditForm` Add-tags button (itself permission-gated by
+      TERM_TAGS_UPDATE). The empty state is intentional and actionable.
+    evidence:
+      - sidecar: "(source_read_for_validation — UI sidecar unresolved)"
+        section: source
+        cite: "OverviewTags.tsx:84-99"
+        note: "explicit empty-state branch with inline Add-tags affordance"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-009
+  hypothesis: "When an operator opens the term tags edit dialog, types a novel tag name, and the backend REJECTS the save (e.g. RBAC, validation), the dialog surfaces an error so the operator knows the save failed."
+  derivation: "Negative-space + sibling F-154/F-155 finding: TermsForm / AssignTermQueryExampleForm both have no .catch handler (silent failure); the term-tag edit dialog is the same UX family."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The sibling forms in this feature family are documented to fail silently:
+      TermsForm has no `.catch` on its dispatch chain (F-154b / DOC-199 Caveat 15) and
+      AssignTermQueryExampleForm has no `.catch` on mutateAsync (F-155b / PLT-060 Defect 2),
+      both leaving the dialog open with no error on backend reject. Whether `TagsEditForm`
+      shares this silent-failure shape cannot be verified from the chain — TagsEditForm was
+      `ui_unverified: true` in the F-156 walk ("not read in this UI walk") and has no enriched
+      sidecar. This requires reading TagsEditForm's submit handler OR a probe driving a rejected
+      submit and asserting an error renders.
+    evidence:
+      - sidecar: "(feature-flow F-156 facet tag_create_bypass_via_tagsEditForm_authoring_entry — ui_unverified: true)"
+        section: observed_vs_expected
+        cite: "TagsEditForm.tsx (full read deferred to next pass)"
+        note: "TagsEditForm submit-failure handling unverified; sibling forms (F-154b/F-155b) fail silently"
+    operator_visible_failure: |
+      If TagsEditForm shares the no-catch shape, an operator whose tag save is rejected (RBAC,
+      backend validation) sees the dialog stay open with the form filled and no error message —
+      they cannot tell whether the save succeeded; they may re-submit or assume success and walk
+      away with un-applied tags. This is the LSN-024 silent-empty class.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-156-2
+    routes_to_finding: validation-gap
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: PENDING-F-156-2
+
+- id: H-010
+  hypothesis: "When an operator changes a term's tags or owners, the change is recorded in the term's Activity feed so an auditor can later reconstruct who changed the term's tags/owners and when."
+  derivation: "Cross-pillar promise (P-07 Activity Feed) + pillar mission: catalog stewardship actions are expected to leave an audit trail."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Term tag changes leave NO activity event: `TermServiceImpl.upsertTags`
+      (TermServiceImpl.java:253-264) carries no `@ActivityLog` annotation, and the
+      `ActivityEventTypeDto` enum (ActivityEventTypeDto.java:3-31) has no
+      `TERM_TAGS_UPDATED` value — the audit-silence is schema-rooted (a maintainer adding
+      `@ActivityLog(TERM_TAGS_UPDATED)` would not compile). This is the three-way tag-audit
+      asymmetry of DOC-190: data-entity tag changes log an event (no payload), dataset-field tag
+      changes log a full diff, term tag changes log nothing. Term-ownership changes: the chain
+      does not evidence an `@ActivityLog` on TermOwnershipServiceImpl (hop-2b sidecar unresolved),
+      and the enum likewise has no term-ownership lifecycle value — consistent with the F-006
+      catalog-vocabulary audit-silence pattern.
+    evidence:
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: implicit_adrs / bugs_limitations_corner_cases
+        cite: "TermServiceImpl.java:253-264 + ActivityEventTypeDto.java:3-31"
+        note: "upsertTags has no @ActivityLog; enum has no TERM_TAGS_UPDATED — schema-rooted audit-silence (F-006 / DOC-190 asymmetry)"
+    operator_visible_failure: |
+      (1) An auditor querying the Activity feed for "who changed this term's tags" finds nothing —
+      the change is invisible. (2) The asymmetry is the trap: the same auditor DOES find events for
+      data-entity tag changes, so the absence on terms looks like "no change happened" rather than
+      "term tag changes are never logged". (3) Reconstructing term stewardship history requires
+      direct DB introspection. NOTE: documented (DOC-190 + business-glossary) as a known asymmetry.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When an operator views a term, they see only the tags and owners scoped to a context they are entitled to (the term's namespace / their team), not catalog-wide."
+  derivation: "Negative-space: namespaces imply team isolation; a product owner might expect per-namespace scoping of term metadata visibility."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      There is NO per-namespace or per-tenant scoping on term reads: `TermServiceImpl` and
+      `ReactiveTermRepositoryImpl` apply no owner/tenant filter (TermServiceImpl.md
+      security.owner_scoping — "every authenticated user sees every Term in every namespace").
+      This is the platform's deliberate read-collaborative posture (system-mission.md P-09 line
+      267) — so it is CORRECT-by-design for the platform, but it PARTIALLY contradicts the
+      namespace-as-team-isolation mental model a glossary user might hold. The Tags/Owners on a
+      term are visible to every authenticated user regardless of namespace.
+    evidence:
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: security
+        cite: "TermServiceImpl.md security.owner_scoping; ReactiveTermRepositoryImpl.java:162-179"
+        note: "no per-namespace scoping; read-collaborative posture is platform-wide and intended"
+    operator_visible_failure: |
+      A team assuming a namespace isolates their glossary terms (and the tags/owners on them) from
+      other teams is wrong: all term metadata is catalog-wide readable. This is an intended
+      posture, not a bug — but it is undocumented on the namespace concept and surprises operators
+      who read "namespace" as a tenancy boundary (cross-ref the read-collaborative DOC-NNN
+      follow-up tracked at the P-09 level).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "OverviewTags slices the first 20 tags by backend id-order BEFORE applying the importance sort (both the primary and the collapsed 'View All' path) — important tags on heavily-tagged terms are silently hidden."
+  dedup_status: already_tracked
+  tracked_as: PLT-060
+  distinct_from:
+  recommended_log_as:
+  proposed_fix_anchor: "OverviewTags.tsx:47-49 + 62-64 — `[...tags].sort(tagsCompare).slice(0, visibleLimit)` (sort then slice; spread-copy to avoid mutating React state). PLT-060 Defect 3 already drafts this exact fix."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "TagsEditForm on the term Overview mints novel tags via tagService.getOrCreateTagsByName without consulting TAG_CREATE — TERM_TAGS_UPDATE alone creates global Tag-directory rows."
+  dedup_status: already_tracked
+  tracked_as: PLT-060
+  distinct_from:
+  recommended_log_as:
+  proposed_fix_anchor: "TagsEditForm.tsx (restrictToExisting={!hasPermission(TAG_CREATE)} + CreateTagDialog) + backend tagService.getOrCreateTagsByName consults TAG_CREATE per novel name. PLT-060 Defect 4 + DOC-199 Caveat 13 (doc, done)."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Term-ownership owner-create side-channel is gated only in the UI (disableOwnerCreating prop); the backend term-ownership-create endpoint follows the platform getOrCreate owner-mint class and is not service-tier gated against OWNER_CREATE."
+  dedup_status: already_tracked
+  tracked_as: PLT-059
+  recommended_log_as:
+- hypothesis_id: H-010
+  one_line: "Term tag/owner changes produce no Activity event (schema-rooted: ActivityEventTypeDto has no TERM_TAGS_UPDATED) — three-way tag-audit asymmetry; term stewardship history requires DB introspection."
+  dedup_status: already_tracked
+  tracked_as: DOC-190
+  recommended_log_as:
+- hypothesis_id: H-011
+  one_line: "Term tags/owners are catalog-wide readable; namespace is not a tenancy boundary (read-collaborative posture) — undocumented on the namespace concept."
+  dedup_status: already_tracked
+  tracked_as: DOC-177
+  recommended_log_as:
+- hypothesis_id: H-001
+  one_line: "The Tags panel's importance-sort + 20-chip visible-limit + 'View All' collapse behaviour is NOT documented on business-glossary (WebFetch 2026-06-03: 'important flag, ordering, visible-limit: NOT MENTIONED'); DOC-199 deliberately declined a separate doc caveat for the slice-then-sort defect (one-line code fix)."
+  dedup_status: net_new
+  tracked_as:
+  recommended_log_as: "doc-gap candidate (LOW) — note the deliberate DOC-199 decision; revisit only if PLT-060 Defect 3 does NOT land, in which case the operator-visible ordering behaviour needs a caveat."
+
+### functional_test_demands
+# LSN-030 (Rule 11). Every UNVERIFIED promise (use_case) — including the confirmed ones — is a
+# missing-functional TEST-GAP candidate. F-156's entire use_case set is at 0 verified.
+- use_case_id: F-156-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "An important tag past payload-position 20 is visible in the prioritised chip strip on a heavily-tagged term."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-001)"
+  proposed_test: "UI/component test (or Playwright e2e): seed a term with 21+ tags where the important one is at backend index 25; render OverviewTags; assert the important chip is in the visible (pre-View-All) set. RED today, GREEN after PLT-060 Defect 3."
+- use_case_id: F-156-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "At <=20 tags the importance-first sort is honoured."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-002)"
+  proposed_test: "Component test: render OverviewTags with a mix of important/non-important tags (<=20); assert important chips precede non-important, alphabetical within group. Regression guard for the H-001 fix."
+- use_case_id: F-156-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "TERM_TAGS_UPDATE without TAG_CREATE cannot mint a new global tag from the term tag dialog."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-003)"
+  proposed_test: "Backend integration (StepVerifier / @WebFluxTest): caller with TERM_TAGS_UPDATE but not TAG_CREATE submits upsertTags with a novel name; pin the CURRENT behaviour (tag IS created) as a characterization test (RED-on-fix flips to assert ForbiddenException after PLT-060 Defect 4). Cross-ref TEST-GAP-018 (TermServiceImpl untested)."
+- use_case_id: F-156-UC-004
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "Typing an EXISTING tag name re-uses it (no create, only TERM_TAGS_UPDATE needed)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-004)"
+  proposed_test: "Backend integration: upsertTags with an existing tag name; assert no new tag row created and the relation links the existing tag id; the happy path the dialog is designed for."
+- use_case_id: F-156-UC-005
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "Owner-create is gated at the term Add-owner affordance for callers without OWNER_CREATE."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-005)"
+  proposed_test: "Two-layer: (a) component test — OwnershipForm with createOwner=false disables OwnerAutocomplete creation; (b) backend integration (after probe PENDING-F-156-1) pinning whether term-ownership-create mints an Owner for a novel name without OWNER_CREATE."
+- use_case_id: F-156-UC-006
+  hypothesis_id: H-006
+  kind: teardown
+  promise: "Deleting one owner from a term removes only that ownership row."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-006)"
+  proposed_test: "Backend integration: term with 3 owners; delete one; assert the other two persist and exactly one row is removed (after probe PENDING-F-156-1 resolves the delete shape)."
+- use_case_id: F-156-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "A caller without TERM_TAGS_UPDATE sees the chips but no edit affordance."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-007)"
+  proposed_test: "Component test with a permission context lacking TERM_TAGS_UPDATE; assert the Edit/Add tags button is absent and chips still render."
+- use_case_id: F-156-UC-008
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: "A term with no tags shows an actionable 'Not created.' empty state."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-008)"
+  proposed_test: "Component test: render OverviewTags with tags=[]; assert 'Not created.' text and (with permission) the inline Add-tags button."
+- use_case_id: F-156-UC-009
+  hypothesis_id: H-009
+  kind: edit-reconcile
+  promise: "A rejected tag-save surfaces an error in the dialog (no silent failure)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-009)"
+  proposed_test: "Component/e2e: force a backend reject on tag save; assert an error renders and the dialog state is correct (after probe PENDING-F-156-2 confirms whether TagsEditForm has a .catch)."
+- use_case_id: F-156-UC-010
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "A term's tag/owner changes are auditable in the Activity feed."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-010)"
+  proposed_test: "Backend integration: upsertTags on a term; assert NO activity event is emitted (characterization pin of the current audit-silence; RED-on-fix when a TERM_TAGS_UPDATED enum value is added). Cross-ref DOC-190 / F-006."
+- use_case_id: F-156-UC-011
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: "Term tags/owners are scoped to the viewer's entitlement."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-156-UC-011)"
+  proposed_test: "Backend integration (LDAP stack): a user in namespace A reads a term in namespace B; assert the read-collaborative posture (tags/owners visible) is the intended behaviour — pin it so a future tenancy change is a deliberate flip, not a silent regression."
+
+### probes_emitted
+- probe_id: PENDING-F-156-1
+  hypothesis_id: H-006
+  hypothesis_text: "When an operator deletes an owner from the Term Overview ownership list, only that owner's ownership row is removed and the term's other owners remain (per-row delete is scoped to the row)."
+  expected_outcome: "Seed a term with 3 distinct owners; DELETE one via the term-ownership delete endpoint; assert exactly one term_ownership row removed and the other two persist; observe whether the delete is row-scoped or a delete-then-recreate of the owner set."
+  local_execution_blocked: false
+  note: "Local-only per Rule 6 (odd-minimal docker-compose + psql). Needed because hop-2b TermOwnershipServiceImpl sidecar is unresolved (VG-2)."
+- probe_id: PENDING-F-156-2
+  hypothesis_id: H-009
+  hypothesis_text: "When an operator types a novel tag name in the term tags edit dialog and the backend REJECTS the save, the dialog surfaces an error so the operator knows the save failed."
+  expected_outcome: "Drive a rejected tag save (e.g. backend validation/RBAC reject) through TagsEditForm in a headless browser; assert an error message renders and the dialog does not silently swallow the rejection. RED if TagsEditForm shares the F-154b/F-155b no-catch shape."
+  local_execution_blocked: false
+  note: "Local-only per Rule 6 (Playwright against odd-minimal). Needed because TagsEditForm was ui_unverified:true in the F-156 walk and has no enriched sidecar (VG-3)."
+
+### validation_gaps
+- sidecar: "(UI components: OverviewTags / OverviewGeneral / OwnershipForm — chain hops 1a/1b/1c)"
+  field_insufficient: "All three UI component sidecars are `sidecar: unresolved` in the F-156 chain. Per Rule 9 this reflection's UI-tier verdicts (H-001/H-002/H-005/H-007/H-008) rest on the feature-flow chain.evidence + the ui-review-2026-05-26 walk + the Rule-8 single-line confirming reads (OverviewTags.tsx:17,20-26,47-49,62-64,84-99,32,94; OwnershipForm.tsx:27-132) — NOT on enriched component sidecars. This is NOT an API-only reflection (the UI WAS reviewed), but the absence of component sidecars means the user-experience verdicts are not backed by the same enrichment depth as the TermServiceImpl backend verdicts."
+  proposed_refresh: "Enrich OverviewTags / OverviewGeneral / OwnershipForm as file-analyser sidecars (they are among the ~530 React components LSN-025 / Rule-20 flags as below the UI-axis conceptual ceiling) so future reflections trace UI verdicts through real sidecars rather than chain evidence."
+- sidecar: "(TermOwnershipServiceImpl — chain hop 2b)"
+  field_insufficient: "hop-2b is explicitly `unresolved: true` and `sidecar: (referenced from F-002 batch K coupling)`. The term-ownership CREATE/UPDATE/DELETE backend behaviour — owner-create side-channel (H-005), per-row vs set delete (H-006), activity-audit (H-010) — cannot be verified from the chain; two probes (PENDING-F-156-1) and one caveat rest on this gap."
+  proposed_refresh: "Enrich TermOwnershipServiceImpl as a service sidecar with a Category-F request-input pass (owner_name → getOrCreate; permission gates) + the delete shape + @ActivityLog presence."
+- sidecar: "(TagsEditForm — chain hop 1a child)"
+  field_insufficient: "TagsEditForm carried `ui_unverified: true` in the F-156 walk ('not read in this UI walk; the novel-tag-input handling shape determines confirmation OR refinement'). The submit-failure handling (H-009) and the novel-tag-input UX signal cannot be verified without reading the form."
+  proposed_refresh: "Read TagsEditForm.tsx; enrich as a sidecar capturing the submit handler (.catch presence), the autocomplete novel-input behaviour, and any TAG_CREATE consultation."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: "Tags on a term are 'applied via the standard tagging surface'; the important flag, the importance ordering of chips, and the 20-chip visible-limit / 'View All' behaviour are NOT MENTIONED (WebFetch 2026-06-03)."
+  code_does: "The right-rail sorts by importance then alphabetic and caps at 20 visible chips with a 'View All' reveal (OverviewTags.tsx:17,20-26,58-81) — and does so via a slice-then-sort that breaks the importance ordering (H-001)."
+  recommended_log_as: "doc-gap candidate (LOW) — the ordering/visible-limit behaviour is undocumented; DOC-199 deliberately declined a caveat for the slice-then-sort defect (one-line code fix tracked PLT-060). Revisit only if PLT-060 Defect 3 stalls."
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: "'Typing a novel tag name in the Term tags edit dialog creates a new tag on submit — without consulting TAG_CREATE.' (verbatim caveat, business-glossary 'Known operator caveats')."
+  code_does: "Confirmed — TermServiceImpl.upsertTags → getOrCreateTagsByName mints novel tags (TermServiceImpl.java:257). Code MATCHES doc."
+  recommended_log_as: "none — doc and code agree (DOC-199 Caveat 13 already live). This is a positive doc-coverage confirmation, not a drift."
+
+## maintainer_notes
+
+(Reserved for maintainer hand-edits — preserved across refreshes.)

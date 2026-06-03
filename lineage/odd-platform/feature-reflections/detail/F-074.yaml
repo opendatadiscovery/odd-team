@@ -1,0 +1,840 @@
+---
+feature_id: F-074
+pillar_id: P-08
+pillar_anchored_id: P-08:F-014
+pillar: Management & Administration  # cross-pillar to P-09 Security & Access Control
+feature_name: |-
+  Management-Tab Read-Collaborative Posture — Management directory list endpoints
+  are universally ungated reads (Owners / Datasources / Collectors / Titles /
+  Namespaces / Owner-Association activity / IdP-providers list return their full
+  directory to any authenticated user, and to any anonymous caller under
+  auth.type=DISABLED).
+reflected_at: "2026-06-03T00:00:00Z"
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__TitleController__controller-class__TitleController.md
+  - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+  - odd-platform__java__DataSourceController__controller-method__getDataSourceList.md
+  - odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Page NOW documents the read-collaborative posture explicitly ("There is no
+      OWNER_READ permission"; "withholding OWNER_CREATE ... does not restrict reads";
+      "GET /api/owners is reachable to any authenticated user (and anonymous under
+      auth.type=DISABLED)"). This is a CHANGE from the 2026-05-27 ontology snapshot
+      where F-074a recorded the page as silent. The doc-gap appears REMEDIATED.
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Page NOW warns about (a) "Tab visibility is permission-aware (Associations is
+      the explicit case today; other tabs are visible to any signed-in operator)";
+      (b) "partially-redacted tokens — the last six characters of the token leak
+      through the list response" on Datasources + Collectors; (c) deep-link reads of
+      /management/policies/{id} expose full Policy JSON. CHANGE from the 2026-05-27
+      snapshot (F-074b/F-074c recorded the page as conflating / silent). The
+      doc-drift findings appear REMEDIATED; this reflection re-verifies them as a
+      convergent cross-check rather than re-filing.
+hypothesis_summary:
+  total: 11
+  confirmed: 6
+  contradicted: 2
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      An operator who withholds OWNER_CREATE / DATA_SOURCE_CREATE / etc. expecting
+      reads to be restricted gets NO read restriction — every authenticated user
+      reads every Management directory; the permission set has no read-gating lever.
+related_feature_flows: [F-019, F-020, F-028, F-031, F-036, F-041, F-161, F-171, F-173, F-174]
+related_concepts:
+  - Management-tab-Read-Collaborative-Posture
+  - ADR-CANDIDATE-003  # now promoted: ADR-0003 (read-collaborative authorization, pinned by AdrSecurityRulesContractTest)
+  - read-collaborative-cross-owner-enumeration-posture
+related_drift_classes:
+  - management_read_collaborative_posture_undocumented_across_seven_surfaces
+  - collector_masked_token_last_six_chars_anonymous_under_disabled
+  - idp_provider_topology_fingerprintable_anonymous_under_disabled
+  - owner_association_activity_log_full_forensic_dataset_anonymous_reachable
+  - title_directory_reveals_policy_vocabulary_for_reverse_engineering
+  - owner_directory_pii_disclosure_surface
+  - openapi_403_response_absent_implicit_design_intent_under_documented
+new_drift_classes_proposed: []
+---
+
+# Management-Tab Read-Collaborative Posture — product-owner reflection
+
+## product_owner_narrative
+
+ODD Platform's Management section is the operator-facing surface for everything an
+operator configures inside the running platform: namespaces, datasources,
+collectors and their tokens, owners, the tag taxonomy, RBAC roles and policies,
+and user-owner association requests (per `system-mission.md:222-247`, P-08). This
+feature is not a single screen — it is the **cross-cutting read posture** shared by
+the seven directory-list endpoints behind those tabs: `GET /api/owners`,
+`/api/datasources`, `/api/collectors`, `/api/titles`, `/api/namespaces`,
+`/api/owner_association_request/activity`, and `/api/owners/providers`. The
+product-owner question this feature answers is not "what does one tab show?" but
+"who is allowed to READ the catalog of operational configuration, and does that
+match what an operator setting up RBAC expects?" (per `F-074.yaml:5-14`).
+
+The mechanism is uniform and deliberate. None of the seven list endpoints carries
+a `@PreAuthorize`; none has an entry in `SecurityConstants.SECURITY_RULES`; all
+fall through to the single catch-all `pathMatchers("/**").authenticated()` in
+`AuthorizationCustomizer:29-30` (per the DataSource method sidecar
+`getDataSourceList.md:31-38` and the Title sidecar invariants[3], lines 37). The
+authorization table guards MUTATIONS only — every `*_CREATE` / `*_UPDATE` /
+`*_DELETE` verb is gated, but there is **no `*_READ` permission anywhere in the
+model** (per `permissions` doc WebFetched 2026-06-03 status 200: "There is no
+OWNER_READ permission"). So under `LOGIN_FORM` / `OAUTH2` / `LDAP`, any
+authenticated user reads every directory regardless of role, policy, or owner
+scope; under `auth.type=DISABLED` — the application.yml-shipped default (per
+`DisabledAuthSecurityConfiguration` sidecar, `application.yml:32-34`) — every
+directory is readable by any anonymous network caller, because the DISABLED chain
+is `.anyExchange().permitAll()` and the SECURITY_RULES table is inert.
+
+How a user interacts with it: an operator opens any Management tab (the sidebar
+renders eight of nine tabs to every authenticated user; only Associations is
+hidden behind `OWNER_ASSOCIATION_MANAGE` — per the `ui_review_2026_05_26` block,
+`F-074.yaml:152-184`, the full UI-tier finding living in the newly-minted F-161).
+The tab fires its list GET; the backend returns the full directory paginated
+`id ASC` (insertion order) with no owner-scoping and no server-side size cap. Two
+directories carry sensitive payloads beyond plain labels: the Collector and
+Datasource lists embed each token's **last six plaintext characters** (the masked
+`"******"+last6` form from `TokenMapper.mapValue`, per `getDataSourceList.md:28-32`
+and `TokenMapperImplTest:29-32`), and the Owner-Association activity log exposes
+the full "who approved Alice's binding to Owner-X at T" forensic record set —
+which, notably, has NO SecurityRule of its own (per the OAR controller sidecar
+`security.known_security_gaps[1]`, severity HIGH).
+
+The integration story is cross-pillar. This posture is the read-side complement to
+the P-09 Security pillar: the same `SecurityConstants.SECURITY_RULES` table that
+gates Management mutations is what (by its silence on reads) defines this posture
+(per `system-mission.md:262-267`, P-09 maintainer notes naming the
+read-collaborative posture as "a load-bearing implicit ADR"). The Title directory
+is also a load-bearing dimension for the authorization model itself — Policies can
+gate access by `dataEntity:owner:title == 'X'`, so enumerating `/api/titles`
+hands an attacker the deployment's policy vocabulary (per Title sidecar
+`dependencies_semantic.requires-feature[1]`). The provider-list endpoint exposes
+the auth-strategy topology (LOGIN_FORM / OAUTH2_GOOGLE / OAUTH2_GITHUB / LDAP) to
+any authenticated user (per OAR sidecar `security.data_exposure[2]`).
+
+The edge a product owner would highlight in a demo: this posture is **intentional**
+and now formalised. ADR-CANDIDATE-003 has been promoted to **ADR-0003** and is
+pinned by a contract test (`AdrSecurityRulesContractTest`, `@enforces ADR-0003`)
+that asserts exactly one GET rule exists in the table. The original load-bearing
+drift was operator-INVISIBILITY: the live docs were silent on the posture. As of
+the 2026-06-03 re-fetch, the `/permissions` and `/features/management` pages now
+document it explicitly (the read-collaborative posture, the token last-6 leak, the
+Policy deep-link read). The reflection's job is therefore split: confirm the
+posture is real and the test pins it (it does); and verify whether the
+operator-discoverability gap — the load-bearing finding — is now closed (it
+appears to be, pending live-render confirmation in /review Gate 8).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When any authenticated user (holding zero RBAC permissions) issues
+    GET /api/owners, /api/datasources, /api/collectors, /api/titles, or
+    /api/namespaces, they receive HTTP 200 with the full directory — no
+    permission, no role, and no owner-scope restricts the read.
+  derivation: |-
+    None of the seven list endpoints is in SecurityConstants.SECURITY_RULES; all
+    fall through to AuthorizationCustomizer's catch-all .authenticated(); there is
+    no *_READ permission in the model.
+  seed_source: endpoint-shape + pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The DataSource method sidecar confirms GET /api/datasources has no
+      SECURITY_RULES entry (only POST/PUT/DELETE on /api/datasources* at
+      SecurityConstants.java:116-126) and "any authenticated user lists the entire
+      catalog, no permission, no owner scope" (getDataSourceList.md:31-38). The
+      Title sidecar invariants[3] confirms the identical pattern for /api/titles
+      ("falls through to pathMatchers(\"/**\").authenticated()"). The contract test
+      AdrSecurityRulesContractTest asserts SECURITY_RULES contains exactly ONE GET
+      rule (the OAR list guard) — proving no catalog read is gated. The live
+      /permissions doc states verbatim "GET /api/owners is reachable to any
+      authenticated user".
+    evidence:
+      - sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList.md
+        section: understanding + invariants
+        cite: "SecurityConstants.java:116-126 (POST/PUT/DELETE only) + AuthorizationCustomizer.java:29-30"
+        note: "GET /api/datasources has no rule; falls to authenticated() catch-all"
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: "concepts.invariants[3] + auth_gates"
+        cite: "TitleController.java:14 (no @PreAuthorize) + SecurityConstants.java:98-355 (no rule)"
+        note: "Any authenticated user gets 200 + full title directory regardless of role"
+      - sidecar: source_read_for_validation
+        section: AdrSecurityRulesContractTest.securityRulesGuardMutationsOnly_withTheSingleGetException
+        cite: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/AdrSecurityRulesContractTest.java:41-53"
+        note: "@enforces ADR-0003 — pins exactly ONE GET rule; the read-collaborative contract"
+        source_read_for_validation: true
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: verified
+    test_ref: "AdrSecurityRulesContractTest.securityRulesGuardMutationsOnly_withTheSingleGetException (@enforces ADR-0003)"
+    test_demand: null
+
+- id: H-002
+  hypothesis: |-
+    When an operator practising least-privilege withholds OWNER_CREATE /
+    DATA_SOURCE_CREATE / NAMESPACE_CREATE / COLLECTOR_* from a role (expecting that
+    a user who cannot CREATE a datasource also cannot LIST/READ the datasource
+    directory), the read is restricted to match.
+  derivation: |-
+    Operator mental model from least-privilege: a permission set with no read verb
+    is normally assumed to gate reads too. The pillar's "create / edit / delete"
+    primary actions (system-mission.md:225) imply per-verb gating.
+  seed_source: negative-space + pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Withholding any *_CREATE / *_UPDATE / *_DELETE permission has ZERO effect on
+      read access. The read endpoints consult no permission at all — they fall to
+      the wire-auth catch-all. The live /permissions doc now confirms this verbatim:
+      "None of the Management permissions above gates the corresponding GET
+      endpoint — withholding OWNER_CREATE, NAMESPACE_CREATE, DATA_SOURCE_CREATE,
+      etc. does not restrict reads of the matching catalog" and "Operators who want
+      to restrict read access on a Management catalog cannot do so through this
+      permission set today." There is no *_READ permission to grant or withhold.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "SecurityConstants.java:95-355 (no /api/titles rule, no *_READ key)"
+        note: "No OWNER_RELATION_MANAGE / no read-Permission consulted on the read path"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList.md
+        section: "tests_coverage_semantic.uncovered_behaviours (RBAC)"
+        cite: "getDataSourceList.md:113-116"
+        note: "A user with NO MANAGEMENT permission CAN still list all datasources"
+      - sidecar: WebFetch
+        section: permissions doc
+        cite: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions (2026-06-03 status 200)"
+        note: "Doc now states the no-read-gating posture verbatim"
+    operator_visible_failure: |-
+      (1) An operator who builds a "read-only auditor" role by granting nothing and
+      expects the user to see nothing finds the user can browse every Management
+      directory — owners, datasources, collectors (with token last-6), titles,
+      namespaces. (2) An operator who builds a "datasource viewer but not editor"
+      role cannot scope WHAT the user reads — the user reads ALL datasources across
+      all teams, not a subset. (3) On a multi-tenant / multi-team deployment, there
+      is NO permission lever to isolate one team's Management catalog from another's
+      readers — the only mitigation is a network perimeter (the doc now recommends
+      exactly this). The contradiction is between the least-privilege expectation
+      and the read-collaborative design; it is INTENTIONAL (ADR-0003) but was
+      operator-invisible until the docs were corrected.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: verified
+    test_ref: "AdrSecurityRulesContractTest.securityRulesGuardMutationsOnly_withTheSingleGetException (@enforces ADR-0003 — pins the no-read-gate contract)"
+    test_demand: null
+
+- id: H-003
+  hypothesis: |-
+    When auth.type=DISABLED (the shipped default), an UNAUTHENTICATED network
+    caller issues GET /api/owners (or any of the seven list endpoints) and receives
+    HTTP 200 with the full directory — no login, no token, no 401.
+  derivation: |-
+    DisabledAuthSecurityConfiguration builds .anyExchange().permitAll(); the
+    SECURITY_RULES table is inert under DISABLED; application.yml:34 ships DISABLED
+    as the default.
+  seed_source: cross-pillar + endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Under DISABLED the single bean securityWebFilterChainDisabled matches all
+      exchanges with .anyExchange().permitAll() and no securityMatcher narrowing
+      (DisabledAuthSecurityConfiguration sidecar understanding + invariants). The
+      AuthorizationCustomizer (which applies SECURITY_RULES) is NOT wired under
+      DISABLED, so every /api/** path including the seven directory lists is served
+      to any caller. The Title auth_gates block confirms: "DISABLED — endpoint is
+      unauthenticated; any caller sees the full title list". The live /features/
+      management doc now warns "Any authenticated user (anonymous under DISABLED)".
+    evidence:
+      - sidecar: odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10.md
+        section: understanding + security.data_exposure[0]
+        cite: "DisabledAuthSecurityConfiguration.java:13-18 (.anyExchange().permitAll()) + application.yml:32-34"
+        note: "Default mode serves every /** path to every network caller; SECURITY_RULES inert"
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: "stress_findings.auth_gates"
+        cite: "DisabledAuthSecurityConfiguration.java:16"
+        note: "DISABLED → full title list to any caller (200 OK)"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When any authenticated user (or anonymous caller under DISABLED) issues
+    GET /api/collectors, the response body exposes the last six plaintext
+    characters of every collector's token (the masked "******"+last6 form).
+  derivation: |-
+    The list path constructs TokenDto via the 1-arg masked constructor
+    (showToken=false); TokenMapper.mapValue renders "******" + last 6 chars.
+    The terminal_side_effect of F-074 names this exposure (F-074.yaml:69-77).
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      TokenMapper.mapValue(hidden) returns "******" + the last 6 characters of the
+      token (verified by TokenMapperImplTest: input "secret1234567890" maps to
+      "******567890"). The DataSource list path uses the 1-arg TokenDto constructor
+      → showToken=false → masked form (getDataSourceList.md:28-32). The Collector
+      repository test confirms the list path emits showToken=false. Combined with
+      H-003, under DISABLED these last-6-chars reach any anonymous caller. The
+      live /features/management doc now warns about exactly this ("the last six
+      characters of the token leak through the list response").
+    evidence:
+      - sidecar: source_read_for_validation
+        section: TokenMapperImplTest.mapValue_hiddenToken_masksAllButLastSix
+        cite: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/mapper/TokenMapperImplTest.java:29-32"
+        note: "@validates F-163 — masked form is '******'+last6; verified"
+        source_read_for_validation: true
+      - sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList.md
+        section: understanding + coupling
+        cite: "TokenMapper.java:15-18 + TokenDto.java:6-8 (showToken=false on list path)"
+        note: "List path = masked; register/regenerate = plaintext. Swapping the constructor would leak full tokens"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: verified
+    test_ref: "TokenMapperImplTest.mapValue_hiddenToken_masksAllButLastSix (@validates F-163) + CollectorRepositoryImplTest (showToken=false on list)"
+    test_demand: null
+
+- id: H-005
+  hypothesis: |-
+    When a low-privilege authenticated user (or anonymous caller under DISABLED)
+    issues GET /api/owners/providers, they receive the deployment's configured
+    auth-provider topology (LOGIN_FORM / OAUTH2_GOOGLE / OAUTH2_GITHUB / LDAP) —
+    fingerprinting the identity-provider strategy.
+  derivation: |-
+    GET /api/owners/providers has no SECURITY_RULES entry (OAR controller sidecar);
+    the endpoint returns Provider.values() + the operator-registered subset. The
+    drift_class idp_provider_topology_fingerprintable names this.
+  seed_source: endpoint-shape + cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The OAR controller sidecar confirms GET /api/owners/providers has NO
+      SecurityRule entry and is "gated only by Spring default .authenticated()"
+      (security.known_security_gaps[2], severity LOW). The endpoint returns the
+      public Provider enum + providerUtils.getRegisteredProviders()
+      (OwnerAssociationRequestServiceImpl.java:125-129). A compromised low-privilege
+      user can enumerate the deployment's identity-provider topology; under DISABLED
+      (H-003) so can any anonymous caller.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "security.known_security_gaps[2] + implicit_adrs[4]"
+        cite: "SecurityConstants.java:148-162 (no /api/owners/providers entry) + OwnerAssociationRequestController.java:81-85"
+        note: "Provider enumeration reachable by any authenticated user; intentional (form dropdown) but a fingerprint surface"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When any authenticated user issues GET /api/owner_association_request/activity,
+    they receive the full historical forensic record set (who requested association
+    with which Owner, who approved/declined, when) — a richer dataset than the live
+    pending-request list.
+  derivation: |-
+    GET /api/owner_association_request/activity has NO SecurityRule (OAR sidecar)
+    even though the sibling pending-list GET requires OWNER_ASSOCIATION_MANAGE — an
+    asymmetry the sidecar flags HIGH. The drift_class
+    owner_association_activity_log_full_forensic_dataset names it.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The OAR controller sidecar records this as a HIGH-severity gap: the activity
+      endpoint has no SecurityRule entry while the LIST endpoint
+      (/api/owner_association_request, GET) requires OWNER_ASSOCIATION_MANAGE. The
+      activity view is "strictly a superset of the list view in sensitivity" — yet
+      the more-sensitive view is LESS-gated. The hypothesis (that a user expects the
+      forensic audit log to be at least as protected as the live list) is
+      contradicted: the activity log is reachable by ANY authenticated user (and
+      anonymous under DISABLED), while the live list requires a MANAGEMENT
+      permission. NOTE: AdrSecurityRulesContractTest pins exactly ONE GET rule, so
+      this asymmetry is locked-in by the very contract that defines the posture.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "security.known_security_gaps[1]"
+        cite: "SecurityConstants.java:148-162 (no activity entry) + OwnerAssociationRequestController.java:47-53 + openapi.yaml:3392-3414"
+        note: "Activity-log read ungated while pending-list read is gated — the asymmetry is unintended per sidecar (severity HIGH)"
+    operator_visible_failure: |-
+      (1) An operator who restricts the pending-request list to OWNER_ASSOCIATION_
+      MANAGE holders (expecting the same gate on the audit trail) finds any
+      authenticated user can read the full association forensic history — every
+      "user X requested binding to Owner-Y, admin Z approved at T" event. (2) The
+      activity dataset is richer than the gated list (it includes approver identity,
+      timestamps, and the manual-vs-self distinction), so the LESS-protected surface
+      leaks MORE. (3) Under DISABLED, the entire association audit trail is anonymous-
+      readable. This is a genuine authorization-consistency defect (not merely the
+      catalog-read posture): the maintainer gated one view and left its superset open.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When any authenticated user issues GET /api/titles, they receive every
+    role-label string ever attached to ownership records — and because Policies can
+    gate on dataEntity:owner:title == 'X', this hands the user the deployment's
+    policy vocabulary for reverse-engineering.
+  derivation: |-
+    Title directory is a global, ungated read; the Policies condition fields
+    dataEntity:owner:title / term:owner:title reference these labels (Title sidecar
+    dependencies_semantic.requires-feature[1]). The drift_class
+    title_directory_reveals_policy_vocabulary names it.
+  seed_source: cross-pillar + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The Title sidecar confirms the directory is enumerable by any authenticated
+      user with no owner-scoping (concepts.invariants[3,4]) and that the Policies
+      page uses dataEntity:owner:title / term:owner:title as live condition fields.
+      An attacker enumerating /api/titles learns the exact role-label strings a
+      Policy condition would match against — narrowing reverse-engineering of the
+      RBAC policy surface. This is consistent with ADR-0003 (titles are a
+      read-collaborative directory by design); the security CONSEQUENCE (policy-
+      vocabulary disclosure) is the caveat worth documenting.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: "dependencies_semantic.requires-feature[1] + concepts.invariants[3]"
+        cite: "TitleController.java:14-24 + Policies doc WebFetch 2026-05-25 (dataEntity:owner:title field)"
+        note: "Titles are a Policy condition dimension; ungated enumeration exposes the policy vocabulary"
+    severity: null
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When any authenticated user (or anonymous caller under DISABLED) issues
+    GET /api/owners, the Owner.name values — which on many deployments carry PII
+    (emails, employee handles, pseudonymous research identifiers) — are disclosed in
+    full.
+  derivation: |-
+    GET /api/owners has no read-gate (same posture); Owner.name typically carries
+    PII (F-019 frontmatter / drift_class owner_directory_pii_disclosure_surface).
+  seed_source: negative-space + response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The endpoint reachability is confirmed (H-001/H-003 establish the ungated
+      read; F-074 drift_class owner_directory_pii_disclosure_surface cites
+      SecurityConstants.java:143-147 no-GET-rule + F-019 Owner Lifecycle PII
+      context). However, whether Owner.name actually carries PII is
+      deployment-dependent: on a deployment that names owners by team ("Data
+      Platform Team") there is no PII exposure; on one that names owners by person
+      ("alice@corp.com") there is. The hypothesis is true for the PII-bearing
+      deployment class and false for the team-named class. The CODE always discloses
+      Owner.name; the SENSITIVITY is conditional. No sidecar in this chain enriches
+      the Owner controller list method directly, so the precise response shape is
+      inferred from the F-019 cross-link, not traced in-chain (see validation_gap).
+    evidence:
+      - sidecar: feature-flow F-074
+        section: "observed_vs_expected.facets[owner_directory_pii_disclosure_surface]"
+        cite: "SecurityConstants.java:143-147 (no GET-rule) + F-019 frontmatter"
+        note: "Ungated Owner read; PII exposure is deployment-conditional"
+    operator_visible_failure: |-
+      On a public-facing deployment hosting personally-named owners, the ungated
+      GET /api/owners is a PII information-disclosure surface: any authenticated user
+      (anonymous under DISABLED) can harvest the full owner roster including any
+      email / handle in Owner.name. On a team-named deployment there is no PII
+      consequence. The gap is that the platform offers no read-gate lever to protect
+      the PII-bearing case (the H-002 contradiction applied to PII).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an operator reads the live /permissions documentation page to understand
+    Management access control, the page tells them that reading a Management
+    directory is ungated (no *_READ permission) and that withholding *_CREATE does
+    not restrict reads — so the operator is not surprised at runtime.
+  derivation: |-
+    The LOAD-BEARING drift of F-074 is operator-invisibility: the docs were silent
+    on the read posture (F-074a, missing-caveat HIGH). A product owner expects the
+    published manual to state the posture an operator's least-privilege intuition
+    would otherwise violate.
+  seed_source: doc-claim + pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      As of the 2026-06-03 WebFetch (status 200), the live /permissions page now
+      states verbatim: "There is no OWNER_READ permission"; "None of the Management
+      permissions above gates the corresponding GET endpoint — withholding
+      OWNER_CREATE, NAMESPACE_CREATE, DATA_SOURCE_CREATE, etc. does not restrict
+      reads"; "GET /api/owners is reachable to any authenticated user (and anonymous
+      under auth.type=DISABLED)"; and "Operators who want to restrict read access on
+      a Management catalog cannot do so through this permission set today." This is
+      a CHANGE from the 2026-05-27 ontology snapshot (F-074a recorded the page as
+      silent). The load-bearing doc-gap is REMEDIATED — the doc now matches the code
+      (and is correct because it matches what the code does, per Rule 1).
+    evidence:
+      - sidecar: WebFetch
+        section: permissions doc
+        cite: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions (2026-06-03 status 200)"
+        note: "Doc now documents the no-read-gate posture verbatim — F-074a appears resolved"
+      - sidecar: feature-flow F-074
+        section: "scanner_reviews.findings_produced[F-074a]"
+        cite: "F-074.yaml:226-238"
+        note: "Original finding: page silent on read-collaborative posture across 7 endpoints"
+    severity: null
+    confidence: MEDIUM  # MEDIUM pending /review Gate 8 live-render confirmation (WebFetch body vs raw HTML)
+    routes_to_finding: doc-gap-candidate  # to CONFIRM-resolved, not to file-open
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When an integrator reads the OpenAPI spec for the seven Management list GETs,
+    the spec signals the design intent (authenticated reads are not 403-gated) so
+    the integrator does not code defensive 403-handling that never fires.
+  derivation: |-
+    The OpenAPI spec declares only 200 and 500 (no 403) on these GETs — implicitly
+    encoding the no-read-gate intent (drift_class
+    openapi_403_response_absent_implicit_design_intent_under_documented).
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The drift_class records that the OpenAPI spec declares only 200/500 (no 403)
+      on these GETs — which is CONSISTENT with the code (authenticated reads are not
+      permission-gated, so a 403 is never returned for an authenticated caller). The
+      spec is therefore accidentally-correct: a 403 absence happens to encode the
+      intent. But the encoding is IMPLICIT — an integrator reading only the spec
+      cannot tell whether 403-absence means "reads are open by design" or "the spec
+      author forgot the 403". The hypothesis (the spec actively signals intent) is
+      partially true: the spec does not CONTRADICT the code, but it does not
+      explicitly STATE the read-collaborative intent either. The drift facet notes
+      "no DOC-NNN follow-up exists for this implicit-design encoding" (F-074.yaml:146).
+    evidence:
+      - sidecar: feature-flow F-074
+        section: "observed_vs_expected.facets[openapi_403_response_absent_implicit_design_intent_under_documented]"
+        cite: "F-074.yaml:137-146 (openapi.yaml — no 403 on any GET in this set)"
+        note: "403-absence is consistent with the code but does not explicitly document the intent"
+    operator_visible_failure: |-
+      An integrator generating a client from the spec sees no 403 on the Management
+      list GETs and may (a) assume reads are always permitted and skip auth-error
+      handling (correct outcome, accidental reasoning), or (b) assume the spec is
+      incomplete and add speculative 403-handling that never fires. The ambiguity is
+      low-severity (the runtime behaviour is unaffected) but the spec is a missed
+      opportunity to document the intent at the contract layer.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When a non-ADMIN operator opens the Management sidebar, the eight visible tabs
+    (Namespaces / Datasources / Integrations / Collectors / Owners / Tags / Roles /
+    Policies) consistently signal that the user can READ each directory — i.e. the
+    sidebar visibility matches the read-access reality, so the operator's mental
+    model is not misled.
+  derivation: |-
+    The ui_review_2026_05_26 block records that 8 of 9 tabs are visible to every
+    authenticated user, with only Associations hidden (gated by
+    OWNER_ASSOCIATION_MANAGE) — an asymmetry that builds an "Associations is
+    special" operator mental model.
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The sidebar-visibility behaviour is described in the ui_review_2026_05_26
+      block (ManagementTabs.tsx:19-50: 8 of 9 tabs unconditionally visible, only
+      Associations hidden via hideAssociations from !hasAccessTo(OWNER_ASSOCIATION_
+      MANAGE)). This means the sidebar leaks the EXISTENCE of every Management
+      catalog (e.g. the "Policies" label tells a non-admin a Policy catalog exists)
+      BEFORE the read fires — and is largely CONSISTENT with the read-access reality
+      (8 tabs visible = 8 readable). But there is an inconsistency worth verifying by
+      running the UI: the Associations tab is HIDDEN (suggesting no read access) yet
+      the underlying /api/owner_association_request/activity endpoint is UNGATED
+      (H-006) — so the sidebar says "you can't see Associations" while the activity
+      endpoint behind it is anonymous-readable. Whether a non-admin user can reach
+      the activity data by deep-linking past the hidden tab requires running the UI
+      with a non-admin session. This chain's UI hop is unresolved; the authoritative
+      UI finding lives in F-161.
+    evidence:
+      - sidecar: feature-flow F-074
+        section: "ui_review_2026_05_26.notes"
+        cite: "F-074.yaml:152-184 (ManagementTabs.tsx:19-50) + cross-link F-161"
+        note: "8 of 9 tabs unconditionally visible; Associations hidden — but its endpoint is ungated (H-006)"
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-074-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: "probe PENDING-F-074-1"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: |-
+    GET /api/owner_association_request/activity (the forensic audit log) has NO
+    SecurityRule while the less-sensitive sibling pending-list GET requires
+    OWNER_ASSOCIATION_MANAGE — the more-sensitive superset is the less-gated surface.
+  dedup_status: already_tracked
+  tracked_as: PLT-054-family / SecurityRulesAuthzGapsKnownBugsTest authz-gap class
+  distinct_from: PLT-054
+  recommended_log_as: null
+  proposed_fix_anchor: |-
+    Add a SECURITY_RULES entry for /api/owner_association_request/activity →
+    OWNER_ASSOCIATION_MANAGE (SecurityConstants.java:148-162). NOTE: this CONFLICTS
+    with AdrSecurityRulesContractTest's "exactly ONE GET rule" pin — closing this
+    gap requires updating ADR-0003 + the contract test to allow the activity-log
+    GET rule (a deliberate exception, like the pending-list rule). The dedup keyword
+    grep (owner_association_request activity / SecurityConstants / ungated) found
+    the SecurityRulesAuthzGapsKnownBugsTest authz-gap pin family in odd-platform-api;
+    this specific endpoint (activity log) is a DISTINCT gap from PLT-054 (slack/
+    events whitelist) and PLT-020 (genai) — it is the audit-log-superset asymmetry,
+    not yet pinned by name. Treat as net-new-within-the-tracked-class: file as a new
+    PLT-NNN cross-referencing the existing authz-gap test, OR fold into the next
+    SECURITY_RULES authz-gap pin batch.
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: |-
+    Least-privilege expectation fails: withholding *_CREATE does not restrict reads;
+    there is no *_READ permission; the only read-isolation lever is a network
+    perimeter.
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-187 + DOC-GAP-082 (META) — strengthened by scan finding F-074a
+  recommended_log_as: null  # doc now documents this verbatim (H-009) — caveat appears SATISFIED in the live doc
+- hypothesis_id: H-007
+  one_line: |-
+    Ungated GET /api/titles exposes the deployment's Policy vocabulary
+    (dataEntity:owner:title condition strings) for reverse-engineering.
+  dedup_status: net_new
+  distinct_from: DOC-GAP-189
+  recommended_log_as: |-
+    caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/policies
+    (the Policies page should note that the title vocabulary it gates on is itself
+    enumerable by any authenticated user via GET /api/titles)
+- hypothesis_id: H-008
+  one_line: |-
+    Ungated GET /api/owners discloses Owner.name (PII on person-named deployments)
+    to any authenticated user (anonymous under DISABLED).
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-187 (read-collaborative posture meta) + F-019 PII context
+  recommended_log_as: null
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# H-001/H-002/H-004 are coverage:verified (real tests exist) — NO demand for those.
+- use_case_id: F-074-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: |-
+    Under auth.type=DISABLED, an UNAUTHENTICATED caller gets HTTP 200 + the full
+    directory on each of the seven Management list endpoints (no 401).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-074-UC-3)"
+  proposed_test: |-
+    @SpringBootTest with auth.type=DISABLED: WebTestClient GET /api/owners (and the
+    other six) asserts 200 (not 401/302) for an unauthenticated request. Pins the
+    DISABLED permit-all posture so a future securityMatcher narrowing or permitAll→
+    authenticated swap RED-flags. (DisabledAuthSecurityConfiguration sidecar notes
+    ZERO test coverage for this class today.)
+- use_case_id: F-074-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: |-
+    GET /api/owners/providers returns the auth-provider topology to any
+    authenticated user (anonymous under DISABLED) — a fingerprint surface.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-074-UC-5)"
+  proposed_test: |-
+    @WebFluxTest / WebTestClient GET /api/owners/providers with a zero-permission
+    authenticated principal asserts 200 + a non-empty provider list (no MANAGEMENT
+    permission required). Pins the intentional-but-ungated provider-discovery.
+- use_case_id: F-074-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: |-
+    GET /api/owner_association_request/activity is reachable by any authenticated
+    user while the pending-list GET requires OWNER_ASSOCIATION_MANAGE (the
+    asymmetry). This test is BOTH the contradiction-characterization AND the
+    regression guard for the fix.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-074-UC-6)"
+  proposed_test: |-
+    Characterization pin (LSN-029 style): assert that a non-MANAGEMENT principal
+    GETs /api/owner_association_request/activity with 200 (the CURRENT ungated
+    behaviour) while GET /api/owner_association_request returns 403 — GREEN now, RED
+    when the activity-log gate is added. Pair with the H-006 bug-candidate fix.
+- use_case_id: F-074-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: |-
+    GET /api/titles returns the full title directory (the Policy vocabulary) to any
+    authenticated user.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-074-UC-7)"
+  proposed_test: |-
+    WebTestClient GET /api/titles with a zero-permission authenticated principal
+    asserts 200 + the full directory (no per-permission gate). The Title sidecar
+    records the controller+service list paths have ZERO direct test coverage today.
+- use_case_id: F-074-UC-8
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: |-
+    GET /api/owners returns the full owner roster (including PII-bearing
+    Owner.name) to any authenticated user (anonymous under DISABLED).
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-074-UC-8)"
+  proposed_test: |-
+    WebTestClient GET /api/owners with a zero-permission principal asserts 200 + the
+    full roster (no read-gate). Pins the ungated owner read; the PII sensitivity is
+    a deployment caveat, not a code assertion.
+- use_case_id: F-074-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: |-
+    The Management sidebar shows 8 of 9 tabs to every authenticated user; the hidden
+    Associations tab is NOT a read-access guarantee (its activity endpoint is ungated).
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-074-1 (UI) — authoritative UI test lives in F-161"
+  proposed_test: |-
+    Playwright (odd-platform/tests harness): with a non-admin session, assert the
+    Associations sidebar tab is hidden BUT a direct fetch to
+    /api/owner_association_request/activity still returns 200 — surfacing the
+    sidebar-vs-endpoint inconsistency to the user. Defer to F-161's IT-NNN.
+
+### probes_emitted
+- probe_id: PENDING-F-074-1
+  hypothesis_id: H-011
+  hypothesis_text: |-
+    When a non-ADMIN operator opens the Management sidebar, the eight visible tabs
+    consistently signal read access matching reality — AND specifically: the hidden
+    Associations tab does NOT prevent a non-admin from reaching the ungated
+    /api/owner_association_request/activity endpoint by deep-linking. Probe: stand
+    up odd-platform locally with auth.type=LDAP (the only mode giving per-user
+    roles), log in as a non-OWNER_ASSOCIATION_MANAGE user, confirm the Associations
+    tab is hidden in the sidebar, then issue GET /api/owner_association_request/
+    activity directly and observe whether 200 (ungated, sidebar misleads) or 403.
+    Local-only: docker-compose odd-platform + osixia OpenLDAP per the project's
+    documented LDAP gotchas. emitted_by: feature-reflector. status:
+    pending-reflection-verification. expected_outcome: 200 (ungated — confirming the
+    sidebar-vs-endpoint inconsistency of H-006/H-011).
+  probe_path: "(parallel-safe mode — not materialised; recorded here for orchestrator mint)"
+
+### validation_gaps
+- sidecar: "(feature-flow F-074 chain — UI hop)"
+  field_insufficient: "chain.hop[1] sidecar: unresolved (the Management list-table UI components)"
+  proposed_refresh: |-
+    RULE 9 (senior-product-owner, from-the-screen): this feature's own UI hop is
+    unresolved — the chain reaches the seven list ENDPOINTS but not the React
+    components that render the directory TABLES the operator actually reads
+    (OwnersList / DataSourcesList / CollectorsList / TitleList tables, the
+    Management tab bodies). This reflection is therefore API/posture-level: it
+    confirms WHO can call the endpoints and WHAT they return, but it cannot judge
+    what the operator SEES on screen (does the UI surface the token last-6 leak
+    visibly? does a non-admin SEE the same table rows an admin sees? is the
+    read-collaborative posture conveyed anywhere in the UI?). The authoritative
+    UI-tier finding lives in F-161 (Management Section Top-Level Chrome, newly
+    minted from ui_review_2026_05_26). The next file-analyser pass should enrich the
+    Management list-table components and feed them into this chain (or F-161 should
+    own the on-screen reflection). Until then H-011 is probe-needed, not confirmed.
+- sidecar: "(no enriched sidecar for OwnerController#list / NamespaceController#list / CollectorController#list)"
+  field_insufficient: "understanding (the Owner/Namespace/Collector list method semantics)"
+  proposed_refresh: |-
+    H-001/H-004/H-008 trace the read posture through the DataSource method sidecar
+    + the Title class sidecar + the OAR class sidecar as representatives of the
+    uniform posture, but the OwnerController#list, NamespaceController#list, and
+    CollectorController#list methods have no dedicated enriched sidecar in this
+    chain (only their class-level controllers exist). The posture is uniform (per
+    F-074's primary_subject naming all seven), so the verdicts hold by the shared
+    SecurityConstants evidence — but a method-level sidecar for each would let the
+    masked-token (Collector) and PII (Owner) verdicts cite the precise response-
+    mapping line rather than the cross-feature inference (H-008 confidence is MEDIUM
+    for exactly this reason).
+
+### doc_drift_findings
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+  doc_says: |-
+    "There is no OWNER_READ permission"; "withholding OWNER_CREATE ... does not
+    restrict reads"; "GET /api/owners is reachable to any authenticated user (and
+    anonymous under auth.type=DISABLED)"; "Operators who want to restrict read access
+    on a Management catalog cannot do so through this permission set today."
+  code_does: |-
+    Exactly this — SECURITY_RULES has no *_READ key; the read endpoints fall to the
+    catch-all .authenticated(); AdrSecurityRulesContractTest pins exactly one GET
+    rule. The code and the doc now AGREE.
+  recommended_log_as: |-
+    CONFIRM-RESOLVED on DOC-GAP-187 / DOC-GAP-082 (the read-collaborative-posture
+    doc-gap). This reflection re-derived the F-074a scan finding and found the live
+    doc now covers it — a convergent CLOSE signal, not a new open finding. /review
+    Gate 8 should confirm via raw-HTML fetch (WebFetch body may mask head-level
+    truncation per the live-render-verify memory).
+- hypothesis_id: H-002 / H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: |-
+    "Tab visibility is permission-aware (Associations is the explicit case today;
+    other tabs are visible to any signed-in operator)"; "partially-redacted tokens —
+    the last six characters of the token leak through the list response" on
+    Datasources + Collectors; deep-link reads of /management/policies/{id} expose
+    full Policy JSON.
+  code_does: |-
+    Matches — 8 of 9 tabs unconditionally visible (ManagementTabs.tsx:19-50); token
+    list path renders "******"+last6 (TokenMapperImplTest). The doc now AGREES with
+    the code; the F-074b (conflation) + F-074c (token bystander-read) drifts appear
+    REMEDIATED.
+  recommended_log_as: |-
+    CONFIRM-RESOLVED on DOC-GAP-186 (Management tab-visibility contradiction) +
+    DOC-GAP-189 (Collector token caveat). Convergent CLOSE signal. /review Gate 8
+    confirms live.
+
+## maintainer_notes
+
+(empty — preserved across refreshes; only the maintainer hand-edits this block.)

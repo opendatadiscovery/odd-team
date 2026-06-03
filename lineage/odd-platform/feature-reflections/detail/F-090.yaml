@@ -1,0 +1,1033 @@
+---
+feature_id: F-090
+pillar_anchored_id: "P-09:F-011"
+pillar: "P-09 Security & Access Control"
+feature_name: |-
+  Permission Read Surface — Contextual vs Non-Contextual Split: the OpenAPI
+  spec exposes PermissionResourceType.MANAGEMENT as a valid value on
+  GET /api/resource/{type}/{id}/permissions, but the runtime service rejects
+  MANAGEMENT with HTTP 400 USR001 because management-scope permissions live on
+  a separate endpoint (whoami -> Identity.permissions); the UI consumes BOTH
+  halves through WithPermissionsProvider
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  # The feature-flow chain hops are ALL `sidecar: unresolved` (F-090 was
+  # SHB-113-seeded and composed from shoebox + spec evidence). BUT two of the
+  # central nodes DO have richly-enriched sidecars on disk (Glob-confirmed) and
+  # were read in full; the rest (service-tier, IdentityServiceImpl, PolicyTypeDto,
+  # UI) have NO sidecar and were validated via Rule-8-exception single-line
+  # source reads (recorded in source_reads_for_validation + source_read_for_validation
+  # on each verdict).
+  - "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md  (HIGH, file-analyser/0.2.0 — the central enriched node)"
+  - "odd-platform__java__PermissionController__controller-class__PermissionController.md  (HIGH, file-analyser/0.4.0 schema_v0.3.0 — class-level scope, names the two-endpoint split + the UI-selector cross-link)"
+  - "odd-platform__java__PermissionController__controller-method__getPolicyPermissions.md  (PHANTOM node — read to confirm REFACTOR-435 is a methodology miss, NOT a real endpoint)"
+source_reads_for_validation:
+  # Rule 8 exception — single-line confirmations the unresolved/absent sidecars omitted.
+  # Each recorded so the next file-analyser pass on these nodes fills the gap.
+  - file: "PermissionServiceImpl.java:22-30,32-40,42-49"
+    confirmed: |
+      getResourcePermissionsForCurrentUser (line 22-30): PolicyTypeDto.valueOf
+      (resourceType.name()) at :24; `if (!policyTypeDto.isHasContext()) throw new
+      BadUserRequestException("Resource type " + resourceType + " does not have
+      context")` at :25-27. getNonContextualPermissionsForCurrentUser (line 32-40)
+      is the COMPLEMENT — `if (policyTypeDto.isHasContext()) throw new
+      BadUserRequestException("... has context")` at :35-37, then
+      getNonContextualPermissions(). getExtractor (line 42-49) throws
+      IllegalArgumentException("No extractor for resource type %s") at :47-48 when
+      no extractor bean matches the PolicyTypeDto. (Note: F-090.yaml cites these as
+      lines 24-27 / 47-48 — the current file is one line off but identical in shape.)
+  - file: "PolicyTypeDto.java:8-14"
+    confirmed: |
+      enum PolicyTypeDto { DATA_ENTITY(true), TERM(true), QUERY_EXAMPLE(true),
+      MANAGEMENT(false); } with `private final boolean hasContext`. EXACTLY THREE
+      contextual types — DATA_ENTITY, TERM, QUERY_EXAMPLE — and NO `NAMESPACE`
+      value (the doc/spec backlog items DOC-240/DOC-243/SPC-002 reference a
+      NAMESPACE resource type that does NOT exist in the current enum — surfaced
+      as a doc_drift_finding below).
+  - file: "ControllerAdvice.java:24-28,61-66"
+    confirmed: |
+      @ExceptionHandler(BadUserRequestException.class) @ResponseStatus(BAD_REQUEST)
+      at :24-25 — so the MANAGEMENT-reject surfaces as HTTP 400 with the
+      BadUserRequestException's ErrorCode. There is NO
+      @ExceptionHandler(IllegalArgumentException.class); the catch-all
+      @ExceptionHandler(Exception.class) @ResponseStatus(INTERNAL_SERVER_ERROR) at
+      :61-66 returns ErrorCode.SERVER_EXCEPTION + body "Internal Server Error",
+      DISCARDING the "No extractor for resource type %s" message. Confirms the
+      400-for-MANAGEMENT vs 500-for-missing-extractor asymmetry.
+  - file: "IdentityServiceImpl.java:29-52"
+    confirmed: |
+      whoami() (line 30-34) -> getCurrentUser().flatMap(getAssociatedOwner).
+      getAssociatedOwner (line 36-52) Mono.zip's the associated owner + last
+      association request + `permissionService.getNonContextualPermissionsForCurrentUser
+      (PermissionResourceType.MANAGEMENT).collectList()` at :42-43, then
+      associatedOwnerMapper.mapAssociatedOwnerWithPermissions(dto, permissions) at
+      :50. So whoami HARDCODES MANAGEMENT (the only non-contextual type) and is the
+      SOLE API surface delivering management-scope permissions. The caller cannot
+      pass a resource type to whoami.
+  - file: "profile.selectors.ts:17-20,27"
+    confirmed: |
+      getGlobalPermissions (line ~17-20) = `profile => profile.owner?.identity.permissions
+      || emptyArr` (reads the whoami half). The contextual selector (line ~27)
+      reads `profile.permissions[resourceType][resourceId] || emptyArr` (the
+      /api/resource/.../permissions half). Confirms the UI's WithPermissionsProvider
+      consumes BOTH halves from two distinct API surfaces.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      WebFetched live this invocation (200). The page has been MATERIALLY IMPROVED
+      since the F-090 facet's 2026-05-25 snapshot (the F-090.yaml facets recorded
+      this page documenting NEITHER endpoint, NEITHER the enum, NEITHER the split).
+      It NOW documents verbatim: a 2-endpoint table — `GET /api/resource/{type}/{id}/permissions`
+      = "The permissions the caller holds in the named resource's context"
+      (Contextual / resource-scoped) vs `GET /api/identity/whoami -> Identity.permissions`
+      = "Non-contextual / management-scope", "as a flat permission list, no resource
+      ID"; "The OpenAPI PermissionResourceType schema declares four values
+      (DATA_ENTITY, TERM, QUERY_EXAMPLE, MANAGEMENT)"; and the five operator-readable
+      categories (Data entity / Term / Query Example / Lookup table / Management)
+      reconciled against the four resource types "because lookup table permissions
+      are management-scoped". This is the DOC-243 / DOC-240 outcome (both review-PASS
+      in the backlog). So the contextual_non_contextual_split_undocumented and the
+      five-categories-vs-four-enum drift_classes are NOW DOC-CLOSED. STILL the
+      open residue: the live page (and DOC-243/DOC-240/SPC-002) name the three
+      contextual types inconsistently — the docs/spec items say DATA_ENTITY /
+      NAMESPACE / TERM, while the live page (per this fetch) and the CODE
+      (PolicyTypeDto.java:8-12) say DATA_ENTITY / TERM / QUERY_EXAMPLE. The
+      doc backlog drifted to a NAMESPACE type that the enum does not have.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 3
+  probe_needed: 0
+  probes_emitted_count: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: |
+      A third-party integrator who compiled an SDK from openapi.yaml and calls
+      GET /api/resource/MANAGEMENT/{id}/permissions (a value the spec declares
+      valid) gets HTTP 400 USR001 "Resource type MANAGEMENT does not have context",
+      not the management permission list — and must read source + the whoami chain
+      to discover that management-scope permissions live on a different endpoint.
+related_feature_flows:
+  - F-006   # P-09:F-001 RBAC policy lifecycle — F-006 is the WRITE side; F-090 is the READ-side complement (same policy-evaluation graph)
+  - F-085   # P-09 Identity Probe — whoami is the global/management half; F-085 owns the whoami surface, F-090 owns the contextual/whoami SPLIT
+  - F-026   # P-03 Lookup Tables — LOOKUP_TABLE_* permissions are reachable ONLY via the MANAGEMENT (whoami) half; F-090 anchors how the UI discovers them
+  - F-029   # P-11 Platform Public API Contract — the spec-vs-runtime drift is also a Platform-API-contract issue (cross-pillar; SPC-002 is the spec-side fix)
+related_concepts:
+  - permission_resource_type_spec_runtime_drift
+  - authorization_read_surface_two_endpoint_split
+  - "Permission"
+  - "PolicyTypeDto (hasContext discriminator)"
+  - "Read-collaborative posture (read-side permission discovery ungated)"
+related_drift_classes:
+  # Confirmed by this reflection from F-090's observed_vs_expected.facets:
+  - openapi_spec_management_valid_runtime_rejects_400_usr001
+  - contextual_non_contextual_split_undocumented_two_endpoints_one_concept   # now DOC-CLOSED (DOC-243/DOC-240); the CODE/SPEC split remains
+  - live_docs_five_permission_categories_code_four_resource_types_lookup_table_in_management   # now DOC-CLOSED on the live page
+  - illegalargumentexception_on_missing_extractor_5xx_not_400
+  - ui_consumes_both_halves_no_central_permission_catalogue_endpoint
+  - spec_correctness_vs_architectural_split_pollution
+new_drift_classes_proposed:
+  # NEW from H-008 — the doc/spec backlog items themselves (DOC-240/DOC-243/SPC-002)
+  # name the three contextual resource types as DATA_ENTITY/NAMESPACE/TERM, but the
+  # live code enum (PolicyTypeDto.java:8-12) is DATA_ENTITY/TERM/QUERY_EXAMPLE — there
+  # is no NAMESPACE PolicyTypeDto. The remediation artefacts drifted from the code
+  # they remediate. Not previously catalogued.
+  - remediation_docs_name_namespace_contextual_type_code_enum_has_query_example_not_namespace
+  # NEW from H-002 — the LEGITIMATE promise the contextual endpoint DOES deliver,
+  # framed as the user's intended happy path (a UI button-enable check for a real
+  # DATA_ENTITY/TERM/QUERY_EXAMPLE). The drift catalogue had only the misuse/spec
+  # facets, never "what does this correctly do for its real consumer (the UI)".
+  - contextual_permission_read_correctly_powers_ui_button_enable_state_the_intended_capability
+---
+
+# Permission Read Surface — Contextual vs Non-Contextual Split — product-owner reflection
+
+## product_owner_narrative
+
+The Permission Read Surface answers a question every authenticated user's UI silently asks on every page it renders: *"what is this person allowed to do on the thing they're looking at right now?"* A product owner frames it like this: "When you open a Data Entity, a Term, or a Query Example, the platform asks the backend — against the live policy graph, not a stale cache — which actions you may perform, and uses the answer to enable or disable buttons (edit description, change ownership, add a tag). When you need to know your *global* management powers (can I create a Policy? edit a Lookup Table? manage owners?), that answer rides on your identity payload instead." The audience is the **odd-platform-ui-end-user** (whose buttons this drives) and the **odd-api-consumer / integration-author** compiling an SDK against the Platform API (per `system-mission.md:249-266` P-09 + the P-11 developer surface). It is the READ-side dual of F-006's RBAC write side — same policy-evaluation graph, asked "what do I have" instead of "is this mutation allowed" (per `getResourcePermissions` sidecar `understanding` + `implicit_adrs[0]`).
+
+The first thing a senior product owner notices is that **this one user-facing capability is delivered by TWO endpoints, and which one you hit depends on a property of the resource type you ask about** — a fact invisible from the OpenAPI surface. Contextual permissions (for a specific entity/term/query-example) come from `GET /api/resource/{permission_resource_type}/{resource_id}/permissions` (per `PermissionController.java:20-25`, a single-method delegating controller). Global management permissions come from `GET /api/identity/whoami`, whose `Identity.permissions` field is populated by `IdentityServiceImpl.getAssociatedOwner` calling `permissionService.getNonContextualPermissionsForCurrentUser(PermissionResourceType.MANAGEMENT)` (per `IdentityServiceImpl.java:42-43`, source-read this invocation). The discriminator that routes between them is `PolicyTypeDto.hasContext` — `DATA_ENTITY/TERM/QUERY_EXAMPLE` carry `true`, `MANAGEMENT` carries `false` (per `PolicyTypeDto.java:8-12`).
+
+The working parts as a product owner would demo them, traced through the chain. **Dispatch**: the contextual endpoint computes `PolicyTypeDto.valueOf(resourceType.name())` then, `if (!policyTypeDto.isHasContext())`, throws `BadUserRequestException("Resource type " + resourceType + " does not have context")` (per `PermissionServiceImpl.java:24-27`). **Evaluation** (contextual happy path): for a real `DATA_ENTITY`, it loads the caller's roles -> policies, builds the resource context (entity dimensions + tags + the caller's associated owner), evaluates every policy statement, and emits the union as a `Flux<Permission>` (per `getResourcePermissions` sidecar `understanding` + `concepts.invariants[2]`). **The whoami half** hardcodes `MANAGEMENT` (the only non-contextual type) and cannot be parameterised by the caller (per `IdentityServiceImpl.java:42`). **The UI orchestration**: `getGlobalPermissions` reads `profile.owner?.identity.permissions` (the whoami half) and a separate selector reads `profile.permissions[resourceType][resourceId]` (the contextual half) — `WithPermissionsProvider` stitches the two (per `profile.selectors.ts:17-20,27`, source-read this invocation).
+
+The integration story (per `system-mission.md` P-09 cross-pillar graph + F-090 `related_features`): F-006 is the WRITE side of the same policy graph; F-085 owns the whoami surface this feature shares; F-026 (Lookup Tables) depends on this split because `LOOKUP_TABLE_*` permissions are folded into the MANAGEMENT bucket and are therefore reachable ONLY through the whoami half — a Lookup-Table page cannot ask "what can I do on lookup table X?" contextually (per `getResourcePermissions` sidecar `bugs_limitations_corner_cases[2]`). F-029 (Platform Public API Contract, P-11) is the upstream owner of the OpenAPI-vs-runtime drift class that this feature instantiates for `PermissionResourceType`.
+
+A product owner would flag four edge cases in a demo. (a) **The spec lies to an SDK author**: `components.yaml:3381-3387` declares MANAGEMENT a valid `PermissionResourceType`, so a generated client offers a four-way switch; calling the MANAGEMENT arm against the runtime returns HTTP 400 USR001, not a permission list (H-001). (b) **A latent operator-maintainer trap**: a future maintainer who adds a contextual `PolicyTypeDto` value but forgets the extractor bean gets `IllegalArgumentException("No extractor...")`, which — because `ControllerAdvice` has no handler for it — surfaces as HTTP 500 "Internal Server Error", not the descriptive 400 the MANAGEMENT path gets (H-005, source-confirmed at `ControllerAdvice.java:61-66`). (c) **Under DISABLED the contextual endpoint returns `[]`** (no SecurityContext -> empty policy chain) while mutation endpoints are simultaneously open — the UI greys out every button while the API accepts every write (H-006). (d) **There is no single "tell me everything I can do" call** — an integrator must orchestrate both endpoints themselves (H-007); the live docs now describe this orchestration (WebFetched 2026-06-03, the DOC-243 outcome) but the API offers no unified surface.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When a third-party integrator who compiled an SDK from openapi.yaml calls
+    GET /api/resource/MANAGEMENT/{id}/permissions (MANAGEMENT being a value the
+    PermissionResourceType spec declares valid), they receive HTTP 200 with the
+    caller's management-scope permission list — the same four-way switch the spec
+    presents actually works four ways at runtime.
+  derivation: |
+    Endpoint-shape — components.yaml:3381-3387 declares a 4-value enum
+    (DATA_ENTITY/TERM/QUERY_EXAMPLE/MANAGEMENT) on the getResourcePermissions
+    operation (openapi.yaml:3681-3702); an SDK consumer believes all four are
+    callable. Category-F naming alignment: does the runtime honour the spec's
+    declared input domain?
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      PermissionServiceImpl.getResourcePermissionsForCurrentUser computes
+      PolicyTypeDto.valueOf("MANAGEMENT") -> MANAGEMENT(hasContext=false), and
+      `if (!policyTypeDto.isHasContext()) throw new BadUserRequestException("Resource
+      type MANAGEMENT does not have context")` (PermissionServiceImpl.java:24-27,
+      source-read). ControllerAdvice.java:24-28 maps BadUserRequestException ->
+      HTTP 400 (error code USR001). So a MANAGEMENT call returns HTTP 400 with body
+      "Resource type MANAGEMENT does not have context", NOT a 200 permission list.
+      Three of the four spec-declared enum values work on this endpoint; the fourth
+      is rejected. The management permissions the integrator wanted live on a
+      DIFFERENT endpoint (GET /api/identity/whoami -> Identity.permissions, hardcoded
+      to MANAGEMENT at IdentityServiceImpl.java:42).
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "concepts.invariants[0] + bugs_limitations_corner_cases"
+        cite: "PermissionServiceImpl.java:24-27"
+        note: "hasContext==false -> BadUserRequestException; sidecar states MANAGEMENT (and any non-contextual type) is rejected."
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "ControllerAdvice.java:24-28 + components.yaml:3381-3387 + IdentityServiceImpl.java:42"
+        note: "BadUserRequestException->400; spec declares 4-value enum; MANAGEMENT permissions reachable only via whoami."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) An integrator generates a Platform-API SDK, sees PermissionResourceType
+          with four constants, and writes `getResourcePermissions(MANAGEMENT, id)`
+          to discover the caller's management powers. At runtime every such call
+          returns HTTP 400 USR001 — the SDK compiled cleanly, the contract lied.
+      (b) The error message ("does not have context") explains the SYMPTOM but not
+          the REMEDY: nothing in the 400 response, the spec, or the generated SDK
+          points the integrator at whoami -> Identity.permissions. They must read
+          PermissionServiceImpl + IdentityServiceImpl source to discover the actual
+          mechanism. (The live permissions docs page NOW documents the orchestration,
+          per DOC-243 — but an SDK author working from the spec alone never sees it.)
+      (c) A Swagger-UI explorer hitting "Try it out" with MANAGEMENT selected gets a
+          400 with no hint that the operation simply does not accept that enum value.
+    severity: HIGH
+    confidence: HIGH
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-002
+  hypothesis: |
+    When the UI (or any authenticated caller) requests
+    GET /api/resource/DATA_ENTITY/{id}/permissions for an entity that exists, the
+    response is the caller's actual resolved permission set on THAT entity —
+    correctly powering the enable/disable state of the action buttons on that
+    entity's page.
+  derivation: |
+    Pillar-mission — P-09's read-side authorization-discovery (the UI button-enable
+    capability) + the contextual-half of the split. This is the LEGITIMATE promise
+    the feature exists to deliver; a reflection that catalogued only the spec drift
+    would miss what the feature correctly does for its real consumer (the UI).
+  seed_source: pillar-mission
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      For a contextual type (hasContext==true), PermissionServiceImpl delegates to
+      the matching ContextualPermissionExtractor.getContextualResourcePermissions
+      (PermissionServiceImpl.java:28-29, source-read). The DataEntity extractor
+      loads the caller's roles -> policies (PolicyService.getCurrentUserPolicies),
+      builds the resource context (entity dimensions + tags + the caller's associated
+      owner), evaluates every policy statement, and emits the union as a
+      Flux<Permission> (getResourcePermissions sidecar understanding +
+      concepts.invariants[2]). The response is authoritative and recomputed per call
+      (no cache), so a role change is observable on the next call; and the UI reads
+      it via profile.permissions[resourceType][resourceId] (profile.selectors.ts:27).
+      The contextual happy path delivers exactly what the feature promises.
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "understanding + concepts.invariants[2] + implicit_adrs[1]"
+        cite: "PermissionServiceImpl.java:28-29 + AbstractContextualPermissionExtractor.java:25-35"
+        note: "Contextual extractor evaluates policies x context -> permission union; authoritative, uncached."
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "profile.selectors.ts:27"
+        note: "UI reads profile.permissions[resourceType][resourceId] — the contextual half feeds button-enable state."
+    source_read_for_validation: true
+    confidence: HIGH
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-003
+  hypothesis: |
+    When the UI requests the caller's MANAGEMENT-scope permissions (can I create a
+    Policy, manage Owners, edit Lookup Tables), it obtains them — i.e. the global
+    half of the permission surface is actually reachable and populates the UI's
+    global-permission checks.
+  derivation: |
+    Pillar-mission (the management-scope half of the read surface) + response-shape
+    (Identity.permissions). The contextual endpoint REJECTS MANAGEMENT (H-001), so
+    a senior PO asks: is the global half reachable at all, and where?
+  seed_source: pillar-mission + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      GET /api/identity/whoami -> IdentityServiceImpl.whoami ->
+      getAssociatedOwner Mono.zip's in
+      permissionService.getNonContextualPermissionsForCurrentUser
+      (PermissionResourceType.MANAGEMENT).collectList() (IdentityServiceImpl.java:42-43,
+      source-read) and maps it into AssociatedOwner.permissions via
+      associatedOwnerMapper.mapAssociatedOwnerWithPermissions (:50). The service's
+      non-contextual branch (PermissionServiceImpl.java:32-40) is the symmetric
+      complement — it REJECTS contextual types ("has context") and serves only the
+      NoContextPermissionExtractor for MANAGEMENT. The UI reads it via
+      getGlobalPermissions = profile.owner?.identity.permissions
+      (profile.selectors.ts:17-20). So the global half IS reachable — but ONLY
+      bundled inside the whoami identity payload, never via the resource endpoint.
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-class__PermissionController.md"
+        section: "concepts.entities[PermissionService] + coherence_check.strengthens[3]"
+        cite: "PermissionService.java:7-12 + profile.selectors.ts:17-20"
+        note: "Class sidecar states getNonContextualPermissionsForCurrentUser is invoked by IdentityServiceImpl, not the controller; UI Management surface reads profile.owner.identity.permissions."
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "IdentityServiceImpl.java:42-43,50 + PermissionServiceImpl.java:32-40"
+        note: "whoami hardcodes MANAGEMENT; non-contextual branch rejects contextual types; mapper attaches permissions to AssociatedOwner."
+    source_read_for_validation: true
+    confidence: HIGH
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-004
+  hypothesis: |
+    When a user wants to discover their permissions on a Lookup Table instance
+    (can I edit THIS lookup table's rows), they can query it the same contextual
+    way they query a Data Entity — GET /api/resource/{lookup-table-type}/{id}/permissions.
+  derivation: |
+    Cross-pillar (F-026 Lookup Tables) + the live docs' "five categories" including
+    "Lookup table". A senior PO expects per-instance permission discovery for a
+    first-class catalog entity that has its own RBAC surface.
+  seed_source: cross-pillar + doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is NO lookup-table PermissionResourceType. PolicyTypeDto has exactly
+      four values (DATA_ENTITY/TERM/QUERY_EXAMPLE/MANAGEMENT — PolicyTypeDto.java:8-12,
+      source-read); LOOKUP_TABLE_* permissions are folded into the non-contextual
+      MANAGEMENT bucket (getResourcePermissions sidecar bugs_limitations_corner_cases[2]
+      + PolicyPermissionDto.java:80-88 per F-090.yaml). So a Lookup-Table page CANNOT
+      ask "what can I do on lookup table X?" contextually — it can only learn the
+      caller's GLOBAL lookup-table management permissions via the whoami half. The
+      live docs reconcile this ("lookup table permissions are management-scoped",
+      WebFetched 2026-06-03), so it is documented as intentional — but per-instance
+      lookup-table permission gating is structurally unsupported on the read surface.
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "bugs_limitations_corner_cases[2] + docs_link_semantic.doc_drift_findings[1]"
+        cite: "PolicyTypeDto.java:8-12 + SecurityConstants.java:325-354"
+        note: "LOOKUP_TABLE_* live under NO_CONTEXT/MANAGEMENT; not a resource-typed contextual query."
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "PolicyTypeDto.java:8-12"
+        note: "Four-value enum; no lookup-table contextual type exists."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) If an operator expects Lookup Tables to be per-instance permission-gated
+          (e.g. lookup-table-level owner association), the read-side discovery model
+          does not support it — every caller sees the same GLOBAL lookup-table
+          management permission, regardless of which lookup table they are viewing.
+      (b) A UI rendering a single Lookup Table's action buttons reflects the caller's
+          global management powers, not anything specific to that lookup table — a
+          potential over- or under-statement of capability if per-instance gating
+          was the operator's mental model.
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-005
+  hypothesis: |
+    When a platform maintainer adds a new contextual PolicyTypeDto value but
+    forgets to register the corresponding ContextualPermissionExtractor bean, a
+    caller hitting that resource type gets a descriptive HTTP 400 (a client error,
+    "this isn't usable yet") — not a generic HTTP 500 that reads like a platform crash.
+  derivation: |
+    Negative-space + the latent-regression facet
+    (illegalargumentexception_on_missing_extractor_5xx_not_400). A senior engineer
+    expects a configuration gap to surface as a 4xx with a clear message, not a 5xx.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      getExtractor (PermissionServiceImpl.java:42-49, source-read) does
+      `.orElseThrow(() -> new IllegalArgumentException("No extractor for resource
+      type %s".formatted(resourceType)))` when no bean matches. ControllerAdvice
+      (ControllerAdvice.java:24-66, source-read) has handlers for
+      BadUserRequestException (->400), NotFoundException (->404),
+      UniqueConstraintException/CascadeDeleteException/WebExchangeBindException (->400),
+      GenAIException (->500) — but NO @ExceptionHandler(IllegalArgumentException.class).
+      The catch-all @ExceptionHandler(Exception.class) -> HTTP 500 with body
+      "Internal Server Error" (:61-66), DISCARDING the specific "No extractor"
+      message. So the maintainer (and the on-call reading the 500) sees a generic
+      server error, not the descriptive 400 the MANAGEMENT path correctly gets.
+    evidence:
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "PermissionServiceImpl.java:42-49 + ControllerAdvice.java:24-28,61-66"
+        note: "IllegalArgument('No extractor') + no IllegalArgumentException handler -> catch-all 500 'Internal Server Error', message lost."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) A maintainer extending the RBAC model (new contextual resource type) and
+          forgetting the extractor bean sees HTTP 500 "Internal Server Error" — which
+          reads as a platform crash, sends them debugging the wrong layer, when the
+          actual cause is a missing wiring (a 4xx-class configuration error).
+      (b) The descriptive message "No extractor for resource type X" — the single
+          most useful diagnostic — never reaches the client; it is replaced by the
+          generic catch-all body. The asymmetry with the MANAGEMENT path (which DOES
+          get a descriptive 400) makes the failure mode inconsistent and confusing.
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: |
+    When the platform runs under auth.type=DISABLED, the contextual permission
+    endpoint reflects the actual (open) access posture — i.e. it does NOT tell the
+    UI "you can do nothing" while the mutation API simultaneously accepts every write.
+  derivation: |
+    View-mode (auth.type dispatch) + negative-space. A senior PO expects the
+    permission-read surface and the mutation-enforcement surface to AGREE about what
+    the caller can do under each auth mode.
+  seed_source: view-mode + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Under DISABLED, DisabledAuthSecurityConfiguration permitAll() skips the
+      security filter chain, so ReactiveSecurityContextHolder.getContext() is empty;
+      AuthIdentityProviderImpl returns no user; the role->policy chain cascades to
+      Mono.just(List.of()); the extractor emits NO permissions. So
+      GET /api/resource/DATA_ENTITY/{id}/permissions returns an empty Flux<Permission>
+      ([]) regardless of resource — the UI renders every action button DISABLED.
+      Meanwhile the mutation endpoints are .permitAll() — any caller can perform any
+      write (getResourcePermissions sidecar bugs_limitations_corner_cases[0] +
+      security.known_security_gaps[0]). The read surface says "you can do nothing";
+      the write surface says "anyone can do anything". The contradiction is silent —
+      no error, no log, no admonition.
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "bugs_limitations_corner_cases[0] + security.known_security_gaps[0]"
+        cite: "DisabledAuthSecurityConfiguration.java:13-17 + AuthIdentityProviderImpl.java:24-47 + RoleServiceImpl.java:95-101"
+        note: "Empty SecurityContext -> empty policy chain -> []; mutations simultaneously permitAll; silent UI-vs-API contradiction."
+    confidence: HIGH
+    operator_visible_failure: |
+      (a) An operator running DISABLED (the default out-of-box mode) sees a UI where
+          every action button is greyed out and concludes the platform is locked down
+          — while the mutation API is wide open to any caller. The UI's "you can do
+          nothing" is the OPPOSITE of the API's "anyone can do anything".
+      (b) The deception is silent (no log, no warning), so the operator's false sense
+          of security is undetectable short of probing the mutation API directly.
+          (This is the read-side face of the wider DISABLED-mode posture; F-006 / the
+          P-09 mission carry the write-side.)
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-007
+  hypothesis: |
+    When a user (or an integrator) wants "tell me everything I can do" in one call,
+    a single API surface returns the caller's complete permission set (contextual +
+    management) — they do not have to orchestrate two endpoints themselves.
+  derivation: |
+    Endpoint-shape + negative-space + the facet
+    ui_consumes_both_halves_no_central_permission_catalogue_endpoint. A senior PO
+    asks whether the user-facing concept ("my permissions") maps to one surface or
+    forces client-side orchestration.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      There is NO unified "all my permissions" endpoint. The contextual half
+      (per resource) is GET /api/resource/{type}/{id}/permissions; the management
+      half is bundled in GET /api/identity/whoami -> Identity.permissions. The UI's
+      WithPermissionsProvider orchestrates BOTH (profile.selectors.ts:17-20 reads the
+      whoami half; :27 reads the per-resource half) — so the UI consumer DOES get a
+      coherent picture, but only because the React app stitches it. PARTIAL: the
+      user-facing concept ("what can I do") IS fully served for the first-party UI
+      (the orchestration exists), but an SDK/third-party integrator must replicate
+      the two-call orchestration themselves, AND the contextual half is per-resource
+      (no batch), so "everything I can do across N entities" is N+1 calls
+      (getResourcePermissions sidecar performance.throughput_characteristics[0]).
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-class__PermissionController.md"
+        section: "coherence_check.strengthens[3] + understanding"
+        cite: "PermissionController.java:20-25 (single contextual method) + profile.selectors.ts:17-20,27"
+        note: "No central catalogue endpoint; the UI orchestrates the two halves; integrators must replicate."
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "performance.throughput_characteristics[0] + known_performance_gaps[0]"
+        cite: "PermissionController.java:20-22 + openapi.yaml:3681-3702"
+        note: "Per-resource shape; no batch variant; list views are N+1 (4N DB round-trips)."
+    operator_visible_failure: |
+      (a) A third-party integrator wanting "the caller's full capability set" must
+          discover and orchestrate two endpoints (whoami + per-resource), and learn
+          (from source or the now-improved docs) that MANAGEMENT lives on whoami —
+          there is no single call and no SDK affordance for it.
+      (b) For contextual permissions across a LIST of entities, the per-resource shape
+          forces N requests (each a 4-query DB fan-out): a 50-entity list view is
+          ~200 DB round-trips for permission checks alone. This is a structural perf
+          gap on permission-heavy list rendering, not a config-tuning gap.
+    severity: MEDIUM
+    confidence: MEDIUM
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-008
+  hypothesis: |
+    When an operator reads the platform's own remediation docs / SDK guidance for
+    this feature, the resource-type names they are told to use (DATA_ENTITY / TERM /
+    QUERY_EXAMPLE) match the resource-type names the runtime actually accepts — the
+    documentation does not invent a type the code does not have.
+  derivation: |
+    Doc-claim seed (the live permissions page + the DOC-240/DOC-243/SPC-002 backlog
+    items) cross-checked against the code enum. A senior PO checks that the guidance
+    a user follows names the SAME contextual types the code enforces.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The CODE enum is DATA_ENTITY / TERM / QUERY_EXAMPLE / MANAGEMENT
+      (PolicyTypeDto.java:8-12, source-read). The live permissions page (WebFetched
+      2026-06-03) names the four enum values correctly (DATA_ENTITY, TERM,
+      QUERY_EXAMPLE, MANAGEMENT). BUT the remediation BACKLOG items that authored that
+      coverage — DOC-240, DOC-243, and SPC-002 — repeatedly name the three contextual
+      types as "DATA_ENTITY, NAMESPACE, TERM" (e.g. DOC-243 acceptance table; SPC-002
+      Facet 2 "Three remaining values: DATA_ENTITY, NAMESPACE, TERM") — substituting a
+      NAMESPACE type that does NOT exist in PolicyTypeDto and DROPPING QUERY_EXAMPLE.
+      PARTIAL: the user-facing live page is (per this fetch) correct on the enum, but
+      the remediation artefacts (and any spec edit that follows SPC-002's stated value
+      list) would introduce a real NAMESPACE-vs-QUERY_EXAMPLE drift between spec and code.
+    evidence:
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read + backlog cross-ref"
+        cite: "PolicyTypeDto.java:8-12 vs backlog/spec/SPC-002.md:43 + backlog/docs/DOC-243.md:32 + DOC-240.md:33"
+        note: "Code: DATA_ENTITY/TERM/QUERY_EXAMPLE; remediation items: DATA_ENTITY/NAMESPACE/TERM — NAMESPACE not in enum, QUERY_EXAMPLE dropped."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) If SPC-002 Facet 2 is implemented as written ("Three remaining values:
+          DATA_ENTITY, NAMESPACE, TERM"), the spec would declare a NAMESPACE
+          PermissionResourceType the runtime cannot dispatch (PolicyTypeDto has no
+          NAMESPACE) AND would drop QUERY_EXAMPLE which the runtime DOES accept —
+          replacing one spec-runtime drift (MANAGEMENT) with two new ones.
+      (b) An SDK author or operator following the docs' "valid type values:
+          DATA_ENTITY, NAMESPACE, TERM" guidance would call a NAMESPACE arm that 400s
+          (no extractor / invalid enum) and would not know QUERY_EXAMPLE is valid.
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: doc-gap-candidate
+
+- id: H-009
+  hypothesis: |
+    When any authenticated user calls GET /api/resource/{type}/{id}/permissions, the
+    response reveals only THEIR OWN resolved permissions on the resource — a caller
+    cannot coerce the endpoint into reporting another user's permissions.
+  derivation: |
+    Endpoint-shape (the path has {resource_id} but NO {user_id} slot) + negative-space.
+    A senior security reviewer checks whether a permission-read endpoint can be turned
+    into a cross-user privilege-enumeration tool.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The endpoint signature carries (PermissionResourceType, Long resourceId,
+      ServerWebExchange) and NO user identifier (PermissionController.java:20-22);
+      the caller identity comes only from the reactive SecurityContext via
+      AuthIdentityProviderImpl (getResourcePermissions sidecar concepts.invariants[3]
+      + security.data_exposure[0]). The response is always evaluated for "current
+      user" — there is no {user_id} the caller can substitute. So cross-user
+      permission disclosure is structurally impossible. (A caller CAN iterate
+      resource_id values to discover which resources they themselves have elevated
+      permissions on, but that is bounded to what the policy graph would grant them
+      anyway — a discoverability surface, not an escalation; sidecar rates it LOW.)
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "concepts.invariants[3] + security.owner_scoping + security.data_exposure[0]"
+        cite: "PermissionController.java:20-22 + AuthIdentityProviderImpl.java:24-35"
+        note: "No {user_id} slot; caller from SecurityContext only; no cross-user disclosure."
+    confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-010
+  hypothesis: |
+    When the caller's policies change (a role is granted or revoked in the
+    Management UI), the next GET /api/resource/{type}/{id}/permissions call reflects
+    the change — the permission read is live, not a stale per-session snapshot.
+  derivation: |
+    Negative-space + response-freshness. A senior PO expects an authorization-read
+    surface that drives live UI button state to reflect a just-committed policy change
+    without requiring re-login.
+  seed_source: negative-space + response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The endpoint recomputes per request — no caching layer between the controller
+      and the policy/role tables; the role->policy->context->permission chain is
+      re-run every call (getResourcePermissions sidecar concepts.invariants[4] +
+      implicit_adrs[1] "never trust a UI-shaped permission cache"). So under
+      OAUTH2/LDAP a committed role change IS observable on the next call. PARTIAL,
+      with a load-bearing exception: under LOGIN_FORM the seeded admin's authority is
+      STATIC in-memory (GrantedAuthorityExtractor.getAuthorities(true) + the
+      Administrator role's 'ALL' policy), so EVERY caller resolves as admin and EVERY
+      call returns the full permission set REGARDLESS of subsequent UI policy
+      revocations — the in-memory admin authority bypasses the DB role mapping
+      (sidecar bugs_limitations_corner_cases[1] + security.known_security_gaps[1]).
+      So freshness holds for OAUTH2/LDAP and is defeated for LOGIN_FORM.
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "concepts.invariants[4] + bugs_limitations_corner_cases[1]"
+        cite: "AbstractContextualPermissionExtractor.java:25-35 (no cache) + LoginFormSecurityConfiguration.java:74-82 + GrantedAuthorityExtractor.java:12-14"
+        note: "Per-call recompute (fresh) EXCEPT LOGIN_FORM static admin authority returns ALL regardless of DB policy state."
+    operator_visible_failure: |
+      (a) An operator on LOGIN_FORM (common for staging/single-tenant) who revokes a
+          policy in the UI and then checks the permission endpoint still sees the full
+          ALL set — because the static admin authority short-circuits the DB lookup.
+          They may believe per-resource permission gating is honoured when it is not.
+      (b) The behaviour DIFFERS by auth mode with no signal — the same UI action
+          (revoke a role) is reflected live under OAUTH2/LDAP and silently ignored
+          under LOGIN_FORM, an inconsistency invisible to the operator.
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: |
+    When a user looks at an entity page, the action buttons the UI enables (from the
+    contextual permission read) match the actions the server will actually allow if
+    the user clicks — the read surface and the mutation-enforcement surface agree, so
+    a user is never shown an enabled button that 403s on click (or a disabled button
+    for an action they could perform).
+  derivation: |
+    Senior-product-owner UX seed ("is it intuitive; does what is on screen match what
+    the system does") applied to the feature whose entire purpose is to drive on-screen
+    button state. The read path and the enforcement path are claimed to share one
+    policy graph — does the user actually experience that consistency?
+  seed_source: ui-label + pillar-mission
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The contributing sidecars establish that the SAME PermissionService bean and
+      the SAME ContextualPermissionExtractors are wired into BOTH this read controller
+      AND OAuthSecurityConfiguration.AuthorizationCustomizer (the mutation enforcer) —
+      "the read path and the enforcement path share one evaluation graph"
+      (getResourcePermissions sidecar implicit_adrs[0], evidence
+      OAuthSecurityConfiguration.java:87-98 wiring the same permissionService bean).
+      So under OAUTH2/LDAP the button-enable state the UI computes from this endpoint
+      is the same decision the server makes on the mutation — a consistent UX. (The
+      DISABLED-mode and LOGIN_FORM-static caveats from H-006/H-010 are the documented
+      exceptions where the two surfaces DIVERGE; under the normal RBAC-enforced modes
+      they agree by construction.)
+    evidence:
+      - sidecar: "odd-platform__java__PermissionController__controller-method__getResourcePermissions.md"
+        section: "implicit_adrs[0] + understanding"
+        cite: "PermissionController.java:17,20-25 + OAuthSecurityConfiguration.java:87-98 + AbstractContextualPermissionExtractor.java:25-35"
+        note: "Same permissionService bean + same extractors power read AND mutation-enforcement -> read/enforce agree under RBAC modes."
+    confidence: HIGH
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+    sme_consultation_recommended: true
+    sme_consultation_question: |
+      Do operators of comparable data-catalog / metadata platforms (DataHub /
+      Amundsen / OpenMetadata) expect a "what can I do on this resource" read API to
+      be a SINGLE unified call, or is a contextual-vs-global split (per-resource
+      endpoint + identity-payload-for-global) an industry-conventional shape? This
+      determines whether H-007's "no unified endpoint" is a genuine ergonomics gap
+      worth a getManagementPermissions operationId (SPC-002 Facet 2 Option B) or an
+      accepted idiom that only needs the now-shipped docs orchestration.
+    sme_consultation_archetype: comparative
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |
+    A new contextual PolicyTypeDto value added without its extractor bean raises
+    IllegalArgumentException("No extractor...") which, lacking a ControllerAdvice
+    handler, surfaces as HTTP 500 "Internal Server Error" (message discarded) instead
+    of the descriptive HTTP 400 the MANAGEMENT path gets.
+  dedup_status: already_tracked
+  tracked_as: PLT-076
+  proposed_fix_anchor: |
+    PLT-076 ALREADY covers this exactly — its title names "PermissionServiceImpl
+    no-extractor branch", it cites PermissionServiceImpl.java:47-48 + ControllerAdvice.java:23-66,
+    proposes the class-wide @ExceptionHandler(IllegalArgumentException.class) -> HTTP 400
+    (code USR400), and names F-090 in its impact. Convergent re-derivation from the
+    F-090 product-owner lens — corroboration, NOT a new filing. Source-confirmed this
+    invocation (ControllerAdvice.java:61-66 catch-all -> 500; no IllegalArgumentException handler).
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: |
+    components.yaml declares MANAGEMENT a valid PermissionResourceType, but
+    GET /api/resource/MANAGEMENT/{id}/permissions returns HTTP 400 USR001 "does not
+    have context"; management permissions live on whoami -> Identity.permissions. An
+    SDK author working from the spec alone never learns the orchestration.
+  dedup_status: already_tracked
+  tracked_as: DOC-243
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions
+  note: |
+    DOC-243 (review-PASS in backlog) ALREADY added the "Permission read surface
+    (two-endpoint orchestration)" H2 + the MANAGEMENT spec-vs-runtime drift WARNING
+    admonition (HTTP 400 USR001 quote + SDK-routing-to-whoami guidance) to permissions.md;
+    DOC-240 added the same to api-reference.md. WebFetch 2026-06-03 CONFIRMS the live
+    page now carries the 2-endpoint table + the four-value enum + the drift reconciliation.
+    The SPEC-side fix is SPC-002 Facet 2 (pending). So the doc gap is CLOSED, the spec
+    gap is tracked. Corroboration of the DOC-243/DOC-240 cluster from the PO lens — NOT
+    a new filing. (See doc_drift_findings H-008 for a NET-NEW residual: those very items
+    name a NAMESPACE contextual type the code enum does not have.)
+
+- hypothesis_id: H-004
+  one_line: |
+    Lookup-table permissions are NOT per-instance queryable on the contextual
+    endpoint (no lookup-table PermissionResourceType); LOOKUP_TABLE_* lives in the
+    global MANAGEMENT bucket reachable only via whoami. Per-instance lookup-table
+    gating is structurally unsupported on the read surface.
+  dedup_status: already_tracked
+  tracked_as: DOC-243
+  recommended_log_as: caveat in permissions.md (already covered by the five-categories-vs-four-enum reconciliation)
+  note: |
+    DOC-243's "five categories reconciled with four resource types" framing
+    (WebFetch-confirmed live: "lookup table permissions are management-scoped")
+    ALREADY documents that lookup-table permissions are management-scoped, not
+    contextually-typed. Corroboration. The structural observation (no per-instance
+    lookup-table gating) is a design fact, not a new doc/bug item.
+
+- hypothesis_id: H-006
+  one_line: |
+    Under auth.type=DISABLED the contextual permission endpoint returns [] (UI greys
+    out every button) while mutation endpoints are permitAll (anyone can write) — a
+    silent UI-says-locked-down vs API-says-wide-open contradiction.
+  dedup_status: already_tracked
+  tracked_as: DOC-240
+  recommended_log_as: caveat (DISABLED-mode security framing — the DOC-239/DOC-240 cluster)
+  note: |
+    The DISABLED-mode synthetic-admin / open-posture framing is the DOC-239 + DOC-240
+    cluster (DOC-240 acceptance explicitly covers whoami's DISABLED synthetic-admin
+    path). The read-side face (empty permission list under DISABLED) is the same
+    posture viewed from the contextual endpoint; folds into that cluster rather than a
+    fresh item. The wider DISABLED open-write posture is a P-09 mission-level known
+    state (F-006 / read-collaborative posture). Corroboration.
+
+- hypothesis_id: H-007
+  one_line: |
+    No unified "all my permissions" endpoint — the contextual half (per resource) and
+    the management half (whoami) must be orchestrated client-side; the contextual half
+    is per-resource (no batch), so list views are N+1 permission calls.
+  dedup_status: net_new
+  distinct_from: DOC-243
+  recommended_log_as: |
+    REFACTOR candidate (either a getManagementPermissions operationId per SPC-002 Facet 2
+    Option B for SDK-discoverability, OR a batch POST /api/resource/{type}/permissions
+    accepting {resource_ids:[...]} to collapse the N+1) — plus the orchestration is
+    already doc-disclosed (DOC-243), so no new doc item.
+  note: |
+    DISTINCT from DOC-243 (which documents the orchestration prose). The net-new ask is
+    a CODE/SPEC enhancement: SPC-002 Facet 2 Option B already floats getManagementPermissions
+    as a "stretch goal"; the N+1 batch variant is the getResourcePermissions sidecar's
+    known_performance_gaps[0] (HIGH on permission-heavy list views). Not tracked as a
+    standalone REFACTOR yet. Cross-link SPC-002 + the sidecar perf gap.
+
+- hypothesis_id: H-010
+  one_line: |
+    Permission reads are live (per-call recompute, no cache) under OAUTH2/LDAP — a
+    committed policy change is reflected on the next call — BUT under LOGIN_FORM the
+    static admin authority returns ALL permissions regardless of UI policy revocations.
+  dedup_status: net_new
+  recommended_log_as: caveat in the authorization docs (LOGIN_FORM static-admin authority short-circuits per-resource gating)
+  note: |
+    The LOGIN_FORM-admin-static behaviour is documented in the getResourcePermissions
+    sidecar (bugs_limitations_corner_cases[1] + security.known_security_gaps[1] severity
+    MEDIUM) but I found no DOC/PLT item capturing the OPERATOR-facing consequence (revoked
+    policies silently ignored under LOGIN_FORM on the read surface). Net-new doc caveat;
+    could fold into the broader LOGIN_FORM-is-single-tenant-admin framing. No code fix
+    proposed (the static-admin authority is the documented LOGIN_FORM design).
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the promise layer. EVERY hypothesis (confirmed, partial,
+# contradicted) is an unverified user-facing promise: the contributing sidecars'
+# tests_coverage_semantic is `covered_behaviours: []` for getResourcePermissions
+# ("find ... Permission*Test* returns zero"), the Grep over odd-platform-api/src/test
+# found only PolicyDeserializer JSON fixtures (no endpoint behaviour test), and the
+# Grep over odd-team/tests (IT-NNN suite) found NOTHING for this feature. So
+# use_case_coverage = 0/11. The MANAGEMENT-rejection invariant and the two-endpoint
+# orchestration — the load-bearing behaviours of this feature — have ZERO behavioural
+# test coverage. These are the highest-value tests to mint.
+- use_case_id: F-090-UC-1
+  hypothesis_id: H-001
+  kind: grammar
+  promise: "GET /api/resource/MANAGEMENT/{id}/permissions returns HTTP 400 USR001 'does not have context' (pin the spec-vs-runtime drift so a future spec tightening / SPC-002 is a deliberate, test-visible change)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-1)"
+  proposed_test: |
+    @WebFluxTest(PermissionController.class) + WebTestClient (or integration):
+    GET /api/resource/MANAGEMENT/0/permissions -> expect status 400 + body code USR001
+    + message containing "does not have context". Characterization pin: when SPC-002
+    removes MANAGEMENT from the enum, this becomes a 4xx-at-deserialization and the
+    test flips RED, making the contract change explicit.
+- use_case_id: F-090-UC-2
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "GET /api/resource/DATA_ENTITY/{id}/permissions for an existing entity returns 200 + the caller's resolved permission set on that entity (the UI button-enable capability)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-2)"
+  proposed_test: |
+    Integration (Testcontainers Postgres) under OAUTH2/LDAP: seed a role+policy
+    granting DATA_ENTITY_DESCRIPTION_UPDATE on entity 42; call
+    GET /api/resource/DATA_ENTITY/42/permissions -> assert 200 + body contains
+    DATA_ENTITY_DESCRIPTION_UPDATE and NOT a permission the policy did not grant. The
+    happy path that drives every entity-page button and has NO guard today.
+- use_case_id: F-090-UC-3
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "GET /api/identity/whoami returns Identity.permissions containing the caller's MANAGEMENT-scope permissions — the global half of the read surface is reachable."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-3; overlaps F-085 whoami)"
+  proposed_test: |
+    Integration under OAUTH2/LDAP with an admin role: GET /api/identity/whoami ->
+    assert identity.permissions includes MANAGEMENT-scope values (POLICY_CREATE,
+    OWNER_CREATE, LOOKUP_TABLE_UPDATE, ...). Pins that whoami is the management-scope
+    surface (IdentityServiceImpl.java:42 hardcodes MANAGEMENT). Coordinate with F-085.
+- use_case_id: F-090-UC-4
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "There is no per-instance lookup-table contextual permission query; lookup-table permissions are management-scoped (reachable only via whoami)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-4)"
+  proposed_test: |
+    Unit/contract test asserting PolicyTypeDto has exactly {DATA_ENTITY, TERM,
+    QUERY_EXAMPLE, MANAGEMENT} and no lookup-table value; and an integration assertion
+    that LOOKUP_TABLE_* permissions appear in whoami.identity.permissions (MANAGEMENT
+    bucket), not in any /api/resource/.../permissions response. Pins the management-scoped
+    placement so a future per-instance-lookup-table feature is a deliberate change.
+- use_case_id: F-090-UC-5
+  hypothesis_id: H-005
+  kind: teardown-constraint
+  promise: "A missing ContextualPermissionExtractor surfaces as a descriptive HTTP 400, not a generic HTTP 500 (the regression guard for PLT-076)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-5; regression-guard for PLT-076)"
+  proposed_test: |
+    Today (characterization): a request whose PolicyTypeDto has no registered extractor
+    -> assert HTTP 500 (pins the current bug). After PLT-076 lands the class-wide
+    @ExceptionHandler(IllegalArgumentException.class): flip to assert HTTP 400 + the
+    "No extractor for resource type" message. The test goes RED on the fix and becomes
+    the guard. (Hard to trigger via the public enum since all four types have extractors
+    or are rejected earlier — exercise via a unit test of getExtractor with an empty list,
+    OR a test-only PolicyTypeDto/extractor-list injection.)
+- use_case_id: F-090-UC-6
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "Under DISABLED, the contextual permission endpoint returns [] while mutations are open — pin the documented UI-vs-API divergence so a future DISABLED-hardening is test-visible."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-6)"
+  proposed_test: |
+    Integration under auth.type=DISABLED: GET /api/resource/DATA_ENTITY/{id}/permissions
+    -> assert 200 + [] (empty); AND assert a mutation (e.g. PUT internal-name) succeeds
+    without auth. Pins the divergence. Cross-link the DOC-239/DOC-240 DISABLED framing.
+- use_case_id: F-090-UC-7
+  hypothesis_id: H-007
+  kind: render
+  promise: "The caller's full capability set is obtainable (today only by orchestrating whoami + per-resource; the orchestration is documented)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-7; pairs with the unified-endpoint / batch REFACTOR)"
+  proposed_test: |
+    When the getManagementPermissions operationId (SPC-002 Facet 2 Option B) or a batch
+    /api/resource/{type}/permissions lands: assert the single call returns the union /
+    the batched map. Today: a UI-level (Playwright IT) assertion that an entity page's
+    button-enable state is correctly derived from BOTH halves (whoami + per-resource).
+- use_case_id: F-090-UC-8
+  hypothesis_id: H-008
+  kind: grammar
+  promise: "The documented/spec'd contextual resource-type names match the code enum (DATA_ENTITY/TERM/QUERY_EXAMPLE — NOT NAMESPACE)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-8; spec-contract guard)"
+  proposed_test: |
+    Contract test asserting the OpenAPI PermissionResourceType enum (components.yaml)
+    is value-equal to the Java PolicyTypeDto enum names — would catch the NAMESPACE
+    drift if SPC-002 is implemented as written (NAMESPACE added, QUERY_EXAMPLE dropped).
+    A generated-code-vs-runtime enum-parity assertion.
+- use_case_id: F-090-UC-9
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "The contextual endpoint reveals only the caller's own permissions — no {user_id} slot, no cross-user disclosure."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-9)"
+  proposed_test: |
+    Integration: two users A and B with different policies on entity 42; call
+    GET /api/resource/DATA_ENTITY/42/permissions as A and as B -> assert each gets
+    THEIR OWN set; assert there is no request shape (path/query) that lets A read B's
+    permissions. Pins the no-cross-user-disclosure invariant.
+- use_case_id: F-090-UC-10
+  hypothesis_id: H-010
+  kind: edit-reconcile
+  promise: "A committed policy change is reflected on the next permission read (live, no cache) under OAUTH2/LDAP — and the LOGIN_FORM static-admin exception is pinned."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-10)"
+  proposed_test: |
+    Integration under OAUTH2/LDAP: read permissions, revoke the granting policy, read
+    again -> assert the revoked permission is gone on the second call (live freshness).
+    Separate LOGIN_FORM characterization: assert the admin gets ALL permissions
+    regardless of DB policy state (pins the static-admin short-circuit).
+- use_case_id: F-090-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "An enabled button (from the contextual read) matches what the server allows on mutation — read and enforcement agree under RBAC modes (shared policy graph)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-090-UC-11; UI e2e — the read/enforce-agree promise)"
+  proposed_test: |
+    Playwright IT (odd-team tests/) under OAUTH2/LDAP: as a user WITHOUT
+    DATA_ENTITY_DESCRIPTION_UPDATE, open an entity page -> assert the edit-description
+    button is disabled AND a direct PUT to the mutation endpoint is rejected (403). As
+    a user WITH it -> button enabled AND the PUT succeeds. Verifies the read/enforce
+    consistency the shared-evaluation-graph promises (implicit_adrs[0]).
+
+### probes_emitted
+- probe_id: "PENDING-F-090-1"
+  hypothesis_id: H-001
+  note: |
+    CONFIRMATORY probe (not a probe-needed verdict — H-001 is CONTRADICTED with HIGH
+    confidence from the primary-source trace + Rule-8 reads). Per APPROACH Rule 6, the
+    spec-vs-runtime contract drift on a security-adjacent endpoint is high-leverage to
+    raise from code-trace to end-to-end-observed (matches F-090.yaml's own proposed_action).
+    PARALLEL-SAFE: recorded here as PENDING, NOT written to probes/ (id-collision risk).
+  probe_skeleton: |
+    name: "PermissionResourceType MANAGEMENT spec-vs-runtime drift — empirical confirmation"
+    emitted_by: feature-reflector
+    status: pending-reflection-verification
+    local_execution: docker-compose (Rule 6 — local-only)
+    setup: |
+      docker-compose up odd-platform + postgres with AUTH_TYPE=DISABLED (or LDAP for
+      an authorised admin token).
+    steps:
+      - "curl -H 'Authorization: <token>' GET /api/resource/MANAGEMENT/0/permissions -> expect HTTP 400, body code USR001, message 'Resource type MANAGEMENT does not have context'"
+      - "curl GET /api/resource/DATA_ENTITY/{existing-id}/permissions -> expect HTTP 200 + a JSON array of Permission enum values (the contextual happy path, H-002)"
+      - "curl GET /api/resource/DATA_ENTITY/{missing-id}/permissions -> expect HTTP 404 (resource existence, sidecar invariants[1])"
+      - "curl GET /api/identity/whoami -> expect identity.permissions includes MANAGEMENT-scope values e.g. POLICY_CREATE, LOOKUP_TABLE_UPDATE (the global half, H-003)"
+    expected_outcome: |
+      "GET /api/resource/MANAGEMENT/{id}/permissions returns HTTP 400 USR001 'Resource
+      type MANAGEMENT does not have context' (NOT the 200 management-permission list a
+      spec-compiled SDK expects); the management permissions are instead returned by
+      GET /api/identity/whoami -> Identity.permissions." (H-001 + H-003 verbatim.)
+
+### validation_gaps
+- sidecar: "F-090 chain hops (all unresolved) + the service-tier / IdentityServiceImpl / PolicyTypeDto / UI nodes (no sidecar) + the absent UI sidecar (Rule 9)"
+  field_insufficient: |
+    RULE-9 (reflect-from-the-screen) GAP — FIRST, per Rule 9: the feature's UI surface
+    is NOT in the chain as an enriched node. The UI consumption (WithPermissionsProvider
+    + the two profile.selectors.ts selectors) is file:line-cited in F-090.yaml and in
+    the PermissionController class sidecar's coherence_check, and I source-read the
+    selector lines this invocation — but there is NO file-analyser sidecar for the React
+    provider/selector tree, so the UX hypotheses (H-002 button-enable, H-006 DISABLED
+    grey-out, H-011 read/enforce-agree) are validated from the BACKEND chain + the raw
+    selector source, NOT from an enriched UI node that would describe loading states,
+    error states, how the two halves are merged in the store, or device-type behaviour.
+    This reflection is therefore backend-grounded with a thin UI-source supplement, not
+    UI-sidecar-grounded.
+    SECOND — RULE-8 chain gap: the feature-flow chain hops are ALL `sidecar: unresolved`.
+    Two CENTRAL nodes (getResourcePermissions method + PermissionController class) DO
+    have rich enriched sidecars (read in full), so the contextual half is strongly
+    sidecar-grounded; but PermissionServiceImpl, IdentityServiceImpl, PolicyTypeDto, and
+    ControllerAdvice have NO sidecar — their claims were validated via Rule-8-exception
+    single-line source reads (recorded in source_reads_for_validation). The per-node
+    Stress-Protocol enrichment (auth_gates matrix, Category-F request_inputs, per-node
+    tests_coverage_semantic) is absent for those four nodes.
+  proposed_refresh: |
+    (1) Run file-analyser on the UI provider/selector tree — at minimum
+    WithPermissionsProvider + profile.selectors.ts — so the UX hypotheses are validated
+    against an enriched UI node (per Rule 9 + APPROACH Failure F: ~530 React components
+    are unenriched). (2) Run file-analyser on PermissionServiceImpl + IdentityServiceImpl
+    + PolicyTypeDto + ControllerAdvice so the chain hops resolve to real sidecars and the
+    400-vs-500 asymmetry + the whoami MANAGEMENT-hardcode get per-node-cited. This is a
+    P-09 security-read chain with a HIGH-severity contradiction (H-001) and only two of
+    six nodes enriched.
+
+### doc_drift_findings
+- hypothesis_id: H-008
+  doc_url: "(internal backlog artefacts — DOC-240, DOC-243, SPC-002 — NOT the live site)"
+  doc_says: |
+    DOC-243 acceptance table + SPC-002 Facet 2 name the three contextual
+    PermissionResourceType values as "DATA_ENTITY, NAMESPACE, TERM" (SPC-002:43
+    "Three remaining values: DATA_ENTITY, NAMESPACE, TERM"; DOC-243:32 + DOC-240:33
+    list NAMESPACE as a contextual example value).
+  code_does: |
+    PolicyTypeDto.java:8-12 (source-read this invocation) defines exactly four values:
+    DATA_ENTITY(true), TERM(true), QUERY_EXAMPLE(true), MANAGEMENT(false). There is NO
+    NAMESPACE PolicyTypeDto, and QUERY_EXAMPLE (which the remediation items omit) IS a
+    valid contextual type. The live permissions page (WebFetched 2026-06-03) names the
+    four enum values correctly — so the drift is in the BACKLOG remediation artefacts,
+    not (yet) on the live site.
+  recommended_log_as: |
+    doc-gap-NNN (or a correction note on DOC-243/DOC-240/SPC-002): replace
+    "DATA_ENTITY, NAMESPACE, TERM" with "DATA_ENTITY, TERM, QUERY_EXAMPLE" everywhere
+    the contextual types are enumerated; CRITICALLY, gate SPC-002 Facet 2 — implementing
+    it as written would ADD a NAMESPACE enum value the runtime cannot dispatch and DROP
+    QUERY_EXAMPLE which it accepts, replacing one spec-runtime drift with two. This is a
+    NET-NEW finding (the dedup grep surfaced these items as already-tracked for the
+    MANAGEMENT drift, but none of them flags their own NAMESPACE/QUERY_EXAMPLE error).
+
+## maintainer_notes
+
+(Reserved for hand-curated notes that survive future enrichment passes.)
+
+NOTE for the maintainer (F-090, feature-reflector/0.3.0): the headline is that F-090's
+THREE original sub-findings have largely CONVERGED with the scanner pipeline and been
+remediated — the spec drift (F-090a) is SPC-002 Facet 2 (pending) + DOC-243/DOC-240
+(done, WebFetch-confirmed live); the 500-not-400 latent regression (F-090c) is PLT-076
+(pending); the two-endpoint-split + 5-vs-4 doc gaps (F-090b) are DOC-243/DOC-240 (done).
+The v0.3.0 promise layer adds what the bug/doc catalogue never captured: the feature's
+11 user-facing PROMISES — including the LEGITIMATE contextual happy path (H-002), the
+reachable management half (H-003), the no-cross-user-disclosure invariant (H-009), and
+the read/enforce-agree UX promise (H-011) — have ZERO behavioural test coverage
+(use_case_coverage 0/11; the only permission-adjacent tests in the repo are
+PolicyDeserializer JSON fixtures; the odd-team IT-NNN suite has nothing for this feature).
+The single NET-NEW finding worth the maintainer's eye is H-008: the remediation artefacts
+themselves (DOC-240/DOC-243/SPC-002) name a NAMESPACE contextual resource type that the
+code enum (PolicyTypeDto = DATA_ENTITY/TERM/QUERY_EXAMPLE/MANAGEMENT) does not have, and
+drop QUERY_EXAMPLE which it does have — implementing SPC-002 Facet 2 verbatim would
+introduce two new spec-runtime drifts while closing one.

@@ -1,0 +1,794 @@
+---
+feature_id: F-075
+pillar_anchored_id: P-08:F-015
+pillar: "P-08 Management & Administration"
+feature_name: |-
+  User-Owner Association — `POST /api/owner_association_request` flow. Two
+  operationally-distinct branches: (A) standard SELF-request → PENDING →
+  Admin-approve (documented); (B) auto-approve under the DIRECT_OWNER_SYNC
+  MANAGEMENT permission (undocumented), which composes with the
+  OwnerService.getOrCreate side-door into a SELF-MINT-THEN-SELF-BIND chain.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+  - odd-platform__java__service__service__OwnerServiceImpl.md
+  - odd-platform__java__PermissionController__controller-class__PermissionController.md
+  - odd-platform__ts__routes__route__management.md
+  # Service-tier OwnerAssociationRequestServiceImpl has NO standalone sidecar;
+  # its load-bearing claims are transcribed verbatim (with file:line) inside the
+  # OwnerAssociationRequestController class sidecar's coherence_notes +
+  # security + bugs blocks, and were confirmed against the live source this
+  # invocation (Rule 8 single-line validation reads — see source_read_for_validation
+  # flags in the verdicts below).
+source_reads_for_validation:
+  - file: "odd-platform-api/.../service/OwnerAssociationRequestServiceImpl.java:54-74"
+    reason: |-
+      The sidecar described the DIRECT_OWNER_SYNC branch but did not transcribe
+      that getOrCreate (line 57) runs UNCONDITIONALLY — BEFORE the permission
+      branch — so the Owner is minted on BOTH the PENDING and the auto-approve
+      paths. This single-line read is load-bearing for H-002 / H-005 and is
+      flagged for the next file-analyser refresh to fold into a service sidecar.
+  - file: "odd-platform-api/.../service/OwnerServiceImpl.java:38-42"
+    reason: "Confirm getOrCreate has no permission check (getByName.switchIfEmpty(create))."
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+    last_verified_at: "2026-05-27T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Verified status 200 by the docs/coverage/undocumented-features scanner
+      (SR-20260527T1900Z) and by the OwnerAssociationRequestController sidecar
+      (batch V, 2026-05-20). The page describes EXACTLY two flows: SELF-request
+      ("Select owner which you want to associate yourself with and press Send
+      request") + Admin-approve ("Admin should approve request for finishing
+      association process or deny it"). It is SILENT on Branch B
+      (DIRECT_OWNER_SYNC auto-approve). WebFetch not re-exercised this invocation
+      (Rule 8 — the sidecar + scanner transcribed the fetched_excerpts verbatim).
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-27T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Verified status 200 by the PermissionController sidecar (batch ZD,
+      2026-05-25) and the undocumented-features scanner. The page lists
+      DIRECT_OWNER_SYNC as a Management permission; the live single-line
+      description is "Allows associating a user with an owner without an
+      approval request" (per the feature-flow facet
+      openapi_permission_editor_does_not_warn_about_composition_hazard). Silent
+      on the self-mint composition with getOrCreate.
+hypothesis_summary:
+  total: 11
+  confirmed: 3
+  contradicted: 5
+  partial: 1
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      A user with DIRECT_OWNER_SYNC submits a never-seen ownerName, the service
+      mints that Owner (no OWNER_CREATE) and auto-binds the user to it in one
+      call — a complete self-mint-then-self-bind privilege chain the docs say is
+      impossible.
+related_feature_flows:
+  - F-019  # Owner Lifecycle — primary parent for the getOrCreate side-door (mint half tracked as PLT-132)
+  - F-011  # Principal-to-Owner Resolution — consumes the user_owner_mapping rows this flow writes
+  - F-171  # Operator-Facing Triage Workflow — the approve/decline UI consuming the SELF-request side
+  - F-172  # Admin Direct-Bind UserOwnerMapping Create — the third write-path branch into user_owner_mapping
+  - F-006  # RBAC — the policy/permission graph that authorises DIRECT_OWNER_SYNC
+related_concepts:
+  - "DIRECT_OWNER_SYNC-auto-approve-branch"
+  - "permission-bypass-via-owner-auto-create-side-door-write-path"
+  - "read-collaborative-cross-owner-enumeration-posture"
+  - "audit-log-presence-asymmetry-2-tier-audit-story"
+related_drift_classes:
+  - self_mint_then_self_bind_privilege_chain_via_direct_owner_sync
+  - openapi_permission_editor_does_not_warn_about_composition_hazard
+  - live_doc_user_owner_association_silent_on_auto_approve_branch
+  - mint_path_audit_silent_on_self_mint
+  - rest_path_no_security_rule_anyone_reaches_endpoint
+new_drift_classes_proposed:
+  - direct_owner_sync_does_not_verify_oidc_group_mapping_permission_alone_sufficient
+  - association_request_mints_owner_even_on_pending_branch_before_approval
+---
+
+# User-Owner Association (POST /api/owner_association_request) — product-owner reflection
+
+## product_owner_narrative
+
+The **User-Owner Association** feature is how an authenticated platform user becomes
+linked to a catalog-side **Owner** directory entry, so that owner-scoped behaviours —
+"My Objects", owner-filtered alerts, ownership badges, and ownership-conditioned RBAC
+policies — can resolve for that user (per the OwnerAssociationRequestController sidecar
+`understanding`, and the live `/authorization/owners` doc: "Every ODD Platform user
+should associate themselves with one of the existing owners"). It is a P-08 Management
+capability that straddles into P-09 Security: the *act* of association is a Management
+workflow, but the resulting `user_owner_mapping` row is what P-09's authorization graph
+reads to decide what a user can do.
+
+A user interacts with it by submitting their chosen owner name on a self-request form and
+pressing "Send request" (per WebFetch `/authorization/user-owner-association`). The
+request POSTs to `/api/owner_association_request` (the controller delegates to
+`OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest` at
+`OwnerAssociationRequestServiceImpl.java:54`). In the documented happy path the request is
+recorded as PENDING and an operator with `OWNER_ASSOCIATION_MANAGE` approves or declines it
+from the Management → Associations triage inbox (the `new`/`history`/`active` sub-tabs per
+the managementRoutes sidecar; the operator side is F-171). On approval the service writes
+the `user_owner_mapping` row (`OwnerAssociationRequestServiceImpl.java:184-190`) plus a
+`REQUEST_APPROVED` audit row in the dedicated `owner_association_request_activity` table —
+so "who approved whom, when" is forensically recoverable (per the F-006 coherence note: this
+workflow is the *positive* half of the platform's 2-tier audit story).
+
+The working parts that a product owner would demo: a **name-only self-request** (the user
+types an owner name, not picks from a closed list); an **Admin approve/decline** with a
+typed activity trail; and — the part absent from every demo and every doc page — a
+**`DIRECT_OWNER_SYNC` auto-approve branch** (`OwnerAssociationRequestServiceImpl.java:60-67`).
+If the requesting user holds the `DIRECT_OWNER_SYNC` MANAGEMENT permission, the request is
+approved *synchronously, in the same call* — `userOwnerMappingService.createRelation(...)`
+fires and the response is a pre-approved request; no Admin click ever happens. The design
+intent (per the controller sidecar `implicit_adrs[2]`, confidence MEDIUM) is a "trust the
+IdP" deployment: an OIDC group claim maps a user to an owner and the platform should not
+make them queue for manual approval. The load-bearing gap this reflection exists to surface
+is that the implementation checks *the permission alone* — it never verifies the OIDC group
+mapping the design assumes — and it composes with a second behaviour.
+
+That second behaviour is the **`OwnerService.getOrCreate` side-door**
+(`OwnerServiceImpl.java:38-42`): a `getByName(...).switchIfEmpty(create(...))` with no
+`OWNER_CREATE` permission check. The association flow calls it *unconditionally* at
+`OwnerAssociationRequestServiceImpl.java:57` — before the permission branch — so a
+never-seen owner name is minted into the directory whether or not the user is auto-approved.
+The mint half is already tracked as PLT-132 (the Owner-side `getOrCreate` side-door, sibling
+to the TERM/NAMESPACE side-doors of PLT-101). What F-075 contributes is the *composition*:
+DIRECT_OWNER_SYNC + getOrCreate = a single authenticated call in which a user mints an Owner
+they just named and binds themselves to it, becoming the principal for any
+`dataEntity:owner == 'X'` policy on that owner — a complete self-mint-then-self-bind chain
+(per the controller sidecar `security.known_security_gaps[3]`, severity HIGH, and the
+feature-flow facet `self_mint_then_self_bind_privilege_chain_via_direct_owner_sync`).
+
+Edge cases a careful product owner would flag in a demo: under `auth.type=DISABLED` the flow
+is *fail-closed* (the service throws `RuntimeException("There is no current authorization")`
+at line 56 — unlike the Owner-CRUD surface which runs anonymously); the self-request POST has
+NO `SecurityConstants.SECURITY_RULES` entry so any *authenticated* user reaches it (pinned by
+`AdrSecurityRulesContractTest` — exactly one GET rule, no POST rule); the Owner mint emits no
+`@ActivityLog` so the *mint* itself is audit-silent even though the *request* is recorded; and
+the feature's submitter-side UI surface (the self-request form) is NOT in the reviewed
+Management/OwnerAssociations subtree — it lives in an identity/profile cluster not yet
+enriched, so this reflection cannot judge what the user sees on screen.
+
+## hypotheses
+
+- id: H-000-UI-GAP
+  hypothesis: |-
+    (Rule 9 mandatory first output) The feature's submitter-side UI surface — the
+    self-request form that POSTs /api/owner_association_request — is NOT in the chain.
+  derivation: |-
+    Feature-flow status is `ui-incomplete`; hop-1 sidecar is `unresolved` with
+    `ui_unverified: true`; slice H (2026-05-26) confirmed the Management/OwnerAssociations
+    subtree is the OPERATOR triage side (F-171), not the submitter-self-request side.
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      No enriched UI sidecar exists for the user-self-request form. The backend chain
+      (controller → service → getOrCreate → DIRECT_OWNER_SYNC branch → createRelation) is
+      fully composed and load-bearing, but the screen the user lives through — how they
+      discover the form, whether the owner field is a free-text box or a select-or-create
+      combo-box, whether typing a novel name visibly warns "this will create a new owner",
+      how auto-approve vs PENDING is communicated back — is unanalysed. Per Rule 9 this
+      reflection is therefore API-only for every user-experience question; it does NOT
+      emit confident UX verdicts from the API alone (the F-031 / LSN-023 failure class).
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__management.md
+        section: understanding
+        cite: "managementRoutes.ts:4-14 + AssociationsRoutes (new/history/active)"
+        note: "Confirms the only enriched association UI is the operator triage inbox, not the submitter form."
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: chain hop-1 (feature-flow)
+        cite: "F-075.yaml chain hop:1 sidecar: unresolved"
+        note: "hop-1 ui_unverified; submitter form owned by an un-enriched identity/profile subtree."
+    operator_visible_failure: |-
+      Not a runtime failure — a reflection-coverage gap. The convenience / intuitiveness /
+      cross-device / select-or-create-combo-box questions (Rule 9 UX seeds) cannot be
+      answered. A select-or-create combo-box feeding getOrCreate would be the *intended*
+      pattern (and would make H-005's mint behaviour benign-by-design); a bare free-text
+      field with no "will create" affordance would make the directory-pollution risk
+      user-facing. Which one ships is unknown until the identity/profile UI cluster is enriched.
+    severity: MEDIUM
+    confidence: HIGH
+    probe_id: PENDING-F-075-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-001
+  hypothesis: |-
+    When a user WITHOUT DIRECT_OWNER_SYNC submits POST /api/owner_association_request for
+    an existing owner, the request is recorded as PENDING and no user_owner_mapping row is
+    created until an Admin approves it.
+  derivation: |-
+    Endpoint shape + live doc claim ("Admin should approve request for finishing
+    association process"); the else-branch at OwnerAssociationRequestServiceImpl.java:68-74
+    builds a PENDING request via createOwnerAssociationRequestWithActivity(item, false, ...).
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The branch at lines 62-74: when permissions does NOT contain DIRECT_OWNER_SYNC, the
+      service maps to a PENDING pojo and calls createOwnerAssociationRequestWithActivity with
+      isManual=false, emitting a REQUEST_CREATED activity row. No createRelation call on this
+      path — the user_owner_mapping is written only later, by the Admin-approve path
+      (updateOwnerAssociationRequest → OwnerAssociationRequestServiceImpl.java:184-190).
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "concepts.invariants + coherence_notes(strengthens F-011)"
+        cite: "OwnerAssociationRequestServiceImpl.java:68-74 (PENDING else-branch) + :184-190 (mapping created on approve)"
+        note: "PENDING path creates no mapping; approval is the write site."
+      - sidecar: SOURCE_READ
+        section: source_read_for_validation
+        cite: "OwnerAssociationRequestServiceImpl.java:68-74"
+        note: "Confirmed the else-branch builds PENDING with isManual=false (source_read_for_validation: true)."
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a user holding DIRECT_OWNER_SYNC submits POST /api/owner_association_request for an
+    owner name that does NOT yet exist, the system creates that Owner AND binds the
+    requesting user to it in a single call — without OWNER_CREATE and without any Admin approval.
+  derivation: |-
+    The auto-approve branch (lines 60-67) calls userOwnerMappingService.createRelation
+    immediately; getOrCreate (line 57) mints the Owner with no OWNER_CREATE check
+    (OwnerServiceImpl.java:38-42); pillar P-09 frames association as the binding the
+    authorization graph reads — so a self-chosen owner becomes attacker-controllable scope.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The implementation does exactly what the hypothesis predicts, and the contradiction is
+      against the PRODUCT PROMISE the docs make (the canonical flow is "request → Admin
+      approves"). getOrCreate runs unconditionally at line 57 (mints the Owner if the name is
+      unseen, no OWNER_CREATE), then at lines 64-67 `permissions.contains(DIRECT_OWNER_SYNC)`
+      is true → `userOwnerMappingService.createRelation(user, provider, owner.id)` fires →
+      `mapToApprovedRequest(...)` is returned. One authenticated POST = a freshly-minted Owner
+      + a binding to it + a pre-approved request. The DIRECT_OWNER_SYNC check verifies the
+      PERMISSION ALONE; it never verifies the OIDC group mapping the design intent assumes
+      (implicit_adrs[2]). Result: a self-mint-then-self-bind privilege chain.
+    evidence:
+      - sidecar: SOURCE_READ
+        section: source_read_for_validation
+        cite: "OwnerAssociationRequestServiceImpl.java:54-67"
+        note: "getOrCreate unconditional at :57; createRelation in the DIRECT_OWNER_SYNC branch at :64-67 (source_read_for_validation: true)."
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: "operations.getOrCreate + upstream_callers"
+        cite: "OwnerServiceImpl.java:38-42 (no permission check)"
+        note: "getOrCreate = getByName.switchIfEmpty(create); the ONLY OWNER write that bypasses OWNER_CREATE."
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "security.known_security_gaps[3]"
+        cite: "OwnerAssociationRequestServiceImpl.java:60-67 + :57"
+        note: "Sidecar independently rates this HIGH: DIRECT_OWNER_SYNC + getOrCreate = complete privilege-escalation chain."
+    operator_visible_failure: |-
+      (1) Privilege escalation: a DIRECT_OWNER_SYNC holder mints an arbitrary owner name and
+      self-binds, becoming the principal for any `dataEntity:owner == '<that name>'` policy —
+      including the chance to pre-empt an owner name a future policy will reference. (2)
+      Documented-impossible behaviour: an operator reading the doc believes association ALWAYS
+      requires Admin approval; in an IdP deployment granting DIRECT_OWNER_SYNC via group claim,
+      users self-approve, contradicting the doc. (3) Directory pollution: arbitrary owner rows
+      minted with no OWNER_CREATE. (4) Audit asymmetry: the request is recorded
+      (REQUEST_APPROVED, isManual=false) but the Owner MINT is @ActivityLog-silent, so the
+      "who created Owner-X" question has no trace (mint_path_audit_silent_on_self_mint).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When DIRECT_OWNER_SYNC is granted, it reflects an authoritative IdP/OIDC group mapping —
+    i.e. the platform verifies the user genuinely belongs to the owner's group before
+    auto-binding, matching the "trust the IdP" design intent.
+  derivation: |-
+    implicit_adrs[2] states the intent: DIRECT_OWNER_SYNC exists for "OIDC-group-mapped users
+    where the IdP authoritatively binds users to owners"; a product owner expects the
+    auto-approve to be conditioned on that mapping.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No OIDC group mapping is consulted anywhere in the branch. The check is purely
+      `permissions.contains(Permission.DIRECT_OWNER_SYNC)` against
+      getNonContextualPermissionsForCurrentUser(MANAGEMENT) (lines 60-64). DIRECT_OWNER_SYNC is
+      an ordinary MANAGEMENT permission grantable via any ad-hoc Policy in the Policies tab
+      (PolicyPermissionDto.java:70; the PermissionController sidecar confirms MANAGEMENT
+      permissions flow from the policy graph, hasContext=false). The owner the user requests
+      is the owner they get bound to — there is no cross-check that the user's IdP groups
+      include that owner. The "trust the IdP" framing is an aspiration the code does not enforce.
+    evidence:
+      - sidecar: SOURCE_READ
+        section: source_read_for_validation
+        cite: "OwnerAssociationRequestServiceImpl.java:60-67"
+        note: "Branch keys on the permission set only; no group-claim lookup, no owner↔group cross-check."
+      - sidecar: odd-platform__java__PermissionController__controller-class__PermissionController.md
+        section: "docs_link_semantic.fetched_excerpts(b) + concepts"
+        cite: "PolicyPermissionDto.java:70 (DIRECT_OWNER_SYNC MANAGEMENT) + PolicyTypeDto.java:12 (MANAGEMENT hasContext=false)"
+        note: "DIRECT_OWNER_SYNC is a normal MANAGEMENT permission resolvable from any policy — not gated on IdP group membership."
+    operator_visible_failure: |-
+      An operator who grants DIRECT_OWNER_SYNC believing it only takes effect for IdP-mapped
+      users actually grants the holder the ability to auto-bind to ANY owner of their choosing.
+      In LOGIN_FORM mode the seeded admin holds ALL MANAGEMENT permissions (incl.
+      DIRECT_OWNER_SYNC) statically, so the "IdP" precondition does not even exist — the branch
+      fires for a local admin. The permission's name and the doc line ("without an approval
+      request") undersell that it is a self-bind primitive, not an IdP-sync convenience.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When any authenticated user (holding no RBAC permission at all) POSTs
+    /api/owner_association_request, the endpoint accepts the request — because a brand-new
+    user with zero permissions must be able to initiate their own association.
+  derivation: |-
+    The POST has NO SecurityConstants.SECURITY_RULES entry (the controller sidecar
+    invariant + security.authorization_assertions: "ABSENT — POST ... gated only by Spring
+    default .authenticated()"); implicit_adrs[3] names the absence as deliberate.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      POST /api/owner_association_request has no entry in SECURITY_RULES; it falls through to
+      the catch-all `.authenticated()` rule. Any authenticated principal — regardless of held
+      permissions — reaches the service. This is asserted by a real test: AdrSecurityRulesContractTest
+      scans the live SECURITY_RULES source and pins that there is EXACTLY ONE GET rule
+      (/api/owner_association_request → OWNER_ASSOCIATION_MANAGE) and no other rule for the
+      request paths — confirming the POST is ungated by design (read-collaborative posture, ADR-0003).
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "security.authorization_assertions + implicit_adrs[3]"
+        cite: "SecurityConstants.java:148-162 (no POST entry) + OwnerAssociationRequestController.java:28-34 (no @PreAuthorize)"
+        note: "POST is ungated; gated only by .authenticated()."
+      - sidecar: SOURCE_READ
+        section: "test pin"
+        cite: "AdrSecurityRulesContractTest.securityRulesGuardMutationsOnly_withTheSingleGetException"
+        note: "Real test pins the SECURITY_RULES shape: exactly 1 GET rule, no POST rule for owner_association_request."
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "AdrSecurityRulesContractTest.securityRulesGuardMutationsOnly_withTheSingleGetException"
+    test_demand: none
+
+- id: H-005
+  hypothesis: |-
+    When a user submits an owner name that does not exist (on EITHER branch), the system
+    returns a not-found / validation error rather than silently creating the owner.
+  derivation: |-
+    A name-only request form with a free-text field would normally validate the name against
+    existing owners; a product owner expects "no such owner" feedback, not silent creation.
+    Tests the getOrCreate behaviour from the submitter's seat.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No not-found is ever returned for an unknown owner name. getOrCreate at line 57 runs on
+      BOTH branches unconditionally: getByName(name).switchIfEmpty(create(new
+      OwnerPojo().setName(name))). An unseen name is minted into the directory and the request
+      proceeds (PENDING on branch A, auto-approved on branch B). So even a permission-less user
+      on the PENDING path mints an Owner row merely by typing a novel name — the row persists
+      regardless of whether the PENDING request is ever approved.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: "operations.getOrCreate + invariants"
+        cite: "OwnerServiceImpl.java:38-42"
+        note: "getByName.switchIfEmpty(create) — unknown name is created, never a not-found."
+      - sidecar: SOURCE_READ
+        section: source_read_for_validation
+        cite: "OwnerAssociationRequestServiceImpl.java:57"
+        note: "getOrCreate called unconditionally before the permission branch — mint happens on the PENDING branch too."
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "bugs_limitations_corner_cases[0]"
+        cite: "OwnerAssociationRequestServiceImpl.java:57"
+        note: "Sidecar: a user associating with a non-existent owner name does NOT receive 'not found' — the Owner is auto-created."
+    operator_visible_failure: |-
+      (1) Directory pollution by any authenticated user (not just DIRECT_OWNER_SYNC holders):
+      a typo or a probe of arbitrary names accretes Owner rows, none gated by OWNER_CREATE and
+      none surviving a not-found check. (2) The PENDING-branch mint is especially silent — the
+      request may be declined, but the minted Owner row remains (no rollback of getOrCreate on
+      decline). (3) If the submitter UI is a bare free-text field with no "will create" warning
+      (see H-000-UI-GAP), the user has no idea they just minted a directory entry. This is the
+      Owner-mint half of the chain — already tracked as PLT-132.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When an association request is auto-approved under DIRECT_OWNER_SYNC, the event is
+    recorded in the activity trail so an operator can later reconstruct that the user
+    self-bound without an Admin click.
+  derivation: |-
+    Pillar P-08 + the 2-tier-audit concept; the controller sidecar establishes the workflow
+    HAS a dedicated owner_association_request_activity table (F-006 positive half).
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The REQUEST half is recorded: the auto-approve path returns mapToApprovedRequest and the
+      flow stamps an activity row (the controller sidecar establishes isManual threads through
+      createActivity; auto-approve is isManual=false, distinct from REQUEST_MANUALLY_APPROVED).
+      So "this request was approved" IS recoverable. BUT the OWNER MINT side — getOrCreate
+      creating the Owner row — emits NO @ActivityLog (OwnerServiceImpl carries zero @ActivityLog
+      on any method, incl. getOrCreate). So the composite event "user X minted Owner-Y and bound
+      to it" is only HALF recorded: the binding/approval is in owner_association_request_activity;
+      the Owner creation has no trace. An auditor sees an approved request pointing at an Owner
+      whose creation is forensically invisible.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "coherence_notes(strengthens F-006) + implicit_adrs[1]"
+        cite: "OwnerAssociationRequestServiceImpl.java:205-221 (createActivity, isManual branch)"
+        note: "Request/approve events ARE recorded in owner_association_request_activity (5 typed values)."
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: "invariants(@ActivityLog absent) + coherence_notes(strengthens F-019)"
+        cite: "OwnerServiceImpl.java:38-122 (Grep: zero @ActivityLog incl. getOrCreate)"
+        note: "Owner mint is audit-silent; the mint half of the auto-approve composite has no trace."
+    operator_visible_failure: |-
+      Partial forensic recoverability. An operator investigating "where did Owner-X come from
+      and who is bound to it" finds the binding event but not the creation event; the request
+      activity row points at an Owner that appears to have always existed. The
+      mint_path_audit_silent_on_self_mint facet (and the audit-silence finding PLT-062) is the
+      load-bearing gap; this hypothesis confirms the asymmetry rather than a total silence.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When auth.type=DISABLED, an anonymous (unauthenticated) caller cannot drive the
+    self-mint-then-self-bind chain, because the flow requires a current user.
+  derivation: |-
+    The service asserts a current user (getCurrentUser().switchIfEmpty(RuntimeException("There
+    is no current authorization")) at line 55-56); the controller sidecar rates this a POSITIVE
+    fail-closed finding distinct from the Owner-CRUD surface (REFACTOR-185) which runs anonymously.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      createOwnerAssociationRequest begins by resolving authIdentityProvider.getCurrentUser()
+      and errors fail-fast on empty (line 55-56). Under DISABLED there is no SecurityContext
+      principal, so the chain throws before getOrCreate or the permission branch — the endpoint
+      is fail-closed for anonymous callers. The controller sidecar explicitly contrasts this with
+      the Owner-CRUD verbs (which run anonymously under DISABLED) and marks it severity N/A
+      (positive). Note this does NOT neutralise H-002/H-003: it closes only the ANONYMOUS path;
+      a DISABLED deployment still has no authenticated users, but any non-DISABLED mode with a
+      DIRECT_OWNER_SYNC grant remains exposed.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "security.auth_mode_relevance + known_security_gaps[5]"
+        cite: "OwnerAssociationRequestServiceImpl.java:55-56 (getCurrentUser.switchIfEmpty(RuntimeException))"
+        note: "Fail-closed under DISABLED; POSITIVE finding."
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When an operator reads the live /user-owner-association doc page, the page describes the
+    DIRECT_OWNER_SYNC auto-approve branch as one of the ways a user can become associated.
+  derivation: |-
+    Doc-claim seed (inverse): a complete doc would cover all association paths; the feature-flow
+    facet live_doc_user_owner_association_silent_on_auto_approve_branch claims it does not.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The live page (WebFetched 2026-05-27 status 200 by the undocumented-features scanner;
+      2026-05-20 by the controller sidecar) describes EXACTLY two flows: SELF-request and
+      Admin-approve. It makes NO mention of DIRECT_OWNER_SYNC, the auto-approve branch, the
+      MANUAL-mapping flow, or the provider-discovery endpoint. An operator cannot discover from
+      the docs that a permission exists which collapses the two-step flow into one. The truth is
+      what the code does (Branch B exists); the doc claim that approval is always Admin-driven is
+      the gap. Already surfaced as scanner finding F-075a (NEW DOC-GAP candidate).
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+        section: "docs_link_semantic.doc_drift_findings"
+        cite: "WebFetch user-owner-association 2026-05-20/27 + OwnerAssociationRequestServiceImpl.java:60-67"
+        note: "Doc names 2 flows; code has Branch B (auto-approve) invisible to the doc."
+      - sidecar: SOURCE_READ
+        section: "scanner_reviews (feature-flow)"
+        cite: "F-075.yaml scanner_reviews.findings_produced[F-075a]"
+        note: "docs/coverage/undocumented-features SR-20260527T1900Z already produced F-075a (missing-caveat, HIGH)."
+    operator_visible_failure: |-
+      An operator deploying with OIDC who grants DIRECT_OWNER_SYNC via group claim sees behaviour
+      the doc says is impossible (users associate without Admin approval). An operator auditing
+      "how can a user get bound to an owner" misses an entire path. This is a doc-completeness
+      failure routed to the doc-gaps registry, not a code bug.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an operator reads the live /permissions page DIRECT_OWNER_SYNC description, the
+    description warns that the permission can compose with owner auto-creation into a self-mint hazard.
+  derivation: |-
+    Doc-claim seed; feature-flow facet openapi_permission_editor_does_not_warn_about_composition_hazard
+    + the PermissionController sidecar confirms the live single-line description.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The live /permissions page (WebFetched 2026-05-25 by the PermissionController sidecar;
+      2026-05-27 by the scanner) lists DIRECT_OWNER_SYNC with the single-line description "Allows
+      associating a user with an owner without an approval request". It does not mention that the
+      same flow mints the owner via getOrCreate without OWNER_CREATE, nor that the holder can
+      self-bind to an arbitrary owner of their choosing. The OpenAPI-generated permission editor
+      in the Policies tab inherits this minimal text, so an operator granting it is not warned.
+      Already surfaced as scanner finding F-075b (NEW DOC-GAP candidate).
+    evidence:
+      - sidecar: odd-platform__java__PermissionController__controller-class__PermissionController.md
+        section: "docs_link_semantic.fetched_excerpts(b)"
+        cite: "WebFetch /permissions 2026-05-25 — DIRECT_OWNER_SYNC confirmed at PolicyPermissionDto.java:70"
+        note: "Page lists DIRECT_OWNER_SYNC; description is the bare one-liner."
+      - sidecar: SOURCE_READ
+        section: "scanner_reviews (feature-flow)"
+        cite: "F-075.yaml scanner_reviews.findings_produced[F-075b]"
+        note: "F-075b already produced (missing-caveat, HIGH) for the /permissions composition-hazard silence."
+    operator_visible_failure: |-
+      An operator authoring a Policy grants DIRECT_OWNER_SYNC to a role believing it is a benign
+      "skip the approval queue" convenience for IdP-mapped users. They are not told it is a
+      self-mint-then-self-bind primitive. The permission editor is the point of decision and it
+      carries no warning — the highest-leverage place to surface the caveat.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When two users concurrently submit auto-approve requests for the SAME never-seen owner
+    name under DIRECT_OWNER_SYNC, exactly one Owner row is created and both users bind to the
+    same Owner (no duplicate Owner rows, no lost binding).
+  derivation: |-
+    getOrCreate is getByName.switchIfEmpty(create) with no lock; the OwnerServiceImpl sidecar
+    notes the partial unique index owner_name_unique serialises concurrent creates but a
+    race window exists between getByName and create.
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Static trace: getOrCreate has no row lock or advisory lock; two concurrent calls for the
+      same unseen name can both pass getByName (empty) and both attempt create. The partial
+      unique index owner_name_unique ON owner(name) WHERE deleted_at IS NULL (V0_0_64:70) would
+      cause the second INSERT to throw UniqueConstraintException (USR003) rather than silently
+      duplicate — so the likely outcome is one success + one error, NOT two rows. But whether the
+      losing request then fails entirely (no binding for that user) or retries-and-binds is not
+      statically determinable — getOrCreate does not catch the unique violation to re-read. This
+      needs a running instance to confirm the loser's user_owner_mapping outcome.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: "downstream_side_effects(INSERT into owner) + invariants(partial unique index)"
+        cite: "OwnerServiceImpl.java:38-42 + V0_0_64:70 (partial unique index)"
+        note: "No lock in getOrCreate; unique index serialises but getOrCreate does not catch+re-read the violation."
+    operator_visible_failure: |-
+      Possible: under a concurrent first-bind to a new owner name, one user receives a 400
+      USR003 (unique violation) instead of a successful association, with no automatic retry —
+      a confusing transient failure on the auto-approve happy path. Severity depends on the
+      loser's outcome (transient error vs lost binding), which the probe resolves.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-075-2
+    routes_to_finding: probe-needed
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: "PENDING-F-075-2"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    DIRECT_OWNER_SYNC + getOrCreate = self-mint-then-self-bind: a user mints an arbitrary
+    Owner (no OWNER_CREATE) and auto-binds to it in one POST, becoming the principal for any
+    dataEntity:owner policy on that name.
+  dedup_status: net_new
+  distinct_from: PLT-132
+  tracked_as: ""
+  recommended_log_as: "upstream-issue (PLT, security; cross-link PLT-132 mint half + F-019)"
+  proposed_fix_anchor: |-
+    OwnerAssociationRequestServiceImpl.java:60-67 — gate the auto-approve branch on a verified
+    IdP/owner group mapping (not the permission alone), OR forbid getOrCreate-minting on the
+    auto-approve path (require the owner to pre-exist when self-binding). PLT-132 covers the
+    mint half (gate getOrCreate); THIS is the composition/self-bind half — distinct because the
+    self-bind via createRelation under permission-only check is not in PLT-132's scope.
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: |-
+    Submitting an unknown owner name (on EITHER branch, by any authenticated user) silently
+    mints an Owner directory row via getOrCreate — no not-found, no OWNER_CREATE, no rollback
+    on decline.
+  dedup_status: already_tracked
+  tracked_as: PLT-132
+  recommended_log_as: "corroboration of PLT-132 (Owner-side getOrCreate side-door)"
+- hypothesis_id: H-006
+  one_line: |-
+    Auto-approve records the request/approval event but the Owner MINT emits no @ActivityLog —
+    the composite self-mint-then-self-bind is only half-recoverable forensically.
+  dedup_status: already_tracked
+  tracked_as: PLT-062
+  recommended_log_as: "corroboration of PLT-062 (Owner-mutation audit-silence) in the auto-approve composite context"
+
+### functional_test_demands
+# LSN-030 (Rule 11): every UNVERIFIED promise (confirmed / partial / contradicted / probe-needed)
+# becomes a missing-functional TEST-GAP candidate. Confirmed-but-untested promises (H-001, H-007)
+# are HERE, not dropped to none.
+- use_case_id: F-075-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A user without DIRECT_OWNER_SYNC self-requests an existing owner → PENDING, no mapping until Admin approves."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-075-UC-001)"
+  proposed_test: |-
+    OwnerAssociationRequestServiceImplTest: createOwnerAssociationRequest with permissions NOT
+    containing DIRECT_OWNER_SYNC → StepVerifier asserts a PENDING request + verify(userOwnerMappingService,
+    never()).createRelation(...) + verify REQUEST_CREATED activity (isManual=false). (Mockito; mirrors
+    the existing updateOwnerAssociationRequest test harness in the same class.)
+- use_case_id: F-075-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "A DIRECT_OWNER_SYNC user submitting an unseen name mints the Owner AND self-binds in one call (the chain to GUARD against)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-075-UC-002) — regression guard for the H-002 fix"
+  proposed_test: |-
+    OwnerAssociationRequestServiceImplTest: permissions CONTAINS DIRECT_OWNER_SYNC + ownerService.getOrCreate
+    stubbed to mint → assert createRelation IS called and an APPROVED request is returned. AFTER the fix
+    (gate on IdP mapping / forbid mint-on-self-bind), this test flips to assert the auto-approve is rejected
+    or requires a pre-existing owner. Pin the CURRENT behaviour as a characterization test until the fix lands.
+- use_case_id: F-075-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "DIRECT_OWNER_SYNC auto-approve is conditioned on a verified IdP/owner group mapping, not the permission alone."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-075-UC-003)"
+  proposed_test: |-
+    Security/integration: grant DIRECT_OWNER_SYNC to a non-IdP-mapped user (LOGIN_FORM admin or an
+    OAUTH2 user not in the owner's group) → assert auto-bind is rejected for an owner the user has no
+    group claim to. (Currently would FAIL — the test encodes the intended invariant; characterization-pin
+    the current permission-only behaviour meanwhile.)
+- use_case_id: F-075-UC-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "Submitting an unknown owner name returns not-found rather than minting a directory row."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-075-UC-005)"
+  proposed_test: |-
+    OwnerAssociationRequestServiceImplTest / IT: submit a never-seen owner name with no DIRECT_OWNER_SYNC →
+    assert the Owner row exists afterward (characterization of the current mint behaviour) AND, post-fix,
+    assert a not-found/validation error or that the UI combo-box explicitly signalled creation (ties to H-000-UI-GAP).
+- use_case_id: F-075-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "An auto-approved self-bind is fully forensically reconstructable (mint + binding both recorded)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-075-UC-006)"
+  proposed_test: |-
+    IT: after an auto-approved request, assert owner_association_request_activity has the approval row AND
+    assert (currently FAILS / documents the gap) that the Owner creation is traceable. Pin the asymmetry.
+- use_case_id: F-075-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "Under auth.type=DISABLED the self-request flow is fail-closed for anonymous callers."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-075-UC-007)"
+  proposed_test: |-
+    OwnerAssociationRequestServiceImplTest: authIdentityProvider.getCurrentUser() returns Mono.empty() →
+    StepVerifier.verifyError(RuntimeException) for createOwnerAssociationRequest. (Mockito; smallest reproducer;
+    pins the POSITIVE fail-closed contract that distinguishes this surface from the anonymous Owner-CRUD surface.)
+- use_case_id: F-075-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "The live /user-owner-association doc documents the DIRECT_OWNER_SYNC auto-approve branch."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "DOC-GAP (F-075a already produced by SR-20260527T1900Z; mint as DOC-NNN)"
+  proposed_test: "n/a — doc-gap, not a functional test. Routed via doc_drift_findings below."
+- use_case_id: F-075-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "The live /permissions DIRECT_OWNER_SYNC description warns of the self-mint composition hazard."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "DOC-GAP (F-075b already produced by SR-20260527T1900Z; mint as DOC-NNN)"
+  proposed_test: "n/a — doc-gap. Routed via doc_drift_findings below."
+
+### probes_emitted
+# PARALLEL-SAFE MODE: recorded here only; no P-NNN file created.
+- probe_id: PENDING-F-075-1
+  hypothesis_id: H-000-UI-GAP
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  hypothesis: |-
+    The user-self-request form that POSTs /api/owner_association_request — enrich the identity/
+    profile UI cluster and determine: is the owner field a select-or-create combo-box (which would
+    make getOrCreate the intended pattern, per Rule 9) or a bare free-text field; does it warn that
+    typing a novel name creates an Owner; how is auto-approve vs PENDING communicated; behaviour
+    across device types. Until enriched, this reflection is API-only for all UX questions.
+  expected_outcome: "Identify the submitter UI component(s) and classify the owner-name control + creation affordance."
+- probe_id: PENDING-F-075-2
+  hypothesis_id: H-010
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  hypothesis: |-
+    Two concurrent DIRECT_OWNER_SYNC auto-approve requests for the SAME never-seen owner name:
+    confirm exactly one Owner row is created (partial unique index owner_name_unique) and determine
+    the LOSER's outcome — transient 400 USR003 with no retry, or a lost user_owner_mapping. Run on a
+    local docker-compose Postgres with two concurrent POSTs; getOrCreate has no lock and does not
+    catch+re-read the unique violation.
+  expected_outcome: "One owner row; characterise the losing request's binding outcome under the unique-violation race."
+
+### validation_gaps
+- sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+  field_insufficient: |-
+    The service-tier OwnerAssociationRequestServiceImpl has NO standalone sidecar; its logic is
+    transcribed only inside this controller-class sidecar's coherence_notes. The transcription did
+    not capture that getOrCreate (line 57) runs UNCONDITIONALLY before the permission branch — a
+    load-bearing fact for H-002/H-005 that required a source_read_for_validation this invocation.
+  proposed_refresh: |-
+    Author a dedicated file-analyser sidecar for OwnerAssociationRequestServiceImpl
+    (service-method:createOwnerAssociationRequest) capturing the unconditional getOrCreate mint,
+    the two branches, the createRelation self-bind, and the isManual activity threading — so future
+    reflections trace the service tier without a source read.
+- sidecar: "F-075 chain hop-1 (ui_unresolved)"
+  field_insufficient: |-
+    The submitter-side UI form is unresolved (ui_unverified). No UX verdict is possible (Rule 9).
+  proposed_refresh: |-
+    Run a ui-review pass on the identity/profile UI cluster to enrich the self-request form
+    component; resolves H-000-UI-GAP / PENDING-F-075-1.
+
+### doc_drift_findings
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "Association is a two-step flow: user sends a request, an Admin approves or declines it."
+  code_does: |-
+    A DIRECT_OWNER_SYNC holder is auto-approved synchronously in the same call
+    (OwnerAssociationRequestServiceImpl.java:60-67) — no Admin step. Branch B is invisible to the doc.
+  recommended_log_as: "DOC-NNN — already produced as scanner finding F-075a (SR-20260527T1900Z); mint into backlog/docs."
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+  doc_says: "DIRECT_OWNER_SYNC — 'Allows associating a user with an owner without an approval request.'"
+  code_does: |-
+    The same flow also mints the owner via getOrCreate without OWNER_CREATE and lets the holder
+    self-bind to an arbitrary owner — a self-mint composition hazard absent from the description and
+    from the permission editor.
+  recommended_log_as: "DOC-NNN — already produced as scanner finding F-075b (SR-20260527T1900Z); mint into backlog/docs."
+
+## maintainer_notes
+
+(none — first reflection of F-075 at feature-reflector/0.3.0)

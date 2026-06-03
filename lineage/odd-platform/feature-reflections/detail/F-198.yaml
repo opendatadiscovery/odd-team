@@ -1,0 +1,677 @@
+---
+feature_id: F-198
+pillar_anchored_id: P-07:F-014-notification-settings-dialog
+pillar: "P-07 Active Platform Features"
+feature_name: |-
+  Notification Settings dialog — react-hook-form dialog on the per-entity Alerts tab that mutates the
+  4 halt-until values via PUT /api/dataentities/{id}/alert_config (DATA_ENTITY_ALERT_CONFIG_UPDATE-gated).
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md  # READ sibling; confirms the alert_config PUT IS rule-gated at SecurityConstants.java:304-307
+  - odd-platform__java__AlertController__controller-method__changeAlertStatus.md         # the Resolve/Reopen mutation (hop 4) backend, in full
+  - odd-platform__ts__react-component__component__Alerts.md                               # shared AlertItem row (hop 4 Resolve button); NOT a DataEntityAlertItem.tsx sidecar
+  # NOTE (Rule 9 / LSN-025 Failure F): the FOUR UI components that ARE this feature's surface —
+  #   NotificationSettings.tsx, AlertTypeRange.tsx, DataEntityAlerts.tsx, DataEntityAlertItem.tsx —
+  #   have NO enriched sidecar (every chain hop in F-198.yaml is `sidecar: unresolved`). The MUTATION
+  #   backend PUT /api/dataentities/{id}/alert_config (updateAlertConfig) ALSO has no enriched sidecar.
+  #   This reflection is therefore UI-shell-traced (from the feature-flow's own cited evidence + the F-014
+  #   sibling reflection's UI walks) + backend-traced via two Rule-8 source reads. See validation_gaps.
+source_reads_for_validation:
+  - "odd-platform-api/.../repository/AlertHaltConfigRepositoryImpl.java:50-64 — the create() upsert (resolves two feature-flow ui_unverified facets at the SQL tier)"
+  - "odd-platform-api/.../service/AlertHaltConfigServiceImplTest.java:49-94 — the only automated coverage of the mutation's service layer (Rule 11 coverage check)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: not-refetched-this-session
+    note: |-
+      Not re-fetched this reflection session (parallel-safe mode; no new doc-claim seeds needed — the
+      F-198 facets are CODE/UX defects, not doc-drift). DOC-201 (status: done, 2026-05-28) already ships
+      a "Known UX limitations" section on this page documenting the Notification Settings concurrency
+      hazard (F-198a) AND the Resolve/Reopen destructive-no-confirmation hazard (F-198b) as operator
+      caveats cross-linked to PLT-053 / PLT-050. So the doc side of the F-198 facets is CLOSED; the
+      verdicts below are "code-contradicts-secure-expectation, doc already warns" rather than fresh
+      doc-drift.
+hypothesis_summary:
+  total: 11
+  confirmed: 2
+  contradicted: 6
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: MEDIUM
+    one_line: |-
+      The halt-config write is an unconditional INSERT...ON CONFLICT(data_entity_id) DO UPDATE upsert
+      (AlertHaltConfigRepositoryImpl.java:50-64) — no version column, no conditional WHERE — so two
+      operators editing the same entity's Notification Settings silently overwrite each other
+      (last-writer-wins), and a dialog that opened on a failed fetch submits empty values that blank
+      the server-side halt config.
+related_feature_flows: [F-014, F-126, F-007, F-010]
+  # F-014 sibling per-entity alert READ surface (same UI family; shares AlertItem + DataEntityAlerts);
+  # F-126 global Alerts list (shares AlertItem + the Alerts-UX cluster PLT-050);
+  # F-007 alert WRITE (AlertManager + ingestion) — the alerts the halt-config suppresses;
+  # F-010 housekeeping — the hard-delete that makes the Resolve-no-confirmation defect destructive.
+related_concepts:
+  - alert-halt-config
+  - per-entity-alert-mutation
+  - data-entity-alert-config-update-permission
+  - "WithPermissions (context, not render-gate)"
+  - "last-writer-wins (no optimistic concurrency)"
+  - "Alert OPEN<->RESOLVED lifecycle"
+related_drift_classes:
+  # from the F-198 feature-flow observed_vs_expected that this reflection re-confirmed top-down
+  - notification_settings_no_optimistic_concurrency_check
+  - notification_settings_silent_open_failure_no_fetch_error_handling
+  - alert_resolve_button_no_confirmation_dialog
+  - notification_settings_dialog_field_labels_not_translated
+  - alert_item_show_history_button_loses_state_on_remount
+  # shared with the F-014 sibling reflection (same UI components)
+  - notification_settings_with_permissions_is_context_not_render_block
+  - alertitem_post_action_permission_discovery_button_enabled_until_click_reveals_no_access
+new_drift_classes_proposed:
+  - halt_config_upsert_unconditional_last_writer_wins_no_version_column   # H-002 — the SQL-tier confirmation of notification_settings_no_optimistic_concurrency_check
+  - halt_config_save_has_no_round_trip_test_only_mocked_service_unit      # H-010 — LSN-030 functional-test gap on the dialog's core promise
+---
+
+# Notification Settings dialog — product-owner reflection
+
+## product_owner_narrative
+
+The Notification Settings dialog is the operator's single control for **silencing alerts on one data entity for a bounded window**. The pillar (P-07 Active Platform Features, "the platform is itself an actor — detect a condition and raise an alert … per-entity halt config") names "per-entity halt config" as a primary user action; this dialog is its only authoring surface (per system-mission P-07 sub-feature seed "Alerting … per-entity halt config"). An operator on a noisy entity — say a dataset whose nightly job is known-flaky during a migration — opens the dialog and, per alert type, sets a "disable until" timestamp; when the window expires the alert type re-arms automatically (per F-198 feature-flow chain hop 2 evidence: the dialog's footer caption "When the time is up, disabled alert types will turn on automatically"). It is the *write* sibling of F-014's per-entity alert *read* tab — they live on the same data-entity detail surface.
+
+How the operator reaches and uses it. The dialog mounts on the per-entity **Alerts** tab (the `DataEntityAlerts` component), and its trigger button is wrapped in `<WithPermissions permissionTo={DATA_ENTITY_ALERT_CONFIG_UPDATE}>` — so an operator without that permission is intended to see no trigger (per feature-flow chain hop 1 evidence: `DataEntityAlerts.tsx:53`). Opening the dialog clones the trigger and injects an `onClick` that dispatches `fetchDataEntityAlertsConfig({dataEntityId})` to populate the form (per chain hop 2 evidence: `NotificationSettings.tsx:127`). The dialog (`NotificationSettings`, a `DialogWrapper`) renders four `AlertTypeRange` controls — one per alert type (incompatibleSchema / failedDqTest / failedJob / distributionAnomaly), each bound to a react-hook-form `Control<FormData>` and serialised to a numeric epoch via `SerializeDateToNumber` (per chain hops 2-3 evidence: `NotificationSettings.tsx:21-23` + `AlertTypeRange.tsx`). Submitting dispatches `updateDataEntityAlertsConfig({dataEntityId, dataEntityAlertConfig})` → `PUT /api/dataentities/{id}/alert_config` (per chain hop 2 evidence: `NotificationSettings.tsx:50`).
+
+The working parts, as the operator experiences them. The form has **four independent halt-until pickers**; each writes one `*HaltUntil` column. The write reaches a service (`AlertHaltConfigService.saveAlertHaltConfig`) whose repository performs an **`INSERT … ON CONFLICT (data_entity_id) DO UPDATE SET <all four halt columns>`** upsert (per source read `AlertHaltConfigRepositoryImpl.java:50-64`) — so saving is idempotent on the entity but **unconditional**: whatever the form holds at submit time becomes the new row, with no version check and no field-level merge. The PUT endpoint itself **IS** permission-gated — `SecurityConstants.SECURITY_RULES` carries `PUT /api/dataentities/{data_entity_id}/alert_config` at `SecurityConstants.java:304-307` paired with `DATA_ENTITY_ALERT_CONFIG_UPDATE` (per the getDataEntityAlerts sidecar `security.known_security_gaps[1]`), which is the structural opposite of the sibling *read* endpoint (`GET …/alerts`) that has no rule entry at all. The same tab also hosts each alert row's **Resolve/Reopen** button (`DataEntityAlertItem`, hop 4), which mutates `PUT /api/alerts/{alert_id}/status` (per the changeAlertStatus sidecar) with a reopen-conflict guard but no owner-scoping and no confirmation prompt.
+
+The integration story places this dialog inside the alert lifecycle. The halt-until values it writes are *consumed* downstream by the alert-generation path (F-007 / the ingestion `AlertIngestionRequestProcessor`) which suppresses an alert type while its halt window is active — so a misconfigured or silently-blanked halt config means alerts the operator believed suppressed will fire (or alerts they believed armed stay silent). The Resolve button on the same tab is coupled to housekeeping (F-010): manually-resolved alerts are hard-deleted on the next cleanup cycle (per the F-014 sibling reflection narrative + DOC-200), which is what makes the Resolve button's missing confirmation a *destructive* defect rather than a cosmetic one.
+
+Edge cases a product owner would flag in a demo. (1) **Concurrent edit** — two operators on the same entity overwrite each other with no warning, because the write is last-writer-wins at the SQL tier (the feature-flow flagged this `ui_unverified`; this reflection resolves it as confirmed at `AlertHaltConfigRepositoryImpl.java:50-64`). (2) **Failed on-open fetch** — the dialog renders a spinner while fetching but has no error branch, so a rejected fetch drops to an empty form whose submit blanks the server config (feature-flow facet `notification_settings_silent_open_failure_no_fetch_error_handling`). (3) **Permission affordance** — `WithPermissions` is a context provider, not a render-gate (PLT-034 family), so the gating depends on a descendant consulting it and can flash on first render. (4) **i18n** — the dialog title/helper/footer are hardcoded English while the parent trigger button is translated (feature-flow facet, F-198c). (5) **Zero round-trip test coverage** — the only automated coverage is a *mocked* service unit test (`AlertHaltConfigServiceImplTest`); there is no UI test, no `@WebFluxTest` of `updateAlertConfig`, and no integration protocol (IT-027/IT-030 cover the *read* and the *global list*, not this dialog) — so every behaviour below is traced from primary source, not guarded by a passing test.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator without DATA_ENTITY_ALERT_CONFIG_UPDATE permission opens an entity's Alerts tab, they do not see the Notification Settings trigger button (the affordance is render-gated to entitled operators)."
+  derivation: "UI-label seed: the trigger is wrapped in <WithPermissions permissionTo={DATA_ENTITY_ALERT_CONFIG_UPDATE}> (feature-flow hop 1 evidence DataEntityAlerts.tsx:53); a senior PO reads that wrapper as a render-gate."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The wrapper's NAME implies a render-gate; its BEHAVIOUR is a permission CONTEXT. Per PLT-034 (the
+      systemic finding; F-014d is its canonical anchor and its Where cites DataEntityAlerts.tsx:53
+      directly), WithPermissions.tsx has all three render branches (loading / success / error)
+      unconditionally render their children — it provides the permission via context, it does not
+      short-circuit. So the trigger is effectively hidden ONLY if (a) the descendant consults the
+      context AND (b) the context is hydrated on first render. PARTIAL: in the steady state where the
+      descendant cooperates the button is hidden, but on first render (context not yet hydrated) the
+      trigger can flash to an unprivileged operator, and the only hard enforcement is the backend rule
+      gate on the PUT (SecurityConstants.java:304-307 — H-003), not the UI wrapper.
+    evidence:
+      - sidecar: "(PLT-034 primary-source — WithPermissions.tsx has no enriched sidecar)"
+        section: PLT-034 What + Where
+        cite: "WithPermissions.tsx:12-49 + DataEntityAlerts.tsx:53"
+        note: "all three branches render children — context, not gate; DataEntityAlerts.tsx:53 is PLT-034's cited locus"
+        source_read_for_validation: false
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: security.known_security_gaps[1]
+        cite: "SecurityConstants.java:304-307"
+        note: "the PUT alert_config IS rule-gated with DATA_ENTITY_ALERT_CONFIG_UPDATE — the real enforcement point"
+    operator_visible_failure: |
+      On first render of the Alerts tab an unprivileged operator can briefly see the Notification
+      Settings trigger before the permission context resolves; clicking it would dispatch the on-open
+      fetch but the eventual PUT is denied by the backend rule (so no data is mutated). The defect is the
+      misleading affordance + the contributor-trap: a developer reading <WithPermissions> reasonably
+      assumes a render-block and may add a new gated control that leaks. The name-vs-behaviour mismatch
+      is the load-bearing issue.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "ALREADY TRACKED as PLT-034 (WithPermissions context-not-gate, systemic; its Where cites DataEntityAlerts.tsx:53). This reflection corroborates PLT-034 from the F-198 dialog locus. Confidence MEDIUM: WithPermissions.tsx / DataEntityAlerts.tsx have no enriched sidecar — verdict rests on PLT-034's primary-source cite + the F-198 feature-flow hop-1 evidence."
+
+- id: H-002
+  hypothesis: "When two operators open the Notification Settings dialog on the same entity and submit different halt-until values, the platform detects the concurrent edit (version check / If-Match) rather than silently letting the last writer overwrite the first."
+  derivation: "Negative-space + the feature-flow facet notification_settings_no_optimistic_concurrency_check (marked ui_unverified at the backend tier); a senior PO checks whether a multi-operator mutation surface protects against lost updates."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The write is unconditional last-writer-wins. AlertHaltConfigService.saveAlertHaltConfig delegates
+      to AlertHaltConfigRepositoryImpl.create, which is an INSERT...ON CONFLICT (DATA_ENTITY_ID) DO
+      UPDATE SET distribution_anomaly_halt_until=..., incompatible_schema_halt_until=...,
+      failed_dq_test_halt_until=..., failed_job_halt_until=... (AlertHaltConfigRepositoryImpl.java:50-64,
+      read this session). There is NO version column referenced, NO conditional WHERE on a prior value,
+      and NO If-Match precondition at the controller (PUT /api/dataentities/{id}/alert_config carries no
+      ETag plumbing). The DO UPDATE overwrites ALL FOUR halt columns with whatever the submitting form
+      held. So operator B's submit, made from a dialog that opened on stale v1 data, silently replaces
+      operator A's v1+A write with v1+B — A's change is lost with no warning to either operator. This
+      RESOLVES the feature-flow's ui_unverified flag on this facet ("whether the backend accepts
+      unconditional writes or carries an ETag has not been traced") — it accepts unconditional writes.
+    evidence:
+      - sidecar: "(source_read_for_validation — AlertHaltConfigRepositoryImpl.java has no enriched sidecar)"
+        section: "AlertHaltConfigRepositoryImpl.create()"
+        cite: "AlertHaltConfigRepositoryImpl.java:50-64"
+        note: "INSERT...ON CONFLICT(DATA_ENTITY_ID) DO UPDATE SET <all 4 halt columns> — no version, no conditional WHERE"
+        source_read_for_validation: true
+      - sidecar: "(source_read_for_validation — AlertHaltConfigServiceImplTest.java)"
+        section: "saveAlertHaltConfig_persistsAndReturnsMappedConfig"
+        cite: "AlertHaltConfigServiceImplTest.java:81-93"
+        note: "service test confirms save = mapForm -> repository.create -> mapPojo; the create is the unconditional upsert"
+    operator_visible_failure: |
+      Two failure modes. (a) Lost update: in a multi-operator team, A and B both open Notification
+      Settings on the same hot entity during an incident, each toggles a different alert type's halt
+      window, and whoever submits second silently wipes the other's change — the entity then alerts (or
+      stays silent) in a way neither operator configured, and there is no audit-log entry for the
+      halt-config mutation to reconstruct what happened. (b) Because the DO UPDATE sets ALL four columns,
+      even editing ONE alert type's window rewrites the other three to whatever the (possibly stale)
+      dialog held — so a concurrent edit can silently re-arm an alert type a colleague had just disabled.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "ALREADY TRACKED both sides — PLT-053 Defect 1 (code: add a version column + If-Match + 412-on-stale) and DOC-201 (done; doc-side known-limitation). This reflection's NET-NEW contribution is the SQL-tier confirmation (the upsert is unconditional last-writer-wins AND DO UPDATE rewrites all four columns) which resolves the feature-flow's ui_unverified flag and strengthens PLT-053 Defect 1's evidence. New drift class proposed: halt_config_upsert_unconditional_last_writer_wins_no_version_column. distinct_from: nothing — it IS PLT-053 Defect 1, now with backend evidence."
+
+- id: H-003
+  hypothesis: "When an operator submits the Notification Settings dialog, the PUT /api/dataentities/{id}/alert_config is permission-gated on DATA_ENTITY_ALERT_CONFIG_UPDATE — an authenticated operator without that permission cannot mutate the halt config."
+  derivation: "Endpoint-shape + pillar-mission: the feature_name asserts the dialog is 'permission-gated via DATA_ENTITY_ALERT_CONFIG_UPDATE'; a senior PO verifies the mutation is gated at the real enforcement layer, not just by the UI wrapper."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The mutation endpoint IS rule-gated. SecurityConstants.SECURITY_RULES contains an entry for
+      PUT /api/dataentities/{data_entity_id}/alert_config at SecurityConstants.java:304-307, pairing the
+      DATA_ENTITY resource with DATA_ENTITY_ALERT_CONFIG_UPDATE (per the getDataEntityAlerts sidecar
+      security.known_security_gaps[1], which cites this rule verbatim as the contrast to the UNGATED
+      sibling read GET .../alerts). The AuthorizationCustomizer registers every SECURITY_RULES entry on
+      the WebFlux chain, so a caller lacking the permission is rejected at admission before the
+      controller runs. This is the structural opposite of the read sibling — the WRITE is gated, the
+      READ is not (the F-014 H-001 contradiction).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: "security.known_security_gaps[1] + implicit_adrs[0]"
+        cite: "SecurityConstants.java:304-307 + AuthorizationCustomizer.java:20-31"
+        note: "alert_config PUT IS in SECURITY_RULES with DATA_ENTITY_ALERT_CONFIG_UPDATE; the rule loop registers it on the chain"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "net_new as a TEST demand only. The behaviour is CONFIRMED (the gate exists) but has NO test — no security-class test asserts that PUT alert_config returns 403 for a principal lacking DATA_ENTITY_ALERT_CONFIG_UPDATE. A future refactor that drops the SecurityConstants.java:304-307 entry would silently open the mutation with the build green. This is exactly the LSN-030 confirmed-but-untested promise — it routes to a functional test demand, NOT to none."
+
+- id: H-004
+  hypothesis: "When the on-open fetch (fetchDataEntityAlertsConfig) FAILS, the dialog tells the operator the load failed and does not present an empty form whose submit would blank the server-side halt config."
+  derivation: "Negative-space + the feature-flow facet notification_settings_silent_open_failure_no_fetch_error_handling; a senior PO checks the failure branch of an async-populated mutation form."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The dialog renders an AppCircularProgress while isDataEntityAlertConfigFetching === true and
+      renders the form otherwise — there is NO branch for the FAILED fetch state (per feature-flow facet
+      evidence NotificationSettings.tsx:61-107 + :127). If the fetch rejects, the spinner clears and the
+      form renders with empty/undefined react-hook-form defaults. Because the SAVE is an unconditional
+      upsert that DO UPDATEs all four halt columns (H-002, AlertHaltConfigRepositoryImpl.java:50-64), an
+      operator who then submits the (empty) form blanks the entity's entire halt config server-side. The
+      feature-flow marked the redux-selector side ui_unverified ("whether getDataEntityAlertsConfig-
+      FetchingStatus exposes an isError flag the dialog could read"); the UI-side fact (no error branch
+      in the dialog render) is visible in the feature-flow's own cited evidence, and the SAVE-side
+      consequence (empty form -> blanked config) is now confirmed at the SQL tier.
+    evidence:
+      - sidecar: "(F-198 feature-flow facet — NotificationSettings.tsx has no enriched sidecar)"
+        section: "observed_vs_expected.facet=notification_settings_silent_open_failure_no_fetch_error_handling"
+        cite: "NotificationSettings.tsx:61-107 + :127"
+        note: "spinner-or-form render; no FAILED branch; fetch dispatched on open"
+        source_read_for_validation: false
+      - sidecar: "(source_read_for_validation — AlertHaltConfigRepositoryImpl.java)"
+        section: "create() DO UPDATE sets all four halt columns"
+        cite: "AlertHaltConfigRepositoryImpl.java:55-60"
+        note: "empty form -> all four columns set to null/empty -> halt config blanked"
+        source_read_for_validation: true
+    operator_visible_failure: |
+      An operator opens Notification Settings on an entity whose halt config they want to TWEAK, the
+      populate-fetch fails (transient network / backend hiccup), and they see a blank form instead of an
+      error. If they save — believing they are confirming the existing config or making a small change —
+      the upsert overwrites all four halt-until values with empty, silently RE-ARMING every alert type
+      the entity had suppressed. There is no error toast, no disabled submit, no "failed to load" state
+      to stop them. This is a silent data-loss-on-mutation hazard of the LSN-001 family (a fragile state
+      defaulting to a destructive write).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "net_new (with distinct_from PLT-053). PLT-053 Defect 1 is the CONCURRENCY lost-update; this is the FAILED-FETCH-then-empty-submit lost-config — a DIFFERENT trigger (single operator, failed populate) for the same blanked-config outcome, and PLT-053 does not name the missing fetch-error branch. The feature-flow facet exists but produced no scanner finding / no PLT (only F-198a concurrency + F-198b resolve + F-198c i18n were filed). distinct_from PLT-053 in the trigger + the fix locus (add a FAILED render branch + disable submit on fetch-error, vs add a version column)."
+
+- id: H-005
+  hypothesis: "When an operator clicks Resolve/Reopen on an alert row in the per-entity Alerts tab, the platform asks for confirmation before performing the status change (because a manual Resolve leads to a housekeeping hard-delete of the alert's audit history)."
+  derivation: "Negative-space + the feature-flow facet alert_resolve_button_no_confirmation_dialog + cross-feature coupling to F-010 housekeeping hard-delete; a senior PO requires a confirmation step before a destructive, irreversible action."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Clicking Resolve/Reopen dispatches updateAlertStatus immediately with no confirmation modal (per
+      feature-flow facet evidence DataEntityAlertItem.tsx:113-118). The dispatch hits
+      PUT /api/alerts/{alert_id}/status (per the changeAlertStatus sidecar understanding), which writes
+      the status through with a reopen-conflict guard but no undo. Per the F-014 sibling reflection +
+      DOC-200, a manually-resolved alert is then HARD-DELETED by the housekeeping job (F-010) on the next
+      cleanup cycle. So a single accidental click destroys the alert + its chunks + status history — the
+      exact audit data the platform's own documented workaround tells operators to export before
+      resolving. No confirmation, no warning, no soft-undo window.
+    evidence:
+      - sidecar: "(F-198 feature-flow facet — DataEntityAlertItem.tsx has no enriched sidecar)"
+        section: "observed_vs_expected.facet=alert_resolve_button_no_confirmation_dialog"
+        cite: "DataEntityAlertItem.tsx:113-118"
+        note: "Resolve dispatch immediate; no confirmation modal"
+        source_read_for_validation: false
+      - sidecar: odd-platform__java__AlertController__controller-method__changeAlertStatus.md
+        section: "understanding + implicit_adrs[1]"
+        cite: "AlertController PUT /api/alerts/{alert_id}/status; AlertServiceImpl.java:111-136"
+        note: "the immediate mutation the button dispatches; reopen-guard but no undo"
+    operator_visible_failure: |
+      An operator scanning a noisy entity's Alerts tab fat-fingers Resolve on the wrong row; the alert is
+      resolved instantly and then hard-deleted by housekeeping — the audit trail of that alert is gone
+      with no recovery path. The damage is silent and irreversible, and it defeats the very
+      audit-export-before-resolve workflow the docs recommend. Severity is bounded below HIGH only
+      because the destruction requires both a click AND the housekeeping cycle, and DOC-201 now warns
+      operators of the hazard.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "ALREADY TRACKED both sides — PLT-053 Defect 2 (code: add a ConfirmationDialog before the Resolve dispatch, cites DataEntityAlertItem.tsx:113-118) and DOC-201 (done; the prominent warning admonition). Convergent corroboration from the PO angle; not a fresh filing."
+
+- id: H-006
+  hypothesis: "When a viewer who lacks DATA_ENTITY_ALERT_RESOLVE permission looks at an alert row on the per-entity tab, they do NOT see a Resolve/Reopen action they cannot use (the UI hides actions the viewer is not entitled to)."
+  derivation: "Senior-PO UX consistency ('does the UI show only what I can do?') + UI-label seed on the Resolve button (the shared AlertItem the global Alerts list uses)."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Resolve/Reopen button is rendered on every alert row unconditionally; the permission probe
+      fires only AFTER the click. The shared AlertItem renders the button enabled (disableResolve starts
+      false) and on click dispatches fetchResourcePermissions(...), THEN conditionally calls
+      updateAlertStatus OR sets disableResolve=true and shows a small "No access!" caption (per the
+      Alerts.tsx sidecar bugs_limitations_corner_cases[1]: AlertItem.tsx:159-166 render + :48-70
+      permission-on-click). The per-entity tab reuses this same AlertItem (DataEntityAlertItem composes
+      it), so the anti-pattern surfaces identically here — the viewer learns their lack of permission by
+      clicking, not from a visual cue.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: "bugs_limitations_corner_cases[1] + tests_coverage_semantic.uncovered_behaviours (Resolve security test)"
+        cite: "AlertItem.tsx:159-166 + AlertItem.tsx:48-70"
+        note: "button rendered unconditionally; permission resolved post-click; late 'No access!'"
+    operator_visible_failure: |
+      A read-only steward on an entity's Alerts tab sees a Resolve button on every alert, clicks
+      expecting it to work, and is denied after the fact with a small inline caption. Compounded with
+      H-005 (no confirmation) for the operator who DOES have permission: a single speculative click that
+      happens to be entitled destroys audit history. The affordance is misleading and inconsistent with
+      permission-gated controls elsewhere on the platform.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "ALREADY TRACKED as PLT-034 (post-action permission-discovery, the WithPermissions/late-probe class; F-014 H-007 is the sibling-read locus). The per-entity tab is a shared-AlertItem locus of the same systemic defect. Corroborates PLT-034; not a fresh filing."
+
+- id: H-007
+  hypothesis: "When an operator sets only ONE alert type's halt window in the dialog and leaves the other three untouched, only that one column is changed server-side (the other three retain their existing values)."
+  derivation: "Response-shape + Category-F: the form exposes four independent pickers, so a senior PO expects a partial edit to be a partial write — editing 'failed job' should not disturb 'incompatible schema'."
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Field-level isolation holds ONLY because the dialog re-populates all four values from the on-open
+      fetch and submits the whole form. The repository's DO UPDATE sets ALL FOUR halt columns
+      unconditionally (AlertHaltConfigRepositoryImpl.java:55-60) — there is no per-column "only if
+      present" merge at the SQL tier. So the invariant "untouched columns keep their value" is an
+      emergent property of the UI round-tripping the full config, NOT a guarantee of the write path. It
+      holds on the happy path (successful populate -> edit one -> submit full). It BREAKS on the
+      failed-populate path (H-004: empty form -> all four blanked) and on the concurrent-edit path
+      (H-002: a stale full-form submit rewrites the three the operator never looked at). PARTIAL: the
+      promise is delivered on the happy path and silently violated on the two edge paths.
+    evidence:
+      - sidecar: "(source_read_for_validation — AlertHaltConfigRepositoryImpl.java)"
+        section: "create() DO UPDATE sets all four halt columns"
+        cite: "AlertHaltConfigRepositoryImpl.java:55-60"
+        note: "all four columns set on every upsert — no per-column conditional merge"
+        source_read_for_validation: true
+      - sidecar: "(F-198 feature-flow chain hop 2)"
+        section: "chain[hop 2] evidence (full-form submit)"
+        cite: "NotificationSettings.tsx:50 (updateDataEntityAlertsConfig with full dataEntityAlertConfig)"
+        note: "the UI submits the whole config — the only reason untouched columns survive"
+        source_read_for_validation: false
+    operator_visible_failure: |
+      In the steady state an operator editing one alert type does not disturb the others — fine. But the
+      isolation is fragile: it depends entirely on the dialog faithfully reloading and resubmitting the
+      full config. The moment the populate fails (H-004) or a concurrent dialog holds stale data (H-002),
+      editing one column silently rewrites the other three. An operator has no way to know that "I only
+      touched failed-job" did not, in fact, leave the other three alone.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "net_new as a low-severity caveat, but it is the SAME ROOT as H-002/H-004 (the unconditional all-column DO UPDATE). Folds under PLT-053 Defect 1 once a version/merge strategy is chosen (a field-level merge or a version check both fix this). No separate filing — record as a corroborating consequence of the all-column-upsert root."
+
+- id: H-008
+  hypothesis: "When an operator scrolls a long alert list with one alert's chunk history expanded, scrolls away, and scrolls back, that alert's history stays expanded (the expand state survives the infinite-scroll re-render)."
+  derivation: "Senior-PO UX (device/interaction consistency) + the feature-flow facet alert_item_show_history_button_loses_state_on_remount; a senior PO checks that local interaction state survives the list's pagination churn."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      showHistory is a local useState(false) on DataEntityAlertItem (feature-flow facet evidence
+      DataEntityAlertItem.tsx:36). The parent DataEntityAlerts paginates via InfiniteScroll AND refires
+      fetchDataEntityAlerts on every dataEntityId change (hop 1 evidence DataEntityAlerts.tsx:31-35),
+      and the redux slice replacement for the alerts list can remount the rows — resetting showHistory to
+      false. WHETHER React preserves the component state across the redux array update depends on whether
+      key={alert.id} (feature-flow facet) keeps the element identity stable across the reducer's merge
+      semantics — which the feature-flow itself marks ui_unverified ("whether key={alert.id} preserves
+      React state across redux array order changes depends on the reducer's merge semantics — not
+      verified"). This cannot be resolved by static trace alone; it requires running the UI and observing
+      the expand state across a scroll-away/scroll-back. Probe-needed.
+    evidence:
+      - sidecar: "(F-198 feature-flow facet — DataEntityAlertItem.tsx has no enriched sidecar)"
+        section: "observed_vs_expected.facet=alert_item_show_history_button_loses_state_on_remount (ui_unverified)"
+        cite: "DataEntityAlertItem.tsx:36 + DataEntityAlerts.tsx:31-35"
+        note: "local useState(showHistory); parent re-fetches + InfiniteScroll; key={alert.id} preservation unverified"
+        source_read_for_validation: false
+    operator_visible_failure: |
+      If the state does NOT survive: an operator investigating an entity's alert timeline expands an
+      alert's chunk history, scrolls down to load more, scrolls back up, and finds the history collapsed
+      again — losing their place and forcing a re-expand. A minor but real friction on the diagnostic
+      surface. The probe pins whether key={alert.id} preserves the expand state across the redux merge.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-198-1
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: probe
+    dedup_note: "net_new (low). The feature-flow facet exists but produced no scanner finding / no PLT. Folds into the PLT-050 Alerts-UX cluster if the probe confirms the state loss; until measured, it is a probe-needed verdict, not a filed bug."
+
+- id: H-009
+  hypothesis: "When an operator opens the Notification Settings dialog in a non-English UI locale, the dialog title, helper text, and footer are translated (consistent with the rest of the platform's i18n)."
+  derivation: "Senior-PO consistency (intuitive + consistent with the platform) + the feature-flow facet notification_settings_dialog_field_labels_not_translated; a senior PO checks i18n consistency on a dialog whose parent trigger IS translated."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The dialog's title (formTitle "Notification settings"), the description text ("Select the type of
+      notifications and the period for which you want to disable notifications"), and the footer caption
+      ("When the time is up, disabled alert types will turn on automatically") are ALL hardcoded English
+      string literals (per feature-flow facet evidence NotificationSettings.tsx:57, :76-79, :102-104).
+      The PARENT trigger button on DataEntityAlerts.tsx:57 DOES use t('Notification settings'). So the
+      same concept is translated on the button and untranslated inside the dialog it opens —
+      mid-component i18n inconsistency.
+    evidence:
+      - sidecar: "(F-198 feature-flow facet — NotificationSettings.tsx has no enriched sidecar)"
+        section: "observed_vs_expected.facet=notification_settings_dialog_field_labels_not_translated"
+        cite: "NotificationSettings.tsx:57, 76-79, 102-104 vs DataEntityAlerts.tsx:57"
+        note: "dialog copy hardcoded English; parent trigger uses t()"
+        source_read_for_validation: false
+    operator_visible_failure: |
+      An operator running ODD in a non-English locale sees a Notification Settings button in their
+      language, opens it, and the dialog inside is in English — title, instructions, and the
+      auto-re-arm caption all untranslated. For a control whose helper text explains a non-obvious
+      behaviour (alerts re-arm when the window expires), losing that text to an untranslated string is a
+      comprehension gap, not just cosmetic.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "ALREADY TRACKED as PLT-053 Defect 3 (wrap the three strings in t(); cites NotificationSettings.tsx:57, 76-79, 102-104). DOC-side family is the DOC-180 i18n-discipline cluster. Corroborates PLT-053 Defect 3; not a fresh filing."
+
+- id: H-010
+  hypothesis: "When an operator sets a halt window in the dialog and saves, then re-opens the dialog, the saved halt-until values are loaded back (the save->persist->reload round-trip works end to end on the happy path)."
+  derivation: "Pillar primary user action ('per-entity halt config') — the baseline confirm that the feature delivers its core write+read-back when correctly used."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The save->persist->reload round-trip is intact at the service+repository tier. saveAlertHaltConfig
+      maps the form to a pojo (mapForm), calls repository.create (the upsert at
+      AlertHaltConfigRepositoryImpl.java:50-64, which RETURNs the persisted row), and maps it back
+      (mapPojo) — verified by AlertHaltConfigServiceImplTest.saveAlertHaltConfig_persistsAndReturns-
+      MappedConfig (lines 81-93). getAlertHaltConfig for an existing entity WITH a config returns the
+      mapped config (test lines 59-69), and for an existing entity WITHOUT one returns an empty default
+      rather than erroring (test lines 71-79) — so the on-open fetch works for both the configured and
+      never-configured cases. The chain mechanically delivers the write and the read-back. (CAVEAT: this
+      is verified only at the MOCKED service tier — the mapper, the repository SQL, the controller, and
+      the UI form binding are NOT exercised by any test; see H-003/H-011 and validation_gaps.)
+    evidence:
+      - sidecar: "(source_read_for_validation — AlertHaltConfigServiceImplTest.java)"
+        section: "saveAlertHaltConfig + getAlertHaltConfig (3 cases)"
+        cite: "AlertHaltConfigServiceImplTest.java:49-94"
+        note: "mocked-service round-trip: save persists+maps; get returns mapped/empty-default/NotFound"
+        source_read_for_validation: true
+      - sidecar: "(source_read_for_validation — AlertHaltConfigRepositoryImpl.java)"
+        section: "create() returns the upserted row"
+        cite: "AlertHaltConfigRepositoryImpl.java:61-63"
+        note: ".returning() + map into AlertHaltConfigPojo — the persisted values flow back to the reload"
+        source_read_for_validation: true
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "net_new TEST demand (LSN-030). The core promise is CONFIRMED at the mocked-service tier, but there is NO end-to-end test: no UI test of the dialog, no @WebFluxTest of updateAlertConfig wiring the real controller+mapper+SQL, and no IT protocol (IT-027/IT-030 cover the per-entity READ and the global LIST, not this dialog). A confirmed-but-untested core promise routes to a functional test demand, NOT to none. Confidence MEDIUM precisely because the only test mocks the mapper+repository — the SQL upsert column-mapping and the UI binding are unguarded."
+
+- id: H-011
+  hypothesis: "When the operator-facing surface of this feature is reviewed, the four React components that comprise it (NotificationSettings, AlertTypeRange, DataEntityAlerts, DataEntityAlertItem) are enriched in the ontology so the reflection can judge what the user actually experiences from the screen."
+  derivation: "Rule 9 (senior PO reflects from the screen) + Rule 8 (the reflector judges from sidecars). A user-facing dialog whose UI components have no enriched sidecar cannot be reflected as a product, only as an API."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      NONE of the four UI components has an enriched sidecar — every chain hop in F-198.yaml is
+      `sidecar: unresolved` (hops 1-4: DataEntityAlerts, NotificationSettings, AlertTypeRange,
+      DataEntityAlertItem). The MUTATION backend PUT /api/dataentities/{id}/alert_config
+      (updateAlertConfig) ALSO has no enriched sidecar — the only Alert-config-adjacent enriched sidecar
+      is the READ sibling (getDataEntityAlerts). This is the LSN-025 / Failure-F situation: ~550 React
+      components, ~20 enriched, and the four that ARE this feature's surface are not among them. This
+      reflection is therefore UI-SHELL-traced (from the feature-flow's own cited file:lines + the F-014
+      sibling reflection's UI walks + PLT-034's primary-source cite) and BACKEND-traced via two Rule-8
+      source reads (the halt-config upsert + its service test) — it is NOT a from-the-screen reflection
+      of an enriched UI surface. Several verdicts above carry confidence MEDIUM/LOW for exactly this
+      reason (the AlertTypeRange picker's serialisation, the dialog's exact render branches, the
+      key={alert.id} state-preservation are all from the feature-flow's evidence, not a re-traceable
+      sidecar).
+    evidence:
+      - sidecar: "(F-198 feature-flow chain hops 1-4)"
+        section: "chain[*].sidecar"
+        cite: "F-198.yaml chain hops 1-4 all 'sidecar: unresolved'"
+        note: "the four UI components + the mutation backend have no enriched sidecar"
+        source_read_for_validation: false
+    operator_visible_failure: |
+      Methodology-facing, not operator-facing: the reflection cannot fully judge the AlertTypeRange
+      picker's date-handling, the dialog's full interaction flow across device types, or the exact
+      permission-flash timing — because the components are not enriched. Per Rule 9, the FIRST output of
+      a UI feature with no enriched UI hop is this validation_gap. The API/backend half is solidly traced;
+      the from-the-screen half rests on the feature-flow's hop evidence and the sibling F-014 reflection.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    dedup_note: "net_new validation_gap (Rule 9). Routes to the file-analyser refresh queue: enrich NotificationSettings.tsx, AlertTypeRange.tsx, DataEntityAlerts.tsx, DataEntityAlertItem.tsx, and the updateAlertConfig controller-method. Same Failure-F class the F-014 sibling reflection already surfaced for the read tab."
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: MEDIUM
+  one_line: "Halt-config write is an unconditional INSERT...ON CONFLICT(data_entity_id) DO UPDATE upsert (AlertHaltConfigRepositoryImpl.java:50-64) — no version, no conditional WHERE, DO UPDATE rewrites all four halt columns — so concurrent edits silently lose updates."
+  dedup_status: already_tracked
+  tracked_as: PLT-053
+  proposed_fix_anchor: "PLT-053 Defect 1 (Option A: add a version column on alert_halt_config + If-Match + 412-on-stale). This reflection adds the SQL-tier evidence (the unconditional all-column DO UPDATE at AlertHaltConfigRepositoryImpl.java:55-60) that resolves the feature-flow's ui_unverified flag — record it on PLT-053 Defect 1's Where."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "Notification Settings dialog has no FAILED-fetch render branch (NotificationSettings.tsx:61-107) — a rejected populate-fetch drops to an empty form whose submit blanks all four halt columns via the unconditional upsert, silently re-arming every suppressed alert type."
+  dedup_status: net_new
+  distinct_from: PLT-053
+  recommended_log_as: BUG-NNN (or fold into PLT-053 as Defect 4) — odd-platform
+  proposed_fix_anchor: "Add a FAILED branch to NotificationSettings.tsx render (read the isError flag the feature-flow notes as ui_unverified on getDataEntityAlertsConfigFetchingStatus; if absent, add it to the slice) + disable the submit button while the populate-fetch has not succeeded. Distinct from PLT-053 Defect 1 (concurrency) in trigger (single-operator failed populate) and fix locus (render branch + submit-guard, not a version column)."
+- hypothesis_id: H-001
+  severity: MEDIUM
+  one_line: "Notification Settings trigger is wrapped in <WithPermissions> which is a permission CONTEXT, not a render-gate (all three branches render children) — the trigger can flash to unprivileged operators on first render; only the backend PUT rule actually enforces."
+  dedup_status: already_tracked
+  tracked_as: PLT-034
+  proposed_fix_anchor: "PLT-034 (refactor WithPermissions to short-circuit / fail-closed). DataEntityAlerts.tsx:53 is PLT-034's cited locus; the F-198 dialog trigger is one of its instances."
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: "Alert Resolve/Reopen button (DataEntityAlertItem.tsx:113-118) dispatches the status mutation with no confirmation — and housekeeping (F-010) then hard-deletes manually-resolved alerts, so an accidental click destroys audit history irreversibly."
+  dedup_status: already_tracked
+  tracked_as: PLT-053
+  proposed_fix_anchor: "PLT-053 Defect 2 (ConfirmationDialog before the Resolve dispatch, cross-linked to the auto-cleanup hard-delete). DOC-201 (done) carries the doc-side warning."
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "The per-entity tab reuses the shared AlertItem whose Resolve/Reopen button renders unconditionally and probes DATA_ENTITY_ALERT_RESOLVE only AFTER click ('No access!' late) — misleading affordance for read-only stewards."
+  dedup_status: already_tracked
+  tracked_as: PLT-034
+  proposed_fix_anchor: "PLT-034 (the post-action-permission-discovery class; systemic WithPermissions render-block/fail-closed). The per-entity tab is a shared-AlertItem locus."
+
+### caveat_candidates
+- hypothesis_id: H-007
+  one_line: "Field-level isolation (editing one alert type leaves the other three alone) is an emergent property of the UI round-tripping the full config, NOT a write-path guarantee — the DO UPDATE always sets all four columns, so it breaks on the failed-fetch (H-004) and concurrent-edit (H-002) paths."
+  dedup_status: net_new
+  recommended_log_as: "Fold under PLT-053 Defect 1 — a version-check or a per-column conditional merge both fix this; record as a corroborating consequence of the all-column-upsert root, no separate filing."
+- hypothesis_id: H-009
+  one_line: "Notification Settings dialog title/helper/footer are hardcoded English (NotificationSettings.tsx:57, 76-79, 102-104) while the parent trigger uses t() — non-English operators lose the helper text explaining the auto-re-arm behaviour."
+  dedup_status: already_tracked
+  tracked_as: PLT-053
+  recommended_log_as: "PLT-053 Defect 3 (wrap the three strings in t()). Corroborates; no fresh filing."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (confirmed, partial, contradicted, probe-needed) becomes a
+# missing-functional TEST-GAP candidate. The CONFIRMED-but-untested promises (H-003, H-010) are the
+# highest-value entries here: hand-proven behaviours with no guard.
+- use_case_id: F-198-UC-10
+  hypothesis_id: H-010
+  kind: happy-path
+  promise: "Setting a halt window and saving, then re-opening, loads the saved halt-until values back (save->persist->reload round-trip)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id=F-198-UC-10)"
+  proposed_test: |-
+    Integration (IT-NNN, odd-minimal Playwright): open an entity's Alerts tab -> Notification Settings ->
+    set 'Failed job' halt-until to a future date -> Save -> re-open the dialog -> assert the picker shows
+    the saved date. AND a @WebFluxTest(DataEntityController) round-trip: PUT alert_config with a body,
+    then GET alert_config, assert the four halt-until values echo (guards the real controller+mapper+SQL
+    upsert column-mapping the mocked AlertHaltConfigServiceImplTest does not exercise).
+- use_case_id: F-198-UC-03
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "PUT /api/dataentities/{id}/alert_config is gated on DATA_ENTITY_ALERT_CONFIG_UPDATE — a principal without it cannot mutate the halt config."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional [security-class], use_case_id=F-198-UC-03)"
+  proposed_test: |-
+    Security-class @WebFluxTest / WebTestClient: with a principal lacking DATA_ENTITY_ALERT_CONFIG_UPDATE,
+    PUT /api/dataentities/{id}/alert_config returns 403 (and with the permission, 200). Regression guard
+    for the SecurityConstants.java:304-307 rule entry — a future refactor dropping it would silently open
+    the mutation with the build green.
+- use_case_id: F-198-UC-02
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "Concurrent edits to the same entity's halt config do not silently lose an update."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id=F-198-UC-02) — the regression guard for PLT-053 Defect 1's fix."
+  proposed_test: |-
+    After PLT-053 Defect 1 ships (version column + If-Match): integration test that two sequential PUTs
+    with the SAME stale version -> the second returns 412 (stale-write rejected). Until the fix, a
+    characterization test pinning the CURRENT last-writer-wins behaviour (per the pin-known-bugs protocol)
+    so the fix is RED-on-change.
+- use_case_id: F-198-UC-04
+  hypothesis_id: H-004
+  kind: edit-reconcile
+  promise: "A failed on-open fetch does not let the operator submit an empty form that blanks the server-side halt config."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id=F-198-UC-04)"
+  proposed_test: |-
+    UI test (Playwright + route interception): force the fetchDataEntityAlertsConfig response to 500 ->
+    open the dialog -> assert an error state renders AND the Submit button is disabled (i.e. the empty
+    form cannot be submitted). Guards the fix for H-004 (the missing FAILED render branch).
+- use_case_id: F-198-UC-05
+  hypothesis_id: H-005
+  kind: teardown
+  promise: "Clicking Resolve/Reopen asks for confirmation before the irreversible (housekeeping-hard-deleted) status change."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id=F-198-UC-05) — regression guard for PLT-053 Defect 2."
+  proposed_test: |-
+    UI test: click Resolve -> assert a ConfirmationDialog opens and updateAlertStatus is NOT dispatched
+    until confirm. Guards PLT-053 Defect 2's fix.
+- use_case_id: F-198-UC-08
+  hypothesis_id: H-008
+  kind: render
+  promise: "An expanded alert-chunk history survives an infinite-scroll re-render (scroll away + back keeps it open)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id=F-198-UC-08) — gated on probe PENDING-F-198-1."
+  proposed_test: |-
+    Probe first (PENDING-F-198-1: does key={alert.id} preserve showHistory across the redux merge?). If
+    the probe shows state loss: a UI test asserting the expand state survives a scroll-away/scroll-back.
+
+### probes_emitted
+- probe_id: PENDING-F-198-1
+  hypothesis_id: H-008
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  hypothesis_text: |-
+    When an operator scrolls a long per-entity alert list with one alert's chunk history expanded
+    (DataEntityAlertItem showHistory useState), scrolls away (InfiniteScroll loads more + the parent
+    DataEntityAlerts may refire fetchDataEntityAlerts, replacing the redux alerts array), and scrolls
+    back, the expanded history STAYS open. Verdict depends on whether key={alert.id}
+    (DataEntityAlertItem.tsx:79) preserves React component state across the reducer's array merge —
+    unverified by static trace. Probe: local odd-minimal + Playwright; seed an entity with >30 alerts
+    each with chunks; expand one row's history; scroll to load the next page; scroll back; assert the
+    row's history is still expanded. emitted_by: feature-reflector. (Parallel-safe mode: recorded here,
+    no P-NNN file created.)
+
+### validation_gaps
+- sidecar: "(NotificationSettings.tsx — NO enriched sidecar)"
+  field_insufficient: "the entire UI component — the feature's primary authoring surface is unenriched (feature-flow hop 2 'sidecar: unresolved')"
+  proposed_refresh: "Enrich NotificationSettings.tsx: capture the render branches (spinner / form / MISSING failed-fetch branch — H-004), the four AlertTypeRange bindings, the SerializeDateToNumber handling, the submit dispatch, and whether the slice exposes an isError flag the dialog could read."
+- sidecar: "(AlertTypeRange.tsx — NO enriched sidecar)"
+  field_insufficient: "the per-alert-type halt-until picker — date serialisation + boundary handling (past dates? clearing a window?) unverified"
+  proposed_refresh: "Enrich AlertTypeRange.tsx: capture how the date picker serialises to the numeric epoch, whether a past/cleared date is allowed, and what a null halt-until means downstream."
+- sidecar: "(DataEntityAlerts.tsx — NO enriched sidecar)"
+  field_insufficient: "the tab host — the hardcoded size=30, the fetch-on-dataEntityId-change, and the WithPermissions wrapper behaviour are traced only from the feature-flow's cited lines"
+  proposed_refresh: "Enrich DataEntityAlerts.tsx: capture the InfiniteScroll pagination, the size=30 hardcode, the WithPermissions wrapping of the trigger, and the redux slice merge semantics relevant to H-008."
+- sidecar: "(DataEntityAlertItem.tsx — NO enriched sidecar)"
+  field_insufficient: "the alert row — the Resolve dispatch, the showHistory local state, and the key={alert.id} identity are traced only from the feature-flow's cited lines"
+  proposed_refresh: "Enrich DataEntityAlertItem.tsx: capture the Resolve/Reopen dispatch (no confirmation — H-005), the shared-AlertItem composition (H-006), the showHistory useState + key (H-008)."
+- sidecar: "(DataEntityController#updateAlertConfig — NO enriched controller-method sidecar)"
+  field_insufficient: "the MUTATION backend the dialog submits to — only the READ sibling (getDataEntityAlerts) is enriched"
+  proposed_refresh: "Enrich the updateAlertConfig controller-method: capture the PUT path, the DataEntityAlertConfig body shape, the DATA_ENTITY_ALERT_CONFIG_UPDATE rule gate (H-003), and the AlertHaltConfigService.saveAlertHaltConfig delegation down to the unconditional upsert (H-002)."
+
+### doc_drift_findings
+[]   # No fresh doc-drift. DOC-201 (done) already documents the F-198 UX hazards (concurrency + Resolve-destructive) as known limitations on the live alerting page; the F-198 facets are CODE/UX defects, not doc-vs-code drift.
+
+## maintainer_notes
+
+This is the FIRST reflection for F-198 (no prior reflection to preserve). It is the WRITE/dialog sibling
+of F-014's reflection (the READ tab). The dominant finding is the Rule-9 validation gap (H-011): the four
+UI components that ARE this feature have no enriched sidecar, so this reflection is UI-shell-traced +
+backend-traced (two Rule-8 source reads), not from-the-screen. The net-new contributions over the existing
+tracked items (PLT-034 / PLT-053 / PLT-050 / DOC-201): (a) H-002 resolves the feature-flow's ui_unverified
+concurrency facet at the SQL tier — the upsert is unconditional last-writer-wins AND rewrites all four
+columns; (b) H-004 surfaces a DISTINCT failed-fetch-then-empty-submit data-loss hazard PLT-053 does not
+name; (c) the LSN-030 functional-test demands — the core save->reload promise (H-010) and the permission
+gate (H-003) are CONFIRMED but have zero round-trip / security test coverage (the only test mocks the
+service tier).

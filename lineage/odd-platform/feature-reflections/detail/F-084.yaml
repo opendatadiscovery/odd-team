@@ -1,0 +1,819 @@
+---
+feature_id: F-084
+pillar_anchored_id: P-09:F-004
+pillar: P-09 Security & Access Control
+feature_name: |-
+  OAuth Provider Admin-Detection Matrix — the operator-observable per-provider
+  divergence in how `admin-attribute`, `admin-groups`, `admin-principals`,
+  `allowed-domain`, `organization-name` are honoured (or silently ignored)
+  across the 5 enum'd providers + 2 generic-OIDC fallbacks
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__auth__handler__GoogleUserHandler.md
+  - odd-platform__java__auth__handler__GithubUserHandler.md
+  - odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md
+  - "unresolved: AbstractOIDCUserHandler (sidecar missing; read source AbstractOIDCUserHandler.java:1-65 under Rule-8 single-line exception)"
+  - "unresolved: OAuthSecurityConfiguration dispatcher (sidecar covers only the auth.type@L71 config-key-consumer concern, not the 168-197 dispatcher/URL-mutate)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      NOT re-fetched this session — the live page was WebFetched at 200 in the
+      GoogleUserHandler (2026-05-19), GithubUserHandler (2026-05-19), and
+      ODDOAuth2Properties (2026-05-12) mining passes; verbatim doc excerpts are
+      carried in those sidecars' docs_link_semantic.fetched_excerpts and used here
+      as the cross-reference. Docs are a cross-reference, not the source of intent
+      (Rule 1).
+hypothesis_summary:
+  total: 11
+  confirmed: 2
+  contradicted: 7
+  partial: 2
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      `admin-groups` set on a Google client binds at boot with zero error and is
+      then silently ignored at every login — the operator's intended group-admins
+      stay USER, no warning, no log (the same key DOES grant ADMIN on Cognito/Azure).
+related_feature_flows:
+  - F-011   # Principal-to-Owner Resolution — owns the resolution chokepoint these handlers feed
+  - F-006   # RBAC — the ADMIN/USER authority produced here is what RBAC later evaluates
+related_concepts:
+  - oauth-provider-quirks-strategy-pattern
+  - admin-detection-asymmetry-cross-provider
+related_drift_classes:
+  - google_admin_groups_silent_no_op_field_binds_but_ignored
+  - github_admin_principals_bypasses_organization_name_gate
+  - allowed_domain_silent_no_op_on_non_google_providers
+  - github_hard_coded_api_github_com_ghes_lockout
+  - handler_dispatch_order_unspecified_first_match_wins
+  - live_docs_claim_okta_keycloak_first_class_code_does_not
+  - provider_quirks_strategy_two_admin_detection_vocabularies
+new_drift_classes_proposed:
+  - admin_groups_match_is_exact_equalsignorecase_not_substring_plt081_premise_misreads_operationutils
+  - admin_principals_and_admin_groups_both_evaluated_no_short_circuit_either_grants_admin
+  - oauth_admin_detection_matrix_zero_tests_every_per_provider_knob_structurally_undefended
+---
+
+# OAuth Provider Admin-Detection Matrix — product-owner reflection
+
+## product_owner_narrative
+
+ODD Platform lets an operator put their whole company behind their existing single-sign-on
+instead of ODD's built-in login form: set `auth.type: OAUTH2` and register one or more
+OAuth2/OIDC clients under `auth.oauth2.client.{name}.*` (per ODDOAuth2Properties:14 — the
+config is a `Map<String, OAuth2Provider>`, one logical client per map key). The live docs
+advertise seven providers — AWS Cognito, GitHub, Google, Azure AD, Okta, Keycloak, and a
+generic Custom-OIDC option (per ODDOAuth2Properties sidecar docs excerpt, WebFetched
+2026-05-19, status 200). For each client the operator gets the same-looking set of knobs to
+decide *who is an administrator*: `admin-principals` (a list of named users), `admin-groups`
+(a list of group/team names), `admin-attribute` (which claim to match principals against),
+plus two membership gates — `allowed-domain` (Google Workspace) and `organization-name`
+(GitHub org). The product promise an operator reads off that uniform schema is: "I configure
+my admin policy once, the same way, and ODD enforces it consistently per provider."
+
+A user interacts with this feature only at the moment of login. They click "Sign in with
+{provider}", get redirected to their IdP, come back, and ODD's per-provider handler runs
+exactly once to decide two things: accept-or-reject this login, and grant ADMIN-or-USER for
+the session (per GoogleUserHandler sidecar understanding + GithubUserHandler sidecar
+understanding). That single decision is terminal — there is no later re-check — and it then
+feeds every authorization decision the user hits for the rest of the session, because the
+ADMIN/USER `GrantedAuthority` produced here is what F-011's principal resolver and F-006's
+RBAC layer read downstream (per GoogleUserHandler downstream_side_effects + the feature-flow
+terminal_side_effect). The operator never sees a screen that reflects any of this: the SPA
+only reads the resulting `identity.permissions` set via `WithPermissionsProvider`, so the
+whole matrix is invisible at the UI (per feature-flow ui_incomplete_reason). This is an
+operator-configuration surface with no operator-facing UI control — which is precisely why
+the silent-no-op failures below are so dangerous: there is nothing on screen to contradict a
+wrong mental model.
+
+The working parts diverge sharply by provider, and that divergence is the whole subject of
+this feature. There are TWO admin-detection vocabularies in the handler set (per feature-flow
+facet `provider_quirks_strategy_two_admin_detection_vocabularies`). The **base-class
+vocabulary** (`AbstractOIDCUserHandler`, used by Cognito / Azure / Custom-OIDC / ODD_IAM)
+reads `admin-groups` from a configurable groups claim, defaults `admin-attribute` to the
+username attribute, and evaluates BOTH `admin-principals` AND `admin-groups` (either grants
+ADMIN) — verified at AbstractOIDCUserHandler.java:33-55 (read under the Rule-8 exception). The
+**Google vocabulary** does NOT extend the base class, ignores `admin-groups` entirely, and
+defaults `admin-attribute` to the literal `email` claim (GoogleUserHandler.java:31, 56-64).
+The **GitHub vocabulary** also does not extend the base class, makes two outbound calls to a
+hard-coded `api.github.com` to read org+team membership, and lets `admin-principals` fire
+BEFORE — and bypass — the `organization-name` gate (GithubUserHandler.java:39, 54-67). So the
+same five YAML keys mean materially different things depending on which provider string the
+operator typed.
+
+This feature sits squarely inside Pillar P-09 (Security & Access Control) and feeds two
+sibling features in both directions. It feeds F-011 (Principal-to-Owner Resolution): the
+handler's output token carries the registration-id that becomes the `provider` partition key
+for owner-scoping (per GithubUserHandler coupling note + feature-flow note). It feeds F-006
+(RBAC): the ADMIN authority granted here is the input to every later `@PreAuthorize` /
+policy evaluation. The drift facets in this feature are therefore not cosmetic — a
+silent-no-op on `admin-groups` means an intended administrator is silently a least-privilege
+USER for the life of every session, and an `admin-principals` org-bypass means an
+out-of-org user is silently a full ADMIN.
+
+The edge cases a product owner would flag in a demo are exactly the ones with no UI to catch
+them: an operator who copies the Cognito `admin-groups` block to a Google client and sees it
+bind cleanly (then wonders why no one is admin); an operator on GitHub Enterprise Server whose
+every login dies on DNS errors to `api.github.com` with no doc explaining why; an Okta or
+Keycloak operator who configures admin-groups off the docs' seven-provider list and gets zero
+admin path because Okta/Keycloak fall through the generic Custom-OIDC handler (per feature-flow
+facets + the live-docs excerpt naming seven providers against a five-value `Provider` enum).
+Every one of these is a real, already-triaged finding — and none of them has a single test
+guarding it (per feature-flow test_matrix: unit/integration/performance/security all GAP;
+Grep of `odd-platform-api/src/test` for any `*UserHandler*` / `OAuthSecurityConfiguration` /
+`ODDOAuth2Properties` returns ZERO; the two auth integration tests IT-009/IT-010 cover only
+LOGIN_FORM authentication-boundary and LDAP RBAC, explicitly NOT OAUTH2).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator sets `auth.oauth2.client.{c}.admin-principals: [alice@corp.com]` on a
+    Google client and `alice@corp.com` logs in, alice is granted ADMIN for the session.
+  derivation: |-
+    `admin-principals` is a uniform OAuth2Provider knob; Google's admin path reads it
+    (GoogleUserHandler.java:56-64) defaulting the lookup claim to `email`.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      GoogleUserHandler reads `provider.getAdminAttribute()` defaulting to the literal
+      `email` claim (GOOGLE_EMAIL, line 31), looks up that claim on the OIDC id-token, and
+      grants ADMIN when its value is contained (case-insensitively, full-string) in
+      `adminPrincipals`. For `alice@corp.com` whose Google id-token `email` claim is
+      `alice@corp.com`, the match succeeds and `GrantedAuthorityExtractor.getAuthorities(true)`
+      produces the ADMIN authority. This is the one provider knob Google honours as the
+      operator expects.
+    evidence:
+      - sidecar: odd-platform__java__auth__handler__GoogleUserHandler.md
+        section: concepts.invariants[4] + bugs_limitations_corner_cases
+        cite: "GoogleUserHandler.java:31, 56-64"
+        note: "admin-attribute defaults to email; containsIgnoreCase(adminPrincipals, email) → ADMIN"
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When an operator sets `auth.oauth2.client.google.admin-groups: [workspace-admins]` and a
+    user who is a member of `workspace-admins` logs in via Google, that user is granted ADMIN.
+  derivation: |-
+    `admin-groups` is exposed uniformly on OAuth2Provider (ODDOAuth2Properties.java:49) and the
+    docs document admin-groups for Cognito + GitHub; an operator reasonably expects it on Google.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      GoogleUserHandler NEVER reads `provider.getAdminGroups()` — the entire admin-groups
+      code path that exists in AbstractOIDCUserHandler.java:44-55 is absent from the Google
+      handler (it does not extend the base class). The `admin-groups` value binds successfully
+      on the POJO at boot (no validation error, no warning log) and is then silently discarded
+      at every login. The member of `workspace-admins` is granted USER, not ADMIN. Contrast:
+      the identical key on a Cognito or Azure client IS consulted via the base class.
+    evidence:
+      - sidecar: odd-platform__java__auth__handler__GoogleUserHandler.md
+        section: bugs_limitations_corner_cases[0] + known_security_gaps[0]
+        cite: "GoogleUserHandler.java:1-74 (no getAdminGroups call) + ODDOAuth2Properties.java:49 (field binds)"
+        note: "field binds, handler never reads it; silent no-op"
+      - sidecar: "unresolved (AbstractOIDCUserHandler — source read for validation)"
+        section: enrichUserWithProviderInformation
+        cite: "AbstractOIDCUserHandler.java:44-55"
+        note: "the admin-groups path that EXISTS for Cognito/Azure and is ABSENT for Google"
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      Two compounding failures. (1) The obvious one: an operator's intended group-based admin
+      policy never activates for Google — the users they meant to make administrators are
+      least-privilege USERs for the life of every session, locked out of RBAC/management
+      surfaces, with no error to diagnose from. (2) The subtle, more dangerous one: there is
+      no boot warning and no per-login log, AND no UI reflects the config — so the operator's
+      mental model ("I configured admin-groups, it bound cleanly, therefore it works") is
+      actively confirmed by the absence of any contradicting signal. The failure is invisible
+      until an intended admin reports they cannot reach an admin screen — and even then the
+      cause (Google ignores admin-groups while Cognito/Azure honour it) is non-obvious because
+      the same key works on a sibling provider.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When an operator sets `organization-name: my-corp` on a GitHub client (intending it as the
+    outermost gate — only my-corp members may log in), a user who is NOT a member of `my-corp`
+    cannot obtain ADMIN regardless of other settings.
+  derivation: |-
+    The live docs describe organization-name as "Restricts login only for users from this
+    particular organization" (GithubUserHandler sidecar doc excerpt) — operator reads it as a
+    global gate.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      GithubUserHandler evaluates the `admin-principals` fast-path at lines 54-67 and returns
+      ADMIN there BEFORE the organization-name membership check at line 68. So an operator with
+      `organization-name: my-corp` AND `admin-principals: [external-consultant]` grants ADMIN
+      to `external-consultant` even though that user is never checked for my-corp membership.
+      The org gate is NOT the outermost guard; admin-principals overrides it.
+    evidence:
+      - sidecar: odd-platform__java__auth__handler__GithubUserHandler.md
+        section: concepts.invariants (admin-principals-bypass-org) + implicit_adrs[1] + bugs_limitations_corner_cases
+        cite: "GithubUserHandler.java:54-67 (early ADMIN return) + line 68 (org check runs AFTER)"
+        note: "fast-path return precedes the org-membership gate"
+    operator_visible_failure: |-
+      An operator who reasons "organization-name keeps everyone outside my GitHub org out"
+      ships a deployment where any username in `admin-principals` is a full platform ADMIN
+      with no org-membership requirement. The high-severity vector: GitHub usernames are
+      free to register, and `admin-principals` matches the `login` string — a typo in the
+      admin-principals list that happens to match a username an attacker can register on
+      github.com becomes a platform-ADMIN backdoor that the org gate does not stop. The
+      operator's separation-of-duties model (org membership first, role second) is inverted.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When an operator runs GitHub Enterprise Server (api at https://github.example.com/api/v3)
+    and configures `provider: github` with an organization-name, their users can log in and be
+    org/team-gated the same as github.com users.
+  derivation: |-
+    The docs list GitHub as a supported provider with no GHES carve-out (GithubUserHandler
+    sidecar doc excerpt); an enterprise operator expects GHES to work.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      GithubUserHandler instantiates a singleton WebClient bound to a hard-coded
+      `https://api.github.com` at field-init (line 39) — no `@Value`, no provider property, no
+      operator override. Every org/team lookup hits github.com. A GHES deployment's API at
+      `https://github.example.com/api/v3` is never contacted; the outbound calls fail with
+      DNS/cert errors that surface as login failures. The handler IS still selected (the
+      GithubCondition only checks the literal `github` string), so GHES operators get a
+      handler that structurally cannot reach their server.
+    evidence:
+      - sidecar: odd-platform__java__auth__handler__GithubUserHandler.md
+        section: concepts.invariants (WebClient-singleton-no-config) + bugs_limitations_corner_cases
+        cite: "GithubUserHandler.java:39"
+        note: "WebClient.create('https://api.github.com') hard-coded, no override knob"
+    operator_visible_failure: |-
+      An entire class of operator (self-hosted GitHub Enterprise Server) is silently locked
+      out of GitHub OAuth. Their login attempts fail with low-level network errors
+      (DNS/cert) — or, if their egress can reach github.com, with "User doesn't belong to
+      organization" because the user's GHES org membership lives on a server that was never
+      queried. No doc and no error message points at the hard-coded endpoint as the cause, so
+      the operator burns debugging time on proxy/DNS/cert red herrings before discovering the
+      handler can never target their server.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When an operator sets `allowed-domain: corp.com` on a Cognito (or Azure / Custom-OIDC)
+    client, login is restricted to users whose email/domain is corp.com — the same way it is
+    on Google.
+  derivation: |-
+    `allowed-domain` is a uniform OAuth2Provider field; an operator reading the schema expects
+    it to gate every provider, not just Google.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `allowed-domain` is honoured ONLY for Google, at two sites: OAuthSecurityConfiguration
+      mutates the authorize URL with `?hd={domain}` only when the provider equals GOOGLE
+      (lines 168-175 per the feature-flow chain hop 1 + facet
+      `allowed_domain_silent_no_op_on_non_google_providers`), and GoogleUserHandler re-verifies
+      the `hd` id-token claim (lines 49-55). No other handler reads `allowedDomain` at all.
+      Setting it on Cognito / Azure / Custom-OIDC / ODD_IAM binds on the POJO and is silently
+      ignored — every user from any domain is admitted.
+    evidence:
+      - sidecar: "feature-flow F-084 facet allowed_domain_silent_no_op_on_non_google_providers"
+        section: observed_vs_expected.facets
+        cite: "OAuthSecurityConfiguration.java:168-175"
+        note: "?hd= mutation gated on Provider.GOOGLE; no other handler reads allowedDomain"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md
+        section: concepts.entities (21-field POJO; allowedDomain uniform)
+        cite: "ODDOAuth2Properties.java:30-53"
+        note: "allowedDomain is a uniform field on every provider; only Google consumes it"
+    operator_visible_failure: |-
+      An operator who believes they have domain-restricted a Cognito or Azure login has, in
+      fact, an open login that admits any account the IdP authenticates — a silent
+      authentication-scope failure on a security feature. Because nothing on screen and no
+      boot log contradicts the config, the operator ships believing the restriction is
+      enforced; the gap surfaces only if an out-of-domain user successfully logs in and is
+      noticed.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When an operator picks Okta or Keycloak (both named in the live docs' provider list) and
+    configures `admin-groups`, members of those groups are granted ADMIN on login.
+  derivation: |-
+    The live oauth2-oidc page enumerates seven providers including Okta + Keycloak
+    (ODDOAuth2Properties sidecar doc excerpt); an operator expects admin-detection parity.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The `Provider` enum has five values (COGNITO/GITHUB/GOOGLE/ODD_IAM/AZURE). Okta and
+      Keycloak match no enum value, so their `shouldHandle` lands on CustomOIDCUserHandler (the
+      catch-all for any provider NOT in the enum). CustomOIDCUserHandler DOES extend
+      AbstractOIDCUserHandler, so admin-groups CAN be honoured IF the operator also configures
+      the correct `groups-claim` (the base class requires a non-empty groups claim at line
+      44-46). But there is no Okta/Keycloak-specific default groups claim, no provider-specific
+      handling, and the docs imply first-class parity that the code does not provide — the
+      operator gets the generic OIDC path, not an Okta/Keycloak handler.
+    evidence:
+      - sidecar: "feature-flow F-084 facet live_docs_claim_okta_keycloak_first_class_code_does_not"
+        section: observed_vs_expected.facets
+        cite: "Provider.java:3-5 (5 values) + CustomOIDCUserHandler.java:28-34 (catch-all) + live docs (7 providers)"
+        note: "Okta/Keycloak fall through Custom OIDC"
+      - sidecar: "unresolved (AbstractOIDCUserHandler — source read for validation)"
+        section: enrichUserWithProviderInformation
+        cite: "AbstractOIDCUserHandler.java:44-46"
+        note: "admin-groups requires a non-empty groups-claim; no Okta/Keycloak default exists"
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      An operator who chooses Okta or Keycloak off the docs' seven-provider list and copies
+      the admin-groups pattern gets one of two silent outcomes: if they don't set groups-claim,
+      admin-groups is ignored and everyone is USER (no admin path at all); if they happen to
+      set the right groups-claim, it works only by accident of the generic base class, with no
+      provider-specific guidance. Either way the documented first-class parity is absent and
+      the operator cannot tell from the product which case they are in.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When an operator sets `admin-groups: [admins]` on a GitHub client, only members of the
+    team named exactly `admins` (within organization-name) are granted ADMIN — not members of
+    teams whose names merely contain "admins" (e.g. `team-admins`, `data-admins`).
+  derivation: |-
+    Operators read `admin-groups` as an exact-match allowlist; whether the match is exact or
+    substring decides how many users are silently promoted.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The GitHub admin-team check resolves through `OperationUtils.containsIgnoreCase`, which
+      is `collection.stream().anyMatch(element::equalsIgnoreCase)` — i.e. it returns true only
+      when an `adminGroups` ENTRY case-insensitively EQUALS the team name (full-string), NOT a
+      substring containment. So `admin-groups: [admins]` matches a team named `Admins` /
+      `ADMINS` but NOT `team-admins` or `data-admins`. The match is exact (case-insensitive),
+      as the operator expects. NOTE: this directly contradicts the premise of the
+      already-tracked HIGH issue PLT-081, which asserts these sites do SUBSTRING matching — see
+      bug_candidates (net-new correction) and validation_gaps below.
+    evidence:
+      - sidecar: odd-platform__java__auth__handler__GithubUserHandler.md
+        section: concepts.invariants (admin-team-match-full-string-eq) + coupling note flagging the conflicting candidate
+        cite: "GithubUserHandler.java:114-120, 122-131 + OperationUtils.java:7-10"
+        note: "containsIgnoreCase = anyMatch(equalsIgnoreCase) — full-string, not substring"
+      - sidecar: "OperationUtils.java (source read for validation)"
+        section: containsIgnoreCase
+        cite: "OperationUtils.java:9"
+        note: "return collection.stream().anyMatch(element::equalsIgnoreCase) — definitively exact-match"
+        source_read_for_validation: true
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When an operator types a provider value with a typo (`provder: google`) or picks an
+    unsupported value, the platform fails to start (fail-fast) so the operator notices before
+    shipping.
+  derivation: |-
+    The `@PostConstruct` validator already fails boot for empty clientId/provider
+    (ODDOAuth2Properties sidecar invariant 1) — an operator expects the same fail-fast for an
+    invalid provider value.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `OAuth2Provider.provider` is a free `String`, not the `Provider` enum (ODDOAuth2Properties
+      .java:32). The `@PostConstruct` validator checks only non-empty clientId + non-empty
+      provider; it does NOT check membership in any allowlist. So `provder: google` binds
+      cleanly, fails every handler's `shouldHandle(...equalsIgnoreCase(Provider.X.name()))`,
+      and silently routes through CustomOIDCUserHandler — a working generic-OIDC deployment
+      with none of Google's provider-specific enrichment (no allowed-domain, no email-default
+      admin-attribute). Boot succeeds; the misconfiguration is invisible.
+    evidence:
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md
+        section: implicit_adrs[2] + bugs_limitations_corner_cases (provider-typo-silent) + security.known_security_gaps[2]
+        cite: "ODDOAuth2Properties.java:32 + ODDOAuth2Properties.java:16-28 (validator skips enum membership)"
+        note: "free String, no enum constraint, validator does not check allowlist"
+    operator_visible_failure: |-
+      A single-character typo in the most security-load-bearing config key produces a
+      deployment that "appears to be Google" but is actually generic Custom-OIDC: allowed-domain
+      is silently off, the email-default admin-attribute does not apply, and the operator's
+      admin policy may not fire. The platform boots green, so the operator gets no signal until
+      an admin can't log in or an out-of-domain user gets in.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an operator follows the docs for Azure and omits `logout-uri` (or relies on defaults),
+    logout works without error.
+  derivation: |-
+    The fail-fast validator enforces clientId+provider; an operator expects either enforcement
+    of, or a safe default for, any provider-required field.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The docs state Azure `logout-uri` is mandatory ("An unset logout-uri raises a
+      NullPointerException and the logout flow returns a 500 response" — ODDOAuth2Properties
+      sidecar doc excerpt). The `@PostConstruct` validator checks ONLY clientId+provider, NOT
+      logoutUri (ODDOAuth2Properties.java:16-28). AzureLogoutSuccessHandler.java:39 calls
+      `URI.create(provider.getLogoutUri())` with no null guard — `URI.create(null)` throws NPE
+      per the JDK contract. CognitoLogoutSuccessHandler has the matching isEmpty guard; Azure
+      does not. So an Azure operator who omits logout-uri boots successfully and hits a 500 at
+      first logout.
+    evidence:
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md
+        section: bugs_limitations_corner_cases[0] (azure-logoutUri-unvalidated) + doc_drift_findings[1]
+        cite: "ODDOAuth2Properties.java:16-28 + AzureLogoutSuccessHandler.java:39 + CognitoLogoutSuccessHandler.java:33-35"
+        note: "fail-fast applied to 2 fields; Azure-required logoutUri deferred to a runtime NPE"
+    operator_visible_failure: |-
+      An Azure operator who configures everything else correctly gets a green boot and a broken
+      logout — the first user to sign out hits a 500 error page and is left in an ambiguous
+      session state. The asymmetry (Cognito guards the same field, Azure does not) means the
+      failure is provider-specific and the operator has no boot-time signal to catch it.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When an operator sets BOTH `admin-principals` and `admin-groups` on a base-class provider
+    (Cognito/Azure), a user who matches EITHER is granted ADMIN.
+  derivation: |-
+    Both knobs are exposed uniformly; an operator expects them to be additive (either path
+    grants admin), not mutually exclusive.
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      In AbstractOIDCUserHandler (Cognito/Azure/Custom-OIDC) BOTH checks run sequentially and
+      either sets isAdmin=true (admin-principals at lines 33-43, admin-groups at lines 44-55) —
+      so on the base-class providers the hypothesis holds: either path grants ADMIN, no
+      short-circuit. BUT the behaviour is NOT uniform across the matrix the operator sees as
+      uniform: on Google, admin-groups is a no-op (H-002) so only admin-principals can grant
+      ADMIN; on GitHub, admin-principals fires FIRST and bypasses the org gate (H-003) and
+      admin-groups is only evaluated for org members who did not already match admin-principals.
+      So "either knob grants admin, consistently" is true for base-class providers and false
+      for Google and GitHub.
+    evidence:
+      - sidecar: "unresolved (AbstractOIDCUserHandler — source read for validation)"
+        section: enrichUserWithProviderInformation
+        cite: "AbstractOIDCUserHandler.java:33-55"
+        note: "admin-principals AND admin-groups both evaluated; either sets isAdmin (no short-circuit)"
+        source_read_for_validation: true
+      - sidecar: odd-platform__java__auth__handler__GithubUserHandler.md
+        section: concepts.invariants (admin-principals-bypass-org)
+        cite: "GithubUserHandler.java:54-67"
+        note: "GitHub diverges — admin-principals short-circuits before org+team evaluation"
+    operator_visible_failure: |-
+      The unmet part: an operator who learns the additive both-knobs behaviour on a Cognito
+      client and carries that mental model to a Google or GitHub client will be wrong. On
+      Google their admin-groups silently does nothing (only admin-principals works); on GitHub
+      the evaluation order means admin-principals is a bypass and admin-groups is conditional on
+      org membership. The matrix presents as uniform but the admin-resolution algebra differs
+      per provider — the exact asymmetry this feature exists to surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When two provider handlers could both claim a login (e.g. a future OktaUserHandler plus the
+    Custom-OIDC catch-all), a deterministic, configured order decides which one wins.
+  derivation: |-
+    Operators (and the maintainers extending the handler set) expect dispatch precedence to be
+    explicit, not accidental, on a security-critical decision.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The dispatcher iterates the Spring-autowired `List<OAuthUserHandler>` and picks the FIRST
+      `shouldHandle == true` (OAuthSecurityConfiguration.java:185-197, per feature-flow chain hop
+      1). There is NO @Order annotation anywhere in the handler hierarchy, so list order is
+      Spring's bean-collection order. TODAY this is safe because each handler matches a disjoint
+      provider string and CustomOIDCUserHandler matches only providers NOT in the enum — so
+      first-match-wins has no ambiguity. The hypothesis is "deterministic AND configured":
+      deterministic-in-practice is true today; configured/explicit is false — the safety is by
+      luck of disjoint matching, not by a pinned order.
+    evidence:
+      - sidecar: "feature-flow F-084 facet handler_dispatch_order_unspecified_first_match_wins"
+        section: observed_vs_expected.facets
+        cite: "OAuthSecurityConfiguration.java:185-197 + CustomOIDCUserHandler.java:28-34"
+        note: "first-match-wins over an unordered List; no @Order; Custom catch-all"
+      - sidecar: odd-platform__java__auth__handler__GoogleUserHandler.md
+        section: bugs_limitations_corner_cases (shouldHandle first-match-wins)
+        cite: "GoogleUserHandler.java:38-40 + OAuthSecurityConfiguration.java:185-189"
+        note: "current bean set uniquely-disjoint, so safe today"
+    operator_visible_failure: |-
+      Latent, not live: a future maintainer adding an OktaUserHandler (shouldHandle true for
+      'okta') depends on Spring listing it BEFORE the Custom-OIDC catch-all in an unordered
+      list — but Custom-OIDC's catch-all does not exclude 'okta' until the list is iterated. If
+      ordering shifts (a refactor, a Spring upgrade changing scan order), the new handler could
+      be shadowed by the catch-all and silently lose its provider-specific admin-detection. The
+      security decision rests on an unpinned dependency.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Google admin-groups binds at boot then is silently ignored at every login; intended group-admins stay USER with no warning."
+  dedup_status: already_tracked
+  tracked_as: PLT-069
+  proposed_fix_anchor: "GoogleUserHandler.java:56-64 — boot-time cross-field validation rejecting admin-groups on provider=google (PLT-069 Option A), or implement Google groups-claim support (Option B)."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "GitHub admin-principals fast-path returns ADMIN before the organization-name gate, so an out-of-org username in admin-principals is a full ADMIN."
+  dedup_status: already_tracked
+  tracked_as: PLT-070
+  proposed_fix_anchor: "GithubUserHandler.java:54-68 — reorder so org-membership fires first, then admin-principals refines role within the org (PLT-070 Thread A)."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "GitHub handler hard-codes api.github.com; GitHub Enterprise Server operators are structurally locked out with no override knob."
+  dedup_status: already_tracked
+  tracked_as: PLT-070
+  proposed_fix_anchor: "GithubUserHandler.java:39 — make the GitHub API base URI an operator-configurable @Value defaulting to https://api.github.com (PLT-070 Thread B)."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Okta + Keycloak (docs-claimed first-class) fall through Custom OIDC with no provider-specific admin-detection; configured admin-groups has no reliable admin path."
+  dedup_status: already_tracked
+  tracked_as: PLT-071
+  proposed_fix_anchor: "Add OktaUserHandler + KeycloakUserHandler (PLT-071 Option A) or a generic group-claim OIDC handler (Option B); add OKTA/KEYCLOAK to Provider.java:3-5."
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: "OAuth2Provider.provider is a free String; a typo binds cleanly and silently routes through Custom OIDC with no provider-specific enrichment."
+  dedup_status: already_tracked
+  tracked_as: PLT-082
+  proposed_fix_anchor: "ODDOAuth2Properties.java:32 — change field type String → Provider enum so Spring fails-fast on an invalid value (PLT-082 recommended Option A)."
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: "Azure logout-uri is docs-mandatory but unvalidated; omitting it boots green and throws NPE → 500 at first logout (Cognito guards the same field, Azure does not)."
+  dedup_status: net_new
+  distinct_from: PLT-075
+  recommended_log_as: PLT-NNN (pending mint)
+  proposed_fix_anchor: |-
+    AzureLogoutSuccessHandler.java:39 add the isEmpty guard that CognitoLogoutSuccessHandler.java:33-35
+    already has, OR extend ODDOAuth2Properties @PostConstruct (lines 16-28) to require logoutUri when
+    provider=azure. DISTINCT from PLT-075 (which is the Host-header logout-redirect HIJACK across all 5
+    logout handlers) — this is the missing null-guard / missing fail-fast on the Azure-required field,
+    a different failure mode (boot-green-then-500) at a different line concern.
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "Already-tracked HIGH issue PLT-081 ('admin-groups SUBSTRING overpromotion') rests on a misreading: OperationUtils.containsIgnoreCase is anyMatch(equalsIgnoreCase) = EXACT case-insensitive match, NOT substring — at BOTH GithubUserHandler:119 AND LDAPSecurityConfiguration:96."
+  dedup_status: net_new
+  distinct_from: PLT-081
+  recommended_log_as: "amend/close PLT-081 (its premise is factually wrong per OperationUtils.java:9)"
+  proposed_fix_anchor: |-
+    OperationUtils.java:9 is `return collection.stream().anyMatch(element::equalsIgnoreCase);` — full-string
+    case-insensitive equality. PLT-081's claim that admin-groups: [admins] promotes team-admins/data-admins
+    is FALSE. The GithubUserHandler sidecar already flagged this conflict (coupling note: the
+    substring-match-admin-escalation canonicalisation candidate is "FACTUALLY WRONG per OperationUtils.java").
+    Recommended action: correct/close PLT-081 (no substring escalation exists); if any privilege-escalation
+    surface remains it is the H-003 admin-principals org-bypass (PLT-070), not substring matching. This is a
+    net-new reflection finding (a tracked HIGH bug built on a code misreading), NOT a duplicate of PLT-081.
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "allowed-domain is honoured ONLY for Google; setting it on Cognito/Azure/Custom-OIDC silently admits any domain — document the per-provider applicability."
+  dedup_status: already_tracked
+  tracked_as: DOC-235
+  recommended_log_as: "caveat in oauth2-oidc.md per-provider matrix (DOC-235 scope: the per-provider admin-detection matrix)"
+- hypothesis_id: H-010
+  one_line: "The admin-resolution algebra is NOT uniform across the matrix: base-class providers evaluate both admin-principals AND admin-groups additively; Google ignores admin-groups; GitHub short-circuits admin-principals before the org gate — document per-provider."
+  dedup_status: already_tracked
+  tracked_as: DOC-235
+  recommended_log_as: "caveat in oauth2-oidc.md per-provider matrix (DOC-235)"
+- hypothesis_id: H-011
+  one_line: "Handler dispatch is first-match-wins over an unordered Spring list with no @Order; safe today by disjoint matching, fragile when a new overlapping handler (Okta) is added."
+  dedup_status: net_new
+  recommended_log_as: "caveat in a provider-quirks/dispatch note OR @Order hardening tracked alongside PLT-071 (which adds the new handlers that make this live)"
+
+### functional_test_demands
+# LSN-030 (Rule 11): every UNVERIFIED promise on this feature is a missing-functional TEST-GAP.
+# This feature is the textbook case — 7 known security drift facets, ALL already triaged as PLT
+# code-fixes, and ZERO tests guarding ANY per-provider knob (feature-flow test_matrix all GAP;
+# Grep of odd-platform-api/src/test for *UserHandler*/OAuthSecurityConfiguration/ODDOAuth2Properties
+# = 0 matches; IT-009/IT-010 cover only LOGIN_FORM auth-boundary + LDAP RBAC, NOT OAUTH2). The
+# confirmed promises (H-001, H-007) are the highest-value to pin first: a confirmed-but-untested
+# correct behaviour is exactly what silently regresses when a maintainer ships the PLT fixes.
+- use_case_id: F-084-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A Google admin-principals match (email claim) grants ADMIN."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-1)"
+  proposed_test: "GoogleUserHandlerTest: adminPrincipals=[john@odd.com] + id-token email=john@odd.com → authorities contain ADMIN (Mockito unit, no I/O)."
+- use_case_id: F-084-UC-2
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Google admin-groups grants ADMIN to group members."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-2) — regression guard for the PLT-069 fix"
+  proposed_test: "GoogleUserHandlerTest: adminGroups=[workspace-admins] + id-token groups=[workspace-admins] → asserts CURRENT behaviour USER (characterization pin per LSN-029); flip to ADMIN-expectation when PLT-069 Option B ships."
+- use_case_id: F-084-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "organization-name gates ALL logins; non-members cannot be ADMIN."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-3) — regression guard for the PLT-070 reorder"
+  proposed_test: "GithubUserHandlerTest: organizationName=my-corp + adminPrincipals=[outsider] + outsider NOT in /user/orgs → assert CURRENT behaviour ADMIN (characterization pin); flip to reject/USER when PLT-070 Thread A reorders."
+- use_case_id: F-084-UC-4
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "GHES operators can use the GitHub provider."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-4) — guards the PLT-070 Thread B base-uri knob"
+  proposed_test: "GithubUserHandlerTest: assert the WebClient base URI is operator-configurable (post-fix) / pin the hard-coded api.github.com (pre-fix); integration-shape via WireMock on a non-github.com host."
+- use_case_id: F-084-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "allowed-domain restricts login on every provider."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-5)"
+  proposed_test: "Per-provider matrix test: assert allowedDomain set on a Cognito client does NOT reject an out-of-domain user (pin the Google-only scope), and DOES reject on Google."
+- use_case_id: F-084-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Okta/Keycloak admin-groups grants ADMIN (docs-claimed parity)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-6) — guards the PLT-071 new handlers"
+  proposed_test: "Dispatch test: provider=okta resolves to CustomOIDCUserHandler today (pin); post-PLT-071, resolves to OktaUserHandler with groups-claim admin-detection."
+- use_case_id: F-084-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "admin-groups is an EXACT (case-insensitive) match, not substring."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-7) — pins exact-match; ALSO the regression oracle that would have caught PLT-081's misreading"
+  proposed_test: "OperationUtils + GithubUserHandler test: adminGroups=[admins] + team name 'team-admins' → NOT ADMIN; team name 'Admins' → ADMIN (locks equalsIgnoreCase exact-match semantics)."
+- use_case_id: F-084-UC-8
+  hypothesis_id: H-008
+  kind: grammar
+  promise: "An invalid/typo'd provider value fails boot (fail-fast)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-8) — guards the PLT-082 enum-typing fix"
+  proposed_test: "ODDOAuth2Properties binding test: provider='provder' → currently binds (pin); post-PLT-082 → boot fails with enum-constant error."
+- use_case_id: F-084-UC-9
+  hypothesis_id: H-009
+  kind: teardown
+  promise: "Azure logout works without a required logout-uri (or fails fast at boot)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-9)"
+  proposed_test: "AzureLogoutSuccessHandler test: logoutUri=null → currently throws NPE (pin); post-fix → graceful Mono.empty() like Cognito, OR ODDOAuth2Properties validator rejects at boot."
+- use_case_id: F-084-UC-10
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "admin-principals and admin-groups are additive (either grants ADMIN), uniformly."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-10)"
+  proposed_test: "AbstractOIDCUserHandler test: adminPrincipals-only match → ADMIN; adminGroups-only match → ADMIN; both → ADMIN (locks the additive base-class algebra that Google/GitHub diverge from)."
+- use_case_id: F-084-UC-11
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: "Handler dispatch precedence is deterministic and explicit."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-084-UC-11)"
+  proposed_test: "Dispatcher test: with a disjoint handler set, each provider string resolves to its handler; add a guard test that an enum-provider is NOT shadowed by CustomOIDCUserHandler regardless of list order."
+
+### probes_emitted
+[]   # no probe-needed verdicts — every hypothesis was decidable from the chain + the Rule-8 source reads (AbstractOIDCUserHandler.java, OperationUtils.java). No runtime-only question remained.
+
+### validation_gaps
+- sidecar: "feature flow F-084 / UI surface"
+  field_insufficient: "no enriched UI hop in the chain (feature-flow status: ui-incomplete)"
+  proposed_refresh: |-
+    RULE-9 API-ONLY DECLARATION (mandatory first output): this feature has NO enriched UI
+    component in its chain. Its UI surface is genuinely thin — the SPA reads only
+    identity.permissions via WithPermissionsProvider and renders no per-provider configuration
+    control (feature-flow ui_incomplete_reason). This reflection is therefore CONFIGURATION-AND-API-ONLY
+    and does NOT judge what a user sees on screen, because there is essentially no screen for this
+    feature: the operator configures it in YAML/env and the only user-visible effect is which
+    permissions their session carries. That is the correct scope here (this is an operator-config
+    surface, not a UI feature) — but the reflection cannot speak to UX/intuitiveness/consistency
+    because there is no UI artefact to reason from. A future refresh need NOT chase a UI hop; it
+    should instead confirm the operator's only feedback channel is the post-login permission set
+    (and the absence of any admin/boot diagnostic is itself the H-002/H-005/H-008 failure mode).
+- sidecar: "unresolved: AbstractOIDCUserHandler"
+  field_insufficient: "no sidecar exists for the base class used by Cognito/Azure/Custom-OIDC/ODD_IAM"
+  proposed_refresh: |-
+    AbstractOIDCUserHandler is the base class for 4 of the 7 providers and carries the
+    base-class admin-detection vocabulary (admin-groups via groups-claim; admin-attribute
+    defaulting to userNameAttribute; both admin-principals AND admin-groups evaluated). The
+    feature-flow marks its chain hop 2-alt2 as `sidecar: unresolved`. This reflection read
+    AbstractOIDCUserHandler.java:1-65 directly under the Rule-8 single-line exception to
+    validate H-002/H-006/H-010 (recorded source_read_for_validation: true). A file-analyser
+    pass should enrich this node so the base-class vocabulary is a first-class sidecar, not a
+    reflection-time read.
+- sidecar: "canonicalisation candidate substring-match-admin-escalation-ldap-containsignorecase"
+  field_insufficient: "asserts SUBSTRING matching at the containsIgnoreCase sites; the source says exact-match"
+  proposed_refresh: |-
+    PLT-081 (HIGH) and the underlying canonicalisation candidate both claim
+    OperationUtils.containsIgnoreCase does substring containment, escalating admin-groups to
+    over-promote (e.g. [admins] matching team-admins). The source is
+    `return collection.stream().anyMatch(element::equalsIgnoreCase);` (OperationUtils.java:9) —
+    FULL-STRING case-insensitive equality, verified by direct read this session. The GithubUserHandler
+    sidecar already flagged the conflict. This is a factual error in a tracked HIGH bug and a
+    canonicalisation candidate; both should be corrected/closed. See bug_candidates H-007.
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+  doc_says: "Seven providers are supported: Cognito, GitHub, Google, Azure AD, Okta, Keycloak, Custom OIDC."
+  code_does: "Provider enum has 5 values; Okta + Keycloak fall through CustomOIDCUserHandler with no provider-specific admin-detection."
+  recommended_log_as: DOC-235 (already tracks the per-provider admin-detection matrix on oauth2-oidc.md)
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+  doc_says: "admin-groups is documented for Cognito + GitHub; the OAuth2Provider schema exposes it on every provider."
+  code_does: "Google ignores admin-groups entirely (no getAdminGroups call); the field binds and is silently dropped."
+  recommended_log_as: DOC-235 (per-provider matrix; Google admin-groups silent-no-op admonition is in scope per PLT-069 doc companion)
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+  doc_says: "admin-principals is 'Direct list of users granted ADMIN role'; organization-name 'Restricts login only for users from this particular organization'."
+  code_does: "admin-principals fires before and bypasses the organization-name gate; the docs do not flag the bypass."
+  recommended_log_as: DOC-235 (GitHub bypass admonition is in scope per PLT-070 doc companion)
+
+## maintainer_notes
+
+(Preserved across refreshes — only the maintainer hand-edits this block.)
+
+ID note: the feature-flow detail carries an internal inconsistency — `feature_id: F-084` but
+`pillar_anchored_id: P-09:F-004` and `pillar_anchored_feature_name: OAuth Provider
+Admin-Detection Matrix`. This reflection preserves both verbatim (P-09:F-004 in the header)
+and does not attempt to reconcile; flag for the maintainer if the anchored sequence should be
+P-09:F-084 or if F-004 is the intended pillar slot.
+
+Convergence note (per MEMORY reflection-dedup-and-convergence): this reflection independently
+re-derived the SHB-103 / Mode-B-scanner cluster (PLT-069/070/071/082 + DOC-235) from the
+sidecars + base-class source, with NO new code-fix bug created for facets already tracked —
+6 of the contradictions/caveats are already_tracked corroborations (high-confidence convergent
+validation across two independent methods). The reflection's NET-NEW value is twofold and both
+are corrections/additions the scanner pass missed: (1) H-007 — PLT-081's HIGH "substring
+overpromotion" premise is factually wrong (OperationUtils is exact-match); (2) H-009 — the
+Azure logout-uri missing-fail-fast NPE is distinct from PLT-075's logout-redirect-hijack and
+appears untracked as a code-fix. Plus the LSN-030 promise layer: 11 use_cases, 0/11 verified,
+11 missing-functional test demands on a feature with 7 known security defects and zero tests —
+the single highest-value test-writing target surfaced this batch.

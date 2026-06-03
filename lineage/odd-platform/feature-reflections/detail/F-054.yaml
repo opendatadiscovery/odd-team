@@ -1,0 +1,523 @@
+---
+feature_id: F-054
+pillar_anchored_id: P-05:F-003
+pillar: P-05 Data Lineage
+feature_name: "Microservices lineage — doc-promised distinct pillar surface rendered by class-agnostic dataset-lineage canvas"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__Lineage.md
+  - odd-platform__ts__react-component__component__LineageGraph.md
+  - odd-platform__java__service__service__LineageServiceImpl.md
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-lineage/microservices"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+  - url: "lineage/odd-platform/doc-understanding/data-lineage__microservices.md (local doc-understanding artefact; doc HEAD 30795b4; live-verified 2026-05-29)"
+    last_verified_at: "2026-05-29T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 9
+  confirmed: 4
+  contradicted: 3
+  partial: 2
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: "Any authenticated user (or any unauthenticated network probe under auth.type=DISABLED) can read the full upstream/downstream call graph of ANY microservice, including services owned by other teams — operational topology is more sensitive than schema lineage."
+related_feature_flows: [F-005, F-016, F-014]
+related_concepts:
+  - microservices-lineage
+  - data-lineage
+  - lineage-graph-traversal
+related_drift_classes:
+  - doc_promises_distinct_surface_code_treats_as_data_class_no_ui_anchor
+  - payload_silently_dropped_no_class_aware_mapper
+  - ui_class_aware_routing_only_on_one_subtree_not_the_other
+  - read_collaborative_posture_amplified_by_sensitive_class
+new_drift_classes_proposed: []
+---
+
+# Microservices lineage — product-owner reflection
+
+## product_owner_narrative
+
+Microservices Lineage is the second of the two sub-features under the Data Lineage pillar (P-05); the first is Data Objects Lineage (F-005 / F-016). To a new customer the pitch is one of ODD's five headline differentiators — "End-to-end microservices lineage support" — and it answers the question *"when service A calls service B which calls the orders database, can I see that whole call chain on one screen alongside my datasets and jobs?"* The answer is yes: a microservice instrumented with OpenTelemetry emits trace spans; the standalone `odd-tracing-gateway` push adapter (the platform's only standalone-gateway integration) infers the service topology and ingests `MICROSERVICE`-class transformer entities plus their call edges through the Ingestion API; those nodes then render in the catalog and on the lineage canvas (per system-mission.md P-05 + per WebFetch https://docs.opendatadiscovery.org/features/data-lineage/microservices 2026-06-03).
+
+The user reaches it exactly like any other entity's lineage: open a catalogued microservice's detail page and click the **Lineage** tab — route `/dataentities/{id}/lineage` (per Lineage.md:understanding). The same depth slider, the same upstream/downstream canvas, the same pan/zoom, the same `Load N more` expansion, the same click-through-to-navigate behaviour apply. There is no separate "microservices view", no mode toggle, no `?ms=` flag, and no microservice-specific affordance anywhere in the chain (per Lineage.md bugs[2] "No microservices-specific branch"; LineageGraph.md bugs[7]). The single UI dispatcher (`Lineage.tsx:14,19-25`) branches ONLY on `isDEG` (data-entity-group vs everything-else); a microservice's entity class is not `ENTITY_GROUP`, so it falls through to the `HierarchyLineage` renderer identically to a Postgres table or a Spark job (per Lineage.md:understanding + concepts.invariants.no-microservices-branch). In the catalog, "Microservice" is only a type label in the type-name enum (per odd-platform-ui/src/lib/constants.ts:110 `[TypeNameEnum.MICROSERVICE, { normal: 'Microservice', plural: 'Microservices' }]`) — it changes the icon/label text, not the lineage rendering or the response shape.
+
+The working parts are entirely inherited from the data-object lineage chain. The backend read is class-agnostic end-to-end: the controller `GET /api/dataentities/{id}/lineage/downstream` (and `/upstream`) is a three-line pass-through (per getDataEntityDownstreamLineage.md:understanding); the service `LineageServiceImpl.getLineage(long, int, List<Long>, LineageStreamKind)` accepts NO `EntityClass` parameter and produces ONE `DataEntityLineage` shape for every class (per LineageServiceImpl.md:understanding, LineageServiceImpl.java:87-122); the recursive-CTE walk in `ReactiveLineageRepositoryImpl` (java:122-176) filters only by `IS_DELETED.isFalse()` with no owner predicate and no class predicate. The terminal projection is the class-agnostic `lineageMapper.mapLineageDto` (LineageServiceImpl.java:121) — so any microservice-specific payload field a tracing gateway emits (operation_name, span_kind, error_rate, p95_latency, callsPerMinute, service-call cardinality) has no slot in the response DTO and is silently dropped at the mapper (per LineageGraph.md:182 bugs[7] + doc-understanding/data-lineage__microservices.md doc_claim_vs_code[0]).
+
+The integration story: this surface is the consuming end of P-10 → P-05 (`odd-tracing-gateway` emits microservice edges via OTel/OTLP — the only ingestion path). It shares the exact same HTTP surface, security posture, and DoS profile as F-005 — including the cross-owner read posture (REFACTOR-203) and the unbounded-depth / null-default-NPE defects on the lineage endpoints (per LineageServiceImpl.md bugs + getDataEntityDownstreamLineage.md bugs). Because microservice lineage encodes *operational call topology* rather than schema structure, the cross-owner read posture is materially more sensitive on this class than on datasets: leaking that service X (team A) calls service Y (team B) reveals team B's internal architecture even when team B's individual entities are not otherwise enumerable.
+
+A product owner demoing this would highlight the empty state (a microservice with no ingested traces shows an empty canvas — same as any entity with no lineage, verified by IT-029's negative case) and would have to caveat, honestly, that the "microservices lineage" promise is satisfied by *participation in the uniform lineage model*, not by a bespoke operational view. The live microservices doc page has been rewritten (doc HEAD 30795b4) to say exactly this — "the same UI surface as Data Objects Lineage" — so the original "doc promises a distinct surface" framing of this feature is now largely doc-mitigated (per WebFetch 2026-06-03 + doc-understanding/data-lineage__microservices.md). The reflection below tests what the uniform surface actually delivers for a microservice.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens the Lineage tab on a MICROSERVICE-class entity, the upstream/downstream call graph of that microservice renders on the canvas (nodes + edges), exactly as it does for a dataset."
+  derivation: "P-05 mission names microservices lineage as a delivered capability; the chain routes microservices through the same HierarchyLineage renderer + same /lineage endpoints as datasets, and IT-029 confirms a lineage relation reaches the canvas for the generic entity case."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      A microservice is a Data Entity reachable at /dataentities/{id}/lineage. The dispatcher (Lineage.tsx:14,19-25)
+      routes any non-DEG class — including MICROSERVICE — to HierarchyLineage, which fires the dual
+      GET /api/dataentities/{id}/lineage/downstream + /upstream thunks (HierarchyLineage.tsx:54-66). The backend
+      getLineage walks lineage edges from the root oddrn regardless of class (LineageServiceImpl.java:87-122) and the
+      canvas renders nodes + edges (LineageGraph.tsx). IT-029 ("an upstream entity renders on the Lineage graph")
+      pins this rendering path for the generic entity; microservices inherit it identically because the chain has no
+      class branch. The promise "you can see a microservice's call graph" is delivered by uniform participation.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Lineage.md
+        section: understanding + concepts.invariants.no-microservices-branch
+        cite: "Lineage.tsx:14,19-25"
+        note: "Non-DEG classes (incl. MICROSERVICE) route to HierarchyLineage; no class branch."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: understanding
+        cite: "LineageServiceImpl.java:87-122"
+        note: "getLineage walks edges from any root oddrn regardless of entity class."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: probe_verifications
+        cite: "P-008 (8 PASS runs, feature F-005, integration)"
+        note: "The lineage read path is dynamically verified for the generic entity case."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: |
+      IT-029 verifies the GENERIC entity lineage-renders path, not a MICROSERVICE-class instance. The
+      microservices-specific happy path (seed a MICROSERVICE root + a call edge; assert the neighbour renders) has
+      NO test. confirmed-but-untested → functional demand, NOT none.
+
+- id: H-002
+  hypothesis: "When a user opens the Lineage tab on a microservice, the screen presents a microservice-specific operational view (service-call cardinality, operation names, or trace timing) distinct from the dataset canvas, matching the 'microservices traced through OpenTelemetry' framing of a dedicated pillar surface."
+  derivation: "system-mission.md P-05 lists 'Microservices Lineage' as a named sub-feature seed distinct from 'Data Objects Lineage'; a senior product owner reading 'microservices traced through OpenTelemetry' expects an operationally-flavoured view (the UX-intuitiveness + customisability seed of Rule 9)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is NO microservice-specific view. The UI dispatcher branches only on isDEG (Lineage.tsx:14); the single
+      non-DEG renderer HierarchyLineage treats every class identically (HierarchyLineage.tsx:1-138, no
+      `entityClass === 'MICROSERVICE'` branch — PRIMARY-SOURCE batch J). The DEG-side Node.tsx:30-36 has a
+      class-aware carve-out for DATA_QUALITY_TEST, but the Hierarchy-side Node.tsx:54-68 has NO class-aware logic for
+      ANY class, so a microservice in either canvas gets no special handling. The user sees boxes-with-names + edges,
+      indistinguishable from a dataset graph.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Lineage.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "Lineage.tsx:14 + selectors.ts:43-45"
+        note: "Only ENTITY_GROUP triggers a branch; no microservice literal in the file."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: bugs_limitations_corner_cases[microservices]
+        cite: "LineageGraph.md:182 bugs[7]"
+        note: "Same component, same endpoint, no mode flag, no class-based override."
+    operator_visible_failure: |
+      An SRE / platform engineer who navigates to a microservice expecting an OpenTelemetry-flavoured operational view
+      (which calls are hot, p95 latency along an edge, error rate per call) sees only a structural box-and-arrow graph
+      identical to a dataset's. The headline differentiator "end-to-end microservices lineage support" is satisfied
+      only as "microservices participate in the uniform lineage graph" — a weaker promise than the dedicated-surface
+      framing implies. No data is lost in the GRAPH STRUCTURE (edges render); the operational SEMANTICS the user came
+      for are simply absent from the surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: |
+      The live microservices doc page (WebFetch 2026-06-03) and DOC-226 now state the uniformity explicitly, so this
+      is a documented product decision, not a hidden contradiction — routes to caveat (already_tracked DOC-226), not bug.
+
+- id: H-003
+  hypothesis: "When a microservice's traces carry OpenTelemetry operational fields (operation_name, span_kind, error_rate, p95_latency, callsPerMinute) ingested via odd-tracing-gateway, those fields are returned in the lineage response so a consumer (UI or third-party API client) can read them."
+  derivation: "P-10→P-05 cross-pillar relationship: odd-tracing-gateway emits microservice-specific metadata; a consumer of the lineage API reasonably expects the metadata it ingested to survive the round-trip (response-shape seed)."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The lineage response DTO (DataEntityLineageNode, assembled via DataEntityLineageStreamDto and projected by
+      lineageMapper.mapLineageDto at LineageServiceImpl.java:121) is class-agnostic. getLineage carries no EntityClass
+      parameter and assembles one node shape for every class — there is no MicroserviceLineageNode variant, no
+      class-discriminated payload union. Any microservice-specific field a tracing gateway emits has no slot in the
+      response and is silently dropped at the response-DTO mapper. The drop is silent: no error, no log, no breadcrumb.
+    evidence:
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: understanding + concepts.operations
+        cite: "LineageServiceImpl.java:121 (lineageMapper.mapLineageDto); 87-122 (no EntityClass param)"
+        note: "One class-agnostic response shape; terminal projection is class-blind."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: bugs_limitations_corner_cases[microservices]
+        cite: "LineageGraph.md:182 bugs[7]"
+        note: "microservices-specific affordances NOT rendered — silently dropped if the response has them."
+      - sidecar: "doc-understanding/data-lineage__microservices.md"
+        section: doc_claim_vs_code[0]
+        cite: "LineageServiceImpl.java:121"
+        note: "Doc claim of silent-drop CONFIRMED by code, not just doc assertion."
+    operator_visible_failure: |
+      A team that instruments services with OpenTelemetry and runs odd-tracing-gateway expecting to see per-call error
+      rate / p95 latency / operation names in ODD will find ONLY the topology (which service calls which). The
+      operational signal they instrumented for never surfaces at the UI or the API — and there is no diagnostic telling
+      them it was dropped, so they may conclude the gateway failed to ingest when in fact the platform discarded the
+      fields at the mapper. This is the highest-value silent-data-loss surface on this feature.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: |
+      Already documented by DOC-226 (done) "Supported payload fields" section. The CODE-side fix (a class-discriminated
+      payload union) is a feature, not a bug — out of scope for a doc/test reflection. Functional test demand below pins
+      the CURRENT silent-drop contract so the future union lift is caught.
+
+- id: H-004
+  hypothesis: "When a user without an ownership association to a microservice opens its Lineage tab, they cannot enumerate the call graph of services owned by other teams — the read is scoped to entities the caller has a relationship with."
+  derivation: "A senior product owner / operator carries a per-tenant RBAC mental model: operational topology is sensitive, so a user expects to see only their teams' microservice call graphs unless catalog-public-by-design is stated (implicit-requirements seed, Rule 10 archetype implicit-requirements)."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      getLineage applies NO owner-scoping. It resolves the root via
+      reactiveDataEntityRepository.getDataEntityWithDataSourceAndNamespace (LineageServiceImpl.java:92) WITHOUT calling
+      authIdentityProvider.fetchAssociatedOwner(); the service has no AuthIdentityProvider field (lines 54-57) and the
+      recursive-CTE walk applies no owner predicate at any layer (ReactiveLineageRepositoryImpl.java:122-176). This is
+      the negative-case sibling of the anchor-set owner-scoping pattern (DataEntityRelationsServiceImpl does call
+      fetchAssociatedOwner; this service does not). Under LOGIN_FORM/OAUTH2/LDAP any authenticated user reads any
+      microservice's full reachable call graph; under auth.type=DISABLED any unauthenticated network probe can.
+    evidence:
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: bugs_limitations_corner_cases[anchor-set] + security.owner_scoping
+        cite: "LineageServiceImpl.java:54-57, 87-122 (no AuthIdentityProvider, no fetchAssociatedOwner)"
+        note: "Service-layer cross-owner enumeration sink for the lineage read path (REFACTOR-203)."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: security.known_security_gaps + bugs_limitations_corner_cases[DISABLED]
+        cite: "DataEntityController.java:255-263 (no owner arg); DisabledAuthSecurityConfiguration.java:16"
+        note: "No @PreAuthorize; DISABLED-mode widens reach to unauthenticated probes."
+      - sidecar: "doc-understanding/data-lineage__microservices.md"
+        section: doc_claim_vs_code[1]
+        cite: "ReactiveLineageRepositoryImpl.java:122-176"
+        note: "Doc 'no ownership-side filter on read path' CONFIRMED by code."
+    operator_visible_failure: |
+      (1) An SRE at a multi-team org who expects per-team microservice visibility discovers by click-through that EVERY
+      microservice's call graph is readable — competitor/peer-team service interdependence becomes visible. (2) Because
+      microservice lineage is operational topology (not schema), this leaks more than the dataset case: it reveals which
+      services talk to which, fan-out/fan-in, and the existence of services a caller could not otherwise enumerate.
+      (3) On a default auth.type=DISABLED deployment the same cross-owner operational topology is reachable by any
+      unauthenticated network probe — the cross-owner gap compounds with the DISABLED-mode bypass.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    note: |
+      Code fix tracked PLT-100 (zero-RBAC lineage read + unset-depth NPE) + the doc caveat tracked DOC-226 (done). The
+      microservice-class AMPLIFICATION angle is a framing nuance on the same code locus — corroboration, not a new item.
+
+- id: H-005
+  hypothesis: "When a third-party API client calls GET /api/dataentities/{id}/lineage/downstream for a microservice WITHOUT supplying lineage_depth, the platform returns a default-depth graph (per the API-reference doc 'Unset returns the platform's default depth')."
+  derivation: "The live API-reference page documents the unset behaviour; microservice lineage shares this exact HTTP surface (doc-claim seed); the doc is a behavioural claim to validate against code."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no platform default. The OpenAPI spec marks lineage_depth required:false → generated interface declares
+      Integer lineageDepth; the service signature is primitive `int` (LineageService.java:12). A null Integer autoboxes
+      to int at the controller→service call (DataEntityController.java:257-261), throwing NullPointerException BEFORE
+      getLineage's body runs (LineageServiceImpl.java:96 LineageDepth.of). The caller receives an HTTP 500 with a
+      server-side exception trace, not a default-depth graph. The documented unset behaviour is unimplementable as written.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: bugs_limitations_corner_cases[0] + docs_link_semantic.doc_drift_findings[0]
+        cite: "DataEntityController.java:257-261 + LineageService.java:12 + LineageServiceImpl.java:96"
+        note: "null Integer → int autobox NPE → HTTP 500; doc 'default depth' is unimplemented."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: bugs_limitations_corner_cases[null-lineageDepth]
+        cite: "LineageServiceImpl.java:88-89"
+        note: "Service cannot null-check a primitive; realised behaviour is unimplementable as documented."
+    operator_visible_failure: |
+      A third-party API consumer following the doc omits lineage_depth and gets a 500 instead of a graph; they cannot
+      distinguish 'my request was malformed' from 'the server is broken', and the 500 leaks a stack trace into logs.
+      The UI masks this (it always sends d=1 from defaultLineageQuery), so the failure is invisible to UI users and only
+      bites API consumers — exactly the audience the doc page serves.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+    note: |
+      Tracked PLT-100 (unset lineage_depth NPE→500). Inherited by the microservices page via the shared-surface claim
+      (doc-understanding/data-lineage__microservices.md doc_claim_vs_code[3]). Convergent corroboration, not net_new.
+
+- id: H-006
+  hypothesis: "When a user (or third-party client) requests a very large lineage_depth (e.g. d=10000) on a microservice, the platform clamps the traversal to a safe ceiling rather than attempting to enumerate the entire reachable graph."
+  derivation: "The UI depth dropdown caps at [1..20] and the API-reference doc states a minimum of 1; a user reasonably assumes 20 (or some platform ceiling) is the enforced maximum (endpoint-shape + implicit-requirements seed)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No upper bound exists at any tier. The generated interface enforces @Min(1) only — no @Max
+      (getDataEntityDownstreamLineage.md bugs[1]). The service hands the int straight to LineageDepth.of with no
+      Math.min clamp (LineageServiceImpl.java:96). The recursive CTE terminates only on tDepth < lineageDepth with no
+      cycle guard (ReactiveLineageRepositoryImpl.java:174). The UI dropdown caps at 20 but the URL accepts any integer
+      (useQueryParams parseNumbers:true) and click-through propagates node.depth without Math.min(.,20). A d=10000
+      request runs the CTE to whatever Postgres/timeout limits enforce.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: bugs_limitations_corner_cases[1] + performance.known_performance_gaps[0]
+        cite: "DataEntityApi @Min(1) only; ReactiveLineageRepositoryImpl.java:122-176 (no cap)"
+        note: "No @Max, no service clamp, no CTE cycle guard — DoS-amplification vector."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: bugs_limitations_corner_cases[no-upper-bound-d]
+        cite: "useQueryParams.ts:36 + HierarchyLineage.tsx:47 + Node.tsx:46-52"
+        note: "UI dropdown [1..20] is cosmetic; URL + click-through bypass it."
+    operator_visible_failure: |
+      A curious operator hand-editing ?d=10000, or a node-click that propagates a large rendered depth, drives an
+      arbitrarily-expensive recursive-CTE walk that can peg a Postgres connection / exceed the transaction timeout and
+      degrade the platform for everyone. On a microservice with a densely-connected call graph (microservice topologies
+      are often more interconnected than dataset DAGs) the amplification is worse. Under DISABLED mode an unauthenticated
+      probe can trigger it. The user expecting "20 is the max" gets no clamp and no warning.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+    note: "Tracked PLT-042 (controller @Max(20) + UI click-through clamp) and PLT-100 (no-cap half). Convergent corroboration."
+
+- id: H-007
+  hypothesis: "When a microservice has no ingested call edges (no traces yet, or the tracing gateway is not deployed), opening its Lineage tab shows an empty/no-relations canvas rather than an error."
+  derivation: "Empty-state is a normal user expectation; F-005's IT-029 negative case ('an entity with no lineage does not render a related entity') pins this for the generic entity (negative-space seed)."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      An entity with no lineage edges returns an empty graph (root only) and the canvas renders no related node — the
+      lineage read is data-driven (getLineage resolves the root and walks zero edges). IT-029's second test
+      ("an entity with no lineage does not render a related entity (negative)") pins exactly this behaviour for the
+      generic entity; a microservice with no ingested traces is the same data shape (root exists, no edges) and inherits
+      the empty-canvas behaviour. Note: this is distinct from the DEG empty-vs-404 asymmetry (F-016 / SHB-032), which
+      does not apply to a non-DEG microservice on the per-entity endpoint.
+    evidence:
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: invariants
+        cite: "LineageServiceImpl.java:93 (404 only if root missing); 87-122 (walks whatever edges exist)"
+        note: "Existing microservice with zero edges → 200 with empty graph, not an error."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: probe_verifications
+        cite: "IT-029 negative case + P-008 PASS runs"
+        note: "Generic empty-lineage path is dynamically + e2e verified; microservices inherit the data shape."
+    severity: null
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    note: |
+      Confidence MEDIUM (not HIGH): IT-029 verifies the GENERIC entity empty case, not a MICROSERVICE-class root
+      specifically. confirmed-but-untested-for-this-class → functional demand. (The class makes no difference to the read
+      path per the chain, hence confirmed not partial.)
+
+- id: H-008
+  hypothesis: "When a microservice node is clicked in a lineage canvas, the user navigates to that microservice's own Lineage tab (so they can walk the call chain hop by hop), consistent with how dataset nodes behave."
+  derivation: "Consistency-with-the-rest-of-the-platform UX seed (Rule 9): a user expects node click-through to behave the same for microservices as for datasets."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Click-through works uniformly: Node.tsx click navigates to dataEntityLineagePath(entityId, lineageQueryString)
+      → /dataentities/{clickedId}/lineage (LineageGraph.md concepts.operations.Node + Node.tsx:54-72). A microservice
+      node behaves the same as a dataset node — confirmed consistent. BUT the navigation overrides the chosen depth with
+      the clicked node's rendered depth (d = node.depth || 1, Node.tsx:46-52), so drilling deep compounds depth rather
+      than preserving the user's selection; and clicking a node that was expanded out of a group navigates to the GROUP,
+      not the inner entity. The convenience promise holds; the depth-preservation sub-promise does not.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: concepts.operations.Node + implicit_adrs[click-through]
+        cite: "Node.tsx:46-72 (navigate); Node.tsx:51 (d: node.depth override)"
+        note: "Click-through is class-uniform; depth override is the partial-gap."
+    operator_visible_failure: |
+      The user gets the expected hop-by-hop navigation, so the core convenience works. The surprise: the depth slider
+      value they chose is silently discarded on click (the new view opens at the clicked node's depth), and repeated
+      drilling compounds depth — which combines with H-006 (no depth cap) to make accidental deep walks easy. A user
+      tracing a long microservice call chain may unexpectedly trigger an expensive deep query just by clicking inward.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: "Click-through-overrides-depth caveat already tracked DOC-320 (F-005 H-006). Convergent; microservices inherit it."
+
+- id: H-009
+  hypothesis: "When a microservice participates in a Data Entity Group (e.g. an ML/service domain), the same class-aware navigation carve-out that exists for DATA_QUALITY_TEST nodes also routes a microservice click to an appropriate view."
+  derivation: "The DEG-side Node.tsx:30-36 has a class-aware carve-out for DATA_QUALITY_TEST; a product owner asks whether microservices get analogous treatment (consistency + customisability seed, Rule 9)."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The class-aware carve-out exists on the DEG-side Node only and only for DATA_QUALITY_TEST (Node.tsx:30-36 routes
+      DQ-test clicks to dataEntityDetailsPath instead of dataEntityLineagePath). There is NO MICROSERVICE carve-out on
+      either subtree, AND the Hierarchy-side Node (Node.tsx:54-68) has no class-aware logic at all. So microservices get
+      identical (non-special) routing in both canvases — the hypothesis is FALSE for microservices specifically, but the
+      broader observation is that class-aware routing is asymmetric (one carve-out, one class, one subtree). Partial:
+      the platform HAS class-aware routing machinery; it just isn't applied to microservices anywhere.
+    evidence:
+      - sidecar: "feature-flow F-054 observed_vs_expected facet deg_subtree_has_class_aware_node_routing_hierarchy_subtree_does_not"
+        section: observed_vs_expected
+        cite: "DEGLineage Node.tsx:30-36 (DQ-test carve-out) vs HierarchyLineage Node.tsx:54-68 (none)"
+        note: "PRIMARY-SOURCE batch J ui-review-2026-05-26; LOW-severity asymmetry facet."
+    operator_visible_failure: |
+      No functional break: microservices route to the lineage path everywhere, which is a sensible default. The latent
+      gap is architectural — when/if a microservice operational view is built, the class-aware routing hook only exists
+      on one subtree (DEG-side) and would need to be added to the Hierarchy-side Node too. A maintainer extending this
+      will find the machinery half-present.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: "Maps to the LOW-severity asymmetry facet already in the feature-flow observed_vs_expected. Architectural caveat, not a user-facing break."
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Microservice lineage read is cross-owner-enumerable by any authenticated user (unauthenticated under DISABLED); operational call topology is more sensitive than schema lineage."
+  dedup_status: already_tracked
+  tracked_as: PLT-100
+  distinct_from: null
+  recommended_log_as: null
+  proposed_fix_anchor: "PLT-100 already proposes: SECURITY_RULES entry or AuthIdentityProvider owner-scope check on all three lineage endpoints (LineageServiceImpl.java:54-57, 87-122). Microservice-class amplification is corroboration of the same locus, not a separate fix."
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "Unset lineage_depth on the (shared) lineage endpoint autoboxes null → NPE → HTTP 500; documented 'default depth' is unimplemented."
+  dedup_status: already_tracked
+  tracked_as: PLT-100
+  distinct_from: null
+  recommended_log_as: null
+  proposed_fix_anchor: "PLT-100: make lineageDepth Integer end-to-end + apply the documented default (or change the doc); LineageServiceImpl.java:96."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "No @Max / service clamp / CTE cycle-guard on lineage_depth; d=10000 drives an unbounded recursive-CTE DoS, worse on dense microservice call graphs."
+  dedup_status: already_tracked
+  tracked_as: PLT-042
+  distinct_from: "PLT-100 (covers the no-cap half + NPE; PLT-042 is the defence-in-depth @Max(20) + UI click-through clamp)"
+  recommended_log_as: null
+  proposed_fix_anchor: "PLT-042: controller @Max(20) + Math.min(node.depth,20) on click-through (Node.tsx:46-52); PLT-100 covers the service/SQL no-cap half."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "Microservices lineage is the UNIFORM dataset canvas, not a bespoke operational view; the 'distinct surface' framing is satisfied by participation, not affordances."
+  dedup_status: already_tracked
+  tracked_as: DOC-226
+  recommended_log_as: null
+- hypothesis_id: H-008
+  one_line: "Node click-through silently overrides the chosen depth with the clicked node's rendered depth (microservices inherit this from the shared canvas)."
+  dedup_status: already_tracked
+  tracked_as: DOC-320
+  recommended_log_as: null
+- hypothesis_id: H-009
+  one_line: "Class-aware node routing exists only DEG-side and only for DATA_QUALITY_TEST; microservices get no class-aware routing on either subtree (architectural caveat for a future operational view)."
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: "DOC-320 (F-005 caveats) — that item is data-object canvas behaviour; this is the class-aware-routing asymmetry specific to where a microservice operational view would hook in. LOW severity; already captured as the F-054 observed_vs_expected LOW facet, so no separate doc item is warranted — recorded here as corroboration of the existing facet."
+  recommended_log_as: "no new item — covered by F-054 observed_vs_expected facet deg_subtree_has_class_aware_node_routing_hierarchy_subtree_does_not (LOW)."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the net-new value of this reflection. The feature-flow sits at related_test_gaps: []
+# and control_summary: 0/4 — every microservices-lineage promise is unverified. IT-029 verifies the GENERIC
+# data-object lineage path (F-005); NO test exercises a MICROSERVICE-class entity or any microservice-specific
+# promise. Each unverified promise below becomes a missing-functional TEST-GAP candidate.
+- use_case_id: F-054-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A MICROSERVICE-class entity with a call edge renders its neighbour on the Lineage canvas (microservices participate in the uniform lineage graph)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-054-UC-1)"
+  proposed_test: "Integration (Playwright, extend IT-029 harness): seed a MICROSERVICE-class root + an upstream call edge via helpers/db; goto /dataentities/{msId}/lineage; assert the neighbour node renders (mirror of IT-029 but with a MICROSERVICE root) — pins that the uniform chain delivers the microservices promise."
+- use_case_id: F-054-UC-2
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "A microservice with no ingested traces shows an empty lineage canvas, not an error."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-054-UC-2)"
+  proposed_test: "Integration: seed a MICROSERVICE root with zero lineage edges; goto its Lineage tab; assert a 200 empty-graph (no related node renders) — mirror of IT-029 negative case for the microservice class."
+- use_case_id: F-054-UC-3
+  hypothesis_id: H-003
+  kind: render
+  promise: "Microservice-specific OpenTelemetry fields (operation_name/span_kind/error_rate/p95_latency/callsPerMinute) are dropped at the response DTO (CURRENT contract — pin it so the future class-discriminated-union lift is caught)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-054-UC-3)"
+  proposed_test: "Unit (LineageMapperTest extension): given a DataEntityLineageStreamDto whose nodes carry microservice-shaped metadata, assert mapLineageDto produces a DataEntityLineageNode that does NOT carry operation_name/span_kind/etc. — characterization test pinning the silent-drop until a payload union ships."
+- use_case_id: F-054-UC-4
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "Microservice lineage read returns cross-owner edges (CURRENT read-collaborative posture) — pin it so an owner-scope fix (PLT-100) flips this RED deliberately."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-054-UC-4)"
+  proposed_test: "Integration (WebTestClient or Playwright): two owners A and B; a MICROSERVICE owned by A with a call edge to a service owned by B; call the lineage endpoint as a user associated only with B (or no owner); assert the cross-owner node IS currently returned (characterization). Becomes the regression guard that PLT-100's owner-scope fix must intentionally break. Parallel to the security test_matrix gap on the F-005 dataset case."
+- use_case_id: F-054-UC-5
+  hypothesis_id: H-005
+  kind: resolve-later
+  promise: "Omitting lineage_depth on the lineage endpoint currently yields HTTP 500 (NPE) — pin the contract; flips when PLT-100 implements the documented default."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-054-UC-5)"
+  proposed_test: "Integration (@WebFluxTest DataEntityController): GET /api/dataentities/{id}/lineage/downstream with lineage_depth omitted; assert current 500 (characterization) — RED-flips the day a platform default is implemented per PLT-100/doc."
+- use_case_id: F-054-UC-6
+  hypothesis_id: H-006
+  kind: resolve-later
+  promise: "A very large lineage_depth is currently accepted unclamped — pin the absence of an upper bound; flips when PLT-042's @Max(20) lands."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-054-UC-6)"
+  proposed_test: "Integration (@WebFluxTest): GET lineage with lineage_depth=10000; assert it is NOT rejected with 400 today (characterization of the missing @Max) — RED-flips when PLT-042 adds @Max(20)."
+- use_case_id: F-054-UC-7
+  hypothesis_id: H-002
+  kind: render
+  promise: "Opening a microservice's Lineage tab renders the uniform HierarchyLineage canvas (no microservice-specific operational affordance) — the documented product decision."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-054-UC-7)"
+  proposed_test: "Integration (Playwright): goto a MICROSERVICE entity's Lineage tab; assert the standard lineage canvas controls render and NO microservice-specific panel is present — pins the uniform-surface decision so a future operational view is a conscious, test-visible change."
+
+### probes_emitted
+[]
+
+### validation_gaps
+- sidecar: "(HierarchyLineage.tsx — referenced from Lineage.tsx coupling; not independently enriched)"
+  field_insufficient: "chain hop 2 (HierarchyLineage) has sidecar '(referenced from Lineage.tsx coupling)' rather than a dedicated enriched node. The microservice render path is judged via the Lineage dispatcher + LineageGraph sidecars (which both Read HierarchyLineage), so the trace is sound, but a dedicated HierarchyLineage sidecar would let a future reflection assert the no-class-branch claim from the renderer's own enrichment rather than via its callers."
+  proposed_refresh: "Enrich odd-platform ts react-component:HierarchyLineage as a first-class node (understanding + tests_coverage_semantic + the absence-of-class-branch invariant), so F-054's UI hop 2 stops pointing at a coupling reference."
+- sidecar: "(LineageMapper.mapLineageDto)"
+  field_insufficient: "The silent-drop claim (H-003) is grounded in LineageServiceImpl.java:121 + LineageGraph.md bugs[7] + the doc-understanding artefact, but LineageMapper itself has no enriched sidecar; the exact mapper file:line proving NO microservice field is read is inferred from the class-agnostic DTO, not from a direct mapper enrichment."
+  proposed_refresh: "Enrich the LineageMapper node (MapStruct mapLineageDto) so the response-DTO field set is explicit and the silent-drop is provable from the mapper's own sidecar (currently only LineageMapperTest exists, which does not assert microservice-field absence)."
+
+### doc_drift_findings
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/data-lineage/microservices"
+  doc_says: "Access model: any authenticated user can read any microservice's call graph; under auth.type=DISABLED 'authenticated user' widens to any unauthenticated client that can reach the network port."
+  code_does: "CONFIRMED — getLineage applies no owner-scoping (LineageServiceImpl.java:54-57,87-122); DISABLED-mode permitAll (DisabledAuthSecurityConfiguration.java:16) makes it unauthenticated-reachable."
+  recommended_log_as: "no new doc-gap — the live page now states this (doc HEAD 30795b4); DOC-226 (done) added the Access model section. The residual DISABLED-mode caveat for THIS page is noted in doc-understanding/data-lineage__microservices.md doc_claim_vs_code[2] as a triage candidate; not minted here to avoid duplicating that harvest entry."
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/data-lineage/microservices"
+  doc_says: "Microservice-specific OpenTelemetry trace fields are silently dropped at the response-DTO mapper."
+  code_does: "CONFIRMED — class-agnostic DataEntityLineageNode + lineageMapper.mapLineageDto (LineageServiceImpl.java:121); no class-discriminated payload union."
+  recommended_log_as: "no new doc-gap — DOC-226 (done) added the 'Supported payload fields' section enumerating the dropped fields. Convergent corroboration of an already-shipped doc fix."
+
+## maintainer_notes
+
+(empty — first reflection of this feature; reserved for maintainer prose that should survive refresh)

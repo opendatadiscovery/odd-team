@@ -1,0 +1,764 @@
+---
+feature_id: F-192
+pillar_anchored_id: P-01:F-011-ui
+pillar: P-01 Data Discovery
+feature_name: |-
+  Per-Column Annotation Editor Composition — the right-rail editor surface
+  at `/dataentities/{id}/structure/{versionId}` that ORCHESTRATES six
+  per-column edit sub-flows (description / business-name / tags / enums /
+  terms / lookup-table-column) against a SINGLE selected field driven by a
+  jotai `selectedFieldIdAtom`. The operator-observable composition shell for
+  the F-047 backend chain.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+maintainer_curated: false
+
+contributing_sidecars_read:
+  - odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md  # the ONLY resolved node in the chain (F-047 backend)
+contributing_sidecars_unresolved:
+  # Rule 9 — the entire UI tier of this UI-composition feature has NO enriched sidecar.
+  # The 20 contributing UI nodes in the feature-flow chain are all sidecar: unresolved.
+  - "ui-state jotai:selectedFieldIdAtom (hop 0)"
+  - "ui-component component:DatasetFieldOverview (hop 1)"
+  - "ui-component component:DatasetFieldHeader (hop 2a)"
+  - "ui-component component:DatasetFieldDescription (hop 2b)"
+  - "ui-component component:DatasetFieldTags (hop 2c)"
+  - "ui-component component:DatasetFieldOverviewEnums (hop 2d)"
+  - "ui-component component:DatasetFieldTerms (hop 2e)"
+  - "ui-component component:DatasetFieldInternalNameForm"
+  - "ui-component component:TagsEditForm + TagsEditFormAutocomplete"
+  - "ui-component component:DatasetFieldEnumsForm + DatasetFieldEnumsFormItem"
+  - "ui-component component:AssignFieldTermForm + TermItem"
+  - "ui-component component:DatasetStructureOverviewProvider + DatasetStructureList + DatasetStructureItem"
+  - "ui-state redux:datasetStructure.slice (hop 3)"
+evidence_basis: |-
+  This reflection is reflected against (a) the F-047 backend sidecar
+  (DatasetFieldController — the one resolved node), AND (b) the
+  feature-flow's own statically-extracted observed_vs_expected facets +
+  chain evidence (the feature-flow-builder read the .tsx files and recorded
+  six drift facets, three carrying ui_unverified: true). It is NOT reflected
+  against enriched UI sidecars because none exist. Per Rule 9, the first
+  output is a validation_gap and the user-EXPERIENCE verdicts (field-switch,
+  dialog rebind, fetch race) are probe-needed, not confidently confirmed.
+
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/per-column-annotation"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: "not-fetched-this-session"
+    note: |-
+      WebFetch not run this parallel-safe session. The page does NOT YET
+      EXIST — DOC-193 is the open backlog item to CREATE it (the canonical
+      per-column-annotation.md sub-page). Live verification deferred; the
+      doc-gap is already tracked, so no new doc-gap is minted here.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-25T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Cross-referenced via the DatasetFieldController sidecar's
+      docs_link_semantic (verified 2026-05-25, status 200). Documents
+      DATASET_FIELD_ADD_TERM as the gate for POST /api/datasetfields/{id}/terms
+      — which the code at SecurityConstants.java:299 contradicts.
+
+hypothesis_summary:
+  total: 11
+  confirmed: 3
+  contradicted: 3
+  partial: 2
+  probe_needed: 3
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: |-
+      A user adds a glossary term to a column via the Add-term button (gated
+      in the UI by the documented DATASET_FIELD_ADD_TERM) and the term
+      silently never appears — the server requires DATA_ENTITY_ADD_TERM and
+      TermItem swallows the 403 (SecurityConstants.java:299; tracked PLT-029/PLT-061).
+
+related_feature_flows:
+  - F-047   # backend per-column annotation endpoints — DatasetFieldController; the chain every sub-editor routes to
+  - F-004   # entity-description XSS family — same Markdown.tsx render path the description sub-editor uses
+  - F-045   # parent Structure tab the composer lives inside (IT-023 covers the LIST, not this composer)
+  - F-002   # term-to-entity linkage (the terms sub-editor's backend half; IT-033 / F-153 linked_columns)
+  - F-178   # entity-header business-name display (IT-031) — the ENTITY-level sibling of the field business-name sub-editor
+  - F-176   # data-entity Overview composition (IT-013) — the sibling composition-shell pattern
+related_concepts:
+  - dataset-field-annotation
+  - per-column-edit-composition
+  - selected-field-atom
+  - mixed-redux-thunk-react-query-state-management
+related_drift_classes:
+  # facets from the feature-flow's drift_class_summary this reflection CONFIRMED / re-derived top-down
+  - per_column_editor_composition_no_unsaved_changes_warning_on_field_switch
+  - per_column_editor_fast_field_switch_useeffect_enum_fetch_race
+  - composer_split_state_management_redux_thunks_plus_react_query_hooks_coexist
+  - each_sub_editor_separately_wrapped_in_with_permissions_no_composite_read_only_mode
+  - per_column_editor_no_keyboard_navigation_between_fields
+new_drift_classes_proposed: []
+---
+
+# Per-Column Annotation Editor Composition — product-owner reflection
+
+## product_owner_narrative
+
+The Per-Column Annotation Editor is the surface where a data curator gives a single
+dataset column its *meaning* — its business name, its human description, its tags, its
+allowed enum values, and its glossary-term links — without leaving the dataset's
+Structure tab. The operator opens a dataset, clicks the **Structure** tab, picks a column
+from the list on the left, and the right rail becomes an editor for exactly that column:
+six stacked sections (header with business-name edit, read-only stats, description,
+tags, enum values, glossary terms), each with its own edit affordance gated by its own
+permission (per `DatasetFieldController` sidecar `understanding` + feature-flow chain
+hop 1, `DatasetFieldOverview.tsx:54-98`). It is the column-level twin of the
+entity-level annotation surface — same idea (annotate a catalog object), one level
+deeper (a column inside a dataset).
+
+The interaction the whole feature turns on is **field selection**. A single jotai atom,
+`selectedFieldIdAtom`, is the one source of truth for "which column am I editing"
+(feature-flow hop 0, `DatasetStructureOverviewProvider.tsx:35-42` hydrates it with the
+first column; `DatasetStructureItem.tsx:71-74` mutates it on every row click). Clicking a
+different row in the list silently re-points all six sub-editors at the new column. There
+is no separate "open editor" step — selection *is* the edit context. This is convenient
+for a curator sweeping across a wide table, but it is also the feature's structural
+fault line: the sub-editors are mounted unconditionally and re-render against whatever
+the atom currently points at, so what happens when the operator switches columns
+mid-edit is the load-bearing UX question (feature-flow `observed_vs_expected`).
+
+Every mutation the operator performs — save a description, add a tag, replace the enum
+set, link a term, rename the column — routes to the **F-047 backend chain**: the seven
+endpoints of `DatasetFieldController` under `/api/datasetfields/{id}/...` (feature-flow
+hop 4; `DatasetFieldController` sidecar). That backend is where the column's annotations
+are actually persisted, activity-logged, and search-indexed — and it is where the
+documented behaviour and the implemented behaviour diverge in several places the curator
+cannot see from the screen (the term-add permission gate, the enum bulk-replace
+semantics, the tag delete-all-then-recreate). The composition shell is, in product
+terms, the *front door* to every F-047 drift facet; the operator meets those drifts here
+even though the bug lives in the backend.
+
+The feature sits inside Data Discovery (P-01) — "annotate them with tags, statuses,
+descriptions, and groupings" (`system-mission.md` P-01 one-line capability) — and shares
+data with the Glossary (P-06, via the terms sub-editor) and is gated by Security (P-09,
+via the six per-sub-editor permissions). A read-only user (no `DATASET_FIELD_*`
+permissions) sees the whole composer with every edit affordance hidden — consistent with
+the platform's read-collaborative posture, but with no banner explaining *why* the edit
+buttons are gone (feature-flow drift facet
+`each_sub_editor_separately_wrapped_in_with_permissions_no_composite_read_only_mode`).
+
+In a demo, the product owner would flag three edge cases an operator hits in real use:
+fast-switching between columns while a dialog is open (does the open dialog rebind or
+submit against the wrong column?); the enum editor's "replace" semantics (sending a
+partial set silently deletes the omitted values); and the keyboard-only path (the column
+list is mouse-click-only — there is no arrow-key navigation). All three are
+operator-observable, none are documented, and the most dangerous (the enum bulk-replace
+and the silent term-add 403) are already tracked as **PLT-029** with a doc companion at
+**DOC-193**.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When the operator clicks a different column row in the Structure list, every one of the six right-rail sub-editors (header, stats, description, tags, enums, terms) re-points at the newly-selected column — the operator never has to manually re-open an editor for the new column."
+  derivation: "Single selection driver — selectedFieldIdAtom hop 0 hydrated by DatasetStructureOverviewProvider, mutated by DatasetStructureItem.handleRowClick, read by DatasetFieldOverview; the six sub-editors are mounted unconditionally and consume the atom."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The feature-flow chain establishes a single source of truth:
+      DatasetStructureItem.tsx:71-74 calls setSelectedFieldId(datasetField.id)
+      on row click; DatasetFieldOverview.tsx:23-26 reads selectedFieldId via
+      useStructure() and resolves the field via
+      useAppSelector(getDatasetFieldById(selectedFieldId)); DatasetFieldOverview.tsx:54-98
+      renders all six sections against that resolved field. The re-point is
+      automatic — no manual re-open. (Static .tsx evidence via the feature-flow;
+      no enriched UI sidecar.)
+    evidence:
+      - sidecar: "(feature-flow F-192 chain hop 0 + hop 1)"
+        section: chain.evidence
+        cite: "DatasetStructureItem.tsx:71-74; DatasetFieldOverview.tsx:23-26,54-98"
+        note: "single-atom selection driver re-points all sub-editors on row click"
+    confidence: MEDIUM
+    confidence_note: "Static-from-.tsx via feature-flow; no enriched UI sidecar to confirm runtime render order. The convenience promise is met; the correctness of re-point under fast switching is H-005/H-006 (probe-needed)."
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When the operator sets a business name on a column (the header edit affordance), the new business name is what the column is thereafter displayed by — and clearing it falls back to the technical column name."
+  derivation: "DatasetFieldHeader renders field name OR internalName (hop 2a, DatasetFieldHeader.tsx:58-135); the business-name edit is DatasetFieldInternalNameForm gated by DATASET_FIELD_INTERNAL_NAME_UPDATE; backend updateInternalName carries @ActivityLog(DATASET_FIELD_INTERNAL_NAME_UPDATED) per DatasetFieldController sidecar."
+  derivation_sibling: "IT-031 confirms the ENTITY-header internalName||externalName fallback (F-178); this hypothesis is the FIELD-level analogue."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The backend half is confirmed: PUT /api/datasetfields/{id}/name routes to
+      DatasetFieldServiceImpl.updateInternalName which has
+      @ActivityLog(DATASET_FIELD_INTERNAL_NAME_UPDATED) and rebuilds the search
+      vector (DatasetFieldController sidecar operations: update-internal-name).
+      The header rendering uses internalName-or-name (DatasetFieldHeader.tsx:58-135
+      per feature-flow). BUT the field-level internalName||name fallback is NOT
+      tested anywhere — IT-031 covers only the ENTITY header (F-178), not the
+      dataset-field header. So the promise is structurally present but the
+      field-level fallback rendering is unverified, and the spec/code 200-vs-201
+      response-code drift (DatasetFieldController sidecar) means a generated-SDK
+      caller branching on 201 silently mishandles the success response.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+        section: operations / invariants
+        cite: "DatasetFieldServiceImpl.java:99 (@ActivityLog); DatasetFieldController.java:45-53,52 (returns 200, spec says 201)"
+        note: "backend persists + activity-logs; response-code drift is silent for SDK clients"
+      - sidecar: "(integration-tests IT-031)"
+        section: gates.validates
+        cite: "integration-tests/protocols/IT-031-entity-business-name-display.md"
+        note: "IT-031 validates F-178 (entity header), NOT the dataset-field header — the field-level fallback is uncovered"
+    operator_visible_failure: |-
+      (a) UI side unverified: no test asserts the field-level header shows the
+      business name and falls back to the technical name on clear — a regression
+      that broke the fallback would ship undetected. (b) SDK side: a generated
+      client branching on HTTP 201 (per the OpenAPI spec) never takes the success
+      branch because the controller returns 200 — the business-name save appears
+      to fail to such a client even though it persisted.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When the operator edits the enum-value set of a column and saves, the column's allowed values become exactly the set shown in the editor — values the operator removed from the editor are gone, values left in place stay."
+  derivation: "DatasetFieldOverviewEnums / DatasetFieldEnumsForm submits as BULK-REPLACE (feature-flow hop 2d); endpoint operationId createEnumValue; DatasetFieldController sidecar name_behavior_pairs flags DRIFT_NAME_VS_BEHAVIOR — body IS the new state, softDeleteExcept removes omitted rows."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The implementation IS replace-the-set-with-the-body. EnumValueServiceImpl.java:91-122
+      partitions items by id, bulkUpdates id!=null, bulkCreates id==null, and
+      softDeleteExcept removes every existing row whose id is NOT in the submitted
+      set (DatasetFieldController sidecar invariant + name_behavior_pairs +
+      bugs_limitations_corner_cases). The UI form (DatasetFieldEnumsForm.tsx:90-105)
+      sends the FULL data.enums array, so the WHAT-YOU-SEE-IS-THE-SET promise holds
+      for the UI path. The hypothesis as stated (the saved set == the editor set)
+      is confirmed FOR THE UI. The hidden danger (a PARTIAL body deleting omitted
+      values) is the contradiction surfaced separately in H-007.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+        section: stress_findings.name_behavior_pairs / bugs_limitations_corner_cases
+        cite: "EnumValueServiceImpl.java:91-122; DatasetFieldEnumsForm.tsx:90-105"
+        note: "BULK-REPLACE; UI sends full set so the operator-visible save matches the editor"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When the operator clicks the Add-term button on a column (visible to a user holding the documented DATASET_FIELD_ADD_TERM permission) and picks a glossary term, the term becomes linked to that column and appears in the column's terms list."
+  derivation: "DatasetFieldTerms Add affordance gated by DATASET_FIELD_ADD_TERM (hop 2e); live docs document DATASET_FIELD_ADD_TERM as the gate for POST /api/datasetfields/{id}/terms; AssignFieldTermForm dispatches useAddDatasetFieldTerm."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The server gates POST /api/datasetfields/{id}/terms on DATA_ENTITY_ADD_TERM,
+      NOT the documented DATASET_FIELD_ADD_TERM (SecurityConstants.java:299;
+      DatasetFieldController sidecar invariant + bugs_limitations_corner_cases +
+      doc_drift_findings, verified against the live permissions page 2026-05-25
+      status 200). The UI shows + enables the Add-term affordance for a user
+      holding DATASET_FIELD_ADD_TERM (the documented permission). For such a user
+      the click hits the endpoint, the server denies it (they lack
+      DATA_ENTITY_ADD_TERM), and TermItem's catch path swallows the 403 silently
+      (PLT-029 Defect 1 Bug 2). The term never appears; the operator sees no error.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+        section: bugs_limitations_corner_cases / doc_drift_findings / invariants
+        cite: "SecurityConstants.java:297-299; PolicyPermissionDto.java:34; docs permissions page (verified 2026-05-25, 200)"
+        note: "endpoint gated on DATA_ENTITY_ADD_TERM; docs + UI use DATASET_FIELD_ADD_TERM — silent capability denial"
+    operator_visible_failure: |-
+      (1) A user granted EXACTLY the documented permission (DATASET_FIELD_ADD_TERM)
+      for the field-level Add-term action silently CANNOT perform it — the button
+      is enabled, the click does nothing visible, the term never links, no error
+      toast. (2) Inversely, a user granted only DATA_ENTITY_ADD_TERM (intended for
+      entity-level term linking) CAN link terms to fields — a separation-of-duties
+      leak. (3) The operator who configured permissions from the published docs has
+      a runtime authorization model that does not match the docs.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When the operator has a sub-editor dialog open (e.g. the tags Edit dialog) for column A and clicks column B's row in the list, the system either keeps the dialog editing column A, or warns before discarding the in-progress edit — it does NOT silently submit column A's edited values against column B."
+  derivation: "Composer mounts sub-editors unconditionally (DatasetFieldOverview.tsx:54-98); selectedFieldIdAtom updates on row click while a dialog (TagsEditForm DialogWrapper) is open; the dialog's useForm state was initialised from column A. feature-flow drift facet per_column_editor_composition_no_unsaved_changes_warning_on_field_switch (ui_unverified: true)."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Undefined from static analysis. The dialog's submit handler closes over a
+      datasetFieldId; whether it captures column A's id (closure capture at mount)
+      or rebinds to column B's id (re-render) depends on render timing that .tsx
+      alone does not resolve (feature-flow facet, ui_unverified: true;
+      DatasetFieldOverview.tsx:54-98 + TagsEditForm.tsx:111-124). There is NO
+      unsaved-changes warning and NO loading state on switch (feature-flow
+      observed). This is a latent data-corruption hazard: submit-A's-tags-against-B
+      would silently corrupt column B's annotations.
+    evidence:
+      - sidecar: "(feature-flow F-192 facet)"
+        section: "observed_vs_expected.facets[0]"
+        cite: "DatasetFieldOverview.tsx:54-98; TagsEditForm.tsx:111-124"
+        note: "closure-capture vs re-render timing unresolved from .tsx — requires runtime probe"
+    operator_visible_failure: |-
+      If submit rebinds to column B: the operator edits column A's tags, clicks
+      column B to look at it, hits Save (thinking they are saving A), and column
+      B's tags are silently overwritten with A's edited set — data corruption with
+      no warning. If submit stays bound to A: the operator believes they are
+      editing B but the save lands on A — equally surprising. Either way the
+      absence of an unsaved-changes guard is the defect.
+    severity: HIGH
+    confidence: LOW
+    probe_id: PENDING-F-192-1
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: "PENDING-F-192-1"
+
+- id: H-006
+  hypothesis: "When the operator rapidly clicks through several columns in 1-2 seconds, the enum-value section finally displayed belongs to the column currently selected — not to a column whose in-flight fetch resolved last."
+  derivation: "DatasetFieldOverviewEnums.tsx:35-43 useEffect dispatches fetchDataSetFieldEnum on every field.id change; cleanup is resetLoaderByAction (does NOT abort the in-flight HTTP request). feature-flow drift facet per_column_editor_fast_field_switch_useeffect_enum_fetch_race (ui_unverified: true)."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Cannot be determined statically. The useEffect re-fires per field.id but the
+      cleanup only resets loader state — it does not AbortController-cancel the
+      prior request (feature-flow facet; DatasetFieldOverviewEnums.tsx:35-43).
+      Whether field B can show field A's enum values depends on the reducer's
+      enum-storage keying (per-field-id keyed map vs a global last-fetched buffer),
+      which is opaque from .tsx and requires the datasetStructure/enum slice
+      sidecar (which does not exist). A race is plausible but its operator-visible
+      outcome is unproven.
+    evidence:
+      - sidecar: "(feature-flow F-192 facet)"
+        section: "observed_vs_expected.facets[2]"
+        cite: "DatasetFieldOverviewEnums.tsx:35-43"
+        note: "no request abort on switch; reducer keying opaque — slice sidecar absent (validation gap)"
+    operator_visible_failure: |-
+      If the reducer uses a global last-fetched buffer: a curator sweeping a wide
+      table fast could see column B displaying column A's enum values, then edit
+      and save the WRONG values onto B (compounds H-007's bulk-replace destruction).
+      If the reducer is per-field-id keyed: the race is benign (stale response
+      discarded). The two outcomes differ by a single reducer design choice.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-192-2
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "PENDING-F-192-2"
+
+- id: H-007
+  hypothesis: "When a non-UI caller (a generated SDK client, a script, a future UI refactor) POSTs a SINGLE new enum value to a column that already has values, that value is ADDED and the existing values are preserved."
+  derivation: "Endpoint operationId createEnumValue (singular CREATE verb, openapi.yaml:2536-2554); the verb promises additive create. DatasetFieldController sidecar name_behavior_pairs flags DRIFT_NAME_VS_BEHAVIOR."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The endpoint is BULK-REPLACE: the body IS the entire new state. A partial
+      body of one item runs softDeleteExcept and SILENTLY SOFT-DELETES every
+      existing enum value not in the body (EnumValueServiceImpl.java:91-122;
+      DatasetFieldController sidecar). The operationId createEnumValue promises an
+      additive single-CREATE; the implementation destroys the omitted values. The
+      UI is safe only because DatasetFieldEnumsForm sends the full set; any other
+      caller trusting the verb name corrupts data.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+        section: stress_findings.name_behavior_pairs / bugs_limitations_corner_cases
+        cite: "EnumValueServiceImpl.java:91-122; openapi.yaml:2536-2554"
+        note: "createEnumValue is replace-state-with-body; partial body soft-deletes omitted rows"
+    operator_visible_failure: |-
+      An SDK consumer or integration author calls createEnumValue with one new
+      value (the verb says create-one), and the column's other allowed values
+      vanish — silent data loss with a 200/201 success. Additionally, replaying
+      an identical body churns row identities and emits a fresh
+      DATASET_FIELD_VALUES_UPDATED activity event each time, so auditors
+      correlating events by row id lose the chain (DatasetFieldController sidecar
+      replay finding). Concurrent POSTs are last-write-wins with no lock.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When the operator removes a glossary term from a column via the per-term delete affordance, the term disappears from the column's terms list."
+  derivation: "DatasetFieldTerms TermItem per-row delete gated by DATASET_FIELD_DELETE_TERM (hop 2e); TermItem has a !isDescriptionLink guard hiding delete for description-derived links (TermItem.tsx:63-71)."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      For a term linked ONLY via the manual Add-term path, delete works. But the
+      backend DELETE filters on IS_DESCRIPTION_LINK.isFalse() — it removes ONLY
+      manual term-links (DatasetFieldController sidecar invariant + name_behavior_pairs
+      DRIFT_NAME_VS_BEHAVIOR; TermRelationsRepositoryImpl.java:179). A term linked
+      via BOTH the manual path AND a [[namespace/name]] marker in the description
+      has two rows; DELETE removes only the manual row and the term REMAINS visible
+      (carried by the surviving description-link row). The UI mitigates by hiding
+      the delete affordance on description-link rows (TermItem.tsx:63-71), but a
+      DUAL-linked term still presents a working-looking delete that does not remove
+      the term.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+        section: stress_findings.name_behavior_pairs / bugs_limitations_corner_cases
+        cite: "TermRelationsRepositoryImpl.java:179; TermItem.tsx:63-71"
+        note: "DELETE removes only manual links; dual-linked term survives — delete appears to succeed but term stays"
+    operator_visible_failure: |-
+      For a term that is both manually-linked and description-mentioned, the
+      operator clicks delete, the row's delete returns success, but the term stays
+      in the list (the description-link row survives). The remedy — edit the
+      description and remove the marker — is undocumented and non-obvious. The
+      operator concludes the delete is broken.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a read-only user (no DATASET_FIELD_* permissions) opens the composer, they can read the column's annotations and the platform makes clear they have read-only access (rather than presenting edit affordances that do nothing)."
+  derivation: "Each sub-editor wraps its OWN edit affordance in WithPermissions (DATASET_FIELD_DESCRIPTION_UPDATE / _TAGS_UPDATE / _ENUMS_UPDATE / _ADD_TERM / _DELETE_TERM / _INTERNAL_NAME_UPDATE); feature-flow drift facet each_sub_editor_separately_wrapped_in_with_permissions_no_composite_read_only_mode."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      Read works and edit affordances are correctly hidden per sub-editor
+      (WithPermissions on each; feature-flow facet; consistent with P-09
+      read-collaborative posture). The TWO read endpoints GET /enum_values and
+      GET /metrics have NO SecurityRule and are readable by any authenticated user
+      (DatasetFieldController sidecar invariant). BUT the composer has NO composite
+      read-only banner — the affordances simply vanish with no explanation
+      (feature-flow facet, severity LOW). The promise "they can read" holds; the
+      promise "the platform makes clear it is read-only" does not.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+        section: implicit_adrs / invariants
+        cite: "SecurityConstants.java:282-303 (no rule for GET /enum_values, /metrics); WithPermissions per sub-editor"
+        note: "reads open; per-sub-editor permission gates; no composite read-only mode header"
+    operator_visible_failure: |-
+      A read-only collaborator sees a column annotation surface with every edit
+      button silently absent and no banner explaining why — they may conclude the
+      feature is broken or that they are looking at an incomplete page, rather than
+      understanding they lack edit permission. A UX/discoverability defect, not a
+      security defect (the gating itself is correct).
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "An operator working keyboard-only (no mouse) can move between columns in the Structure list and edit their annotations."
+  derivation: "DatasetStructureList uses @tanstack/react-virtual virtualized rows (hop / DatasetStructureList.tsx:29-34); DatasetStructureItem.tsx:88-94 binds onClick only — no role=button, no tabIndex, no arrow-key handler. feature-flow drift facet per_column_editor_no_keyboard_navigation_between_fields."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Column rows are mouse-click-only. DatasetStructureItem.tsx:88-94 binds onClick
+      with no role="button"/tabIndex on the row container and no keyboard handler
+      for arrow-key navigation; the list is virtualized (only visible rows mounted),
+      so even a tab-order would be partial (feature-flow facet). A keyboard-only
+      operator cannot select a column and therefore cannot reach any sub-editor.
+    evidence:
+      - sidecar: "(feature-flow F-192 facet)"
+        section: "observed_vs_expected.facets[1]"
+        cite: "DatasetStructureItem.tsx:88-94; DatasetStructureList.tsx:29-34"
+        note: "onClick-only virtualized rows — no keyboard selection path"
+    operator_visible_failure: |-
+      A keyboard-only or assistive-technology user cannot select a column and so
+      cannot edit any column annotation — the entire feature is inaccessible to
+      them. The click-only requirement is also undocumented (Gate 6 a11y candidate
+      per the documentation pillar; feature-flow control_summary names this the
+      most-exposed operator workflow).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When the operator edits a description containing a glossary-term marker, saving produces ONE visible 'description updated' change in the activity feed."
+  derivation: "DatasetFieldDescription uses useTermWiki for [[Namespace:Term]] linking (hop 2b); DatasetFieldController sidecar implicit_adrs — description-edit emits TWO activity events (DATASET_FIELD_DESCRIPTION_UPDATED + DATASET_FIELD_TERM_ASSIGNMENT_UPDATED) when the new text contains term references."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      A single description-edit emits TWO activity-feed events when the new text
+      contains term markers: DATASET_FIELD_DESCRIPTION_UPDATED (inner service) +
+      DATASET_FIELD_TERM_ASSIGNMENT_UPDATED (term re-extraction)
+      (DatasetFieldController sidecar implicit_adrs + coupling;
+      DatasetFieldServiceImpl.java:87-95 + TermServiceImpl.java:243). Both events
+      carry the same actor and timestamp.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+        section: implicit_adrs / bugs_limitations_corner_cases
+        cite: "DatasetFieldServiceImpl.java:87-95; TermServiceImpl.java:243; DatasetFieldInternalInformationServiceImpl.java:28"
+        note: "one user description-edit -> two activity events when text has term markers"
+    operator_visible_failure: |-
+      An operator (or auditor) reading the activity feed sees a
+      description-updated row immediately followed by a term-assignment-updated row
+      with the same actor and timestamp, and infers two distinct user actions when
+      only one occurred. Low-severity (no data harm; an audit-reading confusion),
+      and the dual-event semantics are undocumented at the activity-feed page.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Field-level Add-term button (UI-gated by documented DATASET_FIELD_ADD_TERM) hits an endpoint server-gated on DATA_ENTITY_ADD_TERM; the term silently never links (TermItem swallows the 403)."
+  dedup_status: already_tracked
+  tracked_as: PLT-029
+  also_tracked_as: PLT-061
+  corroboration_note: |-
+    Reflection re-derived this top-down (from the UI Add-term label + the live
+    permissions doc) and reached the same SecurityConstants.java:299 wiring bug
+    PLT-029 Defect 1 Bug 2 / PLT-061 found bottom-up via the scan. Convergent
+    validation across two independent methods — high confidence; NOT re-filed.
+
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "createEnumValue (singular CREATE verb) is BULK-REPLACE; a partial body silently soft-deletes the column's omitted enum values for any non-UI caller."
+  dedup_status: already_tracked
+  tracked_as: PLT-029
+  corroboration_note: |-
+    PLT-029 Defect 2 (F-047b). Reflection re-derived top-down from the endpoint
+    operationId vs the sidecar name_behavior_pairs drift; same locus
+    (EnumValueServiceImpl.java:91-122). Corroboration, not a new filing.
+
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "Switching columns with an open sub-editor dialog has undefined submit-binding (closure-capture vs re-render) and no unsaved-changes warning — latent data-corruption hazard on fast-switching."
+  dedup_status: already_tracked
+  tracked_as: PLT-029
+  corroboration_note: |-
+    PLT-029 Defect 4 (F-192a; ui_unverified: true). The verdict here is
+    probe-needed (PENDING-F-192-1) — the probe is the runtime confirmation PLT-029
+    Thread D's fix is waiting on. Corroboration; NOT re-filed.
+
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Fast field-switching may show column B the enum values of column A (no request abort on switch); the outcome turns on the reducer's enum-storage keying."
+  dedup_status: net_new
+  distinct_from: PLT-029
+  distinct_reason: |-
+    PLT-029 enumerates the unsaved-changes hazard (Defect 4) and split state
+    management (Defect 5) but does NOT enumerate the enum-FETCH race
+    (DatasetFieldOverviewEnums useEffect with no AbortController). This is the
+    feature-flow facet per_column_editor_fast_field_switch_useeffect_enum_fetch_race,
+    a DISTINCT failure mode from the dialog-submit hazard. Verdict is probe-needed
+    (PENDING-F-192-2); the reducer slice sidecar is absent (validation gap below),
+    so this cannot be resolved statically. Recommend folding into PLT-029 as
+    "Defect 4b — enum-fetch race" rather than a separate item, at maintainer
+    triage discretion.
+  recommended_log_as: "fold into PLT-029 as Defect 4b (enum-fetch race) — maintainer discretion"
+  proposed_fix_anchor: "DatasetFieldOverviewEnums.tsx:35-43 — AbortController in the useEffect cleanup keyed on field.id; verify reducer is per-field-id keyed"
+
+### caveat_candidates
+- hypothesis_id: H-008
+  one_line: "Delete-term removes only manual links; a term linked via BOTH manual-add AND a description marker survives delete (description-link row persists) — delete appears to succeed but the term stays."
+  dedup_status: already_tracked
+  tracked_as: PLT-029
+  also_tracked_as: DOC-193
+  corroboration_note: "PLT-029 references the term surface; the delete-description-link-survival is the DatasetFieldController sidecar name_behavior_pairs DRIFT and is in DOC-193's caveat scope. Corroboration."
+
+- hypothesis_id: H-009
+  one_line: "Read-only collaborators see the composer with every edit affordance silently hidden and no composite read-only banner explaining why."
+  dedup_status: net_new
+  distinct_from: PLT-029
+  distinct_reason: "PLT-029 covers the five backend+composer defects but not the missing read-only-mode banner (feature-flow facet each_sub_editor_separately_wrapped_in_with_permissions_no_composite_read_only_mode, severity LOW). A platform-wide UX consistency caveat, not unique to this surface."
+  recommended_log_as: "caveat in DOC-193 (per-column-annotation.md read-only behaviour note) OR a platform-wide a11y/UX backlog item"
+
+- hypothesis_id: H-010
+  one_line: "The column list is mouse-click-only — keyboard-only / assistive-tech users cannot select a column and therefore cannot edit any column annotation; the click-only requirement is undocumented."
+  dedup_status: net_new
+  distinct_from: PLT-029
+  distinct_reason: "PLT-029 does not cover keyboard navigation / a11y. feature-flow facet per_column_editor_no_keyboard_navigation_between_fields (the control_summary's named most-exposed workflow). Documentation Gate 6 a11y candidate."
+  recommended_log_as: "doc-gap-NNN (a11y caveat in per-column-annotation.md) + an upstream a11y backlog item for role/tabIndex/keyboard-handler on DatasetStructureItem"
+
+- hypothesis_id: H-011
+  one_line: "One description-edit containing a term marker emits TWO activity events (description-updated + term-assignment-updated) with the same actor/timestamp — an auditor infers two actions where one occurred."
+  dedup_status: net_new
+  distinct_from: PLT-029
+  distinct_reason: "PLT-029 does not cover the dual-activity-event semantics; this is the DatasetFieldController sidecar implicit_adr (dual-event), undocumented at the activity-feed page. Low severity."
+  recommended_log_as: "caveat in the activity-feed docs page (dual-event note) — doc-gap-NNN"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise is a missing-functional test demand.
+# This feature's entire test_matrix is 0/4 (feature-flow); no test exercises the COMPOSER.
+# Confirmed-but-untested promises (H-001/H-003) belong HERE, not dropped to none.
+- use_case_id: F-192-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "Clicking a column row re-points all six sub-editors at the new column automatically."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-192-UC-001)"
+  proposed_test: "e2e: open /dataentities/{id}/structure, click column A row, assert right-rail header shows A; click column B row, assert header + description + tags sections all show B's values (no manual re-open)."
+
+- use_case_id: F-192-UC-002
+  hypothesis_id: H-002
+  kind: edit-reconcile
+  promise: "Setting a column business name makes the column display by it; clearing falls back to the technical name."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-192-UC-002)"
+  proposed_test: "e2e: set field internalName via the header edit; assert the field header renders the business name; clear it; assert fallback to the technical field name. (Field-level analogue of IT-031; IT-031 covers only the ENTITY header.)"
+
+- use_case_id: F-192-UC-003
+  hypothesis_id: H-003
+  kind: edit-reconcile
+  promise: "Editing the enum set via the UI makes the column's allowed values exactly the editor set."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-192-UC-003)"
+  proposed_test: "e2e/integration: open enums editor with 3 values, remove 1, save; assert GET /enum_values returns exactly 2; assert the UI form sent the full set (guards the BULK-REPLACE contract via the safe UI path)."
+
+- use_case_id: F-192-UC-004
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "A user with the documented DATASET_FIELD_ADD_TERM can add a term to a column and see it linked."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-192-UC-004) — regression guard for PLT-029 Thread A fix"
+  proposed_test: "security/integration (LDAP stack): grant a USER only DATASET_FIELD_ADD_TERM; POST /api/datasetfields/{id}/terms; assert 200 + term linked (currently 403 — RED until SecurityConstants.java:299 fixed). Pin as @regresses PLT-029."
+
+- use_case_id: F-192-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "A non-UI caller POSTing one enum value to a populated column ADDS it and preserves existing values."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-192-UC-007) — regression guard for PLT-029 Thread B fix"
+  proposed_test: "integration: seed 3 enum values; POST a body of 1 new item; assert the other 2 are soft-deleted (characterization of CURRENT BULK-REPLACE, RED-flips when split to true create/replace). Pin as @pins PLT-029 Defect 2."
+
+- use_case_id: F-192-UC-008
+  hypothesis_id: H-008
+  kind: teardown
+  promise: "Deleting a term from a column removes it from the column's terms list."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-192-UC-008)"
+  proposed_test: "integration: link a term to a field via BOTH manual-add AND a description [[marker]]; DELETE the manual link; assert the term STILL appears (description-link row survives) — characterizes the partial-delete caveat."
+
+- use_case_id: F-192-UC-005
+  hypothesis_id: H-005
+  kind: edit-reconcile
+  promise: "Switching columns with an open dialog does not silently submit the previous column's edits against the new column."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-192-1 (probe) — then TEST-GAP-NNN once the probe resolves the verdict"
+  proposed_test: "e2e: open tags Edit dialog on column A, click column B row, submit; assert the submit targets A (or a warning blocks it) — NOT a silent write to B. Probe first (binding is ui_unverified)."
+
+- use_case_id: F-192-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: "A keyboard-only operator can select a column and edit its annotations."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-192-UC-010) — a11y"
+  proposed_test: "e2e a11y: Tab to the Structure list, attempt arrow-key/Enter selection of a column; assert a column becomes selected (currently impossible — onClick-only). RED until role/tabIndex/keyboard-handler added."
+
+### probes_emitted
+- probe_id: PENDING-F-192-1
+  hypothesis_id: H-005
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  expected_outcome: |-
+    Hypothesis H-005 verbatim: "When the operator has a sub-editor dialog open
+    (e.g. the tags Edit dialog) for column A and clicks column B's row in the
+    list, the system either keeps the dialog editing column A, or warns before
+    discarding the in-progress edit — it does NOT silently submit column A's
+    edited values against column B."
+  probe_shape: |-
+    Playwright against local odd-minimal (AUTH_TYPE=DISABLED) stack. Seed a
+    dataset (entity 2001) with >=2 columns each carrying >=1 INTERNAL tag.
+    Open /dataentities/2001/structure, select column A, open the tags Edit
+    dialog, modify A's tag set (do NOT save), click column B's row while the
+    dialog is open, then click Save. Inspect the PUT /api/datasetfields/{id}/tags
+    request: assert the path id and payload correspond to A (or that a warning
+    intercepts the switch). RED if the request writes A's tags against B's id.
+  note: "PARALLEL-SAFE MODE — recorded here only; no P-NNN file created. Folds into PLT-029 Thread D's runtime confirmation."
+
+- probe_id: PENDING-F-192-2
+  hypothesis_id: H-006
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  expected_outcome: |-
+    Hypothesis H-006 verbatim: "When the operator rapidly clicks through several
+    columns in 1-2 seconds, the enum-value section finally displayed belongs to
+    the column currently selected — not to a column whose in-flight fetch
+    resolved last."
+  probe_shape: |-
+    Playwright against local odd-minimal, with network throttling / a route
+    delay injected on GET /api/datasetfields/{id}/enum_values. Seed two TYPE_STRING
+    columns with DISTINCT enum sets. Click column A (slow its enum fetch), then
+    immediately click column B (fast). After both resolve, assert the displayed
+    enum section equals B's set (the selected column), never A's late-arriving set.
+    RED if A's response overwrites B's display.
+  note: "PARALLEL-SAFE MODE — recorded here only; no P-NNN file created. Resolution also needs the datasetStructure/enum reducer slice sidecar (validation gap below)."
+
+### validation_gaps
+# Rule 9 — the FIRST output: this UI-composition feature's UI surface is NOT in the chain.
+- sidecar: "(entire UI tier of the F-192 chain)"
+  field_insufficient: "no enriched sidecar exists for ANY of the 20 contributing UI nodes (DatasetFieldOverview, DatasetFieldHeader, DatasetFieldDescription, DatasetFieldTags, DatasetFieldOverviewEnums, DatasetFieldTerms, the forms, the selection provider, DatasetStructureItem, the datasetStructure.slice). All chain hops 0-3 are sidecar: unresolved."
+  proposed_refresh: |-
+    This reflection is API-only + static-.tsx-evidence-only: it judges what the
+    BACKEND does (DatasetFieldController, the one resolved node) and what the
+    feature-flow-builder statically extracted from the .tsx, but it CANNOT
+    confidently judge the user's lived experience of the composer (field-switch
+    dialog binding, enum-fetch render race, optimistic-update/rollback under split
+    state). Per Rule 9 this is correctly an API-anchored reflection and the
+    user-experience verdicts (H-005, H-006) are probe-needed rather than confirmed.
+    Enrich the UI sidecars — at minimum DatasetFieldOverview (the composer),
+    DatasetFieldOverviewEnums (the fetch-race), TagsEditForm (the dialog-binding),
+    and the datasetStructure.slice (the reducer keying for H-006) — to upgrade the
+    probe-needed verdicts to a static verdict and to confirm H-001/H-002/H-003
+    render behaviour at the UI tier.
+
+- sidecar: "redux:datasetStructure.slice (hop 3) / enum.slice"
+  field_insufficient: "the enum-storage keying (per-field-id keyed map vs global last-fetched buffer) is opaque — H-006's operator-visible outcome turns entirely on this, and no slice sidecar exists to resolve it statically."
+  proposed_refresh: "Enrich the datasetStructure/enum reducer slice: record whether fetchDataSetFieldEnum results are stored keyed by datasetFieldId (race benign) or in a single last-fetched buffer (race shows wrong column's values)."
+
+- sidecar: "(F-047 backend feature flow)"
+  field_insufficient: "F-047 has no feature-reflection of its own (feature-reflections/detail/F-047.yaml absent); the backend half of every contradiction here (H-004/H-007/H-008/H-011) is reflected only indirectly via this UI-composition feature."
+  proposed_refresh: "Run feature-reflector on F-047 directly so the backend per-column annotation chain has its own promise layer + use_case_coverage, rather than being reflected only as F-192's downstream."
+
+### doc_drift_findings
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+  doc_says: "DATASET_FIELD_ADD_TERM: Allows linking a business glossary term to a specific field within a dataset (gates POST /api/datasetfields/{id}/terms)."
+  code_does: "The endpoint is gated on DATA_ENTITY_ADD_TERM (SecurityConstants.java:299), contradicting the documented permission."
+  dedup_status: already_tracked
+  recommended_log_as: "DOC-193 (per-column-annotation.md) + PLT-029/PLT-061 (the code fix); doc + code disagree, code is the bug"
+
+- hypothesis_id: "H-007/H-008/H-009/H-010/H-011"
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/per-column-annotation"
+  doc_says: "(page does not exist yet)"
+  code_does: "BULK-REPLACE enum semantics; partial term-delete; no read-only banner; mouse-only column selection; dual activity events — none documented."
+  dedup_status: already_tracked
+  recommended_log_as: "DOC-193 — the open backlog item to CREATE per-column-annotation.md with all five defects as caveats (already enumerates these)"
+
+## maintainer_notes
+# Preserved across refreshes — only block the maintainer hand-edits.
+# (none yet — net-new reflection 2026-06-03)

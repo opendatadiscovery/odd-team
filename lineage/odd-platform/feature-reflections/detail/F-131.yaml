@@ -1,0 +1,711 @@
+---
+feature_id: F-131
+pillar_anchored_id: P-02:F-001
+pillar: P-02 Data Modelling
+feature_name: |-
+  Query Example Authoring Dialog — Create + Edit form-modal with embedded
+  Markdown editor for `query` field; client-side validation limited to
+  presence + trim
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+parent_reflection: F-025  # this is the AUTHORING-DIALOG sub-feature of F-025 (Query Examples CRUD + Faceted Search)
+contributing_sidecars_read:
+  - odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+source_reads_for_validation:
+  # Rule 8 exception — the chain's UI hops (QueryExampleForm, Markdown, DialogWrapper) are all
+  # `sidecar: unresolved` in F-131.yaml; one direct read each, recorded so the next file-analyser
+  # refresh enriches them. These reads are what let this reflection judge the SCREEN, not just the API.
+  - "odd-platform-ui/src/components/DataModelling/QueryExampleForm/QueryExampleForm.tsx:1-145 — the modal authoring form: two Controllers (definition plain Input, query Markdown editor), presence+trim rules, mode:onChange live validation, disabled={!formState.isValid} submit-gate, post-submit reset()+navigate(detailsPath), DialogWrapper with NO dirty-form warning hook"
+  - "odd-platform-ui/src/lib/hooks/api/dataModelling/queryExamples.ts:32-71 — useCreateQueryExample (onSuccess = toast ONLY, NO cache invalidation), useUpdateQueryExample (onSuccess invalidates ONLY ['getQueryExampleDetails', id], NOT any list/by-dataset/by-term key); contrast useAssignEntityQueryExample which DOES invalidate getQueryExamplesByDatasetId — settles drift_class 2 which the flow marked ui_unverified=true"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/QueryExampleServiceImplTest.java:1-75 — a NEW @validates F-025 service test the controller sidecar did not enumerate (update-404 + duplicate-relation guard); confirms NO form/validation/cache test exists at any layer"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The live page has ADVANCED since the contributing controller sidecar fetched it (2026-05-20)
+      and even since the F-131 flow was seeded (2026-05-26). It now EXPLICITLY documents the
+      authoring-time facts this reflection's hypotheses target: (a) "The Query Example form
+      validates only that the `definition` and `query` fields are non-empty — there is no length
+      cap, no HTML-content allowlist"; (b) "The `definition` field is a plain text input at
+      authoring time but renders through the Markdown renderer on the details page"; (c) "The
+      dialog also has no dirty-form warning and no autosave: closing the dialog through Escape,
+      an outside-click, or browser back drops the entire in-progress body silently." So the
+      F-131a / F-131b / F-131c scanner findings and DOC-183 Caveat 3 have SHIPPED into the live
+      doc. The one residual doc drift: the page still describes snippets as having "a name,
+      description, and the query body" while the form has exactly TWO fields — "Definition" and
+      "Query" — and NO Name field (see H-011, shared with F-025 H-011).
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 4
+  partial: 3
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: MEDIUM
+    one_line: "After creating a new query example the catalog list / per-dataset Query Examples tab does NOT refresh — useCreateQueryExample invalidates no query cache, so a user who navigates back to the list (or the dataset tab) sees a stale view missing the example they just authored, with the success toast contradicting the empty list."
+related_feature_flows: [F-025, F-004, F-002]
+related_concepts:
+  - "Query Example"
+  - "Markdown Rendering Pipeline"
+  - "Read-collaborative Catalog Posture"
+related_drift_classes:
+  - markdown_render_no_sanitisation_xss_surface_extension_f_004_4th
+  - query_example_form_no_client_side_length_cap_or_allowlist_on_definition_or_query_authoring_xss_chain_first_intervention_point_uncaptured
+  - query_example_form_edit_mode_no_dirty_check_warning_dialog_closes_silently_on_navigation
+  - query_example_form_definition_is_plain_input_not_markdown_inconsistent_render_will_render_definition_as_markdown
+new_drift_classes_proposed:
+  - create_hook_no_cache_invalidation_authored_example_absent_from_list_until_manual_refetch_update_hook_invalidates_details_only
+  - query_field_markdown_editor_but_holds_executable_sql_authoring_affordance_mismatch_no_code_mode
+---
+
+# Query Example Authoring Dialog — product-owner reflection
+
+## product_owner_narrative
+
+The Query Example Authoring Dialog is the single screen a data engineer or steward uses to write down *how a dataset is meant to be queried* and pin that knowledge to the catalog. It is a modal dialog — there is no dedicated authoring page — opened from two places that both route through the SAME `QueryExampleForm` component: an "Add" button on the Query Examples catalog list (gated behind `<WithPermissions permissionTo=QUERY_EXAMPLE_CREATE>`), and an "Edit" button on a snippet's details page (gated behind `QUERY_EXAMPLE_UPDATE`) (per F-131 `discovered_from_entry_point`; QueryExampleForm.tsx:1-145). The dialog presents exactly two fields: **Definition** — a plain single-line `<Input>` for the human, prompt-style description of what the snippet does — and **Query** — a 200px-tall embedded Markdown editor (`@uiw/react-md-editor` in `preview='edit'` mode) holding the executable SQL / KQL / Spark body (QueryExampleForm.tsx:79-113). The author writes both, clicks "Add query example" (create) or "Save query example" (edit), and lands on the snippet's details page (QueryExampleForm.tsx:63-66).
+
+The interaction the user actually lives through is shaped by three deliberate choices, all verified from the form source. First, **validation is presence-plus-trim only**: each field carries `rules={{ required: true, validate: value => !!value.trim() }}` and the form validates live (`mode: 'onChange'`); the submit button is disabled until both fields are non-empty-after-trim (`disabled={!formState.isValid}`, QueryExampleForm.tsx:83, 94, 124). There is no length cap, no character allowlist, no SQL/Markdown syntax check — exactly what the live doc now states verbatim ("validates only that the `definition` and `query` fields are non-empty — there is no length cap, no HTML-content allowlist", per WebFetch 2026-06-03). Second, **the dialog has no dirty-form guard**: it is wrapped in `DialogWrapper` with no navigation-warning or draft-persistence hook, so an author mid-snippet who hits Escape, clicks outside, or browser-backs loses the entire in-progress body silently (QueryExampleForm.tsx:128-141; live doc confirms). Third, **the two fields are authored in different modes but rendered in the same mode**: Definition is a plain Input at authoring time yet is rendered through the Markdown renderer on the details page (`QueryExampleDetailsOverview.tsx:19`), so an author who types `**bold**` or a `[link](javascript:...)` into Definition sees plain text in the form and rendered Markdown on save (per F-131 facet `..._definition_is_plain_input_not_markdown...`; live doc confirms).
+
+On submit, the dialog calls one of two React-Query mutation hooks. The create path (`useCreateQueryExample`) fires the POST, shows a "Query Example successfully created!" toast, and invalidates NO query cache (queryExamples.ts:32-41). The edit path (`useUpdateQueryExample`) fires the PUT, toasts, and invalidates ONLY the single details query for that snippet (`['getQueryExampleDetails', id]`) — not the catalog list, not the per-dataset tab, not the per-term tab (queryExamples.ts:43-60). Because the post-submit navigation lands the user on the details page (which refetches fresh), the snippet they just authored looks correct *there* — but the catalog list and the in-context dataset/term tabs they came from are not refreshed. This is the load-bearing contradiction this reflection surfaces (H-006): the success toast promises the catalog now has their example; the list cache says otherwise until a manual refetch.
+
+The dialog is the FIRST point in the platform's stored-XSS chain (the F-004 family) where a client-side allowlist could intervene cheaply, and it does not (per F-131 facet `..._authoring_xss_chain_first_intervention_point_uncaptured`; controller sidecar `bugs_limitations_corner_cases.[6]`). The body the author types is passed verbatim to the API (`QueryExampleController.createQueryExamples` / `updateQueryExample`, controller sidecar `operations`), stored verbatim as `text NOT NULL` (V0_0_84__create_query_example.sql:5 per the flow hop-3 evidence), indexed verbatim into the FTS search vector (`QueryExampleServiceImpl.java:166-167`, flow hop-4), and rendered through the same unsanitised `MDEditor.Markdown` on every reader's screen. The authoring-time gap and the render-time gap are the same defence-in-depth hole seen from two ends; both are now documented (DOC-183, shipped) and both are tracked as a platform bug (PLT-018).
+
+This feature sits inside the broader Query Examples CRUD + Faceted Search feature (F-025, whose own v0.3.0 reflection covers the endpoint-level read-collaborative posture, the delete-cascade asymmetry, and the audit silence). F-131's distinct contribution is the AUTHORING SCREEN itself — the form, its validation, its dirty-state handling, and the create/update cache contract — none of which F-025's endpoint-anchored hypotheses reach. Its cross-pillar edges are inherited: the snippet links to data entities (P-01) and glossary terms (P-06), but those linkage operations are authored elsewhere (the dataset/term detail pages, via `DataEntityController` / `TermController`), not in this dialog.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user clicks 'Add query example' with the Definition field empty (or whitespace-only), the dialog refuses to submit and the create request is never sent."
+  derivation: "Both Controllers carry `rules={{ required: true, validate: value => !!value.trim() }}` and the submit button is `disabled={!formState.isValid}` with `mode: 'onChange'` live validation (QueryExampleForm.tsx:83, 94, 124, 45)."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The form's submit button is disabled whenever `formState.isValid` is false, and validity
+      requires BOTH `definition` and `query` to pass `required: true` AND `value => !!value.trim()`.
+      A whitespace-only entry trims to empty and fails the validator, so the button stays disabled
+      and `handleSubmit(onSubmit)` never fires the mutation. The client-side gate is real and
+      enforced before any network call.
+    evidence:
+      - sidecar: "(source_read_for_validation) QueryExampleForm.tsx"
+        section: formContent + actionButton
+        cite: "QueryExampleForm.tsx:83,94,124"
+        note: "presence+trim rules on both fields; disabled={!formState.isValid} on the submit button"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-002
+  hypothesis: "When a user submits the dialog with both fields non-empty, exactly ONE query example is created (or updated) per click — a slow network or a double-click does not create duplicates."
+  derivation: "amplification_factor: 1 (STATIC, confirmed from primary source); Markdown onChange updates form state in-place; submit fires a single mutation (QueryExampleForm.tsx:54-67)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      A single click fires exactly one mutation — `onSubmit` builds one `mutation$` and subscribes
+      once (QueryExampleForm.tsx:56-66), and the flow's amplification_factor is STATIC 1. The
+      submit button is type='submit' bound to the form; once clicked while valid it fires the
+      POST/PUT. BUT the button is NOT disabled during the in-flight request by its own `disabled`
+      prop (that prop tracks only `formState.isValid`, not `isCreating`/`isUpdating`); the
+      DialogWrapper receives `isLoading={isCreating|isUpdating}` (line 138) but whether that
+      blocks a second submit depends on DialogWrapper internals, which are NOT enriched (sidecar
+      unresolved). The per-click cardinality is confirmed; the double-click-during-flight guard
+      is unverified at this layer.
+    evidence:
+      - sidecar: "F-131 flow"
+        section: amplification_factor / amplification_factor_provenance
+        cite: "F-131.yaml:83-89"
+        note: "STATIC amplification_factor 1; single create/update per submission"
+      - sidecar: "(source_read_for_validation) QueryExampleForm.tsx"
+        section: onSubmit + actionButton + DialogWrapper
+        cite: "QueryExampleForm.tsx:56-66,124,138"
+        note: "submit fires one mutation; disabled tracks isValid only; isLoading routed to DialogWrapper (internals unresolved)"
+    operator_visible_failure: |
+      If DialogWrapper does not itself block re-submit while `isLoading`, an impatient author on a
+      slow connection who double-clicks 'Save' could fire two PUTs (idempotent — both write the
+      same body, last-wins, harmless) or two POSTs (NOT idempotent — two near-identical query
+      examples created, each with its own id and its own FTS entrypoint row). The duplicate-create
+      case is a real but low-frequency data-hygiene paper-cut; it cannot be ruled out without the
+      DialogWrapper sidecar.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: probe-needed
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: PENDING-F-131-1
+    probe_id: PENDING-F-131-1
+
+- id: H-003
+  hypothesis: "When a user opens the Edit dialog on an existing query example, the Definition and Query fields are pre-populated with the snippet's current saved values."
+  derivation: "defaultValues derives from queryExampleDetails?.definition/query and a useEffect calls reset(defaultValues) when the prop changes (QueryExampleForm.tsx:36-52)."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      When `queryExampleDetails` is passed (the edit-from-details entry point), `defaultValues`
+      memoises `{ definition: details.definition ?? '', query: details.query ?? '' }` and a
+      useEffect calls `reset(defaultValues)` whenever the prop changes, so the form is seeded with
+      the current saved values. The title also switches to "Edit query example" and the button to
+      "Save query example". Create mode (no prop) seeds both fields empty.
+    evidence:
+      - sidecar: "(source_read_for_validation) QueryExampleForm.tsx"
+        section: defaultValues + useEffect + title/actionButton
+        cite: "QueryExampleForm.tsx:36-52,73,119"
+        note: "defaultValues from queryExampleDetails; reset() on prop change; mode-dependent labels"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-004
+  hypothesis: "When an author types Markdown or an HTML/JS payload (e.g. `<img src=x onerror=alert(1)>`) into the Query field, the dialog accepts it without warning and stores it verbatim — the authoring screen does NOT sanitise or flag dangerous content."
+  derivation: "F-131 facet `..._authoring_xss_chain_first_intervention_point_uncaptured`; the only validation is presence+trim; the Markdown editor renders input verbatim with no sanitiser; controller + service + schema all store verbatim (flow hops 1-4)."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The authoring screen applies NO content allowlist, NO length cap, and NO sanitisation. The
+      `query` field's only rules are `required` + non-empty-after-trim; the Markdown editor
+      (`Markdown editor` = MDEditor preview='edit') renders and round-trips the raw value to form
+      state with no sanitiser (QueryExampleForm.tsx:105-111; flow hop-2 evidence Markdown.tsx:103-111).
+      On submit the body flows verbatim through the controller (no server allowlist, flow hop-3),
+      is stored as `text NOT NULL` (V0_0_84__create_query_example.sql:5), indexed verbatim into
+      the FTS vector (QueryExampleServiceImpl.java:166-167, hop-4), and is later rendered through
+      the same unsanitised `MDEditor.Markdown` on every reader's screen (controller sidecar
+      `security.known_security_gaps.[0]`). The authoring dialog is the first cheap intervention
+      point in the F-004 chain and it intervenes nowhere.
+    evidence:
+      - sidecar: "F-131 flow"
+        section: "observed_vs_expected facet [0]"
+        cite: "F-131.yaml:92-110"
+        note: "authoring-time XSS-chain first intervention point uncaptured; query field renders verbatim"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: "security.known_security_gaps + bugs_limitations_corner_cases.[6]"
+        cite: "QueryExampleController.java:26-32 + QueryExampleServiceImpl.java:42 + V0_0_84__create_query_example.sql:5 + Markdown.tsx:1-127"
+        note: "no sanitisation at HTTP/service/storage; render-time MDEditor.Markdown unsanitised — 4th F-004 surface"
+    operator_visible_failure: |
+      An author with QUERY_EXAMPLE_CREATE (broadly granted via the Administrator role per
+      V0_0_88) can plant a stored-XSS payload in either field; it renders to every authenticated
+      user who opens the snippet's details page or sees it in the catalog list / per-entity tab.
+      Secondary failure: an author who innocently pastes Markdown link/image syntax meaning it
+      literally (common in SQL comments or doc strings) gets it silently transformed into rendered
+      HTML, distorting the snippet's appearance for every reader. The authoring screen gives the
+      author no signal that their input is interpreted as Markdown/HTML rather than stored as code.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an author types the canonical thing this feature is for — an executable SQL/Spark snippet — into the Query field, the editor presents it as code (syntax-aware code editing), not as prose to be Markdown-formatted."
+  derivation: "The feature's whole purpose is authoring executable query bodies (pillar P-02 'author SQL / KQL / Spark snippets'); the Query field is a Markdown editor (preview='edit'), not a code editor (QueryExampleForm.tsx:105-111)."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Query field — the field that by the pillar's own definition holds "the executable code"
+      (system-mission.md:109; live doc "the query body — the executable code") — is wired to a
+      Markdown PROSE editor (`@uiw/react-md-editor`, preview='edit'), not a SQL/code editor. It
+      offers Markdown affordances (bold/italic/heading toolbar, Markdown preview) and spellcheck
+      (Markdown.tsx editor mode, flow hop-2: "Renders a textarea with spellcheck enabled"). It
+      offers NO SQL syntax highlighting, NO code-mode, NO monospace-by-default code affordance
+      beyond what Markdown fenced blocks give. The authoring affordance is mismatched to the
+      content type: the user is asked to write code in a prose editor that will also Markdown-render
+      that code on the details page.
+    evidence:
+      - sidecar: "F-131 flow"
+        section: "chain hop 1 + hop 2 evidence"
+        cite: "F-131.yaml:38-55 + QueryExampleForm.tsx:105-111 + Markdown.tsx:103-111"
+        note: "query field = Markdown editor preview='edit' with spellcheck, not a code editor"
+      - sidecar: "system-mission.md"
+        section: "Pillar P-02 primary user actions"
+        cite: "system-mission.md:109"
+        note: "the feature is for authoring executable SQL/KQL/Spark snippets"
+    operator_visible_failure: |
+      An author writing a multi-line SQL statement gets prose-editor ergonomics: no SQL keyword
+      highlighting, no bracket matching, spellcheck red-underlining every table/column identifier
+      as a misspelling, and the risk that Markdown-significant characters in their SQL (e.g. a
+      leading `#` in a comment becoming an H1, `*wildcard*` becoming italic, `_snake_case_`
+      becoming italic) are silently reinterpreted when the snippet is rendered. The feature
+      promises a place to pin canonical query code; the editor treats that code as a blog post.
+      This is a UX/affordance defect, not a data-corruption bug — the raw text IS stored verbatim
+      — but it degrades the core authoring task and compounds the H-004 Markdown-render surprise.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    sme_consultation_recommended: true
+    sme_consultation_question: "Do operators of data-catalog query-snippet surfaces (DataHub queries, Amundsen, OpenMetadata) expect a SQL/code editor with syntax highlighting for the executable body, vs a Markdown editor — and does treating the executable body as Markdown-rendered violate the industry-canonical expectation for a 'query example' surface?"
+    sme_consultation_archetype: comparative
+
+- id: H-006
+  hypothesis: "When an author creates a new query example, the catalog Query Examples list (and the per-dataset / per-term Query Examples tab) immediately reflects the new snippet without a manual page refresh."
+  derivation: "Standard React-Query create-mutation UX expectation; the flow's drift_class 2 flagged this as ui_unverified pending the useCreateQueryExample hook contract (F-131.yaml:111-124)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `useCreateQueryExample` (queryExamples.ts:32-41) has an `onSuccess` that fires ONLY
+      `showSuccessToast` — it invalidates NO React-Query cache. The catalog list query
+      (`getQueryExampleList` + the faceted search session), the per-dataset tab
+      (`['getQueryExamplesByDatasetId', ...]`), and the per-term tab
+      (`['getQueryExamplesByTermId', ...]`) are all left stale. The post-submit navigation lands
+      the user on the snippet's DETAILS page, which is a fresh fetch — so the new snippet looks
+      present THERE — but any view the user navigates back to (browser-back to the list, or the
+      dataset's Query Examples tab they opened the dialog from) serves the cached pre-create result
+      and omits the new example until that query key naturally refetches (window refocus / TTL /
+      hard refresh). This settles the flow's drift_class 2 (previously ui_unverified=true):
+      confirmed, with the precise hook line. The asymmetry is sharp — the sibling
+      `useAssignEntityQueryExample` / `useUnassignEntityQueryExample` hooks (queryExamples.ts:73-115)
+      DO invalidate `getQueryExamplesByDatasetId`, and `useUpdateQueryExample` invalidates the
+      details key — only the CREATE hook invalidates nothing.
+    evidence:
+      - sidecar: "(source_read_for_validation) queryExamples.ts"
+        section: useCreateQueryExample
+        cite: "queryExamples.ts:32-41"
+        note: "onSuccess = showSuccessToast ONLY; no queryClient.invalidateQueries call"
+      - sidecar: "(source_read_for_validation) queryExamples.ts"
+        section: "useAssignEntityQueryExample / useUpdateQueryExample (contrast)"
+        cite: "queryExamples.ts:53-58,86-91"
+        note: "update invalidates details key; assign/unassign invalidate by-dataset key — create alone invalidates nothing"
+      - sidecar: "F-131 flow"
+        section: "observed_vs_expected facet [1]"
+        cite: "F-131.yaml:111-124"
+        note: "the flow predicted this drift as ui_unverified; this verdict resolves it to confirmed-contradiction"
+    operator_visible_failure: |
+      (1) The most common confusion: an operator authoring a snippet from the catalog list clicks
+      Add, sees "Query Example successfully created!", then browser-backs to the list and does not
+      see their snippet — the success toast and the screen disagree, and the natural read is "it
+      didn't save". (2) An operator authoring from a dataset's Query Examples tab (the in-context
+      path) returns to that tab and the count/list is unchanged, so they may author it a SECOND
+      time, producing a duplicate (compounding H-002). (3) A team curating many snippets in one
+      session sees a list that drifts further out of date with every create until they hard-refresh.
+      The fix anchor is one line — add `queryClient.invalidateQueries` for the list + by-dataset +
+      by-term keys to `useCreateQueryExample`, mirroring the assign/unassign hooks.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When an author EDITS a query example, every place that snippet is shown (catalog list, the dataset tab it's linked to, the term tab it's linked to) reflects the edited definition/query without a manual refresh."
+  derivation: "Standard edit-mutation UX expectation; the useUpdateQueryExample hook contract determines which caches refresh (queryExamples.ts:43-60)."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      `useUpdateQueryExample` (queryExamples.ts:43-60) invalidates ONLY
+      `['getQueryExampleDetails', qed.id]`. The post-submit navigation lands on the details page,
+      which therefore shows the edited values correctly. But the catalog list
+      (`getQueryExampleList` / search session), the per-dataset tab
+      (`getQueryExamplesByDatasetId`), and the per-term tab (`getQueryExamplesByTermId`) are NOT
+      invalidated — they continue to show the OLD definition/query (and the catalog list shows the
+      old `definition` since that is the list display + ILIKE-search field). So the promise holds
+      for the details page (the surface the user is taken to) and is broken for every other surface
+      the snippet appears on.
+    evidence:
+      - sidecar: "(source_read_for_validation) queryExamples.ts"
+        section: useUpdateQueryExample
+        cite: "queryExamples.ts:43-60"
+        note: "onSuccess invalidates only the details key for this id; no list/by-dataset/by-term invalidation"
+    operator_visible_failure: |
+      An operator who fixes a typo in a snippet's definition, returns to the catalog list, and
+      still sees the typo — or who edits a snippet from a dataset's Query Examples tab and sees the
+      old text on that tab — reads the edit as not-saved (it did save). For the catalog list this
+      is especially misleading because the list is also the search surface: a stale `definition`
+      means search-by-definition can still match (or miss) on the pre-edit text until refetch.
+      Same one-line fix anchor as H-006 (broaden the invalidation set on the update hook).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When an author is partway through writing a long query and accidentally hits Escape or clicks outside the dialog, the platform protects their in-progress work (warns before discarding, or preserves a draft)."
+  derivation: "F-131 facet `..._no_dirty_check_warning_dialog_closes_silently_on_navigation`; DialogWrapper has no dirty-form hook (QueryExampleForm.tsx:128-141)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The dialog is a `DialogWrapper` with no `handleNavigationWarning`, no dirty-state detection,
+      and no draft persistence (QueryExampleForm.tsx:128-141; flow facet [2]). Per DialogWrapper's
+      default behaviour, Escape and outside-click close the dialog; browser-back navigates away.
+      In every case the in-progress `definition` + `query` are dropped silently — there is no
+      "you have unsaved changes" prompt and no localStorage autosave. The live doc now states this
+      verbatim ("no dirty-form warning and no autosave: closing the dialog through Escape, an
+      outside-click, or browser back drops the entire in-progress body silently", WebFetch
+      2026-06-03), so it is documented behaviour, not a hidden bug.
+    evidence:
+      - sidecar: "F-131 flow"
+        section: "observed_vs_expected facet [2]"
+        cite: "F-131.yaml:125-137 + QueryExampleForm.tsx:128-141"
+        note: "DialogWrapper has no dirty-form warning hook; no autosave"
+      - sidecar: "WebFetch query-examples doc"
+        section: "authoring caveats"
+        cite: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+        note: "live doc documents the silent-discard behaviour verbatim"
+    operator_visible_failure: |
+      An author composing a multi-line SQL snippet (the canonical use of this feature) who clicks
+      outside the modal to copy a column name from the page behind it, or who reflexively hits
+      Escape, loses everything they typed with no recovery and no warning. For a short definition
+      this is a paper-cut; for a long custom query it is real lost work. The risk compounds with
+      H-005 (no code editor) because authors are more likely to switch context (to grab schema
+      details) precisely because the editor gives them no in-place code assistance.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a user without QUERY_EXAMPLE_CREATE views the catalog list, the 'Add query example' button is not available to them; and a user without QUERY_EXAMPLE_UPDATE does not see the 'Edit' button on the details page."
+  derivation: "Both render sites are wrapped by <WithPermissions permissionTo=QUERY_EXAMPLE_CREATE|UPDATE> (F-131 discovered_from_entry_point:16-17)."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The Add and Edit buttons ARE wrapped in `<WithPermissions permissionTo=QUERY_EXAMPLE_CREATE>`
+      (list) and `<QUERY_EXAMPLE_UPDATE>` (details) respectively (F-131 discovered_from_entry_point).
+      Per the F-025 reflection's analysis of `WithPermissions`, that component gates VISIBILITY using
+      the caller's permission context — so a user lacking the permission does not see the button.
+      This is the visibility half. The ENFORCEMENT half is server-side: the controller gates
+      `createQueryExamples` (QUERY_EXAMPLE_CREATE) and `updateQueryExample` (QUERY_EXAMPLE_UPDATE)
+      via SecurityConstants (controller sidecar `security.authorization_assertions`). The two halves
+      agree for the create/update endpoints. The partial verdict reflects two caveats: (a) the
+      `WithPermissions` gate is a UI-render decision, not a route guard — it hides the button but a
+      determined caller can still POST directly (the server rule is the real gate, and it IS present
+      here, so this is defence-consistent); (b) under auth.type=DISABLED the server falls through to
+      `authenticated()` which anonymous callers pass, so the gate is only as strong as the deployed
+      auth mode (controller sidecar `security.auth_mode_relevance`).
+    evidence:
+      - sidecar: "F-131 flow"
+        section: discovered_from_entry_point
+        cite: "F-131.yaml:11-17"
+        note: "render sites wrapped by WithPermissions CREATE / UPDATE"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: "security.authorization_assertions + auth_mode_relevance"
+        cite: "SecurityConstants.java:112-113,312-314"
+        note: "server gates create+update; under DISABLED auth all rules fall through to authenticated()"
+    operator_visible_failure: |
+      Under a properly-configured auth mode (LOGIN_FORM / OAUTH2 / LDAP), the gate works at both
+      layers. The residual exposure is the DISABLED-auth default deployment, where the UI may hide
+      the button but the server accepts anonymous create/update — an operator reading the
+      button-less screen as 'locked down' ships a platform whose authoring endpoint is open to the
+      network (the same class as F-020's collector-button finding). This is inherited deployment
+      posture, not a defect of this dialog specifically.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When a user pastes a very large query body (e.g. a 5MB generated SQL) into the dialog and submits, the platform either accepts it or gives a clear size-limit error — it does not fail silently or hang."
+  derivation: "No client length cap (presence+trim only); schema is `text NOT NULL` (1GB PG ceiling); WebFlux default in-memory codec cap is 256KB but configurable (controller sidecar `bugs_limitations_corner_cases.[5]`)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The client imposes no length cap (QueryExampleForm.tsx:83,94 — presence+trim only). The
+      schema stores `text NOT NULL` (PG accepts up to ~1GB). BUT the WebFlux default in-memory codec
+      limit is 256KB (`spring.codec.max-in-memory-size`, configurable) per the controller sidecar
+      `bugs_limitations_corner_cases.[5]`. Whether a >256KB body produces a clean 4xx with an
+      operator-readable message, a 500, or a silently-swallowed rejection that closes the dialog
+      and discards the typed input (the F-031-class `.then(...)`-without-`.catch(...)` failure —
+      and note QueryExampleForm.tsx:63-66 chains `.then()` with NO `.catch()`) cannot be determined
+      from static reading. It requires standing up the platform and POSTing an oversize body.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: "bugs_limitations_corner_cases.[5] (no content-length cap)"
+        cite: "V0_0_84__create_query_example.sql:5 + components.yaml:2799-2808"
+        note: "no maxLength in schema; WebFlux 256KB default codec cap, configurable"
+      - sidecar: "(source_read_for_validation) QueryExampleForm.tsx"
+        section: onSubmit
+        cite: "QueryExampleForm.tsx:63-66"
+        note: ".then(qe => reset()+navigate()) with NO .catch — a rejected mutation has no UI error path here"
+    operator_visible_failure: |
+      If the oversize POST rejects and the unhandled `.then()` chain leaves the dialog open with no
+      error toast (the suspected behaviour, matching the F-031 ConfirmationDialog-swallows-rejection
+      class), the author sees a dialog that does nothing on Save and loses confidence / re-clicks.
+      The probe resolves whether large-body submit is a clean error or a silent dead-end.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-131-2
+    routes_to_finding: probe-needed
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: PENDING-F-131-2
+
+- id: H-011
+  hypothesis: "When an author opens the dialog expecting the three fields the documentation describes (a Name, a Description, and the Query body), they find a field to name the snippet."
+  derivation: "doc-claim seed — the live doc still describes snippets as having 'a name, description, and the query body' (WebFetch 2026-06-03); the form has only definition + query (QueryExampleForm.tsx:79-113)."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The form has exactly TWO fields — "Definition" (a plain Input) and "Query" (the Markdown
+      editor) — and NO "Name" field (QueryExampleForm.tsx:79-113). The DB schema and OpenAPI carry
+      only `definition` + `query` (no `name` column, controller sidecar `docs_link_semantic.doc_drift_findings.[0]`).
+      The live doc's "name, description, and the query body" framing is therefore still partly
+      fiction: what the doc calls "description" is the `definition` field, and the "name" does not
+      exist — the snippet is identified only by its integer id ("Query Example #{id}"). The author
+      cannot name a snippet. This is the same residual doc drift recorded on F-025 H-011; F-131
+      corroborates it from the authoring screen.
+    evidence:
+      - sidecar: "(source_read_for_validation) QueryExampleForm.tsx"
+        section: formContent
+        cite: "QueryExampleForm.tsx:79-113"
+        note: "exactly two fields: Definition (Input) + Query (Markdown editor); no Name field"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: "docs_link_semantic.doc_drift_findings.[0]"
+        cite: "V0_0_84__create_query_example.sql:4-5 + components.yaml:2799-2808"
+        note: "schema has only definition + query; no name column"
+    operator_visible_failure: |
+      An operator who read the doc and expects to give each snippet a human-friendly name to find
+      it later cannot — the only identifier in the catalog list is the `definition` text and the
+      integer id. They may file a "can I rename a query example?" request to which the answer is
+      "there is no name". Pure doc-vs-implementation drift; the truth is the two-field form, and the
+      doc's "name" claim is the gap.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When an author edits a snippet and saves, the dialog closes automatically on success (the author is not left to dismiss a dialog that has already saved)."
+  derivation: "DialogWrapper receives handleCloseSubmittedForm={queryExampleDetails ? isUpdated : isCreated} (QueryExampleForm.tsx:137)."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The dialog is wired with `handleCloseSubmittedForm={queryExampleDetails ? isUpdated : isCreated}`
+      (QueryExampleForm.tsx:137) — when the relevant mutation reports success (`isUpdated` for edit,
+      `isCreated` for create), DialogWrapper closes the submitted form. In parallel `onSubmit`'s
+      `.then()` calls `reset()` and navigates to the details page (QueryExampleForm.tsx:63-66). So
+      on success the dialog closes AND the user is routed to the fresh details view. The auto-close
+      promise holds.
+    evidence:
+      - sidecar: "(source_read_for_validation) QueryExampleForm.tsx"
+        section: DialogWrapper props + onSubmit
+        cite: "QueryExampleForm.tsx:137,63-66"
+        note: "handleCloseSubmittedForm bound to isUpdated/isCreated; onSubmit resets + navigates on success"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "useCreateQueryExample invalidates no React-Query cache, so a newly-authored snippet is absent from the catalog list / per-dataset tab / per-term tab until a manual refetch — the success toast contradicts the stale screen."
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN (pending mint) — odd-platform UI bug
+  proposed_fix_anchor: "queryExamples.ts:39 — add queryClient.invalidateQueries for ['getQueryExampleList'], ['getQueryExamplesByDatasetId'], ['getQueryExamplesByTermId'] to useCreateQueryExample.onSuccess, mirroring useAssignEntityQueryExample (queryExamples.ts:86-91)"
+- hypothesis_id: H-007
+  severity: LOW
+  one_line: "useUpdateQueryExample invalidates only the details query key, so an edited snippet shows stale definition/query on the catalog list (also the search surface), per-dataset tab, and per-term tab until refetch."
+  dedup_status: net_new
+  distinct_from: PLT-018
+  recommended_log_as: "fold into the same PLT-NNN as H-006 (one cache-invalidation hardening item)"
+  proposed_fix_anchor: "queryExamples.ts:55-57 — broaden useUpdateQueryExample.onSuccess invalidation set beyond the details key to include the list + by-dataset + by-term keys"
+
+### caveat_candidates
+- hypothesis_id: H-004
+  one_line: "The authoring dialog is the first cheap intervention point in the F-004 stored-XSS chain and applies no allowlist / length cap / sanitisation — definition + query are stored verbatim and Markdown-rendered to every reader."
+  dedup_status: already_tracked
+  tracked_as: DOC-183
+  note: |-
+    DOC-183 (status: done) shipped the render-time XSS caveat into the live doc, which now ALSO
+    documents the authoring-time validation gap verbatim (WebFetch 2026-06-03). The platform-side
+    fix is tracked as PLT-018 (draft). This hypothesis is the authoring-time framing of the same
+    finding — corroboration, not a new item. Convergent: the F-131 reflection independently
+    re-derives the F-131a scanner finding (which extended DOC-183 Caveat 3).
+- hypothesis_id: H-005
+  one_line: "The Query field — which holds executable SQL/Spark by the feature's own definition — is a Markdown PROSE editor (no syntax highlighting, spellcheck on, Markdown reinterprets code characters), an authoring-affordance mismatch to the content type."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-modelling/query-examples OR DOC-NNN (pending) — note the Query field is Markdown, not a code editor; SME consultation recommended (comparative archetype) before deciding whether this is a doc caveat or a PLT UX item"
+- hypothesis_id: H-008
+  one_line: "The dialog has no dirty-form warning and no autosave — Escape, outside-click, or browser-back silently discards an in-progress query body."
+  dedup_status: already_tracked
+  tracked_as: DOC-183
+  note: |-
+    Now documented verbatim in the live doc (WebFetch 2026-06-03: "no dirty-form warning and no
+    autosave … drops the entire in-progress body silently"). Corroborates the F-131b scanner
+    finding. Doc-side is covered; if the maintainer wants the BEHAVIOUR fixed (add a dirty-guard),
+    that would be a separate net_new PLT — flagged but not minted here.
+- hypothesis_id: H-009
+  one_line: "Add/Edit buttons are WithPermissions-gated for visibility and the create/update endpoints are server-gated, but under the auth.type=DISABLED default the server falls through to authenticated() which anonymous callers pass — button-less UI does not imply a locked-down authoring endpoint."
+  dedup_status: already_tracked
+  tracked_as: DOC-183
+  note: |-
+    The 10-of-13-unscoped + auth-posture story is DOC-183 Caveat 2 (shipped) and PLT-018 Defect 3.
+    This hypothesis is the authoring-button-specific view of the documented read-collaborative +
+    auth-mode posture — corroboration.
+
+### functional_test_demands
+# LSN-030 (Rule 11) — the promise layer. NO test exists for this authoring dialog at ANY layer:
+# the only Query Example tests are service-layer Mockito (QueryExampleServiceTest,
+# QueryExampleServiceImplTest) + a JOOQ repository test; the tests/features/ Playwright tree
+# (tags, search, filters, owners, activity) does NOT cover Query Examples. So every promise below
+# is unverified. Confirmed-but-untested promises (H-001, H-003, H-012) are the highest-value guards.
+- use_case_id: F-131-UC-001
+  hypothesis_id: H-001
+  kind: empty/no-match
+  promise: "An empty/whitespace-only Definition or Query keeps the submit button disabled — no create request is sent."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-001"
+  proposed_test: "e2e (Playwright, tests/features/dataModelling/): open Add dialog, leave Definition empty, assert Save button disabled and no POST /api/queryexample fired; repeat with whitespace-only."
+- use_case_id: F-131-UC-003
+  hypothesis_id: H-003
+  kind: edit-reconcile
+  promise: "Opening Edit on an existing snippet pre-populates Definition + Query with the saved values."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-003"
+  proposed_test: "e2e: open Edit on a known snippet, assert the two fields hold the snippet's current definition + query; component test acceptable (reset(defaultValues) on prop)."
+- use_case_id: F-131-UC-004
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "A query body containing Markdown/HTML/JS is accepted verbatim by the authoring dialog (pins the F-004 authoring-time surface explicitly)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-004; cross-ref PLT-018 (the FIX would flip this test)"
+  proposed_test: "characterization test: submit definition/query = '<img src=x onerror=alert(1)>' and assert it is stored verbatim (RED the instant a sanitiser/allowlist is added — pins current behaviour per LSN-029)."
+- use_case_id: F-131-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "The Query field offers code-appropriate authoring for an executable SQL/Spark body."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-005 (regression guard for a future code-editor fix)"
+  proposed_test: "component test asserting the Query field is the Markdown editor today (characterization); flips when/if a code editor is introduced."
+- use_case_id: F-131-UC-006
+  hypothesis_id: H-006
+  kind: happy-path
+  promise: "After creating a snippet, the catalog list / per-dataset tab / per-term tab reflect it without manual refresh."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-006 (regression guard for the cache-invalidation fix)"
+  proposed_test: "e2e: from the catalog list, Add a snippet, return to the list, assert the new snippet appears (RED today, GREEN after invalidation fix)."
+- use_case_id: F-131-UC-007
+  hypothesis_id: H-007
+  kind: edit-reconcile
+  promise: "After editing a snippet, every surface it appears on reflects the edit without manual refresh."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-007"
+  proposed_test: "e2e: edit a snippet's definition, return to the catalog list, assert the list shows the new definition (RED for list today; GREEN for details)."
+- use_case_id: F-131-UC-008
+  hypothesis_id: H-008
+  kind: teardown
+  promise: "An in-progress query body survives (or warns before) an accidental dialog close."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-008 (characterization of the silent-discard; flips if a dirty-guard is added)"
+  proposed_test: "e2e: type into Query, press Escape, reopen dialog, assert the field is empty (characterization of current silent-discard)."
+- use_case_id: F-131-UC-009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "A user without QUERY_EXAMPLE_CREATE/UPDATE cannot author/edit via the UI button, and the server rejects a direct call under an enabled auth mode."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-009"
+  proposed_test: "@WebFluxTest WithMockUser lacking QUERY_EXAMPLE_CREATE asserts 403 on POST /api/queryexample; UI test asserts the Add button is hidden without the permission."
+- use_case_id: F-131-UC-010
+  hypothesis_id: H-010
+  kind: grammar
+  promise: "An oversize query body yields a clear size-limit error, not a silent dead-end."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-010 (depends on probe PENDING-F-131-2 outcome)"
+  proposed_test: "after probe: e2e submitting a >256KB body, assert an operator-readable error toast (NOT a stuck/silent dialog)."
+- use_case_id: F-131-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: "The authoring fields match what the doc describes (a snippet identifier)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-011 — but PRIMARY route is doc-gap (see doc_drift_findings)"
+  proposed_test: "component test asserting the form renders exactly two labelled fields (Definition, Query) and no Name field (pins the contract the doc must match)."
+- use_case_id: F-131-UC-012
+  hypothesis_id: H-012
+  kind: happy-path
+  promise: "On successful create/edit the dialog auto-closes and routes to the fresh details page."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-131-UC-012"
+  proposed_test: "e2e: Add a valid snippet, assert the dialog closes and the URL is the details path for the new id."
+# H-002 routes to a probe (PENDING-F-131-1), not a functional test demand here — see probes_emitted.
+
+### probes_emitted
+- probe_id: PENDING-F-131-1
+  hypothesis_id: H-002
+  hypothesis_text: "When a user submits the dialog with both fields non-empty, exactly ONE query example is created (or updated) per click — a slow network or a double-click does not create duplicates."
+  expected_outcome: "A double-click on Save during an in-flight create fires at most ONE POST /api/queryexample (DialogWrapper or button blocks re-submit while isLoading) — NOT two near-duplicate snippets."
+  local_execution: "Playwright against local docker-compose odd-platform: throttle network, double-click Save on Add, assert exactly one POST and one created row."
+  local_execution_blocked: false
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+- probe_id: PENDING-F-131-2
+  hypothesis_id: H-010
+  hypothesis_text: "When a user pastes a very large query body (e.g. 5MB SQL) and submits, the platform accepts it or gives a clear size-limit error — it does not fail silently or hang."
+  expected_outcome: "A >256KB query body either succeeds OR returns a 4xx that surfaces as an operator-readable error toast; the dialog does NOT stay open silently with the typed input discarded (the .then-without-.catch dead-end at QueryExampleForm.tsx:63-66)."
+  local_execution: "Playwright against local docker-compose: paste a 1MB string into Query, submit, observe network response + UI feedback. Confirm against spring.codec.max-in-memory-size default."
+  local_execution_blocked: false
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+
+### validation_gaps
+# Rule 9 — FIRST output for a UI-driven feature whose UI hops are not enriched.
+- sidecar: "odd-platform ts react-component component:QueryExampleForm (hop 1)"
+  field_insufficient: "entire sidecar — `sidecar: unresolved` in F-131.yaml; the authoring form, the single most user-facing artefact of this feature, has NO enriched sidecar"
+  proposed_refresh: |
+    Enrich QueryExampleForm as a first-class component sidecar. This reflection judged the screen
+    via a Rule-8 direct read of QueryExampleForm.tsx:1-145 (recorded in source_reads_for_validation),
+    so it is NOT API-only — but the chain still carries no durable sidecar for the form's validation
+    rules, the submit-gate, the post-submit navigation, or the mutation-hook cache contract. The
+    next file-analyser pass should capture: the presence+trim validation + disabled-submit gate
+    (H-001), the create/update hook cache-invalidation asymmetry (H-006/H-007 — the load-bearing
+    finding), and the DialogWrapper dirty-form absence (H-008).
+- sidecar: "odd-platform ts shared-element component:Markdown (hop 2)"
+  field_insufficient: "entire sidecar — `sidecar: unresolved`; the Markdown editor mode (preview='edit', spellcheck, no sanitiser) is described only in the flow's inline hop-2 evidence"
+  proposed_refresh: "Enrich the shared Markdown component: editor-mode vs render-mode behaviour, the absence of rehype-sanitize (the F-004 family root, also SHB-166), and the spellcheck-on-code affordance (H-005)."
+- sidecar: "odd-platform ts shared-element component:DialogWrapper (contributing_node, no chain hop)"
+  field_insufficient: "no sidecar at all; DialogWrapper internals determine the H-002 double-submit guard and the H-008 close-on-Escape behaviour, both currently inferred or probe-deferred"
+  proposed_refresh: "Enrich DialogWrapper: handleCloseSubmittedForm semantics, isLoading re-submit blocking (resolves H-002), and the default Escape/outside-click close path (confirms H-008 mechanism)."
+
+### doc_drift_findings
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+  doc_says: "Query Example snippets have 'a name, description, and the query body' (authoring framing)."
+  code_does: "The form has exactly two fields — Definition (plain Input) + Query (Markdown editor); there is NO Name field and no `name` column; snippets are identified by integer id."
+  recommended_log_as: "fold into DOC-183 follow-up OR DOC-NNN (pending) — the live doc still says 'name, description' on the authoring/overview framing; align to the two-field reality (Definition + Query). Same residual drift recorded on F-025 H-011 — corroborated, dedup against F-025."
+
+## maintainer_notes
+
+(intentionally left empty — no prior EXISTING_REFLECTION existed for F-131; this is the first reflection. F-131 is the authoring-dialog sub-feature of F-025 — see parent_reflection. The standout NET-NEW finding distinct from F-025 is H-006/H-007: the create/update mutation hooks' cache-invalidation asymmetry, which settles the flow's drift_class 2 that was previously ui_unverified=true.)

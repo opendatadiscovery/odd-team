@@ -1,0 +1,904 @@
+---
+feature_id: F-196
+pillar_anchored_id: P-07:F-021-per-entity-tab
+pillar: "P-07 Active Platform Features"
+feature_name: |-
+  Data-entity detail-page Activity tab — per-entity, entity-id-scoped variant of
+  the Global Activity Feed (F-021); distinct backend endpoint
+  /api/dataentities/{id}/activity; inherits the LSN-020 User-filter mislabel
+  + cross-owner / soft-delete-inclusive read posture.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  # NOTE (Rule 9): NONE of the F-196 chain nodes have an ENRICHED sidecar. All four
+  # UI hops are `sidecar: unresolved` and the backend hop is `unresolved: true`.
+  # This reflection is grounded in: (a) the F-196 feature-flow's own primary-source
+  # UI evidence blocks; (b) the parent F-021 reflection + feature-flow (sibling
+  # surface, shares the component family); (c) the DataEntityController class sidecar
+  # which documents getDataEntityActivity at the backend tier; (d) the getDataEntityAlerts
+  # sidecar (the F-014 per-entity-tab sibling, identical cross-owner/soft-delete posture);
+  # (e) Rule-8 source reads of the four DataEntityActivity .tsx files (recorded as
+  # source_read_for_validation). See validation_gaps for the enrichment debt.
+  - odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md   # F-014 sibling — identical posture
+  - "(parent) feature-reflections/detail/F-021.yaml — Activity Feed reflection (14 hypotheses)"
+  - "(parent) feature-flows/detail/F-021.yaml — batches ZI/ZJ/ZL/UI-A enriched the GLOBAL Activity component family"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The live page has been UPDATED since the F-021 reflection (2026-05-21). It now
+      describes the per-entity Activity tab as distinct: enumerates the no-type-axis +
+      smaller-filter-surface asymmetry ("exposes a smaller filter surface than the
+      global Activity page does (the entity is already fixed)"); names the User filter
+      as ownership-axis-not-actor-axis ("This is an entity-ownership axis, not an actor
+      axis. It does not answer 'what did Alice do last week'"); AND carries a Visibility
+      warning ("Any authenticated user can navigate to /dataentities/{id}/activity for
+      any catalogued entity, and the tab returns the audit history even when the entity's
+      status is DELETED ... Multi-tenant deployments expecting per-team isolation on
+      entity-level audit history cannot enforce it on this surface today"). The DOC side
+      has caught up to the drift; the CODE behaviour (misleading UI label, ungated tab)
+      is the residual bug/caveat. This DOWNGRADES the F-196a / F-196c "missing-caveat"
+      scanner findings to "doc-now-matches" — the residual finding is the code, not the doc.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      The per-entity Activity tab's `User` filter (labelled t('User')) binds userIds to
+      USER_OWNER_MAPPING.OWNER_ID, not the actor column activity.created_by — on a single
+      entity, "show only Alice's actions" returns "actions on this entity by Alice's OWNER
+      mapping (which may include Bob if Bob shares Alice's owner)". The LSN-020 drift,
+      compounded at the per-entity surface.
+related_feature_flows:
+  - F-021   # Global Activity Feed — parent / sibling surface; shares the LSN-020 channel + actor-resolution JOIN
+  - F-014   # Per-Entity Alert View — symmetric per-entity-tab pattern (cross-owner read, soft-delete-inclusive existence check)
+  - F-011   # Principal-to-Owner Resolution — shared chokepoint for userIds -> OWNER_ID + provider-agnostic actor JOIN
+related_concepts:
+  - "per-entity-tab"
+  - "audit-trail-cross-owner"
+  - "lsn-020-user-filter-mislabel"
+  - "Activity Feed"
+  - "User-Owner Mapping"
+related_drift_classes:
+  # confirmed from the F-196 feature-flow's observed_vs_expected facets:
+  - per_entity_activity_tab_no_type_axis_unlike_global_feed
+  - user_filter_label_misleads_at_per_entity_tab_inherits_lsn_020
+  - per_entity_activity_no_permission_gate_no_restrictedroute_wrap
+  - per_entity_activity_no_useeffect_debounce_no_abortcontroller
+  - per_entity_activity_tabs_visible_when_entity_deleted_inconsistent_with_other_tabs
+  - i18n_user_label_uniform_across_locales_per_entity_inherits_global_amplifier
+new_drift_classes_proposed:
+  - per_entity_activity_endpoint_no_ownerids_no_type_param_signature_narrower_than_global   # NEW from H-001 — the per-entity endpoint signature drops ownerIds + type vs the global /api/activity
+  - per_entity_activity_userids_filter_lists_owners_dropdown_on_single_entity_surface_compounds_lsn_020   # NEW from H-002 — the LSN-020 surface is WORSE here: on one entity, "actions by X" is the natural-and-only actor question, and it is unanswerable
+---
+
+# Per-Entity Activity Tab (Audit-Trail Surface, entity-scoped) — product-owner reflection
+
+## product_owner_narrative
+
+The **per-entity Activity tab** is the entity-scoped sibling of the global Activity Feed (F-021) — the audit-trail surface a data steward reaches by opening any data entity's detail page and clicking the **Activity** tab. Where the global feed answers "what changed across the whole catalog?", this surface answers the narrower, more common operator question: "what has happened to THIS dataset / transformer / quality test?" The audience is the same three personas as the parent — a steward reviewing their entity's change history, an engineer diagnosing "why did this dataset's schema/description change last week?", and a compliance reviewer auditing actions on a regulated entity (per `system-mission.md:200-220` P-07 pillar + the parent F-021 reflection narrative). It is reached at `/dataentities/{id}/activity`, mounted at `DataEntityDetailsRoutes.tsx:105` as a BARE route — no `RestrictedRoute`, no `WithPermissionsProvider` (verified against the F-196 feature-flow hop-1 evidence + the parent F-021 batch-ZL/UI-A finding that the global route is identically unguarded).
+
+A user interacts with this surface through a deliberately leaner control set than the global feed (per Rule-8 source read of `DataEntityActivity/Filters/Filters.tsx:44-60`): exactly **three filters** — a Calendar (date range), an Event-type single-select, and a `User` multi-select — composed inside a 13-line two-column shell (`DataEntityActivity.tsx:6-13` — Filters left, ActivityResults right, no state, no hooks, no permission gate). There is **NO view-mode tab axis** (no ALL / MY_OBJECTS / UPSTREAM / DOWNSTREAM) and **NO** datasource / namespace / tag / owner filters — all of which the global feed exposes. The reasoning is sound from a product view: the entity is already fixed, so the four ownership-scope view-modes and the cross-catalog facets collapse to nothing meaningful here (the live doc, WebFetched 2026-06-03 status 200, now states this verbatim: "exposes a smaller filter surface than the global Activity page does (the entity is already fixed)"). On any filter change, `ActivityResults.tsx:41-45` dispatches a single `fetchDataEntityActivityList({...queryParams, dataEntityId, isQueryUpdated: true})` — ONE backend query per twiddle, distinct from the global feed's five-query (4-count + 1-list) pattern; the per-entity surface has no counts companion.
+
+Behind the screen, the tab calls `GET /api/dataentities/{id}/activity` → `DataEntityController.getDataEntityActivity` (`DataEntityController.java:351-365`) → `activityService.getDataEntityActivityList(beginDate, endDate, size, dataEntityId, userIds, eventType, lastEventId, lastEventDateTime)` (per the DataEntityController class sidecar `concepts.operations` line 48). Two structural facts matter here. First, the per-entity service signature **takes `userIds` but NOT `ownerIds` and NOT `type`** — narrower than the global `/api/activity` signature; the per-entity surface is entity-id-scoped, not view-mode-scoped. Second, the backend posture is the same as every other per-entity read on `DataEntityController`: NO `@PreAuthorize`, NO `SecurityConstants.SECURITY_RULES` entry for the GET path, NO `OWNERSHIP` join, soft-delete-inclusive existence check — every authenticated user reads any data entity's audit trail by enumerating `data_entity_id`, including JSONB old/new-state diffs and including soft-deleted entities (per the DataEntityController class sidecar `security.known_security_gaps[2]` "getDataEntityActivity exposes who-changed-what audit trail to any authenticated user" + `data_exposure[3]`, and the F-014 sibling `getDataEntityAlerts` sidecar which documents the identical cross-owner + `existsIncludingSoftDeleted` shape line-by-line).
+
+The integration story is a tight sibling relationship rather than a cross-pillar fan-out. This surface **shares the entire backend chain mechanism with F-021** — the `userIds` → `USER_OWNER_MAPPING.OWNER_ID` bind (LSN-020), the provider-agnostic actor-resolution LEFT JOIN on `OIDC_USERNAME = ACTIVITY.CREATED_BY`, the `INNER JOIN DATA_ENTITY` (hard-delete history erasure), the absent DISTINCT, and the unbounded `size` — because the per-entity find queries are built by the same `ReactiveActivityRepositoryImpl.getCommonConditions`. It **shares the per-entity-tab structural pattern with F-014** (Per-Entity Alert View): both mount a bare tab, both read cross-owner, both use a soft-delete-inclusive existence check, both survive entity soft-deletion. And it **inherits the i18n amplifier from F-043** — the `t('User')` label resolves to the literal 'User' in all six locales, so the misleading label ships uniformly to every language (per F-021 batch ZJ).
+
+A product owner demoing this tab should highlight three edge cases. (a) The **`User` filter is mislabelled and, on a single entity, the mislabel is worse than on the global feed**: on one dataset the only natural actor question is "who touched THIS?" — and that is precisely the question the filter cannot answer, because it lists Owners and binds OWNER_ID (the actor column `activity.created_by` is JOINed and SELECTed but never filtered). (b) The **Activity tab is the ONLY entity-detail tab without a `hidden:` clause** (`DataEntityDetailsTabs.tsx:91-94`) — it is the single surviving tab on a soft-deleted entity, which is operationally correct (audit history matters most on deleted entities) but visually inconsistent and, combined with the ungated route, means the audit trail of a soft-deleted (UI-hidden) entity is reachable by any authenticated user. (c) The **race-and-staleness contract** — one un-debounced, un-cancellable query per filter change means rapid calendar twiddling lets the redux reducer accept whichever response lands last regardless of correlation to the latest filters (lower amplitude than the global feed's 5-query version, same race class).
+
+## hypotheses
+
+- id: H-000
+  hypothesis: |
+    [Rule 9 / APPROACH.md §0.2 gate] This feature is `status: ui-complete` and its
+    primary surface is a UI tab the user lives in — yet NONE of its four UI hops
+    (DataEntityActivity shell, Filters, ActivityResults, ActivityItem) has an enriched
+    file-analyser sidecar, and the backend hop (getDataEntityActivity) is also unresolved.
+    Can this reflection judge what the USER experiences end-to-end?
+  derivation: |
+    Rule 9 requires that a user-facing feature whose UI surface is not enriched in the
+    chain produce a validation_gap FIRST, rather than a confident set of confirmed
+    verdicts assembled from the backend alone (the F-031 / LSN-023 failure mode).
+  seed_source: pillar + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The UI surface IS judgeable here — but NOT from enriched sidecars (there are none).
+      It is judgeable because (1) the F-196 feature-flow's own hop evidence blocks carry
+      primary-source UI citations at file:line; (2) this reflection performed Rule-8
+      source reads of all four DataEntityActivity .tsx files (Filters.tsx:1-64,
+      ActivityResults.tsx:1-87, ActivityItem.tsx:170-194, DataEntityActivity.tsx:1-13),
+      confirming each hop's claim directly; (3) the parent F-021 reflection + feature-flow
+      enriched the SHARED global Activity component family (Filters/ActivityResults/
+      ActivityItem/ActivityTabs) across batches ZI/ZJ/ZL/UI-A, and the per-entity variant
+      reuses the same MultipleFilter + ActivityResultsList + GearIcon/UserIcon machinery.
+      So the verdict is `partial`, not `probe-needed`: the user-experience IS analysable,
+      but the analysability rests on the parent's enrichment + this reflection's source
+      reads, NOT on any F-196-node sidecar. The standing debt is real and routes to
+      validation_gap (4 UI hops + 1 backend hop need their own sidecars).
+    evidence:
+      - sidecar: "(none — F-196 chain is fully unresolved)"
+        section: chain hops 1-5
+        cite: "feature-flows/detail/F-196.yaml:25-102 (every hop `sidecar: unresolved` or `unresolved: true`)"
+        note: "The structural gap this hypothesis names."
+      - sidecar: "(source read for validation)"
+        section: DataEntityActivity UI subtree
+        cite: "DataEntityActivity/Filters/Filters.tsx:1-64; ActivityResults/ActivityResults.tsx:1-87; ActivityResults/ActivityItem/ActivityItem.tsx:170-194; DataEntityActivity.tsx:1-13"
+        note: "source_read_for_validation: true — all four UI hop claims confirmed directly against source (per Rule 8 exception). The next file-analyser run should enrich these as proper sidecars."
+    operator_visible_failure: |
+      No direct operator-visible failure — this is a methodology-integrity gap. The risk
+      it guards against: shipping confident `confirmed` verdicts for a user-facing feature
+      from its backend alone (LSN-023). Mitigated here by the source reads + parent
+      enrichment; the residual is enrichment debt, surfaced as validation_gap.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: none   # methodology-integrity gap, not a user promise — the ONLY hypothesis that legitimately routes away from a functional test demand
+
+- id: H-001
+  hypothesis: |
+    When a user opens the Activity tab on a data entity and applies a date / event-type /
+    user filter, the response contains activity events for THAT entity only (scoped by its
+    data_entity_id) — the user cannot accidentally see another entity's activity, and the
+    tab does not silently apply a cross-catalog view-mode the way the global feed's four
+    tabs do.
+  derivation: |
+    The endpoint path `/api/dataentities/{id}/activity` names a single entity id; the UI
+    shell (DataEntityActivity.tsx) renders no AppTabs / no view-mode selector; the live
+    doc states the per-entity tab "exposes a smaller filter surface (the entity is already
+    fixed)". The product promise is "this tab = this entity's history".
+  seed_source: endpoint-shape + ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The per-entity surface is genuinely entity-id-scoped and has no view-mode axis.
+      `ActivityResults.tsx:43` threads `dataEntityId` (from `useDataEntityRouteParams()`)
+      into every `fetchDataEntityActivityList` dispatch; the backend
+      `getDataEntityActivity` signature is `(beginDate, endDate, size, dataEntityId,
+      userIds, eventType, lastEventId, lastEventDateTime)` — `dataEntityId` is a mandatory
+      scoping parameter and there is NO `type` parameter (per DataEntityController class
+      sidecar concepts.operations line 48). `Filters.tsx:44-60` renders only CalendarFilter
+      + eventType SingleFilter + userIds MultipleFilter — no AppTabs, no MY_OBJECTS/
+      UPSTREAM/DOWNSTREAM. The four global tabs collapse to ALL-equivalent at this surface,
+      which is the correct product behaviour for a fixed-entity audit view.
+    evidence:
+      - sidecar: "(source read for validation)"
+        section: ActivityResults dispatch + Filters control set
+        cite: "ActivityResults.tsx:41-45 + Filters.tsx:44-60"
+        note: "source_read_for_validation: true — dataEntityId scoping + three-filter-only control set confirmed directly"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md
+        section: concepts.operations
+        cite: "DataEntityController.java:351-365"
+        note: "getDataEntityActivity signature takes dataEntityId; no `type` view-mode parameter — narrower than global /api/activity"
+      - sidecar: "(WebFetch live doc)"
+        section: per-entity vs global comparison
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (verified 2026-06-03 status 200)"
+        note: 'Doc: "exposes a smaller filter surface than the global Activity page does (the entity is already fixed)" — matches code'
+    severity: N/A
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      CONFIRMED but UNTESTED. No Java test exercises getDataEntityActivity (Grep of
+      *Test*.java for getDataEntityActivity/getDataEntityActivityList = zero matches);
+      no Playwright/IT-NNN exercises the per-entity Activity tab (Grep of odd-team
+      integration tree + odd-platform/tests = zero matches). This is the canonical
+      LSN-030 case: a hand-proven happy-path promise with no guard.
+
+- id: H-002
+  hypothesis: |
+    When a steward on a data entity's Activity tab opens the `User` filter and selects a
+    person (e.g. Alice), the tab narrows to activity events PERFORMED BY Alice on this
+    entity — answering "what did Alice change here?"
+  derivation: |
+    The filter is labelled `t('User')` (Filters.tsx:58); on a single fixed entity, the
+    only natural actor question is "who performed these changes?"; the response renders an
+    actor per row (ActivityItem.tsx:184 `createdBy?.owner?.name || identity.username`);
+    the global-feed live doc historically promised "events performed by ... users".
+  seed_source: ui-label + response-shape + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The `User` filter is the LSN-020 surface, and it is WORSE on the per-entity tab than
+      on the global feed. `Filters.tsx:58` renders `<MultipleFilter filterName='userIds'
+      name={t('User')} />`; the MultipleFilter component (per F-021 batch-ZL primary-source
+      finding at MultipleFilter.tsx:32-34) dispatches `fetchOwnersList` for any
+      `filterName !== 'tagIds'` — the dropdown lists OWNERS, not users. The selected owner
+      id is stored in `queryParams.userIds` and threaded to
+      `getDataEntityActivity(... userIds ...)`, which the shared
+      `ReactiveActivityRepositoryImpl.getCommonConditions` binds as
+      `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` (per F-021 reflection H-001 +
+      ReactiveActivityRepositoryImpl.java:272-275). The filter therefore narrows to "events
+      on THIS entity by the selected user's owner-mapping" — an entity-ownership axis, not
+      an actor axis. The actor column `activity.created_by` is JOINed (LEFT JOIN
+      USER_OWNER_MAPPING ON OIDC_USERNAME = ACTIVITY.CREATED_BY) and SELECTed for display
+      but NEVER filtered. The live doc (WebFetched 2026-06-03) now confirms the actual
+      behaviour verbatim: "This is an entity-ownership axis, not an actor axis. It does not
+      answer 'what did Alice do last week'" — the doc has caught up to the drift; the CODE
+      still ships the misleading `t('User')` label.
+    evidence:
+      - sidecar: "(source read for validation)"
+        section: userIds MultipleFilter
+        cite: "Filters.tsx:58"
+        note: "source_read_for_validation: true — `<MultipleFilter filterName='userIds' name={t('User')} />` confirmed directly at the per-entity tab"
+      - sidecar: "(parent F-021 reflection)"
+        section: H-001 validation (canonical LSN-020)
+        cite: "feature-reflections/detail/F-021.yaml H-001 + ReactiveActivityRepositoryImpl.java:272-275"
+        note: "Shared backend chain: userIds binds USER_OWNER_MAPPING.OWNER_ID; actor column created_by joined-but-never-filtered. The per-entity tab reuses the same getCommonConditions."
+      - sidecar: "(WebFetch live doc)"
+        section: User filter behaviour
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (verified 2026-06-03 status 200)"
+        note: 'Doc now states the ownership-not-actor axis verbatim; the UI label t(User) is unchanged — code-vs-UI-label residual'
+    operator_visible_failure: |
+      Compounded LSN-020 at the single-entity surface — three failure modes, sharper than
+      on the global feed because on one entity "who touched THIS?" is the ONLY actor
+      question and it is exactly the one the filter cannot answer:
+      (a) A reviewer on a regulated dataset selects "Alice" to see Alice's edits to that
+          dataset. They get every change on the dataset attributable to Alice's OWNER
+          mapping — which, if Alice shares an owner with Bob and Carol (team-account
+          pattern), includes Bob's and Carol's edits. "What did Alice do here?" returns
+          the team's union.
+      (b) A newly-onboarded user with no user_owner_mapping row who edited the entity's
+          description is UNFILTERABLE — selecting them returns zero rows even though
+          their edits are in the feed under created_by=<their_username>.
+      (c) After an admin reassigns Alice's owner mapping, filtering by her old owner
+          surfaces none of her past edits to the entity; filtering by her new owner
+          surfaces all of them — retroactive attribution rewrite on the entity's own
+          audit tab.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    case_law_anchor: "retrospectives/LSN-020 — the canonical case-law; this is its per-entity-tab manifestation"
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      CONTRADICTED + UNTESTED — needs BOTH a bug fix AND a regression-guard functional
+      test. A characterization test (per the pin-known-bugs protocol, LSN-029) asserting
+      the CURRENT owner-axis behaviour (GREEN now, RED the instant the filter is fixed to
+      actor-axis) is the right pin until the maintainer's design call lands.
+
+- id: H-003
+  hypothesis: |
+    When a user opens the Activity tab on a data entity they do NOT own, the tab is gated
+    — either it is not shown, or it returns 403 / an empty/permission-scoped view — so a
+    data entity's audit history is not readable by every authenticated user.
+  derivation: |
+    Sibling tabs on the same entity-detail route are gated: `/alerts` uses RestrictedRoute
+    + WithPermissionsProvider (DataEntityDetailsRoutes.tsx:70-84); `/history` +
+    `/linked-entities` use RestrictedRoute on `!isStatusDeleted`. A user reasonably expects
+    the Activity tab to follow the same gating posture as its siblings.
+  seed_source: ui-label + cross-pillar + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Activity tab is mounted BARE — `DataEntityDetailsRoutes.tsx:105`
+      `<Route path='activity' element={<DataEntityActivity />} />` with NO RestrictedRoute
+      and NO WithPermissionsProvider (contrast `/alerts` lines 70-84 which use BOTH). The
+      backend matches: `getDataEntityActivity` has NO @PreAuthorize, NO SecurityConstants
+      entry, NO OWNERSHIP join — every authenticated user reads any data entity's audit
+      trail by enumerating data_entity_id (per DataEntityController class sidecar
+      known_security_gaps[2] + data_exposure[3]; structurally identical to the F-014
+      getDataEntityAlerts sibling whose sidecar documents the same posture line-by-line at
+      AlertServiceImpl.java:138-143 + ReactiveAlertRepositoryImpl.java:182-199). Under
+      `auth.type=DISABLED` the tab is anonymously reachable. The live doc (WebFetched
+      2026-06-03) now warns about exactly this: "Any authenticated user can navigate to
+      /dataentities/{id}/activity for any catalogued entity ... Multi-tenant deployments
+      expecting per-team isolation on entity-level audit history cannot enforce it on this
+      surface today."
+    evidence:
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md
+        section: security.known_security_gaps[2] + data_exposure[3] + invariants[3]
+        cite: "DataEntityController.java:351-365 + SecurityConstants.java:98-355 + AuthorizationCustomizer.java:29-30"
+        note: "getDataEntityActivity — no @PreAuthorize, no SECURITY_RULES entry, falls through to .authenticated(); cross-owner read"
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: security.owner_scoping + bugs_limitations_corner_cases[0]
+        cite: "ReactiveAlertRepositoryImpl.java:182-199 (no OWNERSHIP join) — F-014 sibling identical posture"
+        note: "The per-entity-reads-are-unscoped implicit ADR (getDataEntityAlerts implicit_adrs[2]) covers getDataEntityActivity identically"
+      - sidecar: "(F-196 feature-flow hop-1 + hop-5 evidence)"
+        section: drift_class per_entity_activity_no_permission_gate_no_restrictedroute_wrap
+        cite: "DataEntityDetailsRoutes.tsx:105 (bare mount) + :70-84 (alerts gated)"
+        note: "UI-tier bare-mount confirmed in the feature-flow; ui_unverified: false"
+      - sidecar: "(WebFetch live doc)"
+        section: Visibility warning
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (verified 2026-06-03 status 200)"
+        note: "Doc now carries the cross-owner + soft-delete Visibility warning verbatim"
+    operator_visible_failure: |
+      A multi-tenant or multi-team deployment expecting per-team audit isolation cannot get
+      it: any authenticated user (anonymous under DISABLED) opens /dataentities/{id}/activity
+      for any entity id and reads the full who-changed-what trail INCLUDING the JSONB
+      old/new-state diffs (which can carry user-supplied description / business-name content,
+      i.e. potential PII or business-sensitive text). The entity's owner believes the audit
+      history is scoped to people who can see the entity; it is not. This is the
+      read-collaborative posture applied to a per-entity audit surface — deliberate at the
+      platform level, but the per-entity Activity tab gives it a concrete operator-facing
+      surface that looks gated (it sits next to gated sibling tabs) and is not.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      CONTRADICTED-vs-expectation but the cross-owner read is a DELIBERATE platform posture
+      (read-collaborative, REFACTOR-024 family) — routes to caveat, not bug. The functional
+      test demand is a CHARACTERIZATION test pinning the current cross-owner reach (a non-owner
+      authenticated user gets 200 + rows), so a future tightening to owner-scoped reads is a
+      deliberate, test-visible decision rather than a silent regression.
+
+- id: H-004
+  hypothesis: |
+    When a data entity is soft-deleted (status DELETED), its Activity tab is hidden /
+    unreachable — consistent with the other entity-detail tabs, all of which disappear when
+    the entity is soft-deleted.
+  derivation: |
+    Every other tab in the entity-detail tab strip carries a `hidden: isStatusDeleted`-style
+    clause (DataEntityDetailsTabs.tsx:62,67,72,79,84,89,98); `/history` + `/linked-entities`
+    routes gate on `!isStatusDeleted`. A user expects the Activity tab to follow the same
+    soft-delete visibility rule as its siblings.
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Activity tab is the ONLY entity-detail tab rendered WITHOUT a `hidden:` clause
+      (`DataEntityDetailsTabs.tsx:91-94` — no hidden clause, contrast the seven sibling
+      tabs that hide on isStatusDeleted). Combined with the bare route mount (H-003) and the
+      backend's soft-delete-inclusive existence check (the F-014 getDataEntityAlerts sibling
+      uses `existsIncludingSoftDeleted` — per its implicit_adrs[1]; getDataEntityActivity
+      follows the same per-entity read convention), the Activity tab is the single surviving
+      tab on a soft-deleted entity AND it returns that entity's audit history. This is a
+      genuine product TENSION, not a pure bug: surfacing audit history on a soft-deleted
+      entity is operationally CORRECT (audit history matters most on deleted entities, and
+      F-014's per-entity alerts behave the same way for the documented audit-export use
+      case). The defect is the inconsistency + the lack of a permission gate around it: the
+      tab is privileged (survives deletion) but ungated (any authenticated user reaches it).
+    evidence:
+      - sidecar: "(F-196 feature-flow facet)"
+        section: per_entity_activity_tabs_visible_when_entity_deleted_inconsistent_with_other_tabs
+        cite: "DataEntityDetailsTabs.tsx:91-94 (no hidden clause) vs :62,67,72,79,84,89,98 (siblings hidden)"
+        note: "ui_unverified: false — the no-hidden-clause asymmetry is statically verified in the feature-flow"
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: implicit_adrs[1] + bugs_limitations_corner_cases[1]
+        cite: "AlertServiceImpl.java:327-335 (existsIncludingSoftDeleted) — F-014 sibling pattern"
+        note: "Per-entity reads are soft-delete-inclusive by the helper-name convention; getDataEntityActivity inherits"
+      - sidecar: "(WebFetch live doc)"
+        section: Visibility warning
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (verified 2026-06-03 status 200)"
+        note: 'Doc: "the tab returns the audit history even when the entity status is DELETED" — confirms the soft-delete reach'
+    operator_visible_failure: |
+      An operator who soft-deletes an entity (expecting it to vanish from all surfaces, as
+      every other tab does) finds the Activity tab still present and still serving the
+      entity's full audit trail to any authenticated user. The visual inconsistency
+      (one privileged tab among seven that hide) is itself confusing — there is no on-screen
+      explanation of why Activity is special. The deeper issue is the combination with H-003:
+      a UI-hidden (soft-deleted) entity's audit history, including old/new-state diffs, is a
+      reachable cross-owner surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      Functional demand: an e2e characterization that soft-deletes an entity, then asserts
+      (a) the Activity tab is still present + reachable, and (b) it still returns rows —
+      pinning the privileged-but-ungated behaviour so a future change (hide it, or gate it)
+      is deliberate.
+
+- id: H-005
+  hypothesis: |
+    When a user rapidly changes the date / event-type / user filter on the Activity tab,
+    the displayed results always correspond to the LAST filter the user set — an
+    in-flight request for a superseded filter never overwrites the results for the current
+    filter.
+  derivation: |
+    The product promise of any filter UI is "what I see matches what I last selected".
+    `ActivityResults.tsx:41-45` fires a fetch on every `[queryParams, dataEntityId]`
+    change; the question is whether stale responses are cancelled / ordered.
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static analysis (Rule-8 source read of ActivityResults.tsx:41-59): the useEffect
+      dispatches `fetchDataEntityActivityList({...queryParams, dataEntityId,
+      isQueryUpdated: true})` on every queryParams change with NO debounce and NO
+      AbortController — an in-flight fetch is NOT cancelled when the filter changes again.
+      `isQueryUpdated: true` signals the redux reducer to REPLACE (not append) results.
+      Whether a slow response for filter-A can land AFTER a fast response for filter-B and
+      overwrite B's results depends on the reducer's correlation logic (does it stamp/guard
+      responses against the current query, or blindly accept the latest arrival?). The redux
+      slice + the thunk's race-handling are NOT in this reflection's chain (no sidecar), so
+      the operator-visible outcome cannot be PINNED from static reading alone. Lower
+      amplitude than the global feed (1 query vs 5), but the same race contract. Requires a
+      measured run.
+    evidence:
+      - sidecar: "(source read for validation)"
+        section: ActivityResults useEffect
+        cite: "ActivityResults.tsx:41-59"
+        note: "source_read_for_validation: true — no debounce, no AbortController, isQueryUpdated:true REPLACE confirmed; reducer correlation NOT in chain"
+      - sidecar: "(F-196 feature-flow facet)"
+        section: per_entity_activity_no_useeffect_debounce_no_abortcontroller
+        cite: "DataEntityActivity/ActivityResults/ActivityResults.tsx:41-45"
+        note: "Race-contract facet asserted at the component; the win-condition (which response the reducer keeps) is the part requiring measurement"
+    operator_visible_failure: |
+      IF the reducer accepts the latest-arriving response without correlating it to the
+      current query, a user twiddling the calendar fast can briefly (or until the next
+      change) see results for a filter they already moved off — on an audit surface this is
+      misleading ("these are the events for THIS window" when they are not). Bounded by the
+      single-query shape (no count/list desync as in the global feed). The probe pins
+      whether the reducer guards or not.
+    probe_id: PENDING-F-196-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-196-1"
+
+- id: H-006
+  hypothesis: |
+    Each activity row on the per-entity tab visually distinguishes WHO caused the change:
+    a system/ingestion event vs a named human user vs an anonymous (DISABLED-mode) actor —
+    so a reviewer can tell at a glance whether the platform or a person made each change.
+  derivation: |
+    `ActivityItem.tsx:178-187` branches on `activity.systemEvent` (GearIcon) else renders a
+    UserIcon + actor name. A reviewer expects three distinguishable cases. The pillar frames
+    this as an audit surface where attribution is the point.
+  seed_source: response-shape + ui-label + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The component renders TWO explicit visual states and leaves a THIRD unhandled (Rule-8
+      source read of ActivityItem.tsx:178-187, identical to the global ActivityItem per
+      F-021 batch UI-A finding 2): `activity.systemEvent ? <GearIcon /> : <UserIcon /> +
+      (createdBy?.owner?.name || createdBy?.identity.username)`. Case 1 (system event):
+      GearIcon — correct WHEN the write path set is_system_event=true. Case 2 (real user):
+      UserIcon + resolved name — correct when the actor-resolution JOIN hits. Case 3
+      (anonymous DISABLED-mode mutation): `created_by` is null AND `systemEvent` is false
+      (a human mutated, not the system) → the UI renders `<UserIcon />` + empty name
+      (both `createdBy?.owner?.name` and `createdBy?.identity.username` resolve undefined)
+      → a UserIcon with NO actor text, visually distinct from a system event but presenting
+      a nameless human actor with no explanation. This is the same unhandled third state
+      F-021 documented at the global ActivityItem; the per-entity tab inherits it because it
+      reuses the same ActivityItem render branch. Additionally, the F-021 family pinned that
+      the write path may leave is_system_event unset for some ingestion/scheduler rows
+      (F-021 facet ingestion_attribution_null_created_by) — when that happens the GearIcon
+      branch mis-renders too. The promise is partly kept: system-vs-user is usually
+      distinguishable; the anonymous-human case is not handled.
+    evidence:
+      - sidecar: "(source read for validation)"
+        section: ActivityItem actor render
+        cite: "ActivityItem.tsx:178-187"
+        note: "source_read_for_validation: true — GearIcon/UserIcon branch + `createdBy?.owner?.name || createdBy?.identity.username` confirmed; null-name UserIcon is the unhandled third state"
+      - sidecar: "(parent F-021 feature-flow)"
+        section: batch UI-A finding 2 (activityitem three visual states)
+        cite: "F-021 feature-flow batch UI-A note (2) + ActivityItem.tsx:71-79 (global twin)"
+        note: "Per-entity ActivityItem reuses the same render branch; inherits the unhandled-anonymous third state"
+    operator_visible_failure: |
+      Under auth.type=DISABLED, an anonymous human edit to the entity renders on its
+      Activity tab as a UserIcon with a blank name — a reviewer sees "a user did this" with
+      no identity, indistinguishable in usefulness from no-attribution, and cannot tell it
+      apart from a row where actor resolution simply failed. Bounded to DISABLED deployments
+      + ingestion/scheduler rows with unset is_system_event. On the per-entity tab this lands
+      on the entity an operator is actively reviewing.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      Functional demand: a component/e2e test asserting the three actor-render states
+      (system -> GearIcon; real user -> UserIcon+name; anonymous null-created_by ->
+      explicit handled state, currently blank). MEDIUM confidence because the write-path
+      is_system_event population is asserted from the F-021 family, not re-verified here.
+
+- id: H-007
+  hypothesis: |
+    When a data entity is hard-deleted (purged, not soft-deleted), its historical activity
+    rows recorded on the per-entity tab are no longer needed — but for any entity still
+    present (soft-deleted or live), the full history is returned.
+  derivation: |
+    The per-entity tab reads through the shared ReactiveActivityRepositoryImpl find queries,
+    which (per F-021) INNER JOIN DATA_ENTITY. The reflection interrogates whether a soft-vs-
+    hard delete changes what the per-entity tab returns.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The per-entity read shares the global feed's `INNER JOIN DATA_ENTITY ON DATA_ENTITY.ID
+      = ACTIVITY.DATA_ENTITY_ID` (per F-021 reflection H-011 + drift class
+      inner_join_to_data_entity_hardelete_history_erasure). For a SOFT-deleted entity the
+      row still exists, so the INNER JOIN matches and the per-entity tab returns the history
+      (consistent with H-004 + the existsIncludingSoftDeleted gate). For a HARD-deleted
+      entity the DATA_ENTITY row is gone, the INNER JOIN matches nothing, and the activity
+      rows — though physically still in the activity table (no CASCADE DELETE) — drop from
+      every read path including this per-entity tab. The hypothesis as stated is confirmed:
+      soft-deleted -> history returned; hard-deleted -> history invisible. (The hard-delete
+      erasure is itself a documented F-021 bug H-011; here it merely scopes what the
+      per-entity tab can ever show.)
+    evidence:
+      - sidecar: "(parent F-021 reflection)"
+        section: H-011 + drift class inner_join_to_data_entity_hardelete_history_erasure
+        cite: "ReactiveActivityRepositoryImpl.java:219 (INNER JOIN DATA_ENTITY)"
+        note: "Shared find-query JOIN; the per-entity tab inherits soft-survives / hard-erases"
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: implicit_adrs[1] (existsIncludingSoftDeleted)
+        cite: "AlertServiceImpl.java:327-335"
+        note: "Per-entity reads admit soft-deleted entities by the helper-name convention"
+    severity: N/A
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      CONFIRMED but UNTESTED. Functional demand: an integration test seeding an entity with
+      activity rows, soft-deleting it (assert tab still returns rows), then hard-deleting it
+      (assert tab returns empty) — guards the soft-survives / hard-erases boundary that the
+      per-entity tab depends on.
+
+- id: H-008
+  hypothesis: |
+    When a user paginates the per-entity Activity tab (scrolls to load more), the next page
+    returns strictly-older rows for this entity without skipping or duplicating events.
+  derivation: |
+    `ActivityResults.tsx:47-59` `fetchNextPage` threads `lastEventId` + `lastEventDateTime`
+    (cursor) with `isQueryUpdated: false` (append). The product promise of infinite scroll
+    is "every event once, newest-first".
+  seed_source: endpoint-shape + ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The per-entity tab implements cursor pagination correctly at the UI tier (Rule-8 read
+      of ActivityResults.tsx:47-59: `fetchNextPage` guards on `hasNext`, threads
+      `(lastEventId=lastId, lastEventDateTime=lastDateTime)` from pageInfo, appends with
+      `isQueryUpdated: false`). It inherits the SHARED backend cursor mechanism, which F-021
+      H-008 found has an asymmetric-precision edge case: SECOND-truncation on the cursor
+      predicate vs microsecond ORDER BY, allowing possible visual out-of-order or skip
+      within a single second-bucket that splits across a page boundary UNDER SUSTAINED HIGH
+      WRITE RATE. On a single entity the per-second write rate is far lower than the global
+      feed's catalog-wide rate, so the edge case is much less likely to manifest here — but
+      the mechanism is identical and the upper-bound risk is non-zero for a very-hot entity
+      (e.g. one under heavy concurrent ingestion). The happy-path is confirmed; the
+      high-write-rate boundary is the unverified part (F-021's P-024 probe covers the
+      mechanism; the per-entity amplitude is lower).
+    evidence:
+      - sidecar: "(source read for validation)"
+        section: fetchNextPage cursor
+        cite: "ActivityResults.tsx:47-59"
+        note: "source_read_for_validation: true — hasNext-guarded cursor pagination with (lastEventId,lastEventDateTime) append confirmed"
+      - sidecar: "(parent F-021 reflection)"
+        section: H-008 (cursor visual-order under high write rate)
+        cite: "ReactiveActivityRepositoryImpl.java:285-291 + probe P-024"
+        note: "Shared cursor mechanism; per-entity amplitude lower (single-entity write rate << catalog-wide)"
+    operator_visible_failure: |
+      For a normal entity, none observable — pagination is correct. For an exceptionally hot
+      entity under sustained concurrent ingestion (many activity rows/second on the SAME
+      entity), a page-boundary that splits a second-bucket could skip or re-order a row, the
+      same class as F-021 H-008 but at much lower probability. The partial verdict reflects
+      "happy-path works; the rare high-write boundary is shared-and-unpinned".
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      Functional demand: an integration test seeding > size rows on one entity and asserting
+      forward cursor pagination returns each row exactly once newest-first. The high-write
+      boundary is covered by the shared F-021 P-024 probe (not re-emitted here).
+
+- id: H-009
+  hypothesis: |
+    The Event-type filter on the per-entity tab lets a user filter to any activity event
+    type that can occur on a data entity — and the set offered matches what the entity can
+    actually emit.
+  derivation: |
+    `Filters.tsx:31-37` builds the eventType options from `Object.values(ActivityEventType)`
+    minus a hardcoded `excludedTypes` array. A user expects the dropdown to offer the
+    filterable types and the filter to actually narrow results.
+  seed_source: ui-label + endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `Filters.tsx:22-37` (Rule-8 source read) defines exactly the same seven `excludedTypes`
+      as the GLOBAL feed (DATA_ENTITY_OVERVIEW_UPDATED, DATA_ENTITY_METADATA_UPDATED,
+      DATA_ENTITY_SCHEMA_UPDATED, DATA_ENTITY_RELATION_UPDATED, CUSTOM_METADATA_CREATED/
+      UPDATED/DELETED) and offers the remaining ~20 ActivityEventType values in the
+      SingleFilter. The selected value is threaded as `eventType` to getDataEntityActivity
+      and applied at the repository. The filter works as the user expects for the offered
+      types. NOTE the inherited F-021 facet: the seven excluded types are hidden CLIENT-SIDE
+      only — a hand-crafted URL `?eventType=DATA_ENTITY_SCHEMA_UPDATED` bypasses the dropdown
+      and the backend returns matching rows (the backend has no exclusion). So the promise
+      "the dropdown offers the filterable types" is confirmed; the implicit "these are the
+      only types the endpoint accepts" is false (same UI-client-vs-backend asymmetry as the
+      global feed). Within the hypothesis as stated (filter to any offered type), confirmed.
+    evidence:
+      - sidecar: "(source read for validation)"
+        section: excludedTypes + eventType SingleFilter
+        cite: "Filters.tsx:22-37 + :52-57"
+        note: "source_read_for_validation: true — seven excludedTypes (same as global), ~20 offered; eventType threaded to backend"
+      - sidecar: "(parent F-021 feature-flow)"
+        section: batch ZL finding (3) seven excluded types client-side-only
+        cite: "F-021 feature-flow batch ZL note (3)"
+        note: "Client-side-only exclusion; backend accepts all 27 — inherited at the per-entity tab"
+    severity: N/A
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      CONFIRMED but UNTESTED. Functional demand: an integration test selecting an event-type
+      and asserting the per-entity tab narrows to that type; optionally a guard that a
+      hand-crafted excluded-type query still returns rows (pins the client-side-only
+      exclusion, inherited from F-021).
+
+- id: H-010
+  hypothesis: |
+    The Activity tab on a data entity shows ALL change-event types the platform records for
+    that entity — so a steward gets a complete change history (description edits, tag/term
+    changes, status changes, ownership changes, schema changes, etc.).
+  derivation: |
+    The pillar frames the Activity Feed as the audit-trail surface; a steward expects "this
+    entity's complete history". The activity schema is data-entity-anchored
+    (activity.data_entity_id NOT NULL), so per-entity activity should be the entity's full record.
+  seed_source: pillar + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      For a data entity, the Activity tab does surface the full set of data-entity-anchored
+      event types (the ~27 ActivityEventType values, of which the UI offers ~20 and hides 7
+      client-side per H-009). Because the activity schema is structurally data-entity-scoped
+      (activity.data_entity_id NOT NULL FK — per F-021 H-010 + V0_0_48__add_activity.sql:4,12),
+      EVERY event the platform records is data-entity-anchored, so the per-entity tab is in
+      fact the complete record for that entity (subject to the hard-delete erasure of H-007
+      and the date-window filter). The hypothesis is confirmed AT THE ENTITY SCOPE. (The
+      complementary F-021 H-010 finding — that platform-level events like RBAC mutations,
+      Owner CRUD, Datasource registration are NOT in the activity table at all — is not a
+      gap for THIS surface, because those events have no data_entity_id and are out of scope
+      for a per-entity audit tab by construction.)
+    evidence:
+      - sidecar: "(parent F-021 reflection)"
+        section: H-010 + schema-rooted scope
+        cite: "V0_0_48__add_activity.sql:4,12 (data_entity_id NOT NULL FK)"
+        note: "Activity is data-entity-anchored by schema; the per-entity tab is therefore the complete per-entity record"
+      - sidecar: "(source read for validation)"
+        section: eventType options
+        cite: "Filters.tsx:31-37"
+        note: "source_read_for_validation: true — ~20 of 27 types offered; full set is data-entity-anchored"
+    severity: N/A
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    test_note: |
+      CONFIRMED but UNTESTED. Functional demand: an integration test performing several
+      change types on an entity (description edit, tag assign, status change) and asserting
+      each surfaces as a row on its Activity tab — the core happy-path promise of the feature.
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    Per-entity Activity tab `User` filter (t('User')) binds userIds to USER_OWNER_MAPPING.OWNER_ID,
+    not actor column activity.created_by — on a single entity "show only Alice's actions" is the
+    natural-and-only actor question and it is unanswerable; returns owner-mapping union, mislabel
+    sharper than on the global feed.
+  dedup_status: already_tracked
+  tracked_as: PLT-110
+  distinct_from: ""
+  recommended_log_as: "(already tracked — PLT-110 explicitly cites DataEntityActivity/Filters/Filters.tsx:58 'same misleading framing at the per-entity tab'). Reflection corroborates via the per-entity-specific operator-failure framing; no re-file."
+  proposed_fix_anchor: "ReactiveActivityRepositoryImpl.java:272-275 (rebind to ACTIVITY.CREATED_BY) OR relabel the per-entity Filters.tsx:58 control + i18n key. Maintainer design call per PLT-110; the per-entity tab must be fixed in the SAME change as the global feed (shared backend predicate)."
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Per-entity Activity tab is ungated (bare route + no @PreAuthorize + no OWNERSHIP join) — any
+    authenticated user reads any entity's audit trail incl. JSONB old/new-state diffs; anonymous
+    under auth.type=DISABLED; multi-tenant per-entity audit isolation unenforceable.
+  dedup_status: already_tracked
+  tracked_as: PLT-030
+  recommended_log_as: "(already tracked — PLT-030 'Per-entity Activity tab — no permission gate / no RestrictedRoute wrap; soft-deleted entity audit history reachable; cross-channel reach', cites DataEntityDetailsRoutes.tsx:105 + getDataEntityActivity cross-owner). Reflection corroborates (convergent validation). Live doc now carries the Visibility warning verbatim — the doc side is addressed; PLT-030 is the CODE-side gating decision."
+- hypothesis_id: H-004
+  one_line: |-
+    Activity tab is the ONLY entity-detail tab without a `hidden:` clause — the single surviving tab
+    on a soft-deleted entity, returning its audit history (operationally correct but visually
+    inconsistent + ungated). Privileged-but-ungated.
+  dedup_status: already_tracked
+  tracked_as: PLT-030
+  recommended_log_as: "(already tracked — PLT-030 names the soft-delete reach + 'ONLY tab without a hidden clause' explicitly). The visual-inconsistency framing is the reflection's added lens; no re-file. Live doc now documents the soft-delete reach."
+- hypothesis_id: H-006
+  one_line: |-
+    Per-entity ActivityItem reuses the global render branch; the anonymous-DISABLED-mode actor
+    (null created_by, systemEvent=false) renders as a UserIcon with a BLANK name — a nameless human
+    actor with no explanation; unhandled third visual state.
+  dedup_status: net_new
+  distinct_from: PLT-030
+  recommended_log_as: "doc-gap / caveat — fold into the activity-feed.md DISABLED-mode caveat family (the F-021 H-009 caveat). Distinct from PLT-030 (which is about gating, not actor-render). MEDIUM/LOW; the anonymous-actor render gap is a UI-polish + DISABLED-mode caveat, not a security finding."
+- hypothesis_id: H-007
+  one_line: |-
+    Per-entity Activity tab inherits the INNER JOIN DATA_ENTITY hard-delete erasure — a hard-deleted
+    entity's audit rows survive in the table but drop from the tab; soft-deleted survives.
+  dedup_status: already_tracked
+  tracked_as: PLT-030
+  recommended_log_as: "(the hard-delete-erasure mechanism is the F-021 H-011 bug, tracked separately; for THIS surface it merely scopes what the tab can show. The soft-delete reach is PLT-030.) Corroboration; no re-file."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# The whole point: confirmed-but-untested promises (H-001, H-007, H-009, H-010) belong HERE, not dropped to none.
+- use_case_id: F-196-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Opening a data entity's Activity tab + applying a filter returns events for THAT entity only (entity-id-scoped, no cross-catalog view-mode leakage)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-1)"
+  proposed_test: "IT-NNN (Playwright e2e): seed entity A + entity B each with activity; open A's Activity tab; assert only A's events render, B's absent, and no view-mode tabs are shown."
+- use_case_id: F-196-UC-2
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Selecting a person in the `User` filter narrows to events PERFORMED BY that person on this entity."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-2) — regression guard for the PLT-110 fix"
+  proposed_test: "Characterization test (LSN-029 @pins): seed two users sharing one owner; assert the per-entity tab `User`-filter currently returns BOTH users' events (GREEN now, RED when rebound to actor-axis)."
+- use_case_id: F-196-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "A non-owner authenticated user cannot read an entity's audit trail via the Activity tab."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-3) — characterization pin for the deliberate cross-owner posture (PLT-030)"
+  proposed_test: "Integration/e2e characterization: a non-owner authenticated user GETs /api/dataentities/{id}/activity and currently receives 200 + rows (RED if a future tightening gates it)."
+- use_case_id: F-196-UC-4
+  hypothesis_id: H-004
+  kind: teardown-constraint
+  promise: "A soft-deleted entity's Activity tab visibility is consistent with its sibling tabs."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-4)"
+  proposed_test: "e2e: soft-delete an entity; assert the Activity tab is still present + reachable + returns rows (pins the privileged-but-ungated behaviour vs the seven sibling tabs that hide)."
+- use_case_id: F-196-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "Rapid filter changes always render results for the LAST filter set (no stale-response overwrite)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-196-1 (reducer-correlation under rapid filter change)"
+  proposed_test: "(blocked on probe) — once the reducer's correlation behaviour is pinned, either a unit test on the slice (guard) or a debounce/AbortController fix + regression test."
+- use_case_id: F-196-UC-6
+  hypothesis_id: H-006
+  kind: render
+  promise: "Each row distinguishes system vs named-user vs anonymous actor."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-6)"
+  proposed_test: "Component/e2e: assert the three actor-render states (system->GearIcon; user->UserIcon+name; null-created_by->explicit handled state, currently blank UserIcon)."
+- use_case_id: F-196-UC-7
+  hypothesis_id: H-007
+  kind: teardown-constraint
+  promise: "Soft-deleted entity -> Activity tab returns history; hard-deleted entity -> empty."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-7)"
+  proposed_test: "Integration: seed entity + activity; soft-delete (assert tab returns rows); hard-delete (assert tab empty) — guards the INNER JOIN soft-survives/hard-erases boundary."
+- use_case_id: F-196-UC-8
+  hypothesis_id: H-008
+  kind: happy-path
+  promise: "Cursor pagination returns each event once, newest-first, for this entity."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-8)"
+  proposed_test: "Integration: seed > size rows on one entity; assert forward cursor pagination yields each row exactly once newest-first (high-write boundary covered by shared F-021 P-024)."
+- use_case_id: F-196-UC-9
+  hypothesis_id: H-009
+  kind: happy-path
+  promise: "Selecting an event type in the dropdown narrows the tab to that type."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-9)"
+  proposed_test: "Integration: seed mixed event types on an entity; select one in the eventType filter; assert only that type renders (optional guard: hand-crafted excluded-type query still returns rows)."
+- use_case_id: F-196-UC-10
+  hypothesis_id: H-010
+  kind: happy-path
+  promise: "Performing change actions on an entity (description/tag/status/...) surfaces each as a row on its Activity tab — the complete per-entity change record."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-196-UC-10) — THE core happy-path of the feature"
+  proposed_test: "IT-NNN (Playwright e2e): edit an entity's description + assign a tag + change status; open the Activity tab; assert three corresponding rows appear with correct event types + actor."
+
+### probes_emitted
+- probe_id: PENDING-F-196-1
+  hypothesis_id: H-005
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  expected_outcome: |
+    "When a user rapidly changes the date / event-type / user filter on the per-entity
+    Activity tab, the displayed results always correspond to the LAST filter set — an
+    in-flight request for a superseded filter never overwrites the current filter's results."
+  probe_shape: |
+    Local Playwright (headless) against a docker-compose odd-platform with a seeded entity
+    carrying many activity rows across several event types + date span. Open
+    /dataentities/{id}/activity; programmatically fire 5+ rapid filter changes (calendar +
+    eventType) faster than backend RTT, with network throttling to widen the race window;
+    assert the final rendered result set matches the LAST filter (not an earlier one).
+    Inspect the redux slice to determine whether responses are correlated/guarded against
+    the current query or accepted by arrival order. Local-only per Rule 6.
+
+### validation_gaps
+- sidecar: "(F-196 chain — all four UI hops)"
+  field_insufficient: |
+    The DataEntityActivity shell, Filters, ActivityResults, and ActivityItem hops are ALL
+    `sidecar: unresolved`. This reflection confirmed their behaviour via Rule-8 source reads
+    + the parent F-021 enrichment of the SHARED global component family — but the per-entity
+    variant has no sidecar of its own. The redux slice + thunk race-handling (needed to PIN
+    H-005) is not enriched anywhere.
+  proposed_refresh: |
+    Enrich four file-analyser sidecars: DataEntityActivity (shell), DataEntityActivity/Filters,
+    DataEntityActivity/ActivityResults (incl. the fetchDataEntityActivityList thunk + the
+    DataEntityActivities redux slice's response-correlation logic — load-bearing for H-005),
+    DataEntityActivity/ActivityResults/ActivityItem. Run Category F (request-input naming
+    alignment) on the userIds control to anchor the LSN-020 surface at this node directly.
+- sidecar: "(backend hop) getDataEntityActivity"
+  field_insufficient: |
+    The F-196 chain hop-5 is `unresolved: true` — no dedicated controller-method sidecar for
+    getDataEntityActivity exists (contrast the enriched getDataEntityAlerts sibling). The
+    backend posture is currently asserted by structural analogy to getDataEntityAlerts (F-014)
+    + the DataEntityController class sidecar. The activityService.getDataEntityActivityList
+    service method + its repository find query are not enriched as their own nodes.
+  proposed_refresh: |
+    Enrich a getDataEntityActivity controller-method sidecar (mirroring getDataEntityAlerts)
+    + an ActivityServiceImpl.getDataEntityActivityList method note, confirming: no @PreAuthorize,
+    no SECURITY_RULES entry, soft-delete-inclusive existence check (or NOT — verify whether it
+    uses existsIncludingSoftDeleted like alerts, currently asserted by analogy), the userIds ->
+    OWNER_ID bind via the shared getCommonConditions, and the INNER JOIN DATA_ENTITY. This
+    closes the F-196 hop-5 unresolved flag.
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: '"This is an entity-ownership axis, not an actor axis. It does not answer ''what did Alice do last week''" (the doc now describes the actual behaviour)'
+  code_does: "The UI control is still labelled t('User') (Filters.tsx:58) and the dropdown lists Owners — the on-screen label contradicts what the doc now correctly explains"
+  recommended_log_as: "(no new doc-gap — the doc is now CORRECT. The residual is the CODE: the misleading UI label, tracked as PLT-110. This is a doc-now-matches reconciliation: the F-196b scanner finding's premise (LSN-020 doc amplifier) is partially resolved doc-side; the UI label is the remaining surface.)"
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: '"Any authenticated user can navigate to /dataentities/{id}/activity for any catalogued entity ... cannot enforce [per-team isolation] on this surface today" (Visibility warning now present)'
+  code_does: "Bare route mount + no @PreAuthorize + no OWNERSHIP join — matches the doc warning exactly"
+  recommended_log_as: "(no new doc-gap — the doc now carries the Visibility warning. The F-196c scanner finding (missing-caveat for no-permission-gate) is RESOLVED doc-side; the residual is the CODE gating decision, PLT-030.)"
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: '"exposes a smaller filter surface than the global Activity page does (the entity is already fixed)" (no-type-axis asymmetry now documented)'
+  code_does: "Filters.tsx:44-60 renders only Calendar + eventType + userIds; no AppTabs — matches the doc"
+  recommended_log_as: "(no new doc-gap — the doc now documents the asymmetry. The F-196a scanner finding (missing-caveat for no-type-axis) is RESOLVED doc-side; doc-and-code now agree.)"
+
+## maintainer_notes
+
+(intentionally left empty for the auto-generated reflection — the maintainer hand-edits
+this section across refreshes; first refresh will preserve any maintainer additions
+verbatim per Rule 5)
+
+NOTE for the maintainer: this reflection's three doc_drift_findings are a DOC-CAUGHT-UP
+reconciliation. The activity-feed.md live page was re-fetched 2026-06-03 and now documents
+(a) the no-type-axis asymmetry, (b) the User-filter ownership-not-actor axis, and (c) the
+cross-owner + soft-delete Visibility warning — all three of which the F-196 scanner pass
+(SR-20260527T2000Z, findings F-196a/b/c) flagged as undocumented on 2026-05-27. The doc side
+has been addressed (likely via the DOC-110 / DOC-245 family). The residual findings are now
+CODE-side only: the misleading t('User') UI label (PLT-110) and the ungated tab (PLT-030).
+The scanner write-back annotations on F-196.yaml (findings_dedup_corroborated) should be
+updated to reflect doc-now-matches.

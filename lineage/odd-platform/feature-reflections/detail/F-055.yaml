@@ -1,0 +1,668 @@
+---
+feature_id: F-055
+pillar_anchored_id: P-05:F-004
+pillar: P-05 Data Lineage
+feature_name: "Lineage depth boundary — UI dropdown advertises [1..20] cap; URL parser / API / SQL accept any positive integer"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__LineageGraph.md
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+  - odd-platform__java__service__service__LineageServiceImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200   # via LineageGraph sidecar's live WebFetch 2026-05-19; not re-fetched this reflection
+    note: |-
+      Documents lineage_depth as "Number of hops ... minimum 1" with NO maximum; the UI's
+      20-cap (constants.ts:97-99) is undocumented. Doc claim "Unset returns the platform's
+      default depth" is contradicted by code (NPE on null). Cross-referenced, not the source of intent.
+  - url: "https://docs.opendatadiscovery.org/features/data-lineage/data-objects"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Describes "configurable upstream / downstream depth" + "pan, zoom, and on-click expansion";
+      SILENT on the [1..20] range, cycle/diamond rendering, click-through depth compounding,
+      and the URL-is-the-contract asymmetry.
+hypothesis_summary:
+  total: 11
+  confirmed: 2
+  contradicted: 6
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "A user (or any caller) editing the URL to ?d=10000 drives an unbounded depth-10000 recursive-CTE walk; the dropdown's [1..20] cap validates at NO layer below the dropdown."
+related_feature_flows: [F-005, F-016]   # F-005 = recursive-CTE walk semantics (sibling); F-016 = group-lineage read
+related_concepts:
+  - lineage-depth-traversal
+  - data-lineage
+related_drift_classes:
+  - ui_visible_safety_boundary_does_not_validate_at_any_layer_below
+  - ui_amplification_via_click_through_bypasses_dropdown_cap
+  - ui_amplification_via_url_routing_chain
+  - postgres_resource_exhaustion_via_unbounded_recursive_cte
+new_drift_classes_proposed: []
+---
+
+# Lineage depth boundary — product-owner reflection
+
+## product_owner_narrative
+
+The Lineage tab is the daily-use canvas of the Data Lineage pillar (P-05): a user opens any data-entity detail page, clicks Lineage, and sees the entity at the centre with its upstream producers fanning left and downstream consumers fanning right, rendered as a `d3-hierarchy` tree with pan/zoom (per `LineageGraph.md:understanding` + `:concepts.operations`). The single most prominent control the user is handed is a depth dropdown advertising the options `1` through `20` (`LineageGraph.md:concepts.entities` — `lineageDepth array (constants.ts:97-99)`; rendered by `LineageControls.tsx:104-118`). The product promise that dropdown makes is unambiguous to anyone who reads a screen: *you can ask for between 1 and 20 hops of lineage, and 20 is as deep as this goes.* This feature, F-055, is precisely the contract that dropdown advertises — and whether the system below the dropdown honours it.
+
+A user interacts with depth in three ways, and a senior product owner has to look at all three from the screen, not from the endpoint. (1) They pick a value from the dropdown — this writes `?d=N` into the browser URL (`LineageGraph.md:implicit_adrs` — "URL is the source of truth for view state"). (2) They click a node title to re-centre the canvas on that node — which navigates to that node's own Lineage tab carrying `d: node.depth || 1` (`LineageGraph.md:concepts.operations` — `Node.tsx`; `:implicit_adrs` — "click-through ... uses node.depth as new d"). (3) They click "Load N more" on a leaf to expand one hop further — always a depth-1 fetch (`LineageGraph.md:invariants` — LoadMore is depth-1 expansion). The URL is shareable and hand-editable; the dropdown is a `<select>` whose options are exactly the 20-entry array (per the feature-flow chain hop 1b — the native `<select>` will not let the browser pick a value outside its option list, *but the URL `?d=` is unaffected*).
+
+The working parts below the screen are a four-hop backend chain: the controller `GET /api/dataentities/{id}/lineage/{down,up}stream` carries `@Min(1)` and **no `@Max`** (`getDataEntityDownstreamLineage.md:concepts.invariants` + `:bugs[1]`); the service `LineageServiceImpl.getLineage(... int lineageDepth ...)` wraps the value in `LineageDepth.of(lineageDepth)` and hands the primitive straight through with **no `Math.min` clamp** (`LineageServiceImpl.md:bugs[2]`, line 96); the repository consumes the depth directly as the **sole** recursion terminator `tDepth.lessThan(lineageDepth.getDepth())` in a hand-written Postgres `WITH RECURSIVE` CTE with **no cycle guard and no upper bound** (`ReactiveLineageRepositoryImpl.md:bugs[0]` + `:bugs[3]`, lines 174, 177). The full edge list is then collected into JVM heap via `.collectList()` (`LineageServiceImpl.md` line 102). So the user-visible 20-cap is enforced in exactly one place — the dropdown widget — and nowhere in the URL parser, the controller, the service, or the SQL.
+
+Integration story: this feature is the sibling of F-005 (which captures the recursive-CTE walk semantics end-to-end) and shares the same chain; the depth boundary is the user-facing slice F-005 does not isolate. It feeds the same cross-owner-enumeration surface the whole lineage read path carries (`getDataEntityDownstreamLineage.md:security` — the lineage table has no owner column, the read is `.authenticated()` only), so depth amplification and cross-owner reach compound: a deeper walk reaches more entities, across more owner boundaries, in one request. Under `auth.type=DISABLED` the entire affordance — dropdown, URL, click-through — is reachable unauthenticated (`getDataEntityDownstreamLineage.md:bugs[6]`).
+
+Edge cases a product owner would demo: the click-through compounding (drill 5 nodes out and the next view silently opens at depth 5, `LineageGraph.md:downstream_side_effects` Node.tsx row); the diamond DAG that renders the same node twice because the UI builds a tree not a DAG (`LineageGraph.md:bugs[0]`); the cyclic subgraph that has no visited-set guard and is bounded only by the depth ceiling (`ReactiveLineageRepositoryImpl.md:bugs[0]`); and the operator who reads the API docs ("minimum 1", no maximum) plus sees the 20-entry dropdown and reasonably concludes 20 is a hard platform cap when it is decorative.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens the Lineage tab and the depth dropdown shows [1..20], selecting 20 returns at most 20 hops of lineage and the user cannot request more than 20 hops THROUGH THE DROPDOWN."
+  derivation: "UI label seed — the dropdown's only option source is the lineageDepth=[1..20] array (constants.ts:97-99) rendered into a native AppSelect (feature-flow hop 1b)."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The depth dropdown is an AppSelect whose options are exactly the 20-entry lineageDepth
+      array (LineageGraph.md:concepts.entities + LineageControls.tsx:104-118). The feature-flow
+      chain hop 1b (PRIMARY-SOURCE confirmed batch J ui-review-2026-05-26) records that the
+      AppSelect's `native` prop renders an HTML <select>, which the browser will not allow to
+      hold a value outside the <option> list. So a user constrained to the dropdown genuinely
+      cannot pick > 20: selecting 20 writes ?d=20, the canvas fetches a 20-deep tree. The cap
+      holds for the dropdown interaction in isolation — which is precisely why the boundary
+      LOOKS enforced and the real gaps (H-002/H-003) are invisible to a casual screen test.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: concepts.entities + implicit_adrs
+        cite: "constants.ts:97-99 (lineageDepth=[1..20]); LineageControls.tsx:104-118 (AppSelect)"
+        note: "Dropdown options ARE the [1..20] array; native select constrains the widget."
+      - sidecar: "(feature-flow F-055.yaml chain hop 1b)"
+        section: chain
+        cite: "LineageControls.tsx:103-118"
+        note: "PRIMARY-SOURCE batch J: native <select> rejects out-of-list values; only the dropdown path is constrained."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When a user (or any API caller) sets the depth to a value above 20 — by hand-editing the URL to ?d=10000, or by curl with lineage_depth=10000 — the system rejects it or clamps it to 20, because the dropdown advertises 20 as the cap."
+  derivation: "Endpoint-shape + pillar-mission seed — the parameter is `lineage_depth`, the dropdown caps at 20, and a UI-visible safety boundary is expected to validate at the layers below it."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Nothing rejects or clamps it. The URL parser uses query-string parseNumbers:true which
+      converts ?d=10000 to d:10000 with no clamp (LineageGraph.md:bugs[1], useQueryParams.ts:36);
+      HierarchyLineage.tsx:47 passes d straight into the fetch; the controller carries @Min(1)
+      and NO @Max (getDataEntityDownstreamLineage.md:bugs[1]); the service hands the primitive
+      int through with no Math.min (LineageServiceImpl.md:bugs[2], line 96); the repository uses
+      lineageDepth.getDepth() directly as the SOLE recursion terminator tDepth.lessThan(...) with
+      no defensive check (ReactiveLineageRepositoryImpl.md:bugs[3], line 174). The depth-10000 walk
+      then materialises CTE intermediate rows in Postgres work_mem and the full edge list in JVM
+      heap via .collectList() (LineageServiceImpl.md line 102). The 20-cap validates at exactly
+      ONE layer (the dropdown widget) and zero layers below it.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "useQueryParams.ts:33-36 (parseNumbers:true) + HierarchyLineage.tsx:47 (no clamp)"
+        note: "URL accepts any integer; dropdown's [1..20] is presentation-only."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "DataEntityApi.java:918 (@Min(1) only) + openapi.yaml:1294-1300 (no maximum)"
+        note: "Controller has lower bound only; no @Max(20)."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "LineageServiceImpl.java:96 (LineageDepth.of(lineageDepth), no Math.min)"
+        note: "Service hands the primitive int through unchanged."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "ReactiveLineageRepositoryImpl.java:174 (tDepth.lessThan(lineageDepth.getDepth()), no clamp)"
+        note: "Repository consumes the value directly as the only recursion bound."
+    operator_visible_failure: |
+      (1) An operator who reads the API reference ("minimum 1", no maximum stated) AND sees the
+      20-entry dropdown reasonably concludes 20 is the hard platform cap — it is not; the contract
+      they are actually held to is the JVM/Postgres resource limit. (2) A user hand-editing ?d=
+      (URL pasted from a colleague, copy-paste from CI logs, idle curiosity) or a third-party API
+      consumer with no dropdown at all can drive a depth-10000 recursive-CTE walk that pegs a
+      Postgres connection / exceeds work_mem / exhausts JVM heap with no defence at any layer —
+      an authenticated-DoS amplification surface (unauthenticated under auth.type=DISABLED). (3)
+      The depth amplification compounds the cross-owner reach of the same read path: a deeper walk
+      enumerates more entities across more owner boundaries in a single request.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user has set depth to 50 via the URL and then clicks a node title to re-centre the canvas, the new view opens with a depth clamped to the dropdown's 20-cap — clicking does not propagate a depth above 20."
+  derivation: "UI-label + view-mode seed — click-through is a primary navigation affordance; a user-visible cap that is silently bypassable by clicking does not hold."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Click-through propagates d: node.depth || 1 with NO Math.min clamp (LineageGraph.md:
+      downstream_side_effects Node.tsx row + implicit_adrs "click-through uses node.depth as new
+      d"; Node.tsx:46-52). node.depth is the d3-hierarchy depth of the clicked node within the
+      currently-rendered tree. If the user previously rendered the tree to depth 50 by editing
+      ?d=50, clicking a node at depth 50 navigates to a new view with ?d=50 — bypassing the
+      dropdown cap entirely, because the dropdown is never consulted on propagation; the URL
+      parser (the actual contract) accepts the value unclamped.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: implicit_adrs + downstream_side_effects + bugs_limitations_corner_cases[1]
+        cite: "Node.tsx:46-52 (d: node.depth || 1, no Math.min); useQueryParams.ts:36 (parses any int)"
+        note: "Click-through carries the rendered depth verbatim; no clamp to 20."
+    operator_visible_failure: |
+      A user who never touches the dropdown after one URL edit can keep amplifying depth purely by
+      clicking node titles to drill in — each click can carry forward a depth above the advertised
+      cap. The dropdown's 20 is bypassed by a click, not just by a manual URL edit, so the "safety
+      boundary" is defeated by the most ordinary exploration gesture. Combined with H-002 this is
+      the same DoS/cross-owner amplification surface reached without ever leaving the UI.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a user clicks a node title at rendered depth N to re-centre the canvas, the new view opens at the user's intended depth (the dropdown value they last chose), not at a depth that grows the deeper they drill."
+  derivation: "View-mode + senior-PO 'is the interaction intuitive/convenient' seed — re-centring on a node is an exploration gesture; a user does not expect it to silently change how deep the query runs."
+  seed_source: view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The new view opens at d = the CLICKED node's rendered depth (Node.tsx:51 d: node.depth || 1),
+      which grows monotonically as the user drills outward: drill 5 hops from root and clicking
+      that node opens a depth-5 view; from there drill further and depth keeps climbing
+      (LineageGraph.md:downstream_side_effects Node.tsx row + feature-flow facet
+      click_through_compounds_depth_monotonically). No slider state intervenes; the user did not
+      ask for a deeper query, they asked to look at a node.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: downstream_side_effects + implicit_adrs
+        cite: "Node.tsx:46-52, 51 (d: node.depth || 1)"
+        note: "Propagated depth tracks rendered depth, climbing per drill-in click."
+      - sidecar: "(feature-flow F-055.yaml observed_vs_expected)"
+        section: "facet click_through_compounds_depth_monotonically"
+        cite: "LineageGraph.md:bugs[3] + implicit_adrs[4]"
+        note: "Monotonic compounding per click; operators casually exploring drive deeper queries without intent."
+    operator_visible_failure: |
+      Operators casually exploring a graph drive progressively more expensive recursive-CTE queries
+      without any intent to do so — the cost (latency, Postgres load, payload size) silently grows
+      as they click deeper, which is the opposite of the convenient, predictable exploration the
+      canvas presents on screen. A user cannot reason about why the canvas got slow because nothing
+      on screen told them the click changed the query depth.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a lineage subgraph contains a cycle (e.g. a transformer that consumes its own downstream artefact), requesting a large depth terminates quickly via cycle detection rather than materialising rows up to the full requested depth."
+  derivation: "Negative-space seed — a recursive graph walk over real-world lineage will hit cycles; a user expects the canvas not to melt the database on a cyclic subgraph."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no cycle detection. The CTE body is UNION ALL with no visited-set guard and no
+      Postgres WITH...CYCLE clause; the ONLY termination is tDepth.lessThan(lineageDepth.getDepth())
+      (ReactiveLineageRepositoryImpl.md:bugs[0], lines 163-175). For a cyclic subgraph at ?d=10000
+      the recursion materialises intermediate rows up to depth 10000 in Postgres work_mem before
+      the outer selectDistinct prunes the FINAL projection; the intermediate work is never pruned.
+      The UI then renders cross-edges separately as CrossLink components, but that is cosmetic —
+      the resource cost has already been paid in the database (LineageGraph.md:invariants on
+      crossEdges + ReactiveLineageRepositoryImpl.md:bugs[0]).
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "ReactiveLineageRepositoryImpl.java:163-175 (UNION ALL, no cycle guard); 177 (tDepth sole terminator)"
+        note: "No visited-set, no WITH...CYCLE; only the depth bound stops recursion."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: performance.resource_allocation
+        cite: "LineageServiceImpl.java:102 (.collectList materialises full edge list in heap)"
+        note: "Service collects the full result; heap pressure scales with cyclic edge count."
+    operator_visible_failure: |
+      A user opening lineage on an entity whose subgraph happens to contain a cycle, with a high
+      depth (set via dropdown=20, URL edit, or click-through compounding), triggers a recursive-CTE
+      walk whose intermediate row count grows with depth × cyclic-edge-count rather than terminating
+      at the cycle. The observable effects: slow lineage tab, Postgres CPU/work_mem pressure, JVM
+      heap pressure, and on a small instance a saturated database that degrades the whole platform.
+      No cap and no cycle guard means the two failure modes (H-002 unbounded depth + this) multiply.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When a user opens the Lineage tab on an entity whose downstream subgraph crosses into entities owned by other teams, the depth-bounded walk returns only entities the user has an ownership association with — or the depth boundary at least limits how far cross-owner reach extends."
+  derivation: "Cross-pillar seed (P-05 feeds P-09 security) + senior-PO 'can the user customise / is the scope what they expect' — the depth control is the only knob bounding reach, so it interacts with the cross-owner posture."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The walk is not owner-scoped at any layer for the lineage-canvas read path. The lineage table
+      has no owner column; LineageServiceImpl.getLineage resolves the root by raw dataEntityId with
+      no fetchAssociatedOwner() anchor (LineageServiceImpl.md:bugs anchor-set-NOT-applied + security
+      owner_scoping BYPASSES); the repository CTE filters only is_deleted (ReactiveLineageRepository
+      Impl.md:security owner_scoping BYPASSES). So the depth boundary is the ONLY thing bounding how
+      far a user reaches into other owners' pipeline structure — and that boundary is itself
+      unbounded (H-002). The UI realises this: the only fetch surface is getDataEntityDownstream/
+      UpstreamLineage (the negative-case sibling), never the owner-anchored getMyObjectsWith*
+      (LineageGraph.md:bugs anchor-set-not-exercisable + security known_security_gaps).
+    evidence:
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: security.owner_scoping + bugs_limitations_corner_cases
+        cite: "LineageServiceImpl.java:54-57 (no AuthIdentityProvider), 87-122 (no owner anchor)"
+        note: "Negative-case sibling of the anchor-set pattern; no owner scoping on the canvas read."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: security.known_security_gaps
+        cite: "thunks.ts:19,36 (only fetch surface is getDataEntityDownstream/UpstreamLineage)"
+        note: "UI is the realisation point of the cross-owner enumeration; no 'my owners' toggle."
+    operator_visible_failure: |
+      Any authenticated user (anonymous under auth.type=DISABLED) opening the Lineage tab on any
+      entity reads the full reachable subgraph across owner boundaries — names, oddrns, datasource
+      attribution, owner names — for entities they have no ownership relationship to. The depth
+      control does not restrict this; raising depth WIDENS the cross-owner footprint. There is no
+      "restricted view" or "only my owners" affordance on screen. This is the user-observable
+      consequence of the read-collaborative posture (REFACTOR-203) realised on the depth surface.
+      NOTE: per the platform's documented read-collaborative posture (system-mission P-09
+      maintainer notes — "every authenticated user can enumerate the entire catalog"), the
+      cross-owner READ itself may be an intended posture, not a bug; what F-055 adds is that the
+      depth boundary does not bound it AND the boundary is undocumented as such.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    sme_consultation_recommended: true
+    sme_consultation_question: "Is cross-owner lineage READ an intended read-collaborative posture for a data-catalog (cf. DataHub/Amundsen browse-all), making the depth-boundary gap a DoS/cost concern rather than an authz bug — or do operators of a system like this expect per-owner lineage visibility scoping by default?"
+    sme_consultation_archetype: comparative
+
+- id: H-007
+  hypothesis: "When a user opens the Lineage tab without ever touching the depth control (fresh navigation, no ?d= in the URL), the canvas loads at the platform's sensible default depth as the API reference documents ('Unset returns the platform's default depth')."
+  derivation: "Doc-claim seed — the live API reference states unset depth returns a platform default; response-shape + UI-default seed for the fresh-open case."
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Two truths split by caller. (a) FROM THE UI: there is a default, but it is d=1, hardcoded in
+      the UI, not the platform — defaultLineageQuery.d=1 (constants.ts:77) means useQueryParams
+      returns d:1 for a URL with no query string, so the UI ALWAYS supplies lineage_depth=1
+      (LineageGraph.md:invariants + implicit_adrs "UI defaults d=1 silent default-depth contract").
+      The fresh canvas therefore loads a 1-hop neighbourhood — an artificially shallow first
+      impression of the graph, NOT a documented platform default. (b) FROM A DIRECT API CALLER:
+      there is NO default at all — omitting lineage_depth sends a null Integer that autoboxes to
+      the service's primitive int and throws NullPointerException -> HTTP 500 before the body runs
+      (getDataEntityDownstreamLineage.md:bugs[0] + LineageServiceImpl.md:bugs null-NPE). So the doc
+      claim "Unset returns the platform's default depth" is true for neither path: the UI masks it
+      with d=1, the API crashes.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: invariants + implicit_adrs + docs_link_semantic.doc_drift_findings
+        cite: "constants.ts:77 (defaultLineageQuery.d=1); HierarchyLineage.tsx:47"
+        note: "UI hardcodes d=1; the 'unset' API branch is unreachable from the UI."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: bugs_limitations_corner_cases[0] + docs_link_semantic.doc_drift_findings[0]
+        cite: "DataEntityController.java:257 + LineageService.java:12 + LineageServiceImpl.java:89"
+        note: "Null Integer -> primitive int NPE -> 500; documented default does not exist."
+    operator_visible_failure: |
+      (UI) A first-time user sees a 1-hop graph and may conclude the entity has almost no lineage,
+      when in fact they are seeing the shallowest possible view; the default is a product decision
+      that undersells the feature, undocumented as the de-facto default. (API) A third-party caller
+      following the documented "unset returns default depth" guidance gets a 500 with a server
+      exception trace, cannot distinguish bad-request from server-error, and has no way to obtain
+      the promised default behaviour. This is a doc-vs-code contradiction (the doc promises a
+      default the code does not implement) AND a UI under-default.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a user picks a depth from the dropdown and the canvas renders, what they see at depth N matches the backend walk of N hops — i.e. the depth they chose is the depth they get, in both directions (upstream and downstream)."
+  derivation: "Response-shape + pillar-mission seed ('tune lineage_depth ... open the Lineage tab') — the depth value maps predictably to hops rendered."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The depth maps to hops as the user expects for the happy-path tree case. HierarchyLineage
+      fetches downstream then upstream, each with lineageDepth=d (LineageGraph.md:operations); the
+      service issues the recursive-CTE walk with LineageDepth.of(d) for the rooted entity in the
+      chosen direction (LineageServiceImpl.md:operations getLineage); the repository CTE seeds at
+      depth=1 and recurses while tDepth < d, following parent->child for DOWNSTREAM and child->parent
+      for UPSTREAM (ReactiveLineageRepositoryImpl.md:understanding + operations lineageCte). The
+      backend behaviour is pinned by an integration test that walks DEPTH=1/2/3 in BOTH directions
+      on a hand-built 7-edge tree and asserts depth=1 from a root returns ONLY direct children
+      (ReactiveLineageRepositoryImpl.md:tests covered getLineageRelationsTest_WithRoots,
+      LineageRepositoryTest.java:130-281). NOTE the off-by-one the test pins: tDepth.lessThan(d)
+      with seed at depth 1 means LineageDepth.of(0) returns seed-only (1 hop), so "depth N" is
+      "N hops including the seed" — the test confirms the depth-1 case but the dropdown semantics
+      (does dropdown "1" mean 1 hop?) are confirmed only at the repository layer, not end-to-end.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+        section: tests_coverage_semantic.covered_behaviours
+        cite: "LineageRepositoryTest.java:130-281 (getLineageRelationsTest_WithRoots, depth 1/2/3 both directions)"
+        note: "Repository-layer integration test pins depth->hops for the tree case (test_class: integration)."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: concepts.operations
+        cite: "HierarchyLineage.tsx:44-67 (dual fetch with lineageDepth=d)"
+        note: "UI sends the chosen depth to both directions."
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "LineageRepositoryTest.getLineageRelationsTest_WithRoots (repository-tier; depth->hops for tree shapes, depth 1/2/3 both directions)"
+    test_demand: none
+
+- id: H-009
+  hypothesis: "When two lineage subgraphs share a node reachable by two paths (a diamond: A->B, A->C, B->D, C->D), the canvas renders D once — a user sees each entity a single time in the graph."
+  derivation: "Negative-space + senior-PO 'is the UI intuitive' seed — a user expects one node per entity, not duplicates, in a lineage visualisation."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      D renders TWICE. The UI builds a d3-hierarchy TREE, not a DAG: hierarchy(root, childAccessor)
+      re-visits the same raw node along each path with no visited-set check, so a diamond produces
+      duplicate HierarchyPointNode entries (each with its own x/y), and React keys on position mount
+      two SVG nodes (LineageGraph.md:bugs[0] diamond-DAG-amplification + invariants on tree topology).
+      The backend recursive CTE deduplicates only the FINAL (parent,child) projection at the outer
+      selectDistinct; intermediate diamond rows are materialised first (getDataEntityDownstreamLineage
+      .md:bugs[7]).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: bugs_limitations_corner_cases[0] + invariants
+        cite: "generateGraph.ts:68-76 (no visited-set); LineageGraph.tsx:84-110 (node-per-instance)"
+        note: "Tree-not-DAG: diamond node rendered twice; no client-side dedupe before tree build."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+        section: bugs_limitations_corner_cases[7]
+        cite: "ReactiveLineageRepositoryImpl.java:126-131 (outer selectDistinct) + 163-175 (UNION ALL no inner DISTINCT)"
+        note: "Backend dedups only the final projection; diamond intermediates materialised."
+    operator_visible_failure: |
+      A user tracing a diamond-shaped lineage (common where two jobs both write the same dataset)
+      sees the shared entity duplicated in the canvas — visually misleading (is this two entities
+      or one?), and as depth grows the duplication amplifies the render cost (O(N) SVG primitives
+      with diamond multiplication). The depth boundary interacts: deeper walks over diamond-heavy
+      topologies multiply duplicate nodes. This is a render-correctness + performance gap, not a
+      data-loss one.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When a user expands lineage repeatedly via 'Load N more' on many leaf nodes, the canvas keeps the displayed graph bounded — old expansions can be collapsed or evicted so a long exploration session does not accumulate unbounded state."
+  derivation: "Senior-PO 'is it convenient / customisable' seed — LoadMore is the primary depth-extension affordance; a user expects to be able to walk it back."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      LoadMore accumulation is monotonic with no collapse affordance. Each LoadMore dispatches a
+      lineageDepth=1 fetch and MERGES new nodes/edges into module-level globals
+      localDownstreamState.allNodes/allEdges (LineageGraph.md:bugs[3] monotonic-accumulation +
+      operations LoadMoreButton). There is no "remove this expansion" action, no LRU eviction, no
+      max-size cap; the LoadMore button hides itself after click but the underlying data and the
+      rendered SVG stay (LineageGraph.md:bugs[3]). State is bounded only by navigating to a new
+      root entity (slice reset).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph.md
+        section: bugs_limitations_corner_cases[3] + implicit_adrs
+        cite: "dataEntityLineage.slice.ts:206-220 (monotonic merge); LoadMoreButton.tsx:55-65"
+        note: "No collapse / eviction / cap; module-level globals grow until root change."
+    operator_visible_failure: |
+      A user exploring a large graph by clicking LoadMore on dozens of leaves accumulates every
+      batch in memory and in the rendered SVG tree, with no way to fold a branch back in. On a
+      long session against a 10K-node graph this drives browser memory pressure and frame-budget
+      exhaustion (no virtualisation), and the only "reset" is to navigate away and lose the
+      exploration. The interaction is not convenient: expansion is one-way.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a curious user sets ?d=20 (the max dropdown value) on an entity at the centre of a dense, real-world lineage graph, the Lineage tab returns within an interactive latency budget (e.g. < 2s) rather than pegging Postgres or timing out."
+  derivation: "Performance + negative-space seed — 20 is the advertised max; the user expects opening the max to be a supported, performant operation, not a foot-gun. Whether it is requires measuring against a real dense graph."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Cannot be determined from the chain alone — the answer depends on real graph density,
+      Postgres work_mem, and connection behaviour under load. The static facts establish the RISK
+      (no caching, recursive-CTE cost grows as O(branching^depth) for diamonds, full-graph
+      .collectList() into heap, no statement_timeout enforced at the repository, no virtualisation
+      at the UI — getDataEntityDownstreamLineage.md:performance + ReactiveLineageRepositoryImpl.md:
+      performance), but whether depth=20 on a representative dense entity stays within an
+      interactive budget is a runtime question. Per Rule 6 this is locally executable: seed a dense
+      + a cyclic lineage subgraph in a local Testcontainers Postgres and measure the depth=20
+      (and depth=10000) walk latency + row counts via the existing LineageRepositoryTest harness.
+    evidence:
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: performance.resource_allocation + scaling_characteristics
+        cite: "LineageServiceImpl.java:102 (.collectList full graph); no @Cacheable; no cancel verification"
+        note: "Cost shape is known; the latency at depth=20 on a dense graph is a measured unknown."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+        section: performance.known_performance_gaps
+        cite: "ReactiveLineageRepositoryImpl.java:174, 122-131 (no cap); 163-175 (no cycle guard)"
+        note: "No statement_timeout at this layer; runtime measurement required."
+    operator_visible_failure: |
+      If depth=20 on a representative dense graph already exceeds an interactive budget, then the
+      advertised maximum dropdown value is itself a foot-gun (the worst case is reachable from the
+      sanctioned UI, not just from URL edits) — which would raise H-002's severity and argue for a
+      cap well below 20 plus a statement_timeout. The probe resolves whether 20 is a safe maximum
+      or a latent self-inflicted DoS.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-055-1
+    routes_to_finding: validation-gap
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: probe
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Dropdown advertises [1..20] cap but URL parser / controller (no @Max) / service (no Math.min) / repository all accept any positive integer; ?d=10000 drives an unbounded recursive-CTE walk."
+  dedup_status: already_tracked
+  tracked_as: PLT-042
+  recommended_log_as: "(corroboration only — PLT-042 already cites feature-flow F-055 and proposes the controller @Max(20) + UI click-through clamp + service Math.min defence-in-depth fix)"
+  proposed_fix_anchor: "Controller @Max(20) on getDataEntityDownstreamLineage/getDataEntityUpstreamLineage lineageDepth (DataEntityApi.java:918 site); service Math.min(lineageDepth, HARD_CAP) at LineageServiceImpl.java:96; single-sourced HARD_LINEAGE_DEPTH_CAP constant."
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "Click-through propagates d: node.depth || 1 with no Math.min(node.depth, 20), so a URL-set depth above 20 is carried to new views by ordinary node clicks — dropdown cap bypassed by clicking."
+  dedup_status: already_tracked
+  tracked_as: PLT-042
+  recommended_log_as: "(corroboration only — PLT-042 'How' step 2 is exactly the Node.tsx Math.min(node.depth || 1, 20) click-through clamp)"
+  proposed_fix_anchor: "Node.tsx:46-52 — d: Math.min(node.depth || 1, 20); same clamp on any sibling click-through callsite under HierarchyLineage/."
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "No cycle guard in the recursive CTE (UNION ALL, no visited-set / no WITH...CYCLE); a cyclic subgraph at high depth materialises intermediate rows up to the depth ceiling in Postgres work_mem."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-105
+  distinct_from: PLT-042
+  recommended_log_as: "(corroboration — the no-cycle-guard / cycle-diamond-amplification class is tracked as DOC-GAP-105 / REFACTOR-202, cross-referenced from PLT-042 line 101; PLT-042 fixes the depth cap, NOT the cycle guard — the cycle guard is a distinct fix surface)"
+  proposed_fix_anchor: "ReactiveLineageRepositoryImpl.lineageCte (lines 163-175) — add Postgres WITH...CYCLE clause or a visited-oddrn array predicate; OR enforce a statement_timeout for the lineage CTE specifically (REFACTOR-202)."
+
+### caveat_candidates
+- hypothesis_id: H-004
+  one_line: "Click-through re-centring uses the clicked node's rendered depth as the new query depth, so casual drill-in exploration silently compounds query depth monotonically."
+  dedup_status: already_tracked
+  tracked_as: PLT-042
+  recommended_log_as: "(corroboration — the monotonic compounding is the click_through_compounds_depth_monotonically facet on F-055; PLT-042's Node.tsx clamp bounds the worst case at 20 but does not reset to the user's dropdown value — a doc caveat that re-centring changes depth would still be warranted via DOC-227)"
+- hypothesis_id: H-006
+  one_line: "The depth boundary is the only knob bounding lineage reach, and the lineage read is not owner-scoped at any layer (canvas read uses the negative-case sibling, no fetchAssociatedOwner anchor) — raising depth widens cross-owner enumeration."
+  dedup_status: already_tracked
+  tracked_as: PLT-100
+  recommended_log_as: "(corroboration — PLT-100 covers the zero-RBAC cross-owner lineage read posture across all three lineage endpoints; F-055 adds that the depth boundary does not bound it. Whether cross-owner READ is a bug or an intended read-collaborative posture is the open SME question — see H-006 sme_consultation)"
+- hypothesis_id: H-009
+  one_line: "Diamond DAGs render the shared node twice because the UI builds a d3-hierarchy tree, not a DAG; the duplication is visually misleading and amplifies render cost with depth."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-105
+  recommended_log_as: "(corroboration — diamond amplification is part of the cycle/diamond DOC-GAP-105 family; the UI-render duplication specifically is undocumented — a DOC-227 caveat on cycle/diamond visualisation behaviour would cover it)"
+- hypothesis_id: H-010
+  one_line: "LoadMore expansion is monotonic with no collapse / eviction / cap; a long exploration session accumulates unbounded slice + SVG state, reset only by navigating to a new root."
+  dedup_status: net_new
+  tracked_as:
+  recommended_log_as: "caveat in features/data-lineage/data-objects.md (DOC-227 scope) — document that LoadMore expansion is one-way (no collapse) and accumulates state until navigation; net_new vs PLT-042/PLT-100 (a UX/memory limitation, not the depth-cap or auth class)."
+
+### functional_test_demands
+# LSN-030 (Rule 11): every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# 10 of 11 hypotheses are unverified (the lineage feature sits at 1/11 verified promises) — the user-facing
+# happy paths AND the contradicted boundaries have no test obligation today (related_test_gaps was []).
+- use_case_id: F-055-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "The depth dropdown constrains the user to [1..20]; selecting 20 returns at most 20 hops via the dropdown path."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-001)"
+  proposed_test: "UI/component test (or Playwright): the depth AppSelect exposes exactly options 1..20 and the native <select> rejects an out-of-list value; selecting 20 writes ?d=20."
+- use_case_id: F-055-UC-002
+  hypothesis_id: H-002
+  kind: empty/no-match
+  promise: "A request above the advertised cap (?d=21 / lineage_depth=10000) is rejected or clamped to 20, at the controller and below."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-002) — regression guard for PLT-042"
+  proposed_test: "@WebFluxTest(DataEntityController): GET .../lineage/downstream?lineage_depth=21 returns 400 (after @Max(20)); today asserts the absence (no @Max) as a pinned known-bug characterization test until PLT-042 ships."
+- use_case_id: F-055-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "Click-through never propagates a depth above the dropdown cap (Math.min(node.depth, 20))."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-003) — regression guard for PLT-042 step 2"
+  proposed_test: "Playwright/component: set ?d=50, render tree, click a depth-50 node title, assert the navigated URL carries ?d=20 (post-fix) / pins ?d=50 as known-bug (pre-fix)."
+- use_case_id: F-055-UC-004
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "Re-centring on a node opens at the user's intended depth, not a depth that climbs with drill-in."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-004)"
+  proposed_test: "Component test pinning that Node click-through sets d = node.depth (current monotonic-compounding behaviour) so the moment a fix changes it to reset-to-dropdown-value the test RED-flags."
+- use_case_id: F-055-UC-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "A cyclic lineage subgraph terminates the recursive walk without materialising rows up to the full requested depth."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-005) — closes the repo-layer cyclic-CTE gap named in ReactiveLineageRepositoryImpl.md:uncovered_behaviours"
+  proposed_test: "LineageRepositoryTest (Testcontainers): seed A->B->A, request depth=5, assert termination at the depth bound + bound the intermediate row count for the cyclic subgraph (test_class: integration/performance)."
+- use_case_id: F-055-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Lineage reach is owner-scoped, or the depth boundary bounds cross-owner reach."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-006) — security regression test for PLT-100; gated on the SME verdict (intended posture vs bug)"
+  proposed_test: "@WebFluxTest auth-mode matrix: assert whether getDataEntityDownstreamLineage returns cross-owner nodes for a non-owning authenticated user (pins the current read-collaborative posture; flips if owner-scoping is added)."
+- use_case_id: F-055-UC-007
+  hypothesis_id: H-007
+  kind: happy-path
+  promise: "Opening lineage with no depth set yields a sensible documented default (UI) / the documented platform default (API)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-007) — pairs with the DOC-227/DOC-GAP doc-fix; also a regression guard for PLT-100's NPE-on-null fix"
+  proposed_test: "(UI) component test: fresh mount with no ?d= sends lineage_depth=1. (API) @WebFluxTest: omitted lineage_depth currently 500s (pin as known-bug) — flips to 400/default when PLT-100 ships."
+- use_case_id: F-055-UC-008
+  hypothesis_id: H-008
+  kind: happy-path
+  promise: "The chosen depth maps to the hops rendered, in both directions."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "LineageRepositoryTest.getLineageRelationsTest_WithRoots (repository tier; depth 1/2/3 both directions)"
+  recommended_log_as: "(verified at repository tier; OPTIONAL end-to-end demand below)"
+  proposed_test: "OPTIONAL: a WebTestClient end-to-end test asserting dropdown 'N' -> N-hop graph in the response would close the repository-tier-only gap (the UI->API->DB depth semantics are not pinned end-to-end)."
+- use_case_id: F-055-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "Each entity appears once in the canvas, even in a diamond topology."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-009) — pins the generateGraph diamond behaviour named in LineageGraph.md:gaps"
+  proposed_test: "generateGraph.test.ts: a diamond fixture (A->B, A->C, B->D, C->D) renders D twice (current behaviour, pinned); flips when DAG-dedupe is added."
+- use_case_id: F-055-UC-010
+  hypothesis_id: H-010
+  kind: edit-reconcile
+  promise: "Repeated LoadMore expansion stays bounded (collapse / evict / cap)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-055-UC-010)"
+  proposed_test: "dataEntityLineage.slice.test.ts: N LoadMore merges accumulate monotonically with no eviction (pins current behaviour + the module-level-globals merge invariants flagged in LineageGraph.md:gaps)."
+- use_case_id: F-055-UC-011
+  hypothesis_id: H-011
+  kind: happy-path
+  promise: "Opening the advertised maximum depth (20) on a dense entity stays within an interactive latency budget."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-055-1 (performance probe — resolves whether depth=20 is a safe maximum or a latent self-DoS)"
+  proposed_test: "Local Testcontainers performance probe: seed dense + cyclic subgraphs, measure depth=20 and depth=10000 walk latency + CTE row counts via LineageRepositoryTest harness (test_class: performance)."
+
+### probes_emitted
+- probe_id: PENDING-F-055-1
+  hypothesis_id: H-011
+  hypothesis_text: "When a curious user sets ?d=20 (the max dropdown value) on an entity at the centre of a dense, real-world lineage graph, the Lineage tab returns within an interactive latency budget (e.g. < 2s) rather than pegging Postgres or timing out."
+  expected_outcome: "depth=20 on a representative dense (and separately, cyclic) seeded subgraph completes within an interactive budget AND with a bounded CTE intermediate row count; depth=10000 measured as the contrast worst case."
+  local_execution: "Testcontainers-Postgres via the existing LineageRepositoryTest harness (BaseIntegrationTest) — seed a dense fan-out graph + a cyclic A->B->A subgraph; measure walk latency + intermediate row counts at depth 20 and 10000. Local-only per Rule 6."
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  note: "PARALLEL-SAFE mode — recorded here only; no P-NNN file created."
+
+### validation_gaps
+- sidecar: "(none — UI hop is fully enriched)"
+  field_insufficient: "N/A"
+  proposed_refresh: |
+    Rule 9 note: F-055's UI surface is NOT unresolved — the LineageGraph sidecar is a fully
+    enriched UI hop (ui_unverified: false; covers the dropdown, URL parser, click-through, LoadMore,
+    diamond/cycle rendering, error states). This reflection is therefore a full product-owner
+    reflection from the screen, NOT an API-only reflection; no API-only validation_gap applies.
+- sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+  field_insufficient: "prompt_version is file-analyser/0.2.0 (older than the 0.3.0 sidecars in the chain); stress_findings block absent"
+  proposed_refresh: |
+    The controller-method sidecar predates the Stress Protocol schema (no stress_findings /
+    request_inputs Category-F block). A refresh under the current file-analyser would add the
+    Category-F request-input naming-alignment block (lineage_depth name vs no-@Max behaviour) that
+    this reflection had to derive from bugs_limitations_corner_cases instead.
+
+### doc_drift_findings
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage"
+  doc_says: "lineage_depth: 'Number of hops to traverse from the rooted entity. Unset returns the platform's default depth.'"
+  code_does: "No platform default exists; omitting lineage_depth NPEs to HTTP 500 (null Integer -> primitive int). The UI masks this by always sending d=1, which is a UI default, not a platform default."
+  recommended_log_as: "doc-gap (corroborates PLT-100's doc dimension + the unset-depth drift already recorded in the chain sidecars); correct the doc claim to match the shipped behaviour once PLT-100 decides default-vs-400."
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage"
+  doc_says: "lineage_depth minimum is 1; NO maximum stated."
+  code_does: "The UI dropdown caps at 20 but no layer below enforces it; the API accepts any positive integer."
+  recommended_log_as: "doc-gap — covered by DOC-227 (operator-facing caveat: the dropdown is UI-presentation-only, the URL is the actual contract); corroboration of the already-planned doc fix."
+
+## maintainer_notes
+
+<!-- Empty on initial reflection. Preserved verbatim across future refreshes. Hypotheses with
+     maintainer_curated: true (none yet) are preserved verbatim; auto-derived hypotheses refresh. -->

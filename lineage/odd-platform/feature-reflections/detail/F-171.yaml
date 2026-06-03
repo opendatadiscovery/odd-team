@@ -1,0 +1,769 @@
+---
+feature_id: F-171
+pillar_anchored_id: P-08:F-016
+pillar: P-08 Management & Administration
+feature_name: |-
+  Operator-Facing Owner-Association Triage Workflow — the Management →
+  Associations "New requests" tab lists every PENDING OwnerAssociationRequest
+  with per-row Accept / Reject affordances gated by OWNER_ASSOCIATION_MANAGE;
+  the operator-USE side of F-075's two-step branch (A): an admin reviews
+  newly-submitted self-requests and confirms or rejects them via a
+  ConfirmationDialog → PUT /api/owner_association_request/{id} with status
+  APPROVED or DECLINED.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+contributing_sources_cross_referenced:
+  # Rule-8 exception reads (no enriched UI sidecar exists; chain hops are `unresolved`;
+  # the dialog text + permission gate + service approve/decline branch are load-bearing
+  # for the hypotheses). Each carries source_read_for_validation: true in the verdict.
+  - "feature-flows/detail/F-075.yaml (the user-self-CREATE sibling chain — establishes hops 5-6)"
+  - "odd-platform-ui/.../OwnerAssociationsNew/NewAssociationRequest/NewAssociationRequest.tsx:1-111 (Rule-8 exception)"
+  - "odd-platform-api/.../service/OwnerAssociationRequestServiceImpl.java:1-222 (Rule-8 exception — no service sidecar)"
+  - "odd-platform-api/.../auth/util/SecurityConstants.java:148-162 (Rule-8 exception — PUT gate)"
+  - "odd-platform-api/.../test/service/OwnerAssociationRequestServiceImplTest.java (test-coverage cross-ref)"
+  - "odd-platform-api/.../test/config/AdrSecurityRulesContractTest.java (test-coverage cross-ref)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The live page HAS been substantially expanded since the F-019/F-075 reads (2026-05-20)
+      and now DOES document the Management -> Associations -> New requests tab, the per-row
+      Accept/Reject + confirmation dialog, the 4-column row, the History sub-tab, and the
+      OWNER_ASSOCIATION_MANAGE gate. Two doc claims newly contradict the code (see
+      doc_drift_findings): tab-visibility ("hidden ... do not hold OWNER_ASSOCIATION_MANAGE")
+      and silence on the collision cascade-decline side-effect.
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 3
+  partial: 3
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: "Approving one request silently auto-DECLINES every other PENDING request for the same Owner — invisible in the dialog, the UI, and the live doc; an operator approving Alice can silently revoke Bob's pending request."
+related_feature_flows: [F-075, F-019, F-172, F-173, F-174, F-074, F-104, F-064, F-011, F-006]
+related_concepts:
+  - "User-Owner Mapping"
+  - "audit-log-presence-asymmetry-2-tier-audit-story"
+  - "read-collaborative-cross-owner-enumeration-posture"
+  - "permission-bypass-via-owner-auto-create-side-door-write-path"
+related_drift_classes:
+  - triage_ui_no_request_context_preview_only_username_owner_role_provider
+  - confirm_dialog_text_no_irreversibility_warning_no_undo_path
+  - positive_finding_confirm_dialog_present_for_both_accept_and_reject
+  - permission_gate_disables_button_but_does_not_hide_row
+  - tab_switch_resets_search_query_to_empty_no_persistence
+new_drift_classes_proposed:
+  - approve_silently_cascade_declines_all_colliding_pending_requests_no_disclosure
+  - approve_path_no_soft_deleted_owner_guard_binds_to_dead_owner
+  - doc_now_claims_tab_hidden_but_ui_disables_buttons_and_lists_to_any_authed_user
+---
+
+# Operator-Facing Owner-Association Triage Workflow — product-owner reflection
+
+## product_owner_narrative
+
+The Owner-Association Triage Workflow is the operator's inbox for a single
+administrative chore: deciding who is allowed to *act as* a catalog Owner. In
+ODD, an Owner is a directory entity that data entities are stewarded by; before
+a logged-in person can be treated as that Owner (to get "My Objects",
+owner-scoped alerts, ownership badges), a `user_owner_mapping` row must tie
+their identity to the Owner. Most users obtain that row by self-requesting it
+(F-075) and waiting for an admin to approve. This feature is the *approval seat*:
+an operator holding `OWNER_ASSOCIATION_MANAGE` opens Management → Associations →
+"New requests" and sees one row per PENDING request, each with an Accept and a
+Reject button (per OwnerAssociationRequestController sidecar `understanding`;
+chain hop 3 NewAssociationRequest.tsx:33-104).
+
+A user interacts with this feature by landing on the New-requests tab, scanning
+the list, and clicking Accept or Reject on a row. Each click pops a
+ConfirmationDialog, and on confirm fires `PUT /api/owner_association_request/{id}`
+with `status: APPROVED` or `status: DECLINED` (NewAssociationRequest.tsx:33-49,
+70-104). Approve creates the `user_owner_mapping` row and stamps the request
+APPROVED; Reject is a status-only update (per OwnerAssociationRequestServiceImpl.java:90-105,
+184-190). Both outcomes are written to a dedicated typed audit table,
+`owner_association_request_activity`, which the History sub-tab reads — this is
+the *positive* half of the platform's two-tier audit story (per controller
+sidecar coherence-note re F-006; concept `audit-log-presence-asymmetry-2-tier-audit-story`).
+
+The working parts the operator can see are deliberately spare: the row shows the
+requester username, the Owner name, the requested Role(s), and the auth Provider
+— four read-only strings and two buttons (NewAssociationRequest.tsx:53-104). The
+search box atop the list filters the pending set; switching tabs explicitly
+clears it (per feature-flow facet `tab_switch_resets_search_query_to_empty`,
+OwnerAssociationsTabs.tsx:44-47). The buttons are *disabled*, not hidden, for an
+operator lacking `OWNER_ASSOCIATION_MANAGE` — the list itself is reachable to any
+authenticated user under the platform-wide read-collaborative posture (per
+feature-flow facet `permission_gate_disables_button_but_does_not_hide_row`,
+cross-link F-074).
+
+This feature is one leg of a four-leg quartet over the same `user_owner_mapping`
+state: F-075 is the user-self-CREATE side that feeds this inbox; F-172 is the
+admin direct-bind that bypasses the inbox entirely; F-173 is the Active-tab
+Remove that reverses an Approve; F-174 is the History audit consumer that reads
+what this feature writes (related_features). Downstream, the binding this feature
+creates is consumed by F-011 (principal-to-Owner resolution) and gates
+owner-scoped reads across the catalog (P-08 → P-09 cross-pillar relationship in
+system-mission.md).
+
+In a demo a careful product owner would flag three edge cases. First, the row
+gives the operator *no context to decide with* — no submission timestamp, no
+stated reason, no requester history (facet
+`triage_ui_no_request_context_preview`); the operator approves on four identity
+strings. Second, the Accept dialog is silent about consequences — it does not say
+the action is reversible only via a different tab, and it does not warn that
+approving this request will silently auto-decline every *other* pending request
+for the same Owner (OwnerAssociationRequestServiceImpl.java:192-203). Third, a
+request can outlive its Owner: if the target Owner was soft-deleted, the row may
+still be approvable, binding the user to a dead Owner (per controller sidecar
+bug `[1]`; tracked PLT-132).
+
+## hypotheses
+
+- id: H-000-UI-GAP
+  hypothesis: "(Rule 9 framing gap) The user can understand how to use this triage screen, decide each request confidently, and reverse a mistake — judged from the screen and the flow the operator lives through, not from the endpoint shape."
+  derivation: "APPROACH.md §0.2 senior-product-owner UX seed; Rule 9 — the F-171 chain has NO enriched UI sidecar (all five UI hops are `sidecar: unresolved`; status: ui-incomplete; LSN-023)."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The feature flow's UI hops 1-3 are all `sidecar: unresolved` and the flow
+      is flagged `status: ui-incomplete` (F-171.yaml:38,49,59,205). No file-analyser
+      UI sidecar exists for OwnerAssociationsNew or NewAssociationRequest — they
+      were enumerated in the ui-review slice H but never enriched into a sidecar
+      with a Stress Protocol pass. This reflection therefore reads two UI files
+      directly under the Rule-8 single-line exception (NewAssociationRequest.tsx,
+      and the route/list evidence quoted in the flow) to validate the concrete
+      hypotheses, but it CANNOT judge the lived flow: tab navigation, the
+      InfiniteScroll empty state, responsive behaviour across device widths, the
+      History round-trip, or whether the operator can find the Active-tab Remove
+      path after approving. Per Rule 9 the honest verdict is: this reflection is
+      UI-spot-read, not UI-complete, and the experiential UX questions remain open.
+    evidence:
+      - sidecar: feature-flows/detail/F-171.yaml
+        section: chain
+        cite: "F-171.yaml:38,49,59,205 (hops 1-3 sidecar: unresolved; status: ui-incomplete)"
+        note: "The chain has no enriched UI sidecar — Rule 9 first-output validation_gap."
+      - sidecar: NewAssociationRequest.tsx
+        section: render
+        cite: "NewAssociationRequest.tsx:51-107 (Rule-8 exception read)"
+        note: "Spot-read confirms 4-column row + 2 dialogs, but no flow-level UX judgement is possible from one component."
+        source_read_for_validation: true
+    operator_visible_failure: |
+      A user-facing operator feature is being reflected from its API + two spot-read
+      components rather than an enriched UI surface. The convenience, intuitiveness,
+      cross-platform consistency, and customisability questions (Rule 9) cannot be
+      answered. Concrete sub-gaps that ARE visible are surfaced as H-001..H-007; the
+      experiential whole is not.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-001
+  hypothesis: "When an operator with OWNER_ASSOCIATION_MANAGE clicks Accept on a PENDING request and confirms, the system creates a user_owner_mapping row binding that requester (username+provider) to the requested Owner and marks the request APPROVED."
+  derivation: "Endpoint shape — Accept fires PUT /api/owner_association_request/{id} with status=APPROVED; pillar P-08 primary action 'process owner-association requests'."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      handleAccept sends status=APPROVED (NewAssociationRequest.tsx:33-40). The
+      service updates the request status, then createMappingForApprovedRequest
+      (OwnerAssociationRequestServiceImpl.java:184-190) creates the
+      user_owner_mapping via userOwnerMappingService.createRelation
+      (username, provider, ownerId) ONLY when status==APPROVED, then writes a
+      REQUEST_APPROVED activity row (createActivity, :205-211). The binding uses
+      the request's own username+provider+ownerId — exactly the requester.
+    evidence:
+      - sidecar: OwnerAssociationRequestServiceImpl.java
+        section: updateOwnerAssociationRequest + createMappingForApprovedRequest
+        cite: "OwnerAssociationRequestServiceImpl.java:90-105, 184-190"
+        note: "createRelation gated on status==APPROVED; binds the request's username/provider/ownerId."
+        source_read_for_validation: true
+      - sidecar: NewAssociationRequest.tsx
+        section: handleAccept
+        cite: "NewAssociationRequest.tsx:33-40, 78"
+        note: "Accept -> status APPROVED via useUpdateAssociationRequest."
+        source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator clicks Reject and confirms, the request is marked DECLINED and NO user_owner_mapping row is created — the user gains no owner-scoped access."
+  derivation: "Endpoint shape — Reject fires status=DECLINED; the two-button affordance promises a true binary outcome."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      handleReject sends status=DECLINED (NewAssociationRequest.tsx:42-49). In the
+      service, createMappingForApprovedRequest is a no-op for any non-APPROVED
+      status (early return at :185-187), so no user_owner_mapping is written; a
+      REQUEST_DECLINED activity row is recorded (createActivity, :212-215). The
+      decline is a status-only mutation.
+    evidence:
+      - sidecar: OwnerAssociationRequestServiceImpl.java
+        section: createMappingForApprovedRequest (no-op branch) + createActivity
+        cite: "OwnerAssociationRequestServiceImpl.java:185-187, 212-215"
+        note: "Non-APPROVED status short-circuits the mapping create; DECLINED writes REQUEST_DECLINED."
+        source_read_for_validation: true
+      - sidecar: NewAssociationRequest.tsx
+        section: handleReject
+        cite: "NewAssociationRequest.tsx:42-49, 94"
+        note: "Reject -> status DECLINED."
+        source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an operator without OWNER_ASSOCIATION_MANAGE opens the New-requests tab, they can see the pending rows but cannot approve or reject them, and a malformed PUT they craft by hand is rejected by the backend (the UI gate and the backend gate agree)."
+  derivation: "View-mode + pillar security — facet permission_gate_disables_button_but_does_not_hide_row; the positive sibling of the F-173 PLT-040 mismatch."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The Accept and Reject buttons are .disabled when
+      !hasAccessTo(Permission.OWNER_ASSOCIATION_MANAGE)
+      (NewAssociationRequest.tsx:84,101). The backend PUT
+      /api/owner_association_request/{owner_association_request_id} is gated on the
+      SAME permission OWNER_ASSOCIATION_MANAGE (SecurityConstants.java:151-154).
+      UI hint and security boundary are CONSISTENT here — unlike F-173's Active-tab
+      Remove, where the UI gates OWNER_ASSOCIATION_MANAGE but the DELETE gates
+      OWNER_RELATION_MANAGE (tracked PLT-040). This is the read-collaborative
+      list-visible/action-gated posture (concept), so non-holders see the list
+      (positive, discoverable) but cannot act.
+    evidence:
+      - sidecar: NewAssociationRequest.tsx
+        section: button disabled gates
+        cite: "NewAssociationRequest.tsx:84, 101"
+        note: "Both buttons disabled on !OWNER_ASSOCIATION_MANAGE."
+        source_read_for_validation: true
+      - sidecar: SecurityConstants.java
+        section: PUT rule
+        cite: "SecurityConstants.java:151-154"
+        note: "PUT /api/owner_association_request/{id} -> OWNER_ASSOCIATION_MANAGE — same permission as the UI gate."
+        source_read_for_validation: true
+      - sidecar: AdrSecurityRulesContractTest.java
+        section: securityRulesGuardMutationsOnly_withTheSingleGetException
+        cite: "AdrSecurityRulesContractTest.java:40-53"
+        note: "Pins the single GET exception + the PUT mutation gate (ADR-0003); structural source scan."
+    routes_to_finding: none
+    use_case_kind: cross-actor
+    coverage: verified
+    test_ref: "AdrSecurityRulesContractTest.securityRulesGuardMutationsOnly_withTheSingleGetException"
+    test_demand: none
+
+- id: H-004
+  hypothesis: "When an operator approves or declines a request that does not exist (a stale row, a double-click after another admin acted), the system reports a not-found error rather than silently succeeding or creating a phantom mapping."
+  derivation: "Negative-space — concurrent triage; the controller sidecar predicted no .switchIfEmpty guard on this path, an operator-trap if true."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      updateOwnerAssociationRequest looks up the request via
+      ownerAssociationRequestRepository.getDto(id).switchIfEmpty(NotFoundException)
+      (OwnerAssociationRequestServiceImpl.java:94-95) — a missing id errors
+      NotFound BEFORE any mapping is created. (The controller sidecar's
+      bugs_limitations_corner_cases[3] silent-idempotency finding was about a
+      DIFFERENT method, deleteActiveUserOwnerMapping at :118-122 — F-173 — not this
+      approve/decline path.) This is now directly tested.
+    evidence:
+      - sidecar: OwnerAssociationRequestServiceImpl.java
+        section: updateOwnerAssociationRequest
+        cite: "OwnerAssociationRequestServiceImpl.java:94-95"
+        note: "switchIfEmpty -> NotFoundException on a missing request id."
+        source_read_for_validation: true
+      - sidecar: OwnerAssociationRequestServiceImplTest.java
+        section: updateOwnerAssociationRequest_nonExistentRequest_errorsNotFound
+        cite: "OwnerAssociationRequestServiceImplTest.java:53-59"
+        note: "@validates F-171 — Mockito+StepVerifier asserts verifyError(NotFoundException) for a non-existent request."
+    routes_to_finding: none
+    use_case_kind: empty/no-match
+    coverage: verified
+    test_ref: "OwnerAssociationRequestServiceImplTest.updateOwnerAssociationRequest_nonExistentRequest_errorsNotFound"
+    test_demand: none
+
+- id: H-005
+  hypothesis: "The Accept/Reject confirmation dialog gives the operator enough information to decide — what they are about to do, whether it is reversible, and how to undo it."
+  derivation: "UI-label — facet confirm_dialog_text_no_irreversibility_warning_no_undo_path; senior-PO UX seed (is the interaction intuitive?)."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Accept dialog actionText reads, verbatim, `User "X" will be map to owner
+      "Y"` (NewAssociationRequest.tsx:73-77 — the i18n key is literally
+      'will be map to owner', an ungrammatical string). It states neither that the
+      binding is reversible only via a different tab (Active -> Remove, F-173) nor
+      that approving will auto-decline colliding requests (H-006). The Reject dialog
+      ("...will be rejected", :88-93) is silent on permanence and on the user's
+      ability to re-request. The operator decides with no consequence disclosure.
+    evidence:
+      - sidecar: NewAssociationRequest.tsx
+        section: ConfirmationDialog actionText (Accept + Reject)
+        cite: "NewAssociationRequest.tsx:73-77, 88-93"
+        note: "'will be map to owner' (grammar) + no irreversibility/undo/cascade hint."
+        source_read_for_validation: true
+    operator_visible_failure: |
+      (1) The ungrammatical "will be map" reads as sloppiness on a security-adjacent
+      workflow, eroding operator trust. (2) An operator cannot tell from the dialog
+      whether Accept is reversible — they either over-cautiously avoid it or click
+      through and learn the Active-tab Remove path by trial-and-error. (3) The dialog
+      is silent about the cascade-decline (H-006), so the operator does not know
+      approving Alice may silently revoke Bob's pending request. Already tracked as
+      PLT-038 (grammar + irreversibility/undo guidance); the cascade-silence is the
+      distinct net_new H-006.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When an operator approves one request, only that one request changes state — other pending requests for the same Owner are left untouched for separate review."
+  derivation: "Negative-space + response-shape — the row-level Accept affordance promises a row-scoped effect; available-but-unsurfaced side-effect in the service chain."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Approving a request is NOT row-scoped. After the mapping is created,
+      updateOwnerAssociationRequest calls
+      cancelCollisionAssociationByIdForApprovedRequest
+      (OwnerAssociationRequestServiceImpl.java:102, 192-203), which — for APPROVED
+      status only — calls repository.cancelCollisionAssociationById(pojo) and marks
+      every colliding open request DECLINED, each stamped REQUEST_MANUALLY_DECLINED
+      in the activity log (:199-201). So approving Alice's request for Owner-X
+      silently auto-declines every OTHER pending request for Owner-X. Neither the
+      Accept dialog (NewAssociationRequest.tsx:73-77), nor the UI, nor the live doc
+      (WebFetch 2026-06-03: "what happens to other pending requests when one is
+      approved" — NOT MENTIONED) discloses this.
+    evidence:
+      - sidecar: OwnerAssociationRequestServiceImpl.java
+        section: cancelCollisionAssociationByIdForApprovedRequest
+        cite: "OwnerAssociationRequestServiceImpl.java:102, 192-203"
+        note: "On APPROVE, all colliding requests are bulk-DECLINED with REQUEST_MANUALLY_DECLINED."
+        source_read_for_validation: true
+      - sidecar: NewAssociationRequest.tsx
+        section: Accept ConfirmationDialog
+        cite: "NewAssociationRequest.tsx:73-77"
+        note: "Dialog text names only the single user/owner — no cascade disclosure."
+        source_read_for_validation: true
+      - sidecar: WebFetch user-owner-association
+        section: "what happens to other pending requests"
+        cite: "WebFetch 2026-06-03 status 200 — NOT MENTIONED"
+        note: "Live doc is silent on the cascade-decline."
+    operator_visible_failure: |
+      An operator triaging a busy Owner sees N pending requesters and intends to
+      approve them one at a time. Approving the FIRST silently DECLINES the other
+      N-1 — they vanish from New-requests and reappear in History as
+      MANUALLY_DECLINED, attributed to the approving operator who never decided to
+      decline them. Two harms: (1) legitimate requesters are silently rejected and
+      must re-request (and may never notice); (2) the audit trail shows the operator
+      "manually declined" requests they never saw or acted on, corrupting forensic
+      reconstruction of who-decided-what. The cascade is by design where one Owner
+      maps to one user, but the UI presents per-row Accept as if each is independent.
+      This is net_new (PLT-038 covers only the irreversibility/undo text, not the
+      cascade semantics).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When an operator approves a request whose target Owner was deleted after the request was filed, the system refuses to bind the user to a non-existent Owner (a not-found / validation error), rather than creating a binding to a dead Owner."
+  derivation: "Negative-space + cross-pillar (F-019 Owner lifecycle) — the request FK to owner() has no ON DELETE clause; controller sidecar bug [1]."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The approve path has NO soft-deleted-Owner guard. updateOwnerAssociationRequest
+      -> createMappingForApprovedRequest (OwnerAssociationRequestServiceImpl.java:184-190)
+      calls userOwnerMappingService.createRelation(username, provider, ownerId)
+      directly off the request pojo's ownerId, with no cross-check of
+      owner.deleted_at. Owner soft-delete (OwnerServiceImpl cascade at :88-100)
+      does NOT include owner_association_request as a leg, and the FK
+      (V0_0_51__add_owner_association_request.sql:11) has no ON DELETE clause, so the
+      orphan request survives, remains listed (getOwnerAssociationRequestList has no
+      deleted-Owner filter), and is approvable onto the dead Owner.
+    evidence:
+      - sidecar: OwnerAssociationRequestServiceImpl.java
+        section: createMappingForApprovedRequest
+        cite: "OwnerAssociationRequestServiceImpl.java:184-190"
+        note: "createRelation off pojo.getOwnerId() with no deleted_at cross-check."
+        source_read_for_validation: true
+      - sidecar: OwnerAssociationRequestController (controller sidecar)
+        section: bugs_limitations_corner_cases[1]
+        cite: "OwnerAssociationRequestController sidecar bug [1] (REFACTOR-427) + F-019 line 721-737"
+        note: "Owner delete cascade omits the owner_association_request leg; approve creates a mapping to a soft-deleted Owner."
+    operator_visible_failure: |
+      An operator approves a stale request and binds a user to an Owner that no
+      longer exists in the directory. The user_owner_mapping points at a soft-deleted
+      Owner; downstream owner-scoped reads (My Objects, owner-filtered alerts) behave
+      undefinedly — typically returning empty for that binding. The operator gets no
+      error and no signal the Owner is dead. Already tracked as PLT-132 (orphan
+      owner_association_request rows survive Owner delete and can be approved onto a
+      dead Owner) — convergent with this hypothesis.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When an operator opens the New-requests row, it shows enough context to make an informed decision — at minimum when the request was submitted and whether it was a genuine self-request."
+  derivation: "Response-shape — facet triage_ui_no_request_context_preview; the row's prop set vs the available DTO fields."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The row renders exactly four read-only fields: username, ownerName, roles,
+      provider (NewAssociationRequest.tsx:53-68); the component's props interface
+      carries only id/ownerName/username/provider/roles (:14-20). There is no
+      submission timestamp, no requester-vs-actor differentiation, no justification
+      text. The operator approves on identity + role + provider strings alone, with
+      no temporal or intent context. The OwnerAssociationRequest DTO does carry
+      status/statusUpdatedBy/statusUpdatedAt, but no created_at/requested_at is
+      surfaced to this row (and is not in the prop set).
+    evidence:
+      - sidecar: NewAssociationRequest.tsx
+        section: row render + props
+        cite: "NewAssociationRequest.tsx:14-20, 53-68"
+        note: "4 visible fields; no requestedAt/createdAt prop, no justification."
+        source_read_for_validation: true
+      - sidecar: feature-flows/detail/F-171.yaml
+        section: drift facet triage_ui_no_request_context_preview
+        cite: "F-171.yaml:111-123"
+        note: "Facet already records the no-context-preview observation."
+    operator_visible_failure: |
+      An operator cannot distinguish a request filed five minutes ago from one filed
+      six months ago, cannot see whether it was self-submitted or admin-filed, and
+      has no stated reason to weigh. On a busy deployment this turns triage into
+      rubber-stamping, which combined with H-006 (silent cascade-decline) makes
+      careless approval actively harmful. This is a UX completeness gap (net_new for
+      F-171; the doc-side coverage is DOC-219).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "Every approve and decline an operator performs is recorded in the History audit trail with the acting operator's identity, so 'who approved Alice's mapping to Owner-X and when' is reconstructable."
+  derivation: "Pillar mission anchor (P-08 'process owner-association requests' + the audit story) + doc-claim seed ('written to the audit channel surfaced on the History sub-tab')."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Every approve/decline writes a typed activity row via createActivity
+      (OwnerAssociationRequestServiceImpl.java:101, 205-221): APPROVED ->
+      REQUEST_APPROVED, DECLINED -> REQUEST_DECLINED, stamped with the acting user
+      (createdBy = item.getStatusUpdatedBy(), :101 + applyToPojo at :97-98). The
+      live doc confirms "Both actions are written to the audit channel surfaced on
+      the History sub-tab". This is the positive half of the two-tier audit story
+      (concept; tracked context PLT-062). Caveat: the cascade-declined collateral
+      rows (H-006) are stamped REQUEST_MANUALLY_DECLINED — recorded, but mislabelled
+      as a manual decision the operator never made.
+    evidence:
+      - sidecar: OwnerAssociationRequestServiceImpl.java
+        section: createActivity + applyToPojo statusUpdatedBy
+        cite: "OwnerAssociationRequestServiceImpl.java:97-98, 101, 205-221"
+        note: "Typed REQUEST_APPROVED/REQUEST_DECLINED rows stamped with the acting operator."
+        source_read_for_validation: true
+      - sidecar: WebFetch user-owner-association
+        section: audit channel / History sub-tab
+        cite: "WebFetch 2026-06-03 status 200"
+        note: "Doc confirms both actions written to History."
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "The Associations tab is hidden from operators who do not hold OWNER_ASSOCIATION_MANAGE (as the live doc states), so non-privileged operators never see pending-request data."
+  derivation: "Doc-claim seed — the live page asserts 'The Associations tab is hidden from operators who do not hold the OWNER_ASSOCIATION_MANAGE permission.'"
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The code does NOT hide the tab/list from non-holders. The list is reachable to
+      any authenticated user (feature-flow hop 1: the outer WithPermissionsProvider
+      gates only the Header on OWNER_RELATION_MANAGE, NOT the list — F-171.yaml:40-45;
+      cross-link F-074 read-collaborative posture). Within a row, the Accept/Reject
+      buttons are DISABLED, not hidden, for non-holders (NewAssociationRequest.tsx:84,101).
+      So a non-OWNER_ASSOCIATION_MANAGE operator who reaches /management/associations/new
+      can SEE every pending request (a privileged read the doc says they cannot reach)
+      and merely cannot act. The doc claim is doubly wrong: wrong mechanism (hidden vs
+      disabled) and arguably wrong permission for the surrounding Header gate
+      (OWNER_RELATION_MANAGE).
+    evidence:
+      - sidecar: feature-flows/detail/F-171.yaml
+        section: chain hop 1 + facet permission_gate_disables_button_but_does_not_hide_row
+        cite: "F-171.yaml:40-45, 156-172"
+        note: "Outer permission provider wraps the Header only; list reachable to any authed user; buttons disabled not hidden."
+      - sidecar: NewAssociationRequest.tsx
+        section: button disabled gate
+        cite: "NewAssociationRequest.tsx:84, 101"
+        note: "disabled (not absent) for non-holders."
+        source_read_for_validation: true
+      - sidecar: WebFetch user-owner-association
+        section: tab visibility claim
+        cite: "WebFetch 2026-06-03 status 200 — 'Associations tab is hidden ... OWNER_ASSOCIATION_MANAGE'"
+        note: "Doc claims hidden; code disables and lists to any authed user."
+    operator_visible_failure: |
+      Doc-vs-code drift on a security-relevant claim. An operator (or auditor)
+      reading the doc believes pending-request data — requester usernames, target
+      owners, requested roles, providers — is invisible to non-privileged users.
+      Under the read-collaborative posture it is NOT: any authenticated user can
+      enumerate it. The truth is whatever the code does (per Rule 1); the doc claim
+      becomes a doc-gap. This is a partial overlap with the broader read-collaborative
+      doc-silence already tracked, but the specific "tab is hidden" assertion is a
+      fresh factual error on this page.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When two operators approve two different pending requests for the same single-user Owner at the same moment, the system resolves to a single consistent binding without a lost update, a deadlock, or a half-cascade."
+  derivation: "Negative-space + performance — the controller sidecar flags concurrent approvals on the same Owner can deadlock on lock-acquisition order (performance.scaling_characteristics)."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      updateOwnerAssociationRequest runs under @ReactiveTransactional
+      (OwnerAssociationRequestServiceImpl.java:89) and the cascade-cancel
+      (:192-203) takes row locks on N owner_association_request rows. The controller
+      sidecar performance section explicitly notes "concurrent approvals on the same
+      Owner can deadlock on owner_association_request lock acquisition order (not
+      currently observed; not currently guarded)". Whether two concurrent approvals
+      deadlock, serialise cleanly, or produce a lost cascade cannot be determined by
+      reading — it requires running two concurrent transactions against PostgreSQL.
+    evidence:
+      - sidecar: OwnerAssociationRequestController (controller sidecar)
+        section: performance.scaling_characteristics + known_performance_gaps[1]
+        cite: "OwnerAssociationRequestServiceImpl.java:89, 192-203 (per controller sidecar perf block)"
+        note: "Cascade-cancel holds O(N) row locks under one transaction; concurrent same-Owner approvals unguarded."
+    operator_visible_failure: |
+      If a deadlock occurs, one operator's approve fails with a transaction error
+      (recoverable but confusing); if a cascade race loses an update, a request the
+      operator believes declined could remain pending or vice-versa. Severity is
+      contingent on the measured outcome — hence probe-needed.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-171-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: "PENDING-F-171-1 (probe)"
+
+- id: H-012
+  hypothesis: "An operator searching the pending list (e.g. typing a requester name) keeps their filter as they move between the New, Active, and History tabs, so they don't lose their place mid-triage."
+  derivation: "UI-label + senior-PO UX seed (is the interaction convenient/consistent?) — facet tab_switch_resets_search_query_to_empty."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The search atop the list filters the pending set (OwnerAssociationsNew.tsx:28-33
+      passes debouncedQuery into useGetOwnerAssociationRequestList). On tab change,
+      OwnerAssociationsTabs.onTabChange explicitly calls setQuery('') and invalidates
+      the ownerAssociationRequestList query key (per feature-flow facet
+      tab_switch_resets_search_query_to_empty, OwnerAssociationsTabs.tsx:44-47). So
+      within a tab the search works as promised; CROSSING tabs deliberately clears
+      it. The reset is intentional (explicit setQuery('')), not a state-management
+      accident — but from the operator's seat it means a filter typed on New is gone
+      after a glance at Active.
+    evidence:
+      - sidecar: feature-flows/detail/F-171.yaml
+        section: drift facet tab_switch_resets_search_query_to_empty
+        cite: "F-171.yaml:173-188 (OwnerAssociationsTabs.tsx:44-47 onTabChange setQuery(''))"
+        note: "Explicit reset on tab change; intentional, not structural."
+    operator_visible_failure: |
+      An operator who filters New-requests to "alice", clicks Active to check an
+      existing binding, and returns to New finds the filter cleared and the full
+      pending list back. Low-severity inconvenience, not data-incorrect; it is the
+      explicit product choice rather than a bug, so it routes to a caveat. (This is
+      the in-chain UI hop reading the flow can confirm; the broader experiential
+      flow remains H-000-UI-GAP.)
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Approving one request silently auto-DECLINES all other PENDING requests for the same Owner (REQUEST_MANUALLY_DECLINED), invisible in dialog/UI/doc — legitimate requesters silently rejected + audit shows decisions the operator never made."
+  dedup_status: net_new
+  distinct_from: PLT-038
+  recommended_log_as: PLT (upstream-issue draft candidate)
+  proposed_fix_anchor: "OwnerAssociationRequestServiceImpl.java:192-203 — surface the cascade in the Accept dialog text + count the colliders pre-confirm; or scope cancellation to genuine 1:1-Owner constraint only. (Distinct from PLT-038, which covers only the dialog's irreversibility/undo wording, not the cascade semantics.)"
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "Approve path has no soft-deleted-Owner guard — an orphan request can be approved, binding a user to a dead Owner."
+  dedup_status: already_tracked
+  tracked_as: PLT-132
+  proposed_fix_anchor: "OwnerAssociationRequestServiceImpl.java:184-190 — cross-check owner.deleted_at on approve (per PLT-132 proposed fix)."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Accept/Reject dialog text is ungrammatical ('will be map to owner') and discloses neither reversibility nor undo path."
+  dedup_status: already_tracked
+  tracked_as: PLT-038
+- hypothesis_id: H-008
+  one_line: "New-requests row shows only username/ownerName/roles/provider — no submission timestamp, requester-vs-actor differentiation, or justification; operator triages blind."
+  dedup_status: net_new
+  recommended_log_as: "caveat in DOC-219 (operator triage workflow UX) + a UI enhancement note"
+- hypothesis_id: H-012
+  one_line: "Switching tabs (New/Active/History) explicitly clears the operator's search filter — intentional reset, mild inconvenience."
+  dedup_status: net_new
+  recommended_log_as: "caveat in DOC-219; low-priority UI consistency note"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# confirmed-but-untested (H-001/H-002/H-009), partial (H-000/H-012), contradicted (H-005/H-006/H-007/H-008/H-010),
+# and probe-needed (H-011) ALL qualify. H-003 and H-004 are coverage: verified -> NOT listed.
+- use_case_id: F-171-UC-H001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Accept on a PENDING request creates the user_owner_mapping for the requester and marks the request APPROVED."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H001)"
+  proposed_test: "Mockito+StepVerifier: updateOwnerAssociationRequest(id, APPROVED) -> verify userOwnerMappingService.createRelation(username,provider,ownerId) invoked once + REQUEST_APPROVED activity; OR IT-NNN e2e: seed PENDING request, click Accept, assert user_owner_mapping row exists + status APPROVED."
+- use_case_id: F-171-UC-H002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Reject marks the request DECLINED and creates NO user_owner_mapping row."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H002)"
+  proposed_test: "Mockito+StepVerifier: updateOwnerAssociationRequest(id, DECLINED) -> verify createRelation NEVER invoked + REQUEST_DECLINED activity written."
+- use_case_id: F-171-UC-H006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Approving one request must NOT silently decline other operators' pending requests for the same Owner without disclosure."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H006) — characterization-pin the cascade today (RED on fix) + regression guard for the disclosure fix"
+  proposed_test: "IT-NNN e2e: seed 2 PENDING requests for the same single-user Owner (Alice, Bob); Accept Alice; assert Bob's request is now DECLINED/MANUALLY_DECLINED in History — characterization pin of the current cascade; flips when the disclosure/scoping fix lands."
+- use_case_id: F-171-UC-H007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "Approving a request whose Owner was soft-deleted must not create a binding to a dead Owner."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H007) — regression guard for PLT-132 fix"
+  proposed_test: "IT-NNN e2e: seed a PENDING request, soft-delete the target Owner, Accept; assert either a not-found/validation error OR no user_owner_mapping row to a deleted Owner (currently a characterization pin of the orphan-bind)."
+- use_case_id: F-171-UC-H009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "Every approve/decline is recorded in History with the acting operator's identity."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H009)"
+  proposed_test: "Mockito+StepVerifier or IT: approve a request; assert owner_association_request_activity has a REQUEST_APPROVED row with status_updated_by == acting operator; decline -> REQUEST_DECLINED."
+- use_case_id: F-171-UC-H010
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "Pending-request data is not visible to operators lacking OWNER_ASSOCIATION_MANAGE (doc claim) — OR the doc is corrected to match the read-collaborative reality."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H010) — a guard pinning the read-collaborative posture for this surface"
+  proposed_test: "IT-NNN e2e (LDAP stack, non-OWNER_ASSOCIATION_MANAGE user): navigate to /management/associations/new; assert pending rows ARE visible (read-collaborative) and Accept/Reject are disabled — pins the actual posture against the doc claim."
+- use_case_id: F-171-UC-H005
+  hypothesis_id: H-005
+  kind: render
+  promise: "The confirmation dialog discloses what the action does, its reversibility, and the undo path."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H005) — UI assertion guarding the corrected PLT-038 dialog copy"
+  proposed_test: "e2e: open Accept dialog; assert actionText is grammatical ('will be mapped to') and names the undo path (post-PLT-038); guards the copy from regressing."
+- use_case_id: F-171-UC-H008
+  hypothesis_id: H-008
+  kind: render
+  promise: "The triage row surfaces decision context (at minimum a submission timestamp)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H008)"
+  proposed_test: "e2e: assert the New-requests row renders a requested-at timestamp (post-enhancement); currently a characterization pin that only 4 fields render."
+- use_case_id: F-171-UC-H012
+  hypothesis_id: H-012
+  kind: render
+  promise: "Search filter persists (or its reset is the intended, documented behaviour) across tab switches."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-171-UC-H012)"
+  proposed_test: "e2e: type a filter on New, switch to Active and back; assert the (currently cleared) query state — pins the intentional reset."
+- use_case_id: F-171-UC-H011
+  hypothesis_id: H-011
+  kind: resolve-later
+  promise: "Concurrent same-Owner approvals resolve consistently without deadlock or lost cascade."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-171-1 (probe) -> then TEST-GAP-NNN once the outcome is known"
+  proposed_test: "Probe: fire two concurrent PUT /api/owner_association_request/{id} APPROVE for the same single-user Owner against local Postgres; observe deadlock / serialisation / cascade consistency."
+- use_case_id: F-171-UC-H000
+  hypothesis_id: H-000-UI-GAP
+  kind: render
+  promise: "The operator can understand, conveniently drive, and reverse a triage decision from the on-screen flow (Rule 9 UX)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional) — gated on a ui-review enrichment of the OwnerAssociationsNew/NewAssociationRequest subtree"
+  proposed_test: "ui-review enrichment + e2e flow test covering New->confirm->History round-trip and the Active-tab undo discovery path."
+
+### probes_emitted
+- probe_id: PENDING-F-171-1
+  hypothesis_id: H-011
+  hypothesis_text: "When two operators approve two different pending requests for the same single-user Owner at the same moment, the system resolves to a single consistent binding without a lost update, a deadlock, or a half-cascade."
+  probe_intent: |
+    Local-only (Rule 6): odd-minimal docker-compose Postgres. Seed two PENDING
+    OwnerAssociationRequest rows for the same single-user Owner. Fire two concurrent
+    PUT /api/owner_association_request/{id} with status APPROVED (different request
+    ids, same ownerId) and observe: (a) does the cascade-cancel
+    (OwnerAssociationRequestServiceImpl.java:192-203) deadlock on
+    owner_association_request lock-acquisition order; (b) does one transaction lose
+    its cascade; (c) final user_owner_mapping + activity-row consistency.
+  status: pending-reflection-verification
+  local_execution_blocked: false
+
+### validation_gaps
+- sidecar: feature-flows/detail/F-171.yaml
+  field_insufficient: "chain hops 1-3 (UI) are sidecar: unresolved — no enriched UI sidecar for OwnerAssociationsNew or NewAssociationRequest; status: ui-incomplete (Rule 9)."
+  proposed_refresh: "Run a ui-review/file-analyser enrichment pass on the OwnerAssociations subtree (slice H enumerated it; never enriched) so a future reflection can judge the lived flow (tab nav, empty/InfiniteScroll states, responsive behaviour, History round-trip, undo-path discoverability) rather than spot-reading two components."
+- sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+  field_insufficient: "bugs_limitations_corner_cases[3] (silent-idempotency) is attributed to the controller broadly but applies to deleteActiveUserOwnerMapping (F-173), NOT the approve/decline path; and the sidecar predates OwnerAssociationRequestServiceImplTest.java + the .switchIfEmpty(NotFoundException) now on updateOwnerAssociationRequest:94-95."
+  proposed_refresh: "Refresh the controller sidecar to (a) split the per-method idempotency/guard findings, (b) record that updateOwnerAssociationRequest now NotFound-guards the missing-id case and is tested, (c) capture the cancelCollisionAssociationByIdForApprovedRequest cascade-decline as a first-class behaviour, not just a performance note."
+
+### doc_drift_findings
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "The Associations tab is hidden from operators who do not hold the OWNER_ASSOCIATION_MANAGE permission."
+  code_does: "The list is reachable to any authenticated user (read-collaborative posture; outer permission provider wraps only the Header on OWNER_RELATION_MANAGE); Accept/Reject buttons are DISABLED, not hidden, for non-holders (NewAssociationRequest.tsx:84,101)."
+  recommended_log_as: doc-gap-NNN (correct the tab-visibility claim; align with the read-collaborative posture; name the disable-not-hide affordance)
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "(silence) — nothing about what happens to other pending requests when one is approved."
+  code_does: "Approving one request auto-DECLINES all colliding pending requests for the same Owner (OwnerAssociationRequestServiceImpl.java:192-203)."
+  recommended_log_as: doc-gap-NNN (document the collision cascade-decline so operators know approving is not row-isolated)
+
+## maintainer_notes

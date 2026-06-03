@@ -1,0 +1,726 @@
+---
+feature_id: F-146
+pillar_anchored_id: P-01:F-011
+pillar: P-01 Data Discovery
+feature_name: |-
+  Search Result Item rendering of the per-entity is_stale signal — the
+  orange-clock icon surfaced on every Data Entity row across Search /
+  Directory / Detail-header / Lineage / Recommended-panel surfaces,
+  computed from the single backend predicate
+  `lastIngestedAt + odd.data-entity-stale-period < now()`.
+reflected_at: '2026-06-03T00:00:00Z'
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  # F-146's own chain nodes (ResultItem / MetadataStale / DataEntityStaleDetector /
+  # DataEntityMapperImpl / LineageMapper / components.yaml / application.yml) have NO
+  # enriched sidecar — UI hops are `sidecar: unresolved`, backend hops are
+  # `(referenced from SHB-001)`. The feature-flow detail carries the primary-source
+  # evidence inline (read directly from .tsx / .java in the seeding batch). These are
+  # the CORROBORATING enriched sidecars (cross-surface consumers of the same is_stale
+  # field + the same mapper imprint) plus the seed thread + primary-source spot-reads.
+  - feature-flows/detail/F-146.yaml (inline primary-source evidence — the chain substrate)
+  - shoebox/detail/SHB-001-data-entity-staleness.md (the seed thread — 11 evidence refs)
+  - understanding/odd-platform__ts__react-component__component__PopularStrip.md (cross-surface consumer — DataEntityList.tsx:41 renders <MetadataStale isStale={item.isStale}/>)
+  - understanding/odd-platform__java__DataEntityController__controller-method__getPopular.md (cross-surface consumer — mapRef → DataEntityMapperImpl.java:547 isStale imprint)
+  - understanding/odd-platform__java__DataEntityController__controller-method__getDataEntityDetails.md (cross-surface consumer — detail-page is_stale)
+  - source_read_for_validation — DataEntityStaleDetector.java:10-17 (the predicate + @Value, no :default fallback)
+  - source_read_for_validation — application.yml:208-214 (the shipped `data-entity-stale-period: 7 # days` default IS present)
+  - source_read_for_validation — LineageMapperTest.java:83,92 + ActivityMapperTest.java:135 + LineageServiceTest.java:110,120 (incidental `new DataEntityStaleDetector()` — null stalePeriod — NOT behavioural coverage)
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/metadata-stale"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      LIVE and comprehensive — documents the orange-clock, the 7-day default, the
+      silent-default footgun (danger hint), never-ingested, globally-dead-signal-
+      invisible, no-per-source-override, clock-skew flicker, AND trust-on-write
+      forgeability. The feature-flow's `live_doc_silent_on_what_makes_an_entity_stale`
+      facet (anchored 2026-05-26) is now RESOLVED — the canonical aspect page exists.
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Does NOT mention the staleness signal. Not a contradiction — the canonical
+      home is metadata-stale.md (Cornerstone 5: one canonical home per content type),
+      which cross-links Search. A cross-link FROM search.md → metadata-stale.md would
+      improve discoverability but the content is correctly homed.
+hypothesis_summary:
+  total: 12
+  confirmed: 5
+  contradicted: 5
+  partial: 1
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-003
+    severity: HIGH
+    one_line: |-
+      Unset odd.data-entity-stale-period in an operator overlay (Helm / ConfigMap /
+      Docker env strips the line) silently disables the stale indicator platform-wide —
+      the UI looks perfectly healthy, no startup error, no log, no admin signal
+      (LSN-001 / LSN-002 family). Already tracked as PLT-097 Defect 1 (convergent).
+  highest_severity_ux_contradiction:
+    hypothesis_id: H-009
+    severity: MEDIUM
+    one_line: |-
+      A new operator who has never seen a stale row cannot discover what the orange
+      clock means from the screen — the icon has no aria-label, no on-screen legend,
+      and the hover tooltip shows only a relative timestamp, never the word "stale".
+related_feature_flows:
+  - F-146   # this feature
+  - F-001   # Popular Entities Ranking — cross-surface consumer of is_stale (DataEntityList.tsx:41)
+  - F-044   # Data Entity Status Lifecycle — sibling freshness/lifecycle signal; status_updated_at bug family
+  - F-017   # Search Filter Facets — the parent surface hosting F-146 at every result row
+  - F-035   # @Value binding fragility — DataEntityStaleDetector's @Value style is the example F-035 documents
+related_concepts:
+  - data-entity-staleness
+  - orange-clock-stale-indicator
+  - last-ingested-at
+  - "read-collaborative cross-owner enumeration (is_stale broadcast on every row to every authenticated caller)"
+related_drift_classes:
+  - stale_signal_silently_disabled_when_config_unset_no_admin_visible_signal
+  - never_ingested_entity_reports_is_stale_false_misleading_for_manually_created_entities
+  - ingestion_write_capability_can_forge_freshness_no_source_authenticity_check
+  - clock_skew_flicker_horizontally_scaled_deployments_inconsistent_per_node_render
+  - deployment_wide_threshold_no_per_tenant_per_namespace_per_datasource_window
+  - result_item_no_tooltip_legend_orange_clock_meaning_undiscoverable_for_new_users
+  - multiplied_ten_ways_across_surfaces_single_predicate_dispatches_to_search_directory_detail_lineage_term_owner_recommended_modelling_overview_hooks
+new_drift_classes_proposed:
+  - stale_icon_no_aria_label_invisible_to_screen_readers_on_every_catalog_surface
+  - stale_predicate_zero_behavioural_test_coverage_only_incidental_null_period_plumbing_in_mapper_tests
+---
+
+# Metadata Stale Indicator (orange-clock per-row staleness signal) — product-owner reflection
+
+## product_owner_narrative
+
+The **Metadata Stale Indicator** is the platform's at-a-glance "this source may have stopped publishing" signal. Wherever a Data Entity's name appears in the catalog — a Search result row, a Directory level-4 list, a Catalog-Overview Recommended tile, a Lineage-graph node, the entity's own detail-page header — a small **orange clock icon** appears next to the name when the entity's metadata has gone stale, and nothing appears when it is fresh. An operator scanning a list of fifty datasets can spot the three that have not been re-ingested recently without opening any of them. The audience is every catalog user (per pillar P-01: `data-engineer-analyst`, `data-scientist-ml-engineer`, `viz-bi-engineer`, and the general `odd-platform-ui-end-user`); the problem it solves is the data-platform failure mode that `documentation/docs/data-discovery/metadata-stale.md` names directly — "acting on silently-stale data" (per metadata-stale.md:7 + SHB-001 hypothesis).
+
+A user does not interact with the indicator directly — it is a read-only decoration computed entirely server-side. The single rule lives in one five-line `@Component`: an entity is stale when `lastIngestedAt != null && stalePeriod != null && now().isAfter(lastIngestedAt.plusDays(stalePeriod))` (per DataEntityStaleDetector.java:13-17, read directly). The threshold is one deployment-wide integer, `odd.data-entity-stale-period`, defaulting to `7` days (per application.yml:211, read directly). The backend imprints the resulting `is_stale` boolean onto four distinct response DTOs in the mapper tier (DataEntityMapperImpl.java:163,279,492,547) plus the lineage-node DTO (LineageMapper.java:143), and the OpenAPI spec declares `is_stale` as a **required** field on `DataEntityRef`, `DataEntity`, and `DataEntityDetails` (components.yaml:609,918,2010 per SHB-001) — so every list, detail, and lineage payload carries it. The shared UI primitive `MetadataStale.tsx` renders `<StaleIcon/>` wrapped in a hover tooltip when `isStale === true` and returns `null` otherwise (per F-146 chain hop-2 evidence + PLT-097's MetadataStale.tsx:20-31 quote).
+
+The working parts a product owner would demo: the icon appears on a row the moment that entity's last ingestion crosses the 7-day line; hovering reveals the last-refresh timestamp; the same predicate drives every surface so the signal is consistent catalog-wide (the cross-surface uniformity is corroborated by the enriched `PopularStrip` sidecar, where `DataEntityList.tsx:41` renders `<MetadataStale isStale={item.isStale}/>` exactly as the Search row does). There is no filter "show me only stale entities", no per-source threshold, no "mark as acknowledged" — the indicator is purely informational.
+
+The integration story: staleness is computed off the **Ingestion** pillar's `last_ingested_at` write (P-10 feeds P-01), shares its read surface with **Popular Entities** (F-001) and **Search Facets** (F-017) which render the same icon, and is conceptually adjacent to **Alerting** (P-07) — but distinct: metadata-stale.md:42 is explicit that "a stale icon is a discovery-time prompt, not a runtime alert." It is also a read-collaborative disclosure surface: like every other GET on the platform, `is_stale` is broadcast to every authenticated caller (anonymous under `auth.type=DISABLED`) with no owner scoping (per getPopular.md data_exposure — "operators marking entities as stale inadvertently broadcast that signal on the home page").
+
+Edge cases a product owner would flag in a demo: a never-ingested manually-created entity shows NO icon (looks fresh, has no data at all); an operator whose Helm overlay strips the config key silently kills the signal platform-wide with the UI looking perfectly healthy; a multi-replica deployment with clock skew can flicker the icon at the threshold boundary; and any holder of an ingestion token can forge freshness by writing a current timestamp. Notably — and this is the largest change since this feature was seeded on 2026-05-26 — **all five of these caveats are now documented** in the live `metadata-stale.md` page (verified HTTP 200, 2026-06-03), including a `danger`-level hint on the silent-default footgun. The doc-side mitigation has shipped ahead of the code-side fix (PLT-097, still `draft`).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an entity's last ingestion is more than `odd.data-entity-stale-period` (default 7) days before now, its Search result row renders the orange-clock stale icon next to the entity name."
+  derivation: "Endpoint+response shape — `is_stale` is REQUIRED on DataEntityRef; the predicate at DataEntityStaleDetector.java:13-17 is the rule; MetadataStale.tsx renders the icon when isStale=true; ResultItem.tsx:87-90 mounts MetadataStale in the Name cell."
+  seed_source: endpoint-shape + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The chain is mechanically sound end-to-end. DataEntityStaleDetector.java:16 evaluates
+      `now().isAfter(lastIngestedAt.plusDays(stalePeriod))` → true for an entity 8+ days stale
+      with the default 7-day period. The mapper imprints `.isStale(staleDetector.isDataEntityStale(pojo))`
+      (DataEntityMapperImpl.java:547 per getPopular.md couples-to; same imprint at :163,279,492 per
+      SHB-001). MetadataStale.tsx renders `<StaleIcon/>` when isStale is true. ResultItem.tsx:87-90
+      hands `searchResult.isStale` straight to the primitive with no additional logic. The cross-surface
+      DataEntityList.tsx:41 render line (enriched in PopularStrip.md) confirms the identical primitive
+      usage on a sibling surface.
+    evidence:
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: chain hop-1 + hop-2
+        cite: "ResultItem.tsx:87-90 + MetadataStale.tsx:20-32"
+        note: "row hands backend boolean to shared primitive; primitive renders icon when isStale=true"
+      - sidecar: source_read_for_validation
+        section: predicate
+        cite: "DataEntityStaleDetector.java:13-17"
+        note: "the stale rule — true when lastIngestedAt + stalePeriod days < now"
+      - sidecar: understanding/odd-platform__ts__react-component__component__PopularStrip.md
+        section: operations
+        cite: "DataEntityList.tsx:41 — <MetadataStale isStale={item.isStale}/>"
+        note: "cross-surface confirmation the same primitive renders the same boolean"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No test asserts an 8-day-stale entity renders the icon on a Search row. Mapper tests instantiate `new DataEntityStaleDetector()` (null period → always false) so they CANNOT observe is_stale=true. MetadataStale.tsx has ZERO .test.tsx (grep: no match)."
+
+- id: H-002
+  hypothesis: "When an entity was ingested within the last 7 days, its Search result row shows NO stale icon (the fresh state is the absence of the icon)."
+  derivation: "Response shape — MetadataStale.tsx returns null when isStale=false; the predicate returns false for a recent lastIngestedAt."
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      DataEntityStaleDetector.java:16 returns false when now() is NOT after lastIngestedAt+7d.
+      MetadataStale.tsx:20-32 returns null when isStale is false (per F-146 hop-2 + PLT-097
+      MetadataStale.tsx:20-31 `if (!isStale) return null`). The fresh state therefore renders
+      no DOM at all next to the name. This is the documented behaviour (metadata-stale.md:64
+      "renders the orange icon only when is_stale=true; in every other case it renders nothing").
+    evidence:
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: terminal_side_effect
+        cite: "MetadataStale.tsx:20-32"
+        note: "0..1 per row — 0 when not stale"
+      - sidecar: source_read_for_validation
+        section: predicate
+        cite: "DataEntityStaleDetector.java:14-16"
+        note: "false for recent lastIngestedAt"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No render test asserts isStale=false → null (no icon). This is the other half of the MetadataStale render contract."
+
+- id: H-003
+  hypothesis: "When an operator's deployment overlay (Helm / ConfigMap / Docker env) omits or empties `odd.data-entity-stale-period`, the stale indicator continues to work because the shipped application.yml provides a 7-day default."
+  derivation: "Endpoint-shape — `@Value(\"${odd.data-entity-stale-period}\")` config binding; the feature-flow facet flagged this as needing verification against application.yml."
+  seed_source: pillar + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The `@Value` at DataEntityStaleDetector.java:10 is `@Value("${odd.data-entity-stale-period}")`
+      with NO `:default` fallback syntax (read directly — confirmed not `:7` and not `:#{null}`).
+      The shipped application.yml:211 DOES carry `data-entity-stale-period: 7 # days`, so a STOCK
+      deployment is fine. BUT Spring property resolution means an operator overlay that overrides the
+      `odd:` block (or strips the line via env/ConfigMap) injects `null` into the `Integer stalePeriod`
+      field. The predicate's `stalePeriod != null` guard (line 15) then returns FALSE for EVERY entity
+      — the indicator dies platform-wide with no startup error, no log, no admin signal. The hypothesis
+      ("continues to work because of the default") is FALSE in exactly the overlay case that production
+      operators hit. This is the LSN-001 / LSN-002 silent-default family — same shape as the attachment-
+      ephemeral and minio-region footguns.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: "@Value binding"
+        cite: "DataEntityStaleDetector.java:10"
+        note: "no :default fallback — bare ${odd.data-entity-stale-period}"
+      - sidecar: source_read_for_validation
+        section: shipped default
+        cite: "application.yml:211"
+        note: "data-entity-stale-period: 7 # days — present in stock yml, overridable away"
+      - sidecar: source_read_for_validation
+        section: guard
+        cite: "DataEntityStaleDetector.java:15"
+        note: "stalePeriod != null short-circuits to false → every entity reports is_stale=false"
+    operator_visible_failure: |
+      (1) An operator who manages config via Helm values / K8s ConfigMap / Docker `environment:` and
+      does not carry the `odd.data-entity-stale-period` line gets a platform where the stale icon never
+      appears on ANY surface. (2) The UI is visually indistinguishable from a perfectly-healthy platform
+      (no icons = "everything fresh") so the operator has no reason to suspect the signal is dead. (3)
+      Collectors could be days or weeks behind and no SLA dashboard built on staleness fires. (4) There
+      is no startup validator, no INFO log of the resolved value, no admin-tab banner — the only signal
+      is the doc-side caveat that now ships in metadata-stale.md:48-54.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No test asserts that a null stalePeriod makes the predicate return false (the silent-disable behaviour to pin), nor that a @PostConstruct validator rejects a null period once PLT-097's fix lands."
+
+- id: H-004
+  hypothesis: "When a Data Entity has never been ingested (manually created in the UI, or pending its first collector pull), its row shows NO stale icon — and that absence correctly communicates 'fresh, recently maintained'."
+  derivation: "Negative-space — the predicate's first conjunct `lastIngestedAt != null`; a never-ingested entity has NULL lastIngestedAt."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      DataEntityStaleDetector.java:14 short-circuits to FALSE when `lastIngestedAt == null`. A never-
+      ingested entity therefore reports is_stale=false → no icon — IDENTICAL to a freshly-ingested
+      entity. The absence of an icon conflates two opposite states: "ingested twenty minutes ago" and
+      "never ingested, has no data at all". The hypothesis's claim that the absence communicates
+      freshness is FALSE — it communicates "fresh OR empty", and the UI offers no way to tell them apart.
+      Documented at metadata-stale.md:56-60.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: predicate first conjunct
+        cite: "DataEntityStaleDetector.java:14"
+        note: "lastIngestedAt != null → never-ingested short-circuits to is_stale=false"
+      - sidecar: shoebox/detail/SHB-001-data-entity-staleness.md
+        section: Caveat 2
+        cite: "DataEntityStaleDetector.java:13"
+        note: "never-ingested reported as fresh — misleading for manually-created entities"
+    operator_visible_failure: |
+      (1) A manually-created Data Entity Group / Domain, or an entity awaiting its first collector pull,
+      renders with no stale icon — looking exactly like a healthy recently-refreshed entity. (2) An
+      operator auditing a new ingestion's progress cannot distinguish "the collector pulled this and it
+      is fresh" from "the collector has never touched this". (3) Dashboards / SLA reports that treat
+      absence-of-stale as evidence of recency silently over-count healthy entities. Tracked + documented:
+      never-ingested entities must be enumerated separately (`WHERE last_ingested_at IS NULL`).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No test asserts is_stale=false for a NULL lastIngestedAt entity (the never-ingested branch), nor the tri-state FRESH/STALE/NEVER_INGESTED behaviour PLT-097 proposes."
+
+- id: H-005
+  hypothesis: "When an operator hovers the orange clock icon on a Search row, the tooltip explains what 'stale' means and shows the threshold, so a first-time user understands the signal."
+  derivation: "UI-label — the tooltip is the only on-screen affordance; MetadataStale wraps StaleIcon in an AppTooltip."
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The icon IS wrapped in a hover tooltip — but the tooltip shows only the last-ingested RELATIVE
+      time, never the word "stale" and never the threshold. The F-146 chain hop-2 evidence records the
+      tooltip text as `"Ingested at ${formatDistanceToNow(lastIngestedAt)}"`; PLT-097's quote of the same
+      file shows `t('Last updated: {{ts}}')`. Either way it is a bare timestamp — it tells the user WHEN
+      the entity was last refreshed but not THAT this constitutes staleness, nor the 7-day rule. A user
+      who already knows what the orange clock means gets useful information (the timestamp); a first-time
+      user who does not recognise the icon gets a timestamp with no explanation of why it matters. So the
+      hypothesis is partly true: the tooltip exists and is informative for the initiated, but does not
+      teach the uninitiated.
+    evidence:
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: chain hop-2
+        cite: "MetadataStale.tsx:20-32"
+        note: 'tooltip = "Ingested at <relative time>"; NO word "stale", NO threshold, NO doc link'
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: "observed_vs_expected facet (undiscoverable)"
+        cite: "MetadataStale.tsx:20-32 + ResultItem.tsx:87-90"
+        note: "no icon legend, no first-time hint"
+    operator_visible_failure: |
+      A new operator scanning Search results sees an unfamiliar orange icon next to some names and not
+      others. Hovering yields a timestamp ("Ingested at 12 days ago") with no statement that the entity
+      is considered STALE or what the window is. The user must already know the convention, or leave the
+      product and find the docs, to interpret the signal. The information is there but the teaching is not.
+    severity: MEDIUM
+    confidence: MEDIUM
+    confidence_note: "tooltip exact text differs between the two primary-source quotes (F-146 vs PLT-097); both agree it is a bare timestamp, but the precise i18n key is unconfirmed without re-reading MetadataStale.tsx in this session."
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No test asserts the tooltip content. A render test should pin whatever the tooltip text actually is so a future copy change is caught."
+
+- id: H-006
+  hypothesis: "When a screen-reader user navigates a Search result list, they are told which rows are stale (the orange clock conveys its meaning to assistive technology)."
+  derivation: "UI-label + accessibility (Rule 9 device/assistive consistency) — the icon is the sole carrier of the staleness state in the row."
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The feature-flow facet records that StaleIcon "has no aria-label" (observed_vs_expected facet
+      `result_item_no_tooltip_legend...`, MetadataStale.tsx:20-32 line-by-line). The sibling-surface
+      enriched sidecar PopularStrip.md independently flags the same class on the same DataEntityList
+      tile: "no per-tile aria-label ... a blind user hears 'link, [entity-name]' ... without context"
+      (DataEntityList.tsx:37-50). The staleness state is conveyed ONLY as a visual icon (and a hover
+      tooltip, which is itself not reliably announced). A screen-reader user gets no signal that a row
+      is stale. The hypothesis is FALSE.
+    evidence:
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: "observed_vs_expected facet (undiscoverable)"
+        cite: "MetadataStale.tsx:20-32"
+        note: "the icon has no aria-label"
+      - sidecar: understanding/odd-platform__ts__react-component__component__PopularStrip.md
+        section: bugs_limitations_corner_cases
+        cite: "DataEntityList.tsx:37-50"
+        note: "no per-tile aria-label — screen-reader users hear only the entity name, no stale context"
+    operator_visible_failure: |
+      (1) A screen-reader user (a real audience for an enterprise catalog under accessibility-compliance
+      mandates) cannot perceive which entities are stale — the single most important per-row health signal
+      is invisible to them. (2) The signal degrades silently across ALL ten cross-surface render sites
+      because they share the MetadataStale primitive — fixing one fixes all, but today none carries an
+      aria-label. (3) Keyboard-only users may never trigger the hover tooltip at all.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No test asserts an accessible name / aria-label on the stale icon. A11y render test required."
+
+- id: H-007
+  hypothesis: "When the same entity is at the staleness threshold boundary, every user sees a consistent is_stale value regardless of which platform replica served their request."
+  derivation: "Negative-space — the predicate calls DateTimeUtil.generateNow() per mapper invocation (no centralised clock); horizontally-scaled deployments have per-node wall clocks."
+  seed_source: negative-space + pillar (cross-replica consistency)
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The predicate uses `DateTimeUtil.generateNow()` evaluated on the rendering replica
+      (DataEntityStaleDetector.java:16). For an entity whose `lastIngestedAt + stalePeriod` is within the
+      inter-node clock-skew window of "now", two replicas can land on opposite sides of the cutoff and
+      return different is_stale values for the same entity at the same wall-clock instant — a visual
+      flicker as a load-balanced user's requests round-robin across pods. Whether this is OBSERVABLE
+      requires running a 2-node deployment with induced skew and seeding an entity at the threshold edge;
+      it cannot be settled from static reading (it depends on real clock drift + LB behaviour). metadata-
+      stale.md:74-78 documents the mechanism and rates it low-impact for sub-second-NTP single-region
+      deployments. Verdict is probe-needed to confirm the magnitude and the exact boundary condition.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: clock
+        cite: "DataEntityStaleDetector.java:16"
+        note: "DateTimeUtil.generateNow() per invocation — no centralised / DB-side NOW()"
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: "observed_vs_expected facet (clock-skew)"
+        cite: "DataEntityStaleDetector.java:13"
+        note: "per-mapper-invocation now() → flicker on horizontally-scaled deployments"
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-146-1
+    routes_to_finding: probe-needed
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: probe
+
+- id: H-008
+  hypothesis: "When an operator runs collectors on a mix of cadences (hourly streaming + weekly batch), they can set the staleness window per data source so each source is judged against its own cadence."
+  derivation: "Pillar mission ('spot stale entities') + customisation (Rule 9 'can the user customise it?') — operators of mixed-cadence environments need per-source windows."
+  seed_source: pillar + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `odd.data-entity-stale-period` is a single deployment-wide integer (one @Value, one global config
+      key — DataEntityStaleDetector.java:10). There is no per-data-source `stale_period_days` column, no
+      per-namespace override, no per-class default. A mixed-cadence operator must pick one window: a 7-day
+      window flags the streaming source every brief pause; a 1-hour window flags the weekly batch source as
+      permanently stale. The hypothesis (per-source window) is FALSE — the customisation does not exist.
+      metadata-stale.md:68-72 documents the single-global-cadence limitation explicitly.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: config binding
+        cite: "DataEntityStaleDetector.java:10"
+        note: "single global @Value; no per-source parameter on the predicate"
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: "observed_vs_expected facet (deployment-wide threshold)"
+        cite: "DataEntityStaleDetector.java:13"
+        note: "no per-tenant / per-namespace / per-datasource window"
+    operator_visible_failure: |
+      An operator with heterogeneous sources cannot make the staleness signal accurate for all of them
+      simultaneously — either the fast sources under-flag (window too long) or the slow sources over-flag
+      (window too short, permanent false-stale). The only recommended compromise (set the most-conservative
+      window, accept the noise) is documented but is not a substitute for the missing per-source knob.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "Behavioural-correctness is documented; the test demand is a regression guard IF a per-source override ships (REFACTOR-NNN). No test needed for the current single-global behaviour beyond H-001's predicate test."
+
+- id: H-009
+  hypothesis: "When a new operator first encounters the catalog, the screen itself teaches them what the orange clock means (an on-screen legend, a column header, or a first-time hint) without leaving the product."
+  derivation: "Rule 9 senior-PO UX seed — 'does the user understand how to use this from what is on screen?'; the feature-flow's undiscoverability facet."
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no on-screen legend, no results-list header ("N stale entries — threshold 7 days"), no
+      first-time hint, and no in-product link to the metadata-stale doc page. The only affordance is the
+      per-icon hover tooltip (H-005), which shows a bare timestamp and never the word "stale". A user who
+      has never seen a stale row before has nothing on the screen to decode the icon. The hypothesis is
+      FALSE. (The teaching content NOW exists — comprehensively — but it lives in the docs at
+      metadata-stale.md, reachable only by leaving the product and searching for it.)
+    evidence:
+      - sidecar: feature-flows/detail/F-146.yaml
+        section: "observed_vs_expected facet (undiscoverable)"
+        cite: "MetadataStale.tsx:20-32 + ResultItem.tsx:87-90"
+        note: "bare StaleIcon in a tooltip; no legend, no header count, no 'what is stale?' link"
+      - sidecar: understanding/odd-platform__ts__react-component__component__PopularStrip.md
+        section: bugs_limitations_corner_cases
+        cite: "DataEntityList.tsx:65-67 + EmptyContentPlaceholder.tsx:46"
+        note: "the sibling surface's empty/affordance copy is generic — no staleness-specific guidance pattern anywhere in this component family"
+    operator_visible_failure: |
+      The discoverability gap is the highest-severity UX contradiction in this reflection because it is the
+      one the largest audience hits: every new user of every deployment. (1) The icon's meaning is
+      undiscoverable from the screen — the user must already know the convention or leave to read docs.
+      (2) Because the fresh state renders nothing, a user cannot even infer the icon's meaning by contrast
+      across rows. (3) There is no count or summary, so an operator cannot tell at a glance "how stale is
+      my catalog overall?". The product ships a signal it does not teach.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "UX gap — not directly unit-testable. The functional demand is the IT/UX assertion that a stale row is discoverable (e.g. accessible name present per H-006); the legend itself is a design change (REFACTOR-NNN)."
+    sme_consultation_recommended: true
+    sme_consultation_question: "Industry-comparative: how do DataHub / Amundsen / OpenMetadata surface a freshness/staleness signal on list rows — icon-only, badge-with-label, column, or filter — and what is the canonical operator term ('stale' vs 'freshness' vs 'last refreshed')? Does icon-only-with-no-legend match peer-tool convention or is it below it?"
+    sme_consultation_archetype: comparative
+
+- id: H-010
+  hypothesis: "When the staleness signal surfaces, it appears consistently on every catalog surface that lists or shows a Data Entity (Search, Directory, Recommended, detail header, lineage), driven by one shared predicate."
+  derivation: "Pillar (cross-surface coherence) + the feature-flow's cross-surface multiplication facet — a single predicate dispatching to ten consumers."
+  seed_source: cross-pillar + pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      One predicate (DataEntityStaleDetector) feeds four mapper imprints (DataEntityMapperImpl.java:163,
+      279,492,547) + the lineage-node imprint (LineageMapper.java:143), and the shared MetadataStale.tsx
+      primitive renders on every consumer. The enriched PopularStrip.md sidecar confirms the Recommended-
+      tile surface uses `<MetadataStale isStale={item.isStale}/>` at DataEntityList.tsx:41 — the same
+      primitive, same boolean source. The live metadata-stale.md:15-22 enumerates the surfaces (Catalog
+      Overview tiles, Search rows, Directory level-4 list, entity detail page) and states "wherever the
+      entity name appears in the catalog, the stale icon appears next to it". Consistency is confirmed.
+      The flip side (the blast radius — one predicate change ripples to all ten sites with no per-site
+      regression test) is a real architectural caveat, not a behavioural contradiction.
+    evidence:
+      - sidecar: shoebox/detail/SHB-001-data-entity-staleness.md
+        section: Evidence
+        cite: "DataEntityMapperImpl.java:163,279,492,547 + LineageMapper.java:143 + 10 UI consumers"
+        note: "single predicate, four+one mapper imprints, ten UI render sites"
+      - sidecar: understanding/odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: couples-to
+        cite: "DataEntityMapperImpl.java:547 (isStale via dataEntityStaleDetector.isDataEntityStale)"
+        note: "cross-surface consumer imprints the same field"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No single regression suite pins the predicate semantics across the render sites; SHB-001 NEXT step 1 calls for exactly this. A predicate unit test + a spec-conformance test (is_stale REQUIRED on every list response) is the minimum guard for the ten-way blast radius."
+
+- id: H-011
+  hypothesis: "When the platform docs are consulted, an operator finds a clear explanation of what makes an entity stale, the config key + default, and the operator caveats (silent-default, never-ingested)."
+  derivation: "Doc-claim seed — the feature-flow facet `live_doc_silent_on_what_makes_an_entity_stale` claimed the live doc was silent (anchored 2026-05-26); re-verify against current docs."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The feature-flow's silent-doc facet is NOW RESOLVED. `documentation/docs/data-discovery/metadata-stale.md`
+      exists and is comprehensive (verified live HTTP 200, 2026-06-03): it explains the predicate
+      (`last_ingested_at + odd.data-entity-stale-period < now()`, metadata-stale.md:46), the default
+      (`7`, :26), the silent-default footgun as a `danger` hint (:48-54), never-ingested (:56-60), the
+      globally-dead-signal-invisible compound (:62-66), no-per-source-override (:68-72), clock-skew flicker
+      (:74-78), and trust-on-write forgeability (:80-84). The config-page side is also covered (odd-platform.md
+      #detecting-stale-metadata, per DOC-010 which shipped PASS). Code and doc AGREE on every behavioural
+      claim — the doc was authored accurately from the same primary source. This is the rare doc-claim
+      hypothesis that confirms BOTH that the doc exists AND that it tells the truth.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: live doc
+        cite: "documentation/docs/data-discovery/metadata-stale.md:1-93"
+        note: "comprehensive aspect page; all five caveats documented; matches code"
+      - sidecar: source_read_for_validation
+        section: live WebFetch
+        cite: "https://docs.opendatadiscovery.org/features/data-discovery/metadata-stale (200)"
+        note: "published; content confirmed via WebFetch 2026-06-03"
+    confidence: HIGH
+    routes_to_finding: none
+    routes_to_finding_note: |
+      EXCEPTION to the no-route-to-none-while-untested rule (Rule 11): this is a doc-EXISTENCE hypothesis,
+      not a code-behaviour promise. Its "test" is the live-site verification already performed (WebFetch 200
+      + content match). There is no functional code test to demand for "the doc page exists and is accurate";
+      the guard is the /review Gate-8 live-site check. Recorded as confirmed with the live verification as
+      its evidence — NOT a discarded confirmed-promise. This is the one `coverage: verified` use_case.
+    use_case_kind: grammar
+    coverage: verified
+    test_ref: "live-site verification (WebFetch metadata-stale 200, 2026-06-03) + /review Gate 8"
+
+- id: H-012
+  hypothesis: "When any authenticated user (or an anonymous caller under auth.type=DISABLED) reads a list of entities, the is_stale flag for every entity — including entities owned by other teams — is disclosed to them."
+  derivation: "Cross-pillar (P-09 read-collaborative posture) + response-shape — is_stale is on every DataEntityRef with no owner scoping."
+  seed_source: cross-pillar + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `is_stale` is a REQUIRED field on DataEntityRef / DataEntity / DataEntityDetails (components.yaml:
+      609,918,2010) and is imprinted unconditionally by the mapper — there is no owner predicate gating
+      it. The enriched getPopular.md sidecar records exactly this disclosure: "isStale=true flag exposes
+      the staleness state of every popular entity ... operators marking entities as stale inadvertently
+      broadcast that signal on the home page" (data_exposure[2], DataEntityMapperImpl.java:547), and the
+      surface is anonymous under DISABLED (DisabledAuthSecurityConfiguration.java:14-17). The hypothesis
+      is confirmed — staleness is part of the platform's read-collaborative posture (every authenticated
+      caller enumerates every entity's health signal). Whether this is a LEAK or an accepted design is the
+      same standing question as the rest of the read-collaborative family (REFACTOR-024 / -053 / -187 /
+      -201); for staleness specifically the signal is low-sensitivity, so this routes as a caveat, not a
+      fresh bug.
+    evidence:
+      - sidecar: understanding/odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: security.data_exposure
+        cite: "DataEntityMapperImpl.java:547 + DisabledAuthSecurityConfiguration.java:14-17"
+        note: "isStale broadcast to every authenticated caller; anonymous under DISABLED"
+      - sidecar: shoebox/detail/SHB-001-data-entity-staleness.md
+        section: Evidence
+        cite: "components.yaml:609,918,2010"
+        note: "is_stale REQUIRED on every list/detail/lineage payload — no owner gate"
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "No test asserts is_stale is served to a cross-owner / DISABLED-anonymous caller (the read-collaborative posture for this field). A security-class test would pin the current behaviour as intentional."
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "Unset odd.data-entity-stale-period (operator overlay strips the line) silently disables the stale indicator platform-wide — UI looks healthy, no log, no admin signal (LSN-001 family)."
+  dedup_status: already_tracked
+  tracked_as: PLT-097
+  proposed_fix_anchor: "DataEntityStaleDetector.java:10 — @Value(\"${odd.data-entity-stale-period:#{null}}\") + @PostConstruct fail-fast (PLT-097 Defect 1)."
+  convergent_validation_note: "Independently re-derived from primary source (DataEntityStaleDetector.java:10-17 + application.yml:211). PLT-097 Defect 1 is the SAME finding with the same fix — high-confidence corroboration, not a re-file."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "Never-ingested entity (NULL last_ingested_at) reports is_stale=false — indistinguishable from fresh; absence-of-icon conflates 'recently ingested' with 'no data at all'."
+  dedup_status: already_tracked
+  tracked_as: PLT-097
+  proposed_fix_anchor: "DataEntityStaleDetector.java:14 — tri-state FreshnessState {FRESH, STALE, NEVER_INGESTED} (PLT-097 Defect 2)."
+  convergent_validation_note: "PLT-097 Defect 2 is the same finding."
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "The stale icon has no aria-label / accessible name on any catalog surface — screen-reader and keyboard-only users cannot perceive which entities are stale; the gap multiplies across all ten shared-primitive render sites."
+  dedup_status: net_new
+  distinct_from: PLT-097
+  distinct_reason: "PLT-097 covers the silent-disable + never-ingested + UI-tier-invisibility-of-a-dead-signal (Defect 3 is about a globally-dead signal looking healthy). It does NOT cover per-icon ACCESSIBILITY (aria-label / screen-reader announcement of an INDIVIDUAL stale row). PopularStrip.md flags the same a11y class on DataEntityList.tsx:37-50 but no issue tracks it for the staleness primitive."
+  recommended_log_as: PLT-NNN (a11y — MetadataStale.tsx + DataEntityList.tsx aria-label on the stale state)
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Stale-icon hover tooltip shows only the relative last-ingested timestamp — never the word 'stale' nor the threshold; informative for the initiated, non-teaching for first-time users."
+  dedup_status: net_new
+  recommended_log_as: "caveat already shipped in metadata-stale.md (How the indicator surfaces, :9-13) — the doc explains the tooltip; the in-product copy improvement is a UX follow-up (PLT-NNN / REFACTOR-NNN)."
+- hypothesis_id: H-008
+  one_line: "Single deployment-wide stale window; no per-data-source / per-namespace override — mixed-cadence operators cannot make the signal accurate for all sources at once."
+  dedup_status: already_tracked
+  tracked_as: "metadata-stale.md:68-72 (documented limitation) + feature-flow related_refactoring_scopes (REFACTOR-NNN per-datasource override, unminted)"
+- hypothesis_id: H-009
+  one_line: "Orange-clock meaning is undiscoverable from the screen — no legend, no results-header count, no in-product 'what is stale?' link; the teaching content exists only in the docs (leave-the-product)."
+  dedup_status: net_new
+  recommended_log_as: "DOC-side is RESOLVED (metadata-stale.md). The in-product discoverability affordance (legend / header count / doc link from the icon) is a UX follow-up — PLT-NNN / REFACTOR-NNN."
+- hypothesis_id: H-012
+  one_line: "is_stale is disclosed to every authenticated caller (anonymous under DISABLED) for every entity including cross-owner — read-collaborative posture; low-sensitivity signal."
+  dedup_status: already_tracked
+  tracked_as: "getPopular.md known_security_gaps (read-collaborative family REFACTOR-024/-053/-187/-201) — staleness is one more field on the same posture, not a separate gap."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# F-146 sits at use_case_coverage 1/12 verified. The staleness predicate — a 5-line @Component
+# driving TEN UI surfaces and a REQUIRED spec field — has ZERO behavioural test coverage; the only
+# "coverage" is incidental `new DataEntityStaleDetector()` (null period → always false) in mapper tests
+# that can NEVER observe is_stale=true. This is the single highest-value gap the reflection surfaces.
+- use_case_id: F-146-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "An entity ingested >7 days ago renders the orange-clock icon on its Search row."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-1) (pending mint)"
+  proposed_test: "DataEntityStaleDetectorTest (NEW, unit): inject stalePeriod=7 via ReflectionTestUtils; assert isDataEntityStale(pojo with lastIngestedAt=now-8d)==true. + MetadataStale.test.tsx: isStale=true renders StaleIcon."
+- use_case_id: F-146-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "An entity ingested within 7 days renders NO icon (fresh = absence)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-2) (pending mint)"
+  proposed_test: "DataEntityStaleDetectorTest: lastIngestedAt=now-1d, stalePeriod=7 → false. + MetadataStale.test.tsx: isStale=false renders null."
+- use_case_id: F-146-UC-3
+  hypothesis_id: H-003
+  kind: teardown-constraint
+  promise: "The stale signal stays alive when an operator overlay omits the config key (it does NOT — this guards the fail-fast fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-3) (pending mint) — regression guard for PLT-097 Defect 1"
+  proposed_test: "DataEntityStaleDetectorTest: stalePeriod=null → isDataEntityStale==false TODAY (pins the silent-disable); flip to expect a startup IllegalStateException once PLT-097's @PostConstruct validator lands."
+- use_case_id: F-146-UC-4
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "A never-ingested entity is distinguishable from a fresh one (it is NOT — guards the tri-state fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-4) (pending mint) — regression guard for PLT-097 Defect 2"
+  proposed_test: "DataEntityStaleDetectorTest: lastIngestedAt=null → false TODAY; flip to NEVER_INGESTED once the tri-state ships."
+- use_case_id: F-146-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "The stale-icon tooltip communicates the staleness state to the user."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-5) (pending mint)"
+  proposed_test: "MetadataStale.test.tsx: assert the tooltip text content (pins whatever copy ships so a regression is caught)."
+- use_case_id: F-146-UC-6
+  hypothesis_id: H-006
+  kind: render
+  promise: "A screen-reader user is told which rows are stale."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-6) (pending mint) — regression guard for the a11y fix (H-006 bug-candidate)"
+  proposed_test: "MetadataStale.test.tsx: assert the stale state exposes an accessible name (getByLabelText / role+name) — RED today, GREEN after aria-label lands."
+- use_case_id: F-146-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "Every replica returns a consistent is_stale at the threshold boundary."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-146-1 (clock-skew flicker — local 2-node docker-compose with induced skew)"
+  proposed_test: "Probe, not a unit test — see probes_emitted."
+- use_case_id: F-146-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "The stale signal appears consistently on every catalog surface from one shared predicate."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-10) (pending mint) — the ten-way-blast-radius guard SHB-001 NEXT step 1 calls for"
+  proposed_test: "Spec-conformance integration test: assert every list/detail/lineage response carries the REQUIRED is_stale field (components.yaml:609,918,2010); + a round-trip IT seeding entities with varied lastIngestedAt and asserting is_stale across the result list."
+- use_case_id: F-146-UC-12
+  hypothesis_id: H-012
+  kind: cross-actor
+  promise: "is_stale disclosure to cross-owner / DISABLED-anonymous callers is the intended read-collaborative posture."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-146-UC-12) (pending mint)"
+  proposed_test: "Security-class IT: under auth.type=DISABLED an anonymous GET /api/search/{id}/results returns rows with is_stale populated (pins the current posture as intentional)."
+
+### probes_emitted
+- probe_id: PENDING-F-146-1
+  hypothesis_id: H-007
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  expected_outcome: |
+    "When the same entity is at the staleness threshold boundary, every user sees a consistent
+    is_stale value regardless of which platform replica served their request."
+  probe_sketch: |
+    Local-only (Rule 6): docker-compose two odd-platform-api replicas + one Postgres; induce a
+    wall-clock skew of ~30s between the two containers (e.g. faketime / a clock-offset env on one
+    pod); seed one Data Entity with last_ingested_at = now - (7 days - 15s); fire repeated
+    GET /api/search/{id}/results round-robined across the two replicas; assert whether is_stale
+    flickers true/false across responses. PASS = consistent; FAIL/observed = flicker confirmed,
+    promoting the LOW-severity caveat to a measured magnitude.
+  note: "PARALLEL-SAFE MODE — recorded here only; no P-NNN file created."
+
+### validation_gaps
+# Rule 9 — FIRST output: the feature's UI surface is not in the chain as an enriched sidecar.
+- sidecar: "odd-platform ts react-component:ResultItem (chain hop-1)"
+  field_insufficient: "entire sidecar — `sidecar: unresolved` in the feature-flow chain"
+  proposed_refresh: |
+    ResultItem.tsx has NO enriched sidecar; the feature-flow carries only the inline hop-1 evidence
+    (ResultItem.tsx:87-90). This reflection's Search-row verdicts (H-001/H-002/H-005/H-009) lean on that
+    inline evidence + the CROSS-SURFACE enriched PopularStrip.md (DataEntityList.tsx:41, the same
+    MetadataStale primitive on a sibling tile). The verdicts are well-anchored but the Search row's OWN
+    interaction layer (row click target, hover behaviour, how the icon composes with the alert icon +
+    entity-class chips in the Name cell) is not independently enriched. Next /enrich pass should produce
+    a ResultItem sidecar so the Search-row UX is judged from its own component, not by analogy.
+- sidecar: "odd-platform ts react-component:MetadataStale (chain hop-2)"
+  field_insufficient: "entire sidecar — `sidecar: unresolved`; tooltip exact text differs across two primary-source quotes"
+  proposed_refresh: |
+    MetadataStale.tsx has NO enriched sidecar. The feature-flow hop-2 quotes the tooltip as
+    `"Ingested at ${formatDistanceToNow(lastIngestedAt)}"`; PLT-097 quotes `t('Last updated: {{ts}}')`.
+    Both agree it is a bare timestamp (so H-005's verdict holds) but the exact i18n key is unconfirmed.
+    An enriched MetadataStale sidecar (with the precise tooltip key, the aria-label state, and the
+    StaleIcon import) would resolve H-005's MEDIUM confidence to HIGH and ground H-006's a11y bug.
+- sidecar: "odd-platform java service:DataEntityStaleDetector (chain hop-3)"
+  field_insufficient: "`unresolved: true` — substrate node exists, enrichment not run"
+  proposed_refresh: |
+    The predicate's own sidecar does not exist (the four caveats inherit from SHB-001). This reflection
+    spot-read DataEntityStaleDetector.java:10-17 directly (source_read_for_validation) to settle H-003
+    (no :default on @Value) and H-007 (per-invocation now()). A dedicated /enrich pass on this node would
+    resolve all four caveats to primary-source and carry the Category-F request-input analysis the
+    feature-flow's status_reason flags as the pending BACKEND HALF.
+
+### doc_drift_findings
+# The feature-flow's `live_doc_silent_on_what_makes_an_entity_stale` facet is RESOLVED — recorded here as
+# a state change, not an open drift. The remaining item is a minor cross-link discoverability gap.
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+  doc_says: "The Search page does not mention the staleness signal at all."
+  code_does: "Every Search result row renders the orange-clock stale icon (ResultItem.tsx:87-90)."
+  recommended_log_as: |
+    LOW-priority doc cross-link: add a one-line cross-link from search.md → metadata-stale.md so a
+    Search-page reader discovers the icon's meaning. NOT a content-homing violation — metadata-stale.md
+    is the correct canonical home (Cornerstone 5); this is only a discoverability cross-link. The
+    canonical aspect page is comprehensive and live (HTTP 200). The feature-flow's silent-doc facet is
+    otherwise RESOLVED; this finding supersedes it as a much narrower residual.
+
+## maintainer_notes
+
+(none yet — preserved across refreshes; this block is the only one the maintainer hand-edits.)

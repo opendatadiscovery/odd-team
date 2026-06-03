@@ -1,0 +1,790 @@
+---
+feature_id: F-151
+pillar_anchored_id: P-06:F-004
+pillar: Data Glossary
+feature_name: |-
+  Term Detail Page — five-tab composition with affordance-gated tab
+  visibility, lazy-loaded sub-routes, and double-fetch shape on the
+  Overview tab
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__TermDetails.md
+  - odd-platform__java__service__service__TermServiceImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Verified live 200 via batch-K WebFetch (inherited through TermServiceImpl +
+      ReactiveTermRepositoryImpl docs_link_semantic blocks). No fresh WebFetch this
+      session. The pillar landing frames terms-as-entities + the 7 TERM_* permissions
+      but is SILENT on the Term detail page UX (the 5-tab structure, tab auto-hide,
+      Edit/Delete affordances, double-fetch latency contract, the [[ns:term]] format).
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Verified live 200 via batch-K WebFetch. Documents inline term-mention behaviour
+      ("the mention surfaces in that entity's Terms section once the description is
+      saved") but does NOT spell out the exact [[namespace:term]] syntax (only in-app
+      tooltip screenshots), the rename/delete description-mention guards, or the
+      auto-link side-channel.
+hypothesis_summary:
+  total: 13
+  confirmed: 5
+  contradicted: 4
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: |-
+      A term author with only TERM_UPDATE can plant <script> in the term DEFINITION;
+      it renders as live HTML/JS via rehype-raw (no sanitiser) on the Overview tab for
+      every authenticated viewer (read-collaborative) — the F-004 stored-XSS class extends
+      to TermDefinition.
+related_feature_flows: [F-002, F-004, F-024, F-056, F-132, F-155]
+related_concepts:
+  - term-detail-composition
+  - tab-affordance-gating
+  - lazy-route-loading
+related_drift_classes:
+  - ui_double_fetch_shell_plus_sub_route_same_hot_path
+  - ui_tab_auto_hide_obscures_capability
+  - ui_dual_surface_same_data_inconsistent_affordances
+new_drift_classes_proposed:
+  - term_definition_edit_verbatim_storage_xss_class_extension
+  - query_examples_sub_route_gate_present_other_four_ungated_read_collaborative
+---
+
+# Term Detail Page — product-owner reflection
+
+## product_owner_narrative
+
+The **Term detail page** is the operator-facing home of a single glossary Term — the
+canonical place where a data engineer, analyst, or steward lands after clicking a Term in
+search, following a breadcrumb, or deep-linking to `/terms/{id}/overview`. A Term is a
+first-class catalog citizen in the Data Glossary pillar (P-06): it names and describes a
+business concept ("what `Customer` means in your taxonomy"), it links to other Terms, and
+it links to the data entities, dataset fields, and query examples that embody it. This page
+is where all of that converges into one screen (per system-mission.md P-06; per
+`TermDetails.md` understanding — "the OPERATOR-FACING ENTRY POINT for everything F-002
+surfaces"). It solves the problem the pillar exists for: when the catalog grows, an operator
+needs one durable surface that answers "what does this term mean, who owns it, and what is it
+attached to."
+
+A user interacts with the page through a thin shell plus a five-tab strip. On mount, the
+shell fires exactly one `fetchTermDetails({termId})` and one `fetchResourcePermissions`
+(per `TermDetails.md` invariants — deps `[termId]` only, explicitly NOT the LSN-017 doubling
+shape). The header shows the Term name, its last-update timestamp, and — gated behind
+`TERM_UPDATE` / `TERM_DELETE` — Edit and Delete affordances (per `TermDetails.md`
+`couples-to` TermDetailsHeader). Below the header sits the tab strip: **Overview** (always
+shown — the default landing), **Linked entities**, **Linked columns**, **Linked terms**, and
+**Query examples** (per F-151 chain hop 2, `TermDetailsTabs.tsx:9-63`).
+
+The working parts the operator would describe in a demo: a definition rendered as rich
+Markdown on the Overview tab; inline mini-panels on Overview for Owners, Tags, and linked
+Terms with Add/Delete affordances; three of the five tabs that **auto-hide when their count
+is zero** (Linked entities / Linked columns / Linked terms — per F-151 chain hop 2); and a
+**Query examples** sub-route that is the only one gated by a permission
+(`QUERY_EXAMPLE_TERM_CREATE` / `QUERY_EXAMPLE_TERM_DELETE` — per F-151 chain hop 3,
+`TermDetailsRoutes.tsx`). The other four sub-routes are ungated at the UI layer, consistent
+with the platform's read-collaborative posture: any authenticated user can read any term's
+full content (per `TermDetails.md` security `owner_scoping: BYPASSES`; per system-mission.md
+P-09 read-collaborative maintainer-note).
+
+The integration story: this page is the read-and-edit face of F-002 (Term-to-Entity Linkage)
+and the parent surface for F-155 (Term Query-Example Linkage). Editing a Term's definition
+flows into the `[[namespace:term]]` auto-link side-channel (F-056) — a definition that
+mentions `[[finance:Customer]]` silently creates a term-to-term link row with
+`is_description_link=TRUE` (per `TermServiceImpl.md` understanding). The page is backed by the
+platform's most expensive read, `ReactiveTermRepositoryImpl.getTermDetailsDto` — an 11-LEFT-JOIN
++ 4-countDistinct + 7-jsonArrayAgg hot path (per `ReactiveTermRepositoryImpl.md` operations).
+
+Edge cases a product owner would flag in a demo: opening the Overview tab fires the expensive
+hot-path query **twice** (the shell's `fetchTermDetails` AND Overview's `useGetTermByID` —
+per F-151 facet `overview_tab_double_fetch_on_12_join_hot_path`); a brand-new Term with no
+links shows only two tabs, so a first-time operator cannot tell the platform supports linking
+at all (per F-151 facet `tabs_auto_hide_on_zero_count_no_empty_state`); the linked-terms data
+appears in two places with different affordances (per F-151 facet
+`linked_terms_overview_panel_vs_linked_terms_tab_dual_surface`); and a definition can carry
+unsanitised HTML that executes for every viewer (per `TermDetails.md` known_security_gaps —
+the F-004 extension).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens /terms/{id}/overview for a term whose definition is 'X', the Overview tab renders the term's name and that definition text X, and shows only THIS term's content (a different term's definition does not appear)."
+  derivation: "Pillar P-06 promise (name + describe a concept); the Overview tab is the default route (TermDetailsRoutes.tsx:46 Navigate to overview); GET /api/terms/{id} returns the term's name + definition."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The shell fetches GET /api/terms/{id} on mount (TermDetails.tsx:37-45), Overview.tsx
+      reads termDetails.definition and renders it via TermDefinition.tsx → Markdown. The term
+      detail GET is term-scoped (getTermDetailsDto(id) filters by the single id — per
+      ReactiveTermRepositoryImpl.md getTermDetailsDto), so another term's definition is not
+      reachable on this page. IT-032 (term-detail-page.spec.ts) drives exactly this: opens
+      /terms/{id}/overview, asserts the name + definition render, and asserts a second term's
+      definition has visible count 0 (term-specificity negative).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: understanding
+        cite: "TermDetails.tsx:37-45 (shell fetch) + Overview.tsx:39-44 (definition read)"
+        note: "default landing fetches + renders the single term's definition"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+        section: operations
+        cite: "ReactiveTermRepositoryImpl.java:194-238 (getTermDetailsDto(id))"
+        note: "single-id scoped read — no cross-term leakage"
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: render
+    coverage: verified
+    test_ref: "e2e/specs/term-detail-page.spec.ts (IT-032 — name + definition render; term-specific negative)"
+    test_demand: none
+
+- id: H-002
+  hypothesis: "When a user lands on /terms/{id}/overview, exactly ONE GET /api/terms/{id} request fires — the page does not redundantly re-fetch the term it already has."
+  derivation: "A senior product owner expects one page-open to cost one load of the data; the shell already fetches the term for the header before the Overview sub-route mounts."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      TWO independent GET /api/terms/{id} requests fire on every Overview page-open: the
+      shell's fetchTermDetails Redux thunk (TermDetails.tsx:37-45) AND the Overview sub-route's
+      useGetTermByID tanstack-query hook (Overview.tsx:19-21). They use different state stores
+      (Redux vs tanstack-query) with no shared cache key, so neither dedupes the other. Both route
+      through ReactiveTermRepositoryImpl.getTermDetailsDto — the 11-LEFT-JOIN + 4-countDistinct +
+      7-jsonArrayAgg hot path. Net = 2 invocations of the platform's most expensive query per
+      page-open. This is the F-151 facet overview_tab_double_fetch_on_12_join_hot_path and the
+      cross-component sibling of LSN-017 (different mechanism — two components, not a useEffect
+      dep-array — same per-page-open multiplier on a backend hot path).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: bugs_limitations_corner_cases
+        cite: "TermDetails.tsx:37-45 + Overview.tsx:19-21 + ReactiveTermRepositoryImpl.java:194-238"
+        note: "two independent fetchers, same expensive endpoint, no shared cache key"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+        section: docs_link_semantic
+        cite: "ReactiveTermRepositoryImpl.java:194-238 (REPOSITORY-DOC-GAP-C — no documented perf ceiling)"
+        note: "hot path has no documented linked-entity-count ceiling; doubling amplifies fan-out"
+    operator_visible_failure: |
+      For a typical Term (<100 linked entities) the doubled fetch is sub-200ms total — invisible.
+      For a heavily-linked Term (a 'Customer' term linked to 500+ datasets across namespaces with
+      200 tags + 50 owners), the 11-JOIN fan-out runs TWICE per page-open, doubling the DB work and
+      the time-to-interactive with no caching layer between. At scale this is a per-page-open
+      latency tax operators experience as "the Customer term page is slow"; under load it doubles
+      the DB pressure of the glossary's hottest read. No data corruption (it is a SELECT, no
+      view_count-style side effect), so severity is MEDIUM, not HIGH.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user opens a brand-new Term that has zero linked entities, columns, and terms, the page makes it discoverable that the platform CAN link entities/columns/terms (e.g. the tabs are visible with a zero count, or an empty-state hint points to the linking flow)."
+  derivation: "Senior-PO UX seed (intuitive + discoverable): a first-time operator should understand the feature's capabilities from what is on screen; the Query-examples tab is always shown, setting the expected discoverability shape."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Three of the five tabs auto-HIDE when their count is falsy: Linked entities
+      (hidden: !termDetails?.entitiesUsingCount), Linked columns (!columnsUsingCount), Linked
+      terms (!linkedTermsUsingCount) — TermDetailsTabs.tsx:24,30,36. A Term with zero links shows
+      only TWO tabs (Overview + Query examples). There is no empty-state hint and no "Add" call to
+      action on the hidden capabilities. The Query-examples tab is ALWAYS shown (no hidden gate),
+      which IS the correct discoverability shape — the other three diverge from it. This is the
+      F-151 facet tabs_auto_hide_on_zero_count_no_empty_state.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: understanding
+        cite: "TermDetailsTabs.tsx:24,30,36 (hidden flags keyed to count)"
+        note: "three tabs vanish at zero count; no empty state; Query-examples tab is always shown"
+    operator_visible_failure: |
+      An operator new to ODD landing on a freshly-created Term cannot tell whether the platform
+      supports linking entities, columns, or terms — there is no signal until at least one link
+      already exists. The capability is invisible exactly when the operator is most likely to be
+      learning the product. This is a discoverability paper-cut (severity LOW — no data loss, no
+      wrong result), but it directly violates the senior-PO "intuitive + discoverable from the
+      screen" bar, and it is inconsistent with the Query-examples tab's always-visible shape on the
+      very same strip.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a Term is linked to a data entity, the Linked-entities tab lists that entity; when a Term has no linked entities, the tab lists none."
+  derivation: "Pillar P-06 promise (reverse-look-up every entity tied to a Term); the Linked-entities tab is the term-side reverse-lookup view."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The Linked-entities sub-route fetches GET /api/terms/{id}/linked_entities and lists the
+      linked entities (per F-151 chain hop 3 — TermDetailsRoutes lazy-mounts LinkedEntitiesList).
+      IT-033 (term-linked-entities.spec.ts) drives this directly: a term linked to entity
+      'it002_table' lists it on /terms/{id}/linked-entities, and an unlinked term lists none
+      (visible count 0). Note: IT-033 gates F-002 (term-side), not F-151, but it exercises the
+      F-151 tab-composition surface end-to-end.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: couples-to
+        cite: "TermDetailsRoutes.tsx:19-50 (lazy-mounts the linked-entities sub-route)"
+        note: "linked-entities tab renders the reverse-lookup list"
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "e2e/specs/term-linked-entities.spec.ts (IT-033 — linked entity listed; unlinked lists none)"
+    test_demand: none
+
+- id: H-005
+  hypothesis: "When a Term has linked query examples, the Query-examples tab lists them (definition + SQL); when it has none, the tab lists none."
+  derivation: "Endpoint shape — the Query-examples sub-route fetches GET /api/terms/{id}/queryexample; pillar P-02 query-example linkage to terms."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The Query-examples sub-route fetches GET /api/terms/{id}/queryexample and lists linked
+      examples. IT-034 (term-query-examples.spec.ts) drives this: a term with a seeded query
+      example renders the SQL on /terms/{id}/query-examples, and a term with none lists none.
+      IT-034 gates F-155, not F-151, but it exercises the F-151 query-examples tab composition.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: couples-to
+        cite: "TermDetailsRoutes.tsx:19-50 (lazy-mounts the query-examples sub-route, the only permission-gated one)"
+        note: "query-examples tab renders the linked-examples list"
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "e2e/specs/term-query-examples.spec.ts (IT-034 — linked example SQL renders; none lists none)"
+    test_demand: none
+
+- id: H-006
+  hypothesis: "When a term author saves a definition, the definition is displayed to viewers as text — a definition containing <script> or other HTML is shown as literal characters, not executed."
+  derivation: "Response-shape — the Overview tab renders termDetails.definition; a user reasonably expects a description field to be displayed as text, not as live markup."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The term definition flows TermFormData.definition → TermServiceImpl.createTerm/updateTerm
+      (NO Jsoup.clean, NO Encode.html, NO allowlist, NO length cap — per TermServiceImpl.md
+      operations) → term.definition column → Overview.tsx → TermDefinition.tsx:45 →
+      <Markdown value={...}> → MDEditor.Markdown, which bundles rehype-raw@6.1.1 (pnpm-lock.yaml:
+      3900,5922,8843) and applies NO rehype-sanitize (Grep over odd-platform-ui/src returns zero
+      matches). A <script> payload in the definition renders as live HTML/JS on every subsequent
+      render of the Overview tab. This is the F-004 stored-XSS class extended to TermDefinition —
+      the THIRD surface after DataEntity description and DatasetField description.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: known_security_gaps
+        cite: "TermDefinition.tsx:45 + Markdown.tsx:113-124 + pnpm-lock.yaml:3900,5922,8843 (rehype-raw, no rehype-sanitize)"
+        note: "definition rendered via rehype-raw without sanitisation"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: operations
+        cite: "TermServiceImpl.java:99-145 (createTerm/updateTerm — no sanitisation pass)"
+        note: "raw definition string persisted verbatim; shares the F-004 trust assumption"
+    operator_visible_failure: |
+      Any operator holding TERM_UPDATE on any term they can edit can persist arbitrary HTML+JS into
+      that term's definition; because reads are collaborative (any authenticated user can open any
+      term), the script executes in the browser of EVERY authenticated viewer who opens that term's
+      Overview tab. Consequences: session/token theft, action-on-behalf, catalog-wide credential
+      harvesting from a single planted term. Operators classifying a term as "internal/restricted"
+      by NAME get no protection — the content (and the XSS payload) is uniformly readable/executable.
+      The live data-glossary doc page carries no warning that definitions are unsanitised.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a user views the linked-terms list, every entry shown represents a currently-valid (non-deleted) term-to-term link."
+  derivation: "Response-shape — the Overview TERMS panel and the Linked-terms tab both render term-to-term links; a user expects shown links to be live."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The term_to_term table retained its deleted_at column (V0_0_91), unlike the data-entity /
+      dataset-field link tables which had it dropped (V0_0_76). But ReactiveTermRepositoryImpl
+      NEVER filters term_to_term.deleted_at IS NULL on any read (lines 198-199, 227-231, 324-325,
+      345, 429-430, 448-454, 472-491, 510-523 — verified primary source). The only guard is on the
+      TARGET term's deleted_at (lines 427-433/451). Net: a term_to_term row whose deleted_at IS NOT
+      NULL (logically deleted) is INCLUDED in the rendered list as long as the target Term itself is
+      non-deleted. This is the F-002 drift facet v0_0_76_vs_v0_0_91_link_table_schema_asymmetry,
+      surfacing through the F-151 Overview TERMS panel + Linked-terms tab.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+        section: invariants
+        cite: "ReactiveTermRepositoryImpl.java:198-199,427-433,451 (term_to_term read never filters deleted_at)"
+        note: "schema keeps deleted_at; code never filters it — soft-deleted link rows still render"
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: bugs_limitations_corner_cases
+        cite: "Overview.tsx:27-31 (TermLinkedTerms panel inherits the asymmetry transparently)"
+        note: "UI cannot distinguish a logically-deleted link from a fresh one"
+    operator_visible_failure: |
+      An operator viewing a term's linked-terms (in the Overview panel or the Linked-terms tab) may
+      see term-to-term links that have been logically deleted — the UI renders no distinction between
+      a live link and a soft-deleted one. Severity bounded (the misleading rows still point at a real,
+      live target Term, so it is not a dangling reference), so MEDIUM. The flip side is a latent
+      maintenance trap: a future migration that "fixes" the schema by filtering deleted_at would
+      silently change what this page shows, with no test pinning the current behaviour.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a user opens a term they cannot edit, the linked-terms data is presented consistently — the Overview mini-panel and the Linked-terms tab offer the same actions for the same data."
+  derivation: "Senior-PO UX seed (consistency + intuitive): the same data shown twice should not carry contradictory affordances."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Linked terms appear in TWO surfaces with DIFFERENT affordances: the Overview "TERMS" mini-panel
+      (Overview.tsx:65-72 → TermLinkedTerms) shows linked terms inline WITH Add/Delete affordances; the
+      Linked-terms TAB (TermDetailsRoutes.tsx:32 → LinkedTermsList) shows the SAME linked terms in a
+      paginated table WITH a search input but NO Add and NO Delete. So the consistency holds for the
+      DATA (same links shown) but breaks for the ACTIONS (Add/Delete on the panel; search-only on the
+      tab). Adding a term from the Overview panel does not navigate to the tab; the tab silently
+      inherits the new entry. This is the F-151 facet
+      linked_terms_overview_panel_vs_linked_terms_tab_dual_surface.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: bugs_limitations_corner_cases
+        cite: "Overview.tsx:65-72 (panel: Add/Delete) + TermLinkedTermsList.tsx:15-100 (tab: search, no Add/Delete)"
+        note: "same data, inconsistent affordances across two surfaces"
+    operator_visible_failure: |
+      An operator who manages linked terms from the Overview panel, then clicks into the Linked-terms
+      tab to "see all," loses the Add/Delete affordances and gains a search box — the mental model
+      ("this is where I manage linked terms") breaks at the surface boundary. Conversely an operator who
+      starts on the tab cannot add/remove from there and must hunt back to the Overview panel. No data
+      loss; this is a UX-consistency paper-cut (severity LOW). Documenting the intended split (panel =
+      manage recent; tab = search-all) would resolve it without code change.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a user WITHOUT QUERY_EXAMPLE_TERM_CREATE opens the Query-examples tab, they can read the linked query examples but see no Add affordance; when a user WITHOUT TERM_UPDATE/TERM_DELETE opens any other tab, they can read the term's full content."
+  derivation: "View-mode dispatch — the Query-examples sub-route is the ONLY permission-gated sub-route ([QUERY_EXAMPLE_TERM_CREATE, QUERY_EXAMPLE_TERM_DELETE]); the other four sub-routes are ungated at the UI layer."
+  seed_source: view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The UI gating is as described: only the Query-examples sub-route is wrapped by
+      WithPermissionsProvider [QUERY_EXAMPLE_TERM_CREATE, QUERY_EXAMPLE_TERM_DELETE]
+      (TermDetailsRoutes.tsx:36-43); the other four sub-routes render unconditionally; the header
+      Edit/Delete are gated by TERM_UPDATE/TERM_DELETE. BUT all UI gates are PRESENTATION ONLY (per
+      TermDetails.md security.authorization_assertions) — the backend SECURITY_RULES is the operative
+      defence. The reflection cannot confirm from the chain whether a caller without
+      QUERY_EXAMPLE_TERM_CREATE who hits the create endpoint directly (bypassing the hidden UI button)
+      is actually denied by the backend — that requires the SecurityConstants path-matcher to be wired
+      correctly, and the SIBLING term-linkage endpoints have a verified path-mismatch bug (REFACTOR-217:
+      /term singular vs /terms plural makes the matchers never fire, per TermServiceImpl.md headline).
+      The UI half is confirmed; the backend-enforcement half is unverified for the query-example create
+      path on this page.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: authorization_assertions
+        cite: "TermDetailsRoutes.tsx:36-43 (query-examples sub-route gate) + security note 'UI gates are presentation only'"
+        note: "UI hides Add; backend SECURITY_RULES is the real gate (unverified for this path here)"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: understanding
+        cite: "TermServiceImpl.java:170-196 + SecurityConstants.java:237-242 (REFACTOR-217 sibling path-mismatch)"
+        note: "term-linkage gates are demonstrably mis-wired; raises doubt the query-example-term gate is verified end-to-end"
+    operator_visible_failure: |
+      For a read-only viewer the UI correctly hides the Add affordance (presentation is fine). The
+      partial gap is the UNVERIFIED backend enforcement: if the QUERY_EXAMPLE_TERM_CREATE SecurityRule
+      shares the path-string-coupling fragility that mis-wired the term-linkage gates (REFACTOR-217), a
+      caller could create/delete query-example-term links by calling the endpoint directly despite the
+      hidden button. This needs a probe against a running instance with a non-privileged principal.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: validation-gap
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: "probe PENDING-F-151-1"
+
+- id: H-010
+  hypothesis: "When an operator deletes a Term from its detail page, the page navigates them back to where they came from (the term search), and the deletion is blocked with a clear message if the term is still mentioned in any active description."
+  derivation: "Endpoint shape + implicit ADR — the Delete CTA dispatches deleteTerm then navigates to termsSearchPath; TermServiceImpl.delete guards against deleting a term mentioned in an active description."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Navigation: on a SUCCESSFUL delete the shell navigates to termsSearchPath(termSearchId)
+      (TermDetails.tsx:47-53); if the user deep-linked (no search session), termSearchId is undefined
+      and termsSearchPath(undefined) returns /termsearch — a graceful default. Delete-block: if the term
+      is mentioned in an active description, TermServiceImpl.delete returns 400 "Can't delete term, which
+      was mentioned in description" (TermServiceImpl.java:157-160), the .then(navigate) does NOT fire
+      (correct), and the global error snackbar shows. BUT the partial gap: the ConfirmationDialog dismisses
+      synchronously on confirm-click regardless of the thunk outcome (per TermDetails.md
+      bugs_limitations_corner_cases) — so on a blocked delete the user sees the dialog close, the term
+      remain, and an error snackbar appear elsewhere; there is no inline error at the Delete button and no
+      pre-flight "this term is mentioned in N descriptions" warning before the confirm prompt.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: downstream_side_effects
+        cite: "TermDetails.tsx:47-53 (navigate-on-fulfilment) + TermDetailsHeader.tsx:80-90 (dialog dismisses synchronously)"
+        note: "navigation correct; blocked-delete feedback is dislocated from the button"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: invariants
+        cite: "TermServiceImpl.java:157-160 (delete guard — 400 when mentioned in active description)"
+        note: "delete is guarded; error surfaces as a snackbar, not inline"
+    operator_visible_failure: |
+      Happy-path delete + navigate works. On a blocked delete the operator clicks Confirm, the dialog
+      vanishes, the term is still there, and an error toast appears in a corner — the operator may not
+      connect the toast to their action and may retry, confused. Severity LOW (the error IS shown, the
+      data is safe). A pre-flight precondition check ("mentioned in N descriptions — resolve first")
+      would make the constraint legible before the destructive confirm.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a user navigates to a malformed term URL such as /terms/abc/overview, the page shows a clear not-found state rather than crashing or showing a blank screen."
+  derivation: "Negative-space — useTermsRouteParams parses termId via parseInt(termId,10); a non-numeric segment yields NaN."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      parseInt('abc',10) → NaN (termsRoutes.ts:60). NaN flows into getTermDetails(NaN) (returns the empty
+      fallback) and fetchTermDetails({termId: NaN}) hits GET /api/terms/NaN, which the backend answers 400
+      (NumberFormatException on path-variable bind) or 404. isTermDetailsNotFetched becomes true →
+      AppErrorPage renders (TermDetails.tsx:80-83). So the user does NOT see a crash or a blank screen —
+      they see the error page. The gap is that the graceful outcome RELIES on the backend producing a 4xx;
+      there is no client-side isNaN guard, so the error path is "unprincipled" (per TermDetails.md
+      bugs_limitations_corner_cases — severity LOW). It works today; it is fragile to a backend change in
+      path-variable handling.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: bugs_limitations_corner_cases
+        cite: "termsRoutes.ts:60 (parseInt → NaN) + TermDetails.tsx:25,32,34,38,80-83 (NaN → AppErrorPage)"
+        note: "no client-side NaN guard; relies on backend 4xx to show the error page"
+    operator_visible_failure: |
+      A mistyped or stale term URL lands on the AppErrorPage (acceptable). The latent risk: if a future
+      backend change made GET /api/terms/NaN return 200-with-empty or 500-without-the-not-fetched-flag, the
+      page could show a blank shell or an unhandled error. Severity LOW — current behaviour is correct;
+      the partial is the absence of a defensive client guard.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When an operator edits a term's definition to add a mention like [[finance:Customer]], the mention creates a link to that term — and the operator understands this will happen because the [[namespace:term]] format is documented or surfaced in the editor."
+  derivation: "Doc-claim seed + cross-pillar (F-056 auto-link) — the docs say 'the mention surfaces in the Terms section once saved'; the [[ns:term]] regex parses mentions out of the definition."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The auto-link side-channel works: TermServiceImpl.findTermsInDescription runs the regex
+      \[\[([^:]*?):([^\]]*?)\]\] (TermServiceImpl.java:67) over the saved definition and synthesises
+      term_to_term rows with is_description_link=TRUE (TermServiceImpl.md understanding). The CONTRADICTION
+      is against the user's UNDERSTANDING half of the hypothesis: the live business-glossary doc page does
+      NOT spell out the exact [[namespace:term]] text format — it only shows in-app tooltip screenshots
+      (per TermServiceImpl.md docs_link_semantic fetched_excerpts, verified live 200). An operator reading
+      the published docs cannot learn the literal syntax; they must discover it from a tooltip. So the
+      MECHANISM is delivered but the PROMISE ("the user understands how to use this from what is on screen /
+      in the docs") is not — a senior-PO discoverability failure on a behaviourally complex feature (F-056).
+    evidence:
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: docs_link_semantic
+        cite: "TermServiceImpl.java:67 (regex) + business-glossary doc page (200) — format shown only via tooltip screenshots"
+        note: "auto-link mechanism real; literal [[ns:term]] syntax not in the published doc text"
+    operator_visible_failure: |
+      An operator who wants to link terms by mention but has not stumbled on the in-app tooltip cannot
+      find the [[namespace:term]] format in the published documentation. They either miss the capability
+      entirely or guess the syntax (and create unhandled-mention staging rows for malformed attempts). The
+      most behaviourally complex piece of the glossary (F-056 auto-link) is the least discoverable. This is
+      a doc-gap (the mechanism is correct), routed to the doc-gaps registry; severity MEDIUM.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-013
+  hypothesis: "When an operator opens a term detail page on a tablet or narrow viewport, the five-tab strip, the header CTAs, and the Overview mini-panels remain usable (tabs reachable, definition readable, affordances tappable)."
+  derivation: "Senior-PO UX seed (behaviour across device types) — Rule 9 mandates a cross-device hypothesis for any UI feature."
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The contributing sidecars describe the component composition (shell + tab strip + lazy routes +
+      Overview panels) and confirm it mirrors DataEntityDetails (the platform's repeated detail-page shape),
+      but none of them capture responsive behaviour: there is no breakpoint analysis, no assertion about how
+      AppTabs overflow on a narrow viewport, no statement about whether the Overview mini-panels reflow or
+      clip. TermDetails.md scaling_characteristics covers memory/render, not viewport layout. Determining
+      whether the page is usable on a tablet requires rendering it at a narrow viewport against a running
+      instance — it cannot be decided from the chain.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__TermDetails.md
+        section: understanding
+        cite: "TermDetails.tsx:55-84 (composition shell) — no responsive/breakpoint detail in any sidecar"
+        note: "cross-device behaviour is not captured by any contributing sidecar"
+    operator_visible_failure: |
+      Unknown until probed — could range from "fully responsive (MUI defaults)" to "tab strip overflows
+      and the Overview panels clip on a 768px viewport." Surfaced as probe-needed rather than guessed.
+    severity: LOW
+    confidence: LOW
+    routes_to_finding: validation-gap
+    probe_id: PENDING-F-151-2
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-151-2"
+    sme_consultation_recommended: false
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: |-
+    Term DEFINITION is stored verbatim (no Jsoup.clean/Encode.html) and rendered via rehype-raw with no
+    rehype-sanitize on the Overview tab — F-004 stored-XSS class extends to TermDefinition; any TERM_UPDATE
+    holder can plant JS that executes for every authenticated viewer.
+  dedup_status: already_tracked
+  tracked_as: PLT-018
+  distinct_from: ""
+  recommended_log_as: ""
+  proposed_fix_anchor: |-
+    Markdown.tsx:113-124 — add rehype-sanitize to the MDEditor.Markdown pipeline (single fix covers all
+    F-004 surfaces: data-entity description, dataset-field description, term definition). PLT-018 is the
+    code-fix item for the F-004 XSS class; this reflection corroborates it on the term-definition surface.
+- hypothesis_id: H-002
+  severity: MEDIUM
+  one_line: |-
+    Overview tab double-fetches the 11-JOIN getTermDetailsDto hot path (shell fetchTermDetails Redux thunk +
+    Overview useGetTermByID tanstack-query, no shared cache key) — 2 invocations of the platform's most
+    expensive read per term page-open.
+  dedup_status: already_tracked
+  tracked_as: F-151a
+  distinct_from: ""
+  recommended_log_as: ""
+  proposed_fix_anchor: |-
+    Consolidate to one fetcher — drop Overview.tsx:19-21 useGetTermByID and read termDetails from the Redux
+    slice the shell already populated, OR share a cache key between Redux and tanstack-query. Already surfaced
+    as scanner finding F-151a (ontology-confirmed, missing-caveat MEDIUM) on this feature-flow's
+    scanner_reviews; this reflection re-derives it top-down (convergent validation).
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |-
+    Linked-terms reads never filter term_to_term.deleted_at IS NULL (schema kept the column at V0_0_91; code
+    never uses it) — logically-deleted term-to-term links still render on the Overview panel + Linked-terms tab.
+  dedup_status: already_tracked
+  tracked_as: F-002:v0_0_76_vs_v0_0_91_link_table_schema_asymmetry
+  distinct_from: ""
+  recommended_log_as: ""
+  proposed_fix_anchor: |-
+    ReactiveTermRepositoryImpl.java term_to_term reads (lines 198-199,227-231,324-325,345,429-430,448-454,
+    510-523) — add .and(TERM_TO_TERM.DELETED_AT.isNull()) OR drop the dead column via a V0_0_NNN migration
+    (mirroring V0_0_76). Tracked as the F-002 drift facet; this reflection provides the UI-side evidence.
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Three of five tabs auto-hide at zero count with no empty-state hint — a first-time operator cannot tell
+    the platform supports linking entities/columns/terms until a link exists. Inconsistent with the always-shown
+    Query-examples tab.
+  dedup_status: already_tracked
+  tracked_as: F-151b
+  recommended_log_as: ""
+- hypothesis_id: H-008
+  one_line: |-
+    Linked terms appear in two surfaces with inconsistent affordances (Overview panel has Add/Delete; Linked-terms
+    tab has search but no Add/Delete) — same data, contradictory actions.
+  dedup_status: already_tracked
+  tracked_as: F-151c
+  recommended_log_as: ""
+- hypothesis_id: H-010
+  one_line: |-
+    Blocked delete (term mentioned in active description → 400) dismisses the confirm dialog synchronously and
+    surfaces the error only as a dislocated snackbar; no pre-flight "mentioned in N descriptions" warning.
+  dedup_status: net_new
+  tracked_as: ""
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-glossary/business-glossary OR doc-gap (rename/delete description-mention guard — REPOSITORY-DOC-GAP-A already notes the soft-deleted-parent corner case)"
+- hypothesis_id: H-011
+  one_line: |-
+    Malformed term URL (/terms/abc/overview → NaN) lands on AppErrorPage only because the backend returns 4xx;
+    no client-side isNaN guard — graceful today, fragile to backend path-variable changes.
+  dedup_status: net_new
+  tracked_as: ""
+  recommended_log_as: "trivial UI hardening backlog item (add isNaN(termId) → NotFoundPage guard) OR fold into the F-151 UI test-gap"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# The two CONFIRMED-and-VERIFIED promises (H-001/IT-032, H-004/IT-033, H-005/IT-034) are NOT here — they
+# already have real e2e guards. Everything else (contradicted / partial / probe-needed) is unverified and
+# routes to a functional demand so the user-facing promise gets a guard. NONE routed to none.
+- use_case_id: F-151-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "Opening /terms/{id}/overview fires exactly ONE GET /api/terms/{id} — no redundant re-fetch of the 11-JOIN hot path."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-002)"
+  proposed_test: |-
+    Playwright integration with a network-counting interceptor on GET /api/terms/{id}: open
+    /terms/{id}/overview, assert request count == 1. FAILS today (2 fetches) → regression-pin for the
+    consolidation fix (drop Overview useGetTermByID OR shared cache key). Sibling of the view-count
+    double-count test (view-count-overview.spec.ts).
+- use_case_id: F-151-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "A term with zero linked entities/columns/terms keeps the capability discoverable (tab visible with zero, or empty-state hint)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-003)"
+  proposed_test: |-
+    Playwright: seed a term with no links; open /terms/{id}/overview; assert the Linked-entities /
+    Linked-columns / Linked-terms tabs are present (or an empty-state hint is shown). Pins the current
+    auto-hide behaviour (F-151b) and RED-flags any fix.
+- use_case_id: F-151-UC-006
+  hypothesis_id: H-006
+  kind: render
+  promise: "A term definition containing <script> renders as literal text, not executed HTML/JS."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-006)"
+  proposed_test: |-
+    Seed a term whose definition contains <script>window.__xss=1</script>; open /terms/{id}/overview;
+    assert window.__xss is undefined (script NOT executed) and the markup renders as text. RED today
+    (regression-pin for the PLT-018 rehype-sanitize fix). The highest-value guard on this surface.
+- use_case_id: F-151-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "The linked-terms list shows only currently-valid (non-soft-deleted) term-to-term links."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-007)"
+  proposed_test: |-
+    Integration with seeded DB: insert term_to_term(target=A, assigned=B, deleted_at=NOW()); open A's
+    Linked-terms tab; assert B is STILL shown today (pin the V0_0_91 asymmetry) — flip the assertion when
+    the repository adds the deleted_at filter.
+- use_case_id: F-151-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "Linked-terms data is presented consistently across the Overview panel and the Linked-terms tab."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-008)"
+  proposed_test: |-
+    Playwright: assert the Overview TERMS panel exposes Add/Delete and the Linked-terms tab exposes search;
+    documents the intended dual-surface split as a behavioural contract (or RED-flags an unintended drift).
+- use_case_id: F-151-UC-009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "A caller without QUERY_EXAMPLE_TERM_CREATE cannot create a query-example-term link (backend-enforced, not just UI-hidden)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-009) — paired with probe PENDING-F-151-1"
+  proposed_test: |-
+    Backend security test (LDAP/policy stand): a principal lacking QUERY_EXAMPLE_TERM_CREATE POSTs the
+    query-example-term link endpoint directly; assert 403. Guards against the REFACTOR-217 path-mismatch
+    class recurring on the query-example-term gate.
+- use_case_id: F-151-UC-010
+  hypothesis_id: H-010
+  kind: teardown-constraint
+  promise: "Deleting a term mentioned in an active description is blocked with feedback the operator can act on."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-010)"
+  proposed_test: |-
+    Integration: create term + entity whose description mentions [[ns:term]]; attempt delete from the term
+    page; assert 400 + the term remains + an error is surfaced. Pins the delete guard (TermServiceImpl.java:
+    157-160) end-to-end through the UI.
+- use_case_id: F-151-UC-011
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "A malformed term URL shows a clear not-found state, not a blank screen or crash."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-011)"
+  proposed_test: |-
+    Playwright: navigate to /terms/abc/overview; assert the AppErrorPage / not-found state renders (no blank
+    shell, no console error). Pins the NaN-handling path.
+- use_case_id: F-151-UC-012
+  hypothesis_id: H-012
+  kind: grammar
+  promise: "A [[namespace:term]] mention in a definition creates a term link, and the syntax is discoverable to the operator."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-151-UC-012) — mechanism test; the discoverability half is a doc-gap"
+  proposed_test: |-
+    Integration: save a term definition containing [[ns:Existing]]; assert a term_to_term row with
+    is_description_link=TRUE is created and surfaces on the Linked-terms tab. Pins the F-056 auto-link
+    mechanism (which has NO unit/integration test today per TermServiceImpl.md gaps).
+
+### probes_emitted
+- probe_id: PENDING-F-151-1
+  hypothesis_id: H-009
+  probe_path: "(parallel-safe mode — not written; record only)"
+  hypothesis_text: |-
+    When a principal WITHOUT QUERY_EXAMPLE_TERM_CREATE calls the query-example-term link create endpoint
+    directly (bypassing the hidden UI Add button on /terms/{id}/query-examples), the backend SECURITY_RULES
+    denies it with 403 — the gate is NOT merely a UI hide, and NOT mis-wired the way the sibling
+    term-linkage gates are (REFACTOR-217: /term vs /terms path mismatch). Local execution: odd-platform with
+    AUTH_TYPE=LDAP (the only local mode giving per-user roles), a non-privileged principal, curl the create
+    endpoint. local_execution_blocked: false.
+  status: pending-reflection-verification
+- probe_id: PENDING-F-151-2
+  hypothesis_id: H-013
+  probe_path: "(parallel-safe mode — not written; record only)"
+  hypothesis_text: |-
+    When the term detail page is rendered at a narrow (tablet ~768px) viewport, the five-tab strip remains
+    reachable (tabs overflow gracefully, not clipped), the Markdown definition stays readable, and the
+    Overview mini-panels reflow rather than clip. Local execution: Playwright headless at viewport 768x1024
+    against a local odd-minimal stack, open /terms/{id}/overview, screenshot + assert tab reachability.
+    local_execution_blocked: false.
+  status: pending-reflection-verification
+
+### validation_gaps
+- sidecar: odd-platform__ts__react-component__component__TermDetails.md
+  field_insufficient: "feature-flow F-151 chain marks all 5 UI hops as 'sidecar: unresolved', but TermDetails.md (hop 1, the shell) IS a complete HIGH-confidence UI sidecar. The 4 sub-component nodes (TermDetailsTabs, TermDetailsRoutes, Overview, TermDetailsHeader) are NOT separately enriched — their behaviour was traced INLINE by the shell sidecar (Overview.tsx, TermDetailsTabs.tsx, TermDetailsRoutes.tsx citations), so verdicts about the tab strip / lazy routes / Overview panels carry the shell-sidecar's confidence rather than a dedicated sub-component sidecar's."
+  proposed_refresh: "Either (a) update the F-151 chain hop-1 'sidecar: unresolved' marker to point at the existing TermDetails.md (the marker is stale — the shell IS enriched), and (b) enrich TermDetailsTabs / TermDetailsRoutes / Overview / TermDetailsHeader as their own nodes so the tab-auto-hide, lazy-route-gate, and double-fetch verdicts rest on dedicated sidecars."
+- sidecar: odd-platform__ts__react-component__component__TermDetails.md
+  field_insufficient: "No sidecar captures responsive / cross-device layout behaviour for any detail page (TermDetails.md scaling_characteristics covers memory/render, not viewport). H-013 (cross-device usability) could only be surfaced as probe-needed."
+  proposed_refresh: "Add a responsive-behaviour note to UI-component sidecars (breakpoint behaviour of AppTabs overflow + Overview panel reflow) so cross-device hypotheses can be verdicted from the chain rather than probed each time."
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: "Operator-curated term definitions name+describe a concept (terms-as-entities); nothing about HTML sanitisation."
+  code_does: "Definitions are stored verbatim and rendered via rehype-raw without rehype-sanitize — arbitrary HTML/JS executes for every authenticated viewer (F-004 class)."
+  recommended_log_as: "doc-gap (add an admonition: 'Term definitions are stored as raw Markdown without HTML sanitisation; grant TERM_UPDATE only to trusted operators') — pairs with the PLT-018 code fix; UI-DOC-GAP-A in TermDetails.md already records this."
+- hypothesis_id: H-012
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: "'Inline-mention a term inside a description; the mention surfaces in the Terms section once saved' — shown via in-app tooltip screenshots only."
+  code_does: "The literal mention format is [[namespace:term]] (TermServiceImpl.java:67 regex); the published doc text never spells out the syntax."
+  recommended_log_as: "doc-gap (spell out the [[namespace:term]] syntax verbatim in the business-glossary page text, not only as a tooltip screenshot) — the most behaviourally complex glossary feature (F-056) is the least discoverable."
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: "Silent on rename/delete preconditions."
+  code_does: "Renaming or deleting a term mentioned in an active description returns 400 'Can't update/delete term, which was mentioned in description' (TermServiceImpl.java:128-134,157-160); a term mentioned only in a soft-deleted entity's description CAN be deleted (REPOSITORY-DOC-GAP-A corner case)."
+  recommended_log_as: "doc-gap (document the description-mention rename/delete guard + the soft-deleted-parent corner case)."
+
+## maintainer_notes
+
+<preserved across refreshes — only block the maintainer hand-edits>

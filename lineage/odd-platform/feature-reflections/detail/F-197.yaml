@@ -1,0 +1,779 @@
+---
+feature_id: F-197
+pillar_anchored_id: P-07:F-197
+pillar: P-07 Active Platform Features (Data Collaboration / Discussions sub-feature)
+feature_name: |-
+  Data Collaboration UI Tab — three-panel Slack-thread mirror anchored to a
+  data entity (Discussions tab). Operator-visible UI surface of F-038's backend
+  chain (incoming-webhook + outbound Slack-message-sender + DB-backed thread store).
+reflected_at: '2026-06-03T00:00:00Z'
+reflected_at_commit: unverified-no-bash-access  # agent has no Bash/git tool this session; substrate sidecars enriched at 4ec2b20 / ede5d277; feature-flow seeded at ede5d277
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+  - odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md
+  - odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md
+ui_sidecars_read: []   # NONE EXIST — see validation_gap VG-001 (Rule 9). All five UI components in the chain are sidecar:unresolved.
+source_reads_for_validation:   # Rule 8 single-line exception — captured because the UI sidecars are absent
+  - file: "odd-platform-ui/src/components/DataEntityDetails/DataEntityDetailsTabs/DataEntityDetailsTabs.tsx:96-99"
+    why: "Resolve chain hop-5 unresolved question: does the UI gate the Discussions tab on the data-collaboration feature flag? Answer: NO — hidden: isStatusDeleted only."
+    source_read_for_validation: true
+  - file: "odd-platform-ui/src/components/shared/elements/WithFeature/WithFeature.tsx:1-38"
+    why: "Confirm a UI feature-flag mechanism exists (getActiveFeatures + Feature enum from generated-sources) that the tab COULD have consulted but does not."
+    source_read_for_validation: true
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Live page now (a) acknowledges the tab is visible when disabled ("The tab itself is
+      currently rendered regardless of the flag (only hidden when the entity status is
+      deleted)"), (b) states the channel filter is a prefix (startsWith) match, (c) states
+      "Enabling Data Collaboration is the only access control on its routes — none of them
+      carry an RBAC permission" and "any logged-in user can post into and read every
+      entity's discussions regardless of the Policy grants you have authored". The 404 on
+      the OLD path /active-platform-features/data-collaboration (recorded in the sidecars at
+      enrichment time) is resolved — the page now serves 200 under the /features/ prefix.
+hypothesis_summary:
+  total: 11
+  confirmed: 5
+  contradicted: 3
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: |-
+      The Discussions tab renders on every (non-deleted) entity regardless of
+      datacollaboration.enabled — on a default deployment the operator clicks a tab
+      that leads to a feature whose backend routes all 404, with no pre-flight check.
+related_feature_flows: [F-038]
+related_concepts:
+  - data-collaboration
+  - slack-thread-mirror
+  - per-entity-tab
+related_drift_classes:
+  - discussions_tab_visible_when_feature_disabled_no_pre_flight_check
+  - thread_fetch_error_silently_navigates_away_no_user_feedback
+  - empty_state_text_not_translated_hardcoded_english
+  - channelid_messagedate_in_component_state_not_url
+  - messages_list_useeffect_refires_on_ismessagecreating_change
+new_drift_classes_proposed:
+  - discussions_tab_url_not_deep_linkable_channel_and_scroll_lost
+  - send_path_feature_gated_but_tab_not_inconsistent_gating
+---
+
+# Data Collaboration UI Tab (Discussions) — product-owner reflection
+
+## product_owner_narrative
+
+The Discussions tab is ODD Platform's in-app bridge to Slack: on any data entity's
+detail page, a user opens the **Discussions** tab and sees a three-panel surface — a
+channel selector on the left, an infinite-scroll messages list in the middle, and a
+thread/message drilldown on the right — that mirrors a Slack conversation anchored to
+that specific catalog entity (per F-197 chain hop-1, `DataCollaboration.tsx:18-80`; per
+`DataEntityDetailsTabs.tsx:96-99` for the tab mount). The product promise is "discuss
+this dataset where your team already talks — in Slack — without leaving the catalog,
+and keep the conversation pinned to the entity it's about." It is one of five opt-in
+"Active Platform Features" subsystems (`system-mission.md` P-07): the platform is an
+actor, posting to and reading from a configured Slack workspace on the operator's behalf.
+
+A user interacts with the tab in three motions. (1) They read: the middle panel lists
+messages, newest-anchored, and scrolls infinitely (chain hop-2, `MessagesList.tsx:22-74`).
+(2) They drill: clicking a message navigates to a per-message URL and opens the thread on
+the right (chain hop-4, `Thread.tsx:19-62`). (3) They write: a "Share to Slack" /
+create-message affordance (mounted from the entity-detail header, NOT from inside the tab
+— per PLT-095, `DataEntityDetailsHeader.tsx:132-144`) opens a dialog with a Slack-channel
+autocomplete and a text box, and on submit enqueues the message
+(chain hop-3, `CreateMessageForm.tsx:23-122` → `POST /api/datacollaboration/providers/slack/messages`,
+the `postMessageInSlack` sidecar). The backend returns `202 Accepted` and a single-leader
+background sender delivers to Slack asynchronously (per `postMessageInSlack.md`:understanding;
+`AdrDataCollabDeliveryScanTest` pins this decoupling as ADR-0020).
+
+The working parts the operator would be shown in a demo: a **channel autocomplete** that
+lists the bot's joined public channels (filtered by a prefix match — typing the middle of
+a channel name returns nothing, per `DataCollaborationController.md`:invariants and the
+live doc); an **infinite-scroll list** that re-fetches near the bottom; a **deep-linkable
+message URL** (the right panel reads `messageId` from the URL); and a **send dialog**. The
+whole backend is class-gated by `@ConditionalOnDataCollaboration` and **ships disabled by
+default** (`datacollaboration.enabled=false`, pinned by
+`FeatureGatingDefaultsTest.offByDefaultFamily_shipsDisabled`); enabling it requires a Slack
+OAuth bot token (`DataCollaborationController.md`:understanding finding 1).
+
+The integration story: Discussions is a P-07 sub-feature that feeds P-01 (Data Discovery)
+— a conversation about an entity is one more change-driven signal surfaced alongside the
+entity (`system-mission.md` P-07 cross-pillar `feeds: [P-01]`). It is explicitly distinct
+from the one-way Slack **alert** webhook (Notifications): Discussions is a full bidirectional
+OAuth Slack app (`DataCollaborationProperties.md`:docs_link_semantic fetched_excerpt).
+
+The edge cases a senior product owner flags in a demo are exactly where this surface is
+thin, and they are the load-bearing findings below: the tab is **visible even when the
+feature is off** (the user clicks into a dead feature on a default install); opening a
+thread that fails to load **silently navigates the user away with no error**; the
+discussions URL is **not fully deep-linkable** (the channel filter and scroll position live
+in React component state, not the URL, so a shared link drops them); the empty state reads
+hard-coded English ("No messages") with no i18n; and — the asymmetry that makes the first
+finding sharp — the **send button IS feature-gated** (`<WithFeature>`, PLT-095) while the
+**tab that hosts the whole feature is NOT** (`DataEntityDetailsTabs.tsx:96-99`), even though
+the very same `WithFeature` / `getActiveFeatures` mechanism was available to gate it
+(`WithFeature.tsx`, read for validation).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user opens any non-deleted data entity on a default deployment
+    (datacollaboration.enabled=false), the Discussions tab is NOT shown — because the
+    backend feature is off, the platform should not advertise a tab whose every route 404s.
+  derivation: |-
+    Pillar P-07 frames all five sub-features as opt-in ("a deployment can run with all
+    five off and still serve the catalog"); a tab is an advertisement of a working
+    capability; the UI ships a WithFeature mechanism (getActiveFeatures + Feature enum) and
+    uses it for the Share button, so gating the tab the same way is the expected pattern.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      DataEntityDetailsTabs.tsx:96-99 renders the Discussions tab with `hidden:
+      isStatusDeleted` — the ONLY hide condition is entity-deletion. It does not consult
+      `getActiveFeatures` / the DATA_COLLABORATION Feature flag at all, even though
+      WithFeature.tsx:20-25 shows that the active-features list IS available to the UI from
+      redux (getActiveFeatures selector) and is used elsewhere (the Share-to-Slack button,
+      PLT-095). The backend is @ConditionalOnDataCollaboration and 404s every
+      /api/datacollaboration/** route when disabled (DataCollaborationController.md
+      invariant 1). On a default install the user sees and can click Discussions, lands on
+      DataCollaboration.tsx, and the fetchDataEntityMessages call hits a 404-or-empty
+      surface with no banner explaining the feature is off. The live doc acknowledges this
+      verbatim ("The tab itself is currently rendered regardless of the flag").
+    evidence:
+      - sidecar: "(source read — Rule 8 exception)"
+        section: DataEntityDetailsTabs.tsx
+        cite: "odd-platform-ui/src/components/DataEntityDetails/DataEntityDetailsTabs/DataEntityDetailsTabs.tsx:96-99"
+        note: "Discussions tab hidden only on isStatusDeleted — no feature-flag consult."
+      - sidecar: "(source read — Rule 8 exception)"
+        section: WithFeature.tsx
+        cite: "odd-platform-ui/src/components/shared/elements/WithFeature/WithFeature.tsx:20-25"
+        note: "getActiveFeatures + Feature enum is the available-but-unused gating mechanism."
+      - sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+        section: invariants
+        cite: "DataCollaborationController.java:21 (@ConditionalOnDataCollaboration) + application.yml:205"
+        note: "Backend 404s all three routes when datacollaboration.enabled=false (the default)."
+      - sidecar: "(live doc cross-ref)"
+        section: WebFetch
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration (2026-06-03, 200)"
+        note: "Doc acknowledges 'currently rendered regardless of the flag' — doc-honest, not fixed."
+    operator_visible_failure: |-
+      On a default (out-of-box) deployment, every entity detail page shows a Discussions
+      tab that leads nowhere: the user clicks it expecting a feature, lands on an empty
+      three-panel shell (or a 404-driven empty list), and gets no message telling them the
+      feature must be enabled by an operator. First-time evaluators of ODD form the
+      impression "Discussions is broken" rather than "Discussions is off." The send path is
+      gated (button absent) but the read path advertises itself — so the user sees a tab,
+      not the button, which is the most confusing possible split. Fixing this with doc copy
+      ("the tab is currently rendered regardless of the flag") papers a structural UI defect.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a user clicks a message to open its thread and the related-messages fetch fails
+    (transient backend error, deleted thread, feature disabled), the user sees an error
+    (toast or inline banner) explaining the thread could not load.
+  derivation: |-
+    Senior-product-owner UX seed (intuitive / consistent error handling); a drilldown that
+    fails should tell the user why, not silently undo their click — the rest of the
+    platform surfaces fetch errors.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Thread.tsx:31-34 — on `relatedMessagesError`, the component navigates back to the
+      parent discussions list URL (dataEntityDiscussionsPath without messageId) with NO
+      error toast and NO inline banner (chain hop-4 evidence + observed_vs_expected facet
+      thread_fetch_error_silently_navigates_away_no_user_feedback, ui_unverified:false). The
+      user's "open this thread" click appears to do nothing — the URL silently rewrites and
+      they are returned to the list as if they never clicked.
+    evidence:
+      - sidecar: "(feature-flow chain — F-197 hop-4)"
+        section: chain.hop-4.evidence
+        cite: "DataCollaboration/CurrentMessage/Thread/Thread.tsx:31-34"
+        note: "Error-to-navigate side effect strips messageId with no user feedback."
+      - sidecar: "(feature-flow observed_vs_expected)"
+        section: "facet: thread_fetch_error_silently_navigates_away_no_user_feedback"
+        cite: "F-197.yaml observed_vs_expected (ui_unverified: false)"
+        note: "Drift already verified at UI tier by the feature-flow-builder."
+    operator_visible_failure: |-
+      The operator cannot distinguish three very different situations: (a) they clicked a
+      stale/dead message, (b) the thread was deleted Slack-side, (c) the platform backend is
+      partially down. All three present identically as "click did nothing, I'm back on the
+      list." On a disabled deployment (H-001) the thread fetch 404s and this path fires on
+      every drilldown, compounding the dead-tab confusion. Diagnostic signal is zero.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a user copies the URL of a message thread they are viewing and sends it to a
+    colleague, the colleague opens the same entity, the same channel filter, and the same
+    message thread the sender was looking at.
+  derivation: |-
+    Per-message deep-linking is the stated design intent ("per-message thread drilldown"
+    pillar_anchored_feature_name) — a deep-linkable URL must carry the full view state to
+    be useful; consistency seed (the sibling Activity tab uses useQueryParams for filters).
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The dataEntityId and the messageId DO travel in the URL (MessagesList.tsx:22-74
+      navigates to dataEntityDiscussionsPath(dataEntityId, messageId) on message click —
+      chain hop-2; the right panel reads messageId from the URL — chain hop-4). BUT the
+      channelId and the messageDate (scroll position) are held in local React useState in
+      DataCollaboration.tsx:22-23 (chain hop-1 + observed_vs_expected facet
+      channelid_messagedate_in_component_state_not_url). A shared link therefore preserves
+      "which entity + which message" but DROPS "which channel filter + where in the scroll"
+      — the recipient lands on the same entity and message but with the channel filter reset
+      and scrolled to a different position. The sibling DataEntityActivity tab uses
+      useQueryParams for exactly these (ActivityResults.tsx:25), so this surface is also
+      inconsistent with the platform's own established pattern.
+    evidence:
+      - sidecar: "(feature-flow chain — F-197 hop-1, hop-2)"
+        section: chain.hop-1.evidence + chain.hop-2.evidence
+        cite: "DataCollaboration.tsx:22-23 (useState channelId/messageDate) + MessagesList.tsx (messageId→URL)"
+        note: "messageId in URL; channelId + scroll in component state."
+      - sidecar: "(feature-flow observed_vs_expected)"
+        section: "facet: channelid_messagedate_in_component_state_not_url"
+        cite: "F-197.yaml observed_vs_expected (ui_unverified: false)"
+        note: "Inconsistent with DataEntityActivity useQueryParams pattern."
+    operator_visible_failure: |-
+      A user who shares a discussion link expecting a colleague to see exactly what they see
+      gets a partial reproduction: the message opens, but if the sender had filtered to a
+      specific channel, the recipient sees an unfiltered list, and the scroll position
+      differs. For a feature whose value is "discuss this entity together," a link that
+      drops half the view state quietly erodes the collaboration promise. Inconsistency with
+      the Activity tab's URL-state discipline also breaks the "works like the rest of the
+      platform" expectation.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a user opens the channel autocomplete in the Share dialog and types the middle of
+    a channel's name (e.g. "platform" to find "#odd-platform-alerts"), the matching channel
+    appears in the dropdown.
+  derivation: |-
+    Endpoint-shape: the parameter is channel_name and the UI is an autocomplete; a user's
+    default mental model of an autocomplete is substring/fuzzy match, so the name promises
+    "find a channel by what I type."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      getSlackChannels filters with `slackChannel.name().startsWith(nameLike)` — a PREFIX
+      match, not contains/fuzzy (DataCollaborationController.md invariant "filters by
+      startsWith, not contains"; SlackMessageProviderClient.java:52). Typing "platform"
+      returns zero results for "#odd-platform-alerts" even though the bot is in that channel.
+      The UI surfaces no hint that the match is prefix-only. The live doc NOW states this
+      explicitly ("The typed filter is a prefix match (startsWith)... typing the middle of a
+      channel name returns no suggestions"), so the behaviour is documented — but the UI
+      itself gives the user an empty dropdown with no explanation.
+    evidence:
+      - sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+        section: invariants + bugs_limitations_corner_cases
+        cite: "SlackMessageProviderClient.java:50-55 + SlackChannelsAutocomplete.tsx:43-54"
+        note: "startsWith filter drives the autocomplete on every debounced keystroke."
+      - sidecar: "(live doc cross-ref)"
+        section: WebFetch
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration (2026-06-03, 200)"
+        note: "Doc now states the prefix-match behaviour explicitly."
+    operator_visible_failure: |-
+      A user searching for a channel by a distinctive middle word gets an empty dropdown and
+      concludes the bot is not in the channel (or the channel does not exist), when in fact a
+      prefix-typed query would have found it. They cannot post to a channel they can't find.
+      The only feedback is emptiness; the prefix constraint is invisible at the point of use.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When any logged-in user opens an entity's Discussions tab, the messages they can read
+    and the channels they can post to are scoped by the RBAC Policy grants an operator has
+    authored (a user without discussion permission on that entity cannot post).
+  derivation: |-
+    Pillar P-09 frames RBAC (Policies x Permissions x Roles) as gating mutations across the
+    catalog; a senior PO assumes a posting surface participates in that model — the
+    implicit-requirements archetype.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      None of the data-collaboration routes carry an RBAC permission. SecurityConstants.
+      SECURITY_RULES has zero entries for /api/datacollaboration/** or /api/messages/**;
+      all fall through to AuthorizationCustomizer's catch-all pathMatchers("/**")
+      .authenticated() (DataCollaborationController.md invariant 3 + postMessageInSlack.md
+      security.known_security_gaps[0]). Any authenticated user can post to any channel the
+      bot can reach, attached to any data_entity_id (existence-checked only, NOT
+      owner-scoped — postMessageInSlack.md owner_scoping "BYPASSES"). Under auth.type=DISABLED
+      the routes are anonymously reachable; datacollaboration.enabled is the sole defence.
+      The live doc now states this verbatim ("Enabling Data Collaboration is the only access
+      control on its routes — none of them carry an RBAC permission ... any logged-in user
+      can post into and read every entity's discussions regardless of the Policy grants").
+    evidence:
+      - sidecar: odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md
+        section: security.known_security_gaps
+        cite: "SecurityConstants.java:96-355 + AuthorizationCustomizer.java:29-30 + DataCollaborationServiceImpl.java:47-62"
+        note: "No @PreAuthorize, no SecurityRule, no programmatic permission check; cross-owner posting."
+      - sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+        section: invariants
+        cite: "SecurityConstants.java:98-355 (zero matching entries) + AuthorizationCustomizer.java:29-30"
+        note: "All three endpoints RBAC-ungated; anonymous under DISABLED."
+      - sidecar: "(live doc cross-ref)"
+        section: WebFetch
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration (2026-06-03, 200)"
+        note: "Doc now documents the read-collaborative posture + no-RBAC explicitly."
+    operator_visible_failure: |-
+      An operator who has carefully authored Policies to restrict who can mutate a sensitive
+      entity discovers that those grants are silently ignored on the Discussions surface: any
+      authenticated user can post a Slack message attached to that entity, into any channel
+      the bot is in, including entities from a namespace the user could not otherwise mutate
+      (cross-owner message-injection). On DISABLED deployments the surface is fully anonymous
+      once the feature flag is on. The posting user's identity may even be NULL in the audit
+      row if they have no owner association.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When a user submits the Share dialog (valid channel + non-empty text), they are
+    navigated to the entity's Discussions tab and their just-posted message is visible in
+    the list.
+  derivation: |-
+    Happy-path send promise (chain hop-3 CreateMessageForm navigates to discussions on
+    fulfilled); a user who posts expects to see their message land.
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The navigation half is honoured: CreateMessageForm.tsx:23-122 dispatches
+      createMessageToSlack and navigates to dataEntityDetailsPath(dataEntityId,
+      'discussions') only if meta.requestStatus === 'fulfilled' (chain hop-3) — and form
+      validation enforces channelId + non-blank text (custom validate: !!value.trim()). BUT
+      the "message visible in the list" half is at risk: DataCollaboration.tsx:35-43's
+      useEffect dep array includes isMessageCreating, and on the true→false toggle after a
+      successful send it re-fires fetchDataEntityMessages with lastMessageId = lastId, which
+      after a successful send is the ID of the JUST-CREATED message — so the refetch can
+      start AFTER the new message and omit it from the visible list until the user scrolls or
+      reloads (observed_vs_expected facet messages_list_useeffect_refires_on_ismessagecreating_change,
+      ui_unverified:true). Whether redux's clearCollaborationState in cleanup resets lastId
+      before the refetch depends on slice code not in the chain — hence partial / a probe.
+    evidence:
+      - sidecar: "(feature-flow chain — F-197 hop-3)"
+        section: chain.hop-3.evidence
+        cite: "CreateMessageForm.tsx:23-122 (navigate on fulfilled + trim-blank guard)"
+        note: "Navigation + validation half confirmed."
+      - sidecar: "(feature-flow observed_vs_expected)"
+        section: "facet: messages_list_useeffect_refires_on_ismessagecreating_change"
+        cite: "DataCollaboration.tsx:27 (lastId) + :37 (lastMessageId: lastId) + :43 (isMessageCreating dep)"
+        note: "Refetch may start after the just-created message — ui_unverified: true."
+    operator_visible_failure: |-
+      A user posts a message, is taken to the Discussions tab, and does not see their own
+      message in the list — it appears to have vanished. They may re-post (creating a
+      duplicate) or conclude the send failed. The 202-Accepted contract already means the
+      message is only PENDING_SEND at navigation time (postMessageInSlack.md), so even a
+      correct refetch shows it before Slack delivery; combined with the lastId refetch
+      window, the just-posted message can be absent from view for a confusing interval.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When an entity has no discussion messages yet, the empty Discussions list shows a
+    localized "no messages" placeholder consistent with the user's selected UI language.
+  derivation: |-
+    i18n consistency seed; the platform ships a language switcher and the sibling
+    LinkedItemsList uses t('No linked entities'), so the empty state is expected to be
+    translated like its peers.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      MessagesList.tsx:70 renders <EmptyContentPlaceholder text='No messages' /> with a
+      hard-coded English string, NOT t('No messages') (observed_vs_expected facet
+      empty_state_text_not_translated_hardcoded_english, ui_unverified:false). The sibling
+      LinkedItemsList.tsx:86 DOES wrap its placeholder in t(...), so the i18n discipline is
+      inconsistent across the same content-tab surface set.
+    evidence:
+      - sidecar: "(feature-flow observed_vs_expected)"
+        section: "facet: empty_state_text_not_translated_hardcoded_english"
+        cite: "MessagesList.tsx:70 + LinkedItemsList.tsx:86 (t-wrapped sibling)"
+        note: "Hard-coded English vs translated sibling — verified at UI tier."
+    operator_visible_failure: |-
+      A user running the platform in a non-English locale sees "No messages" in English on
+      the empty Discussions list while sibling tabs render their empty states translated —
+      an inconsistency that reads as an unfinished surface. Low functional impact, but it is
+      a visible polish defect on a user-facing panel.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a user scrolls to the bottom of the messages list, older messages load
+    automatically (infinite scroll) without the user clicking a "load more" control.
+  derivation: |-
+    Endpoint-shape + UX convenience seed: the list is an InfiniteScroll wrapper and the
+    fetch carries size + lastMessageId paging params; the promise is seamless pagination.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      MessagesList.tsx:22-74 is an InfiniteScroll wrapper that calls fetchNextMessages when
+      the user scrolls within 200px of the bottom, using the same redux state mutation as the
+      initial fetch (chain hop-2). The parent passes size + lastMessageId
+      (DataCollaboration.tsx fetchDataEntityMessages, chain hop-1) so paging is keyset-style
+      on lastMessageId. The mechanism is present and wired; no "load more" button is required.
+    evidence:
+      - sidecar: "(feature-flow chain — F-197 hop-2)"
+        section: chain.hop-2.evidence
+        cite: "MessagesList.tsx:22-74 (InfiniteScroll, fetchNextMessages at 200px)"
+        note: "Auto-paginates on scroll; same redux mutation as initial fetch."
+      - sidecar: "(feature-flow chain — F-197 hop-1)"
+        section: chain.hop-1.evidence
+        cite: "DataCollaboration.tsx:18-80 (fetchDataEntityMessages with size + lastMessageId)"
+        note: "Keyset paging on lastMessageId."
+    operator_visible_failure: ""
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When datacollaboration.enabled is left at its default, a fresh deployment does NOT
+    silently start an external Slack integration (the feature is off until an operator opts
+    in with a token).
+  derivation: |-
+    Pillar P-07 opt-in framing + ADR-0075 off-by-default family; an external-call feature
+    should be inert on a fresh install.
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      datacollaboration.enabled defaults to false (application.yml:205), the controller bean
+      is @ConditionalOnDataCollaboration so it is not registered when off, and a Slack OAuth
+      token is REQUIRED at bean construction when on (fail-fast IllegalArgumentException) —
+      so a fresh install neither registers the routes nor reaches Slack
+      (DataCollaborationController.md invariants 1-2). This is pinned by a real test:
+      FeatureGatingDefaultsTest.offByDefaultFamily_shipsDisabled asserts
+      datacollaboration.enabled == "false" in the shipped application.yml (@enforces ADR-0075).
+    evidence:
+      - sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+        section: invariants + implicit_adrs
+        cite: "application.yml:205 + DataCollaborationFeatureCondition.java:18-22 + DataCollaborationConfiguration.java:23-25"
+        note: "Disabled-by-default + fail-fast token requirement."
+      - sidecar: "(real test — verified)"
+        section: FeatureGatingDefaultsTest
+        cite: "odd-platform-api/.../config/FeatureGatingDefaultsTest.java:60-63"
+        note: "Pins datacollaboration.enabled=false in shipped application.yml (@enforces ADR-0075)."
+    operator_visible_failure: ""
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: none   # confirmed AND a real test exists → coverage: verified → no demand (the ONLY legitimate 'none' route under Rule 11)
+    use_case_kind: render
+    coverage: verified
+    test_ref: "FeatureGatingDefaultsTest.offByDefaultFamily_shipsDisabled"
+    test_demand: none
+
+- id: H-010
+  hypothesis: |-
+    When a user posts a message, the platform does not block the HTTP request on the Slack
+    round-trip — the request returns promptly and Slack delivery happens in the background.
+  derivation: |-
+    UX responsiveness seed + the 202-Accepted contract; a send should not hang on Slack.
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      postMessageInSlack returns 202 Accepted after persisting a PENDING_SEND row; the actual
+      Slack chat.postMessage happens asynchronously in DataCollaborationMessageSenderJob under
+      a Postgres advisory-lock-elected single leader (postMessageInSlack.md understanding +
+      implicit_adrs[3,4]). This decoupling is pinned by a real test:
+      AdrDataCollabDeliveryScanTest.postMessageReturns202Accepted_noInlineSlackCall +
+      senderJobDrainsBehindBlockingLeaderElectionLock (@enforces ADR-0020).
+    evidence:
+      - sidecar: odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md
+        section: understanding + implicit_adrs
+        cite: "DataCollaborationController.java:38 (HttpStatus.ACCEPTED) + DataCollaborationMessageSenderJob.java:23-95"
+        note: "202 + queue + leader-elected async sender."
+      - sidecar: "(real test — verified)"
+        section: AdrDataCollabDeliveryScanTest
+        cite: "odd-platform-api/.../config/AdrDataCollabDeliveryScanTest.java:38-52"
+        note: "Pins 202-Accepted + decoupled single-leader sender (@enforces ADR-0020)."
+    operator_visible_failure: ""
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: none   # confirmed AND a real test exists → coverage: verified
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "AdrDataCollabDeliveryScanTest.postMessageReturns202Accepted_noInlineSlackCall"
+    test_demand: none
+
+- id: H-011
+  hypothesis: |-
+    When a user posts a message and Slack delivery later fails (token revoked, channel
+    archived, text too long, rate-limited beyond retries), the user is informed in the UI
+    that their message did not reach Slack.
+  derivation: |-
+    Negative-space: a 202-Accepted async send means the success acknowledgement precedes
+    actual delivery; a user reasonably expects to learn if delivery failed.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The send returns 202 with a Message body in PENDING_SEND state; downstream failures
+      flip the row to ERROR_SENDING in the sender job, but there is NO push/notification on
+      the HTTP surface to tell the original caller — the user must re-fetch
+      /api/dataentities/{id}/messages to see status (postMessageInSlack.md
+      bugs_limitations_corner_cases[4]). Whether the UI's messages list renders the
+      ERROR_SENDING state visibly (a failed-badge, a retry affordance) cannot be determined
+      from the chain — the Message component rendering (MessagesList/Message,
+      ThreadMessage/MainThreadMessage) is sidecar:unresolved (VG-001) and the state-to-UI
+      mapping is not in any read artefact. This requires standing the feature up locally and
+      forcing an ERROR_SENDING (e.g. revoke the token after enqueue) to observe the UI.
+    evidence:
+      - sidecar: odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md
+        section: bugs_limitations_corner_cases
+        cite: "DataCollaborationController.java:38 + DataCollaborationServiceImpl.java:96 + DataCollaborationMessageSenderJob.java:58-63"
+        note: "ERROR_SENDING persisted; no HTTP-surface notification back to caller."
+      - sidecar: "(validation gap)"
+        section: VG-001
+        cite: "Message / ThreadMessage UI components sidecar:unresolved"
+        note: "UI rendering of message state not in any read artefact."
+    operator_visible_failure: |-
+      If the UI does not surface ERROR_SENDING, a user believes their message reached Slack
+      (they got an apparent success and saw it in the list as PENDING) when it silently
+      failed — the message is in the DB marked failed, but the team in Slack never saw it.
+      The probe resolves whether the UI closes this loop.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-197-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: "PENDING-F-197-1 (local probe — force ERROR_SENDING, observe UI)"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: |-
+    Discussions tab renders on every non-deleted entity regardless of
+    datacollaboration.enabled (default false) — no UI feature-flag consult though
+    WithFeature/getActiveFeatures is available — user clicks into a dead feature.
+  dedup_status: already_tracked
+  tracked_as: PLT-032
+  proposed_fix_anchor: "DataEntityDetailsTabs.tsx:96-99 — add hidden: !activeFeatures.includes(Feature.DATA_COLLABORATION)"
+- hypothesis_id: H-002
+  severity: MEDIUM
+  one_line: |-
+    Thread.tsx silently navigates away on relatedMessagesError — no toast / no banner;
+    the user's drilldown click appears to do nothing.
+  dedup_status: already_tracked
+  tracked_as: PLT-032
+  proposed_fix_anchor: "Thread.tsx:31-34 — surface an error toast/inline banner before (or instead of) navigating back"
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |-
+    No RBAC on any data-collaboration route — any authenticated user posts to/reads any
+    entity's discussions regardless of Policy grants; cross-owner injection; anonymous under DISABLED.
+  dedup_status: already_tracked
+  tracked_as: PLT-099
+  distinct_from: PLT-129
+  proposed_fix_anchor: |-
+    SecurityConstants.SECURITY_RULES — add a DATA_COLLABORATION-class permission gate on
+    /api/datacollaboration/** + /api/messages/** + owner-scope the data_entity lookup in
+    DataCollaborationServiceImpl. (PLT-099 already tracks the RBAC + HMAC gap; PLT-129 is the
+    DISTINCT open-redirect on the redirect endpoint, not re-filed here.)
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Discussions URL is only partially deep-linkable — channelId + scroll position live in
+    React component state, not the URL; a shared link drops the channel filter + scroll.
+  dedup_status: net_new
+  distinct_from: PLT-032
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration + DOC-gap (URL-state-not-shareable; distinct from PLT-032's tab/thread defects)"
+- hypothesis_id: H-004
+  one_line: |-
+    Channel autocomplete is a prefix (startsWith) match, not substring — typing the middle
+    of a channel name returns an empty dropdown with no hint.
+  dedup_status: already_tracked
+  tracked_as: PLT-095
+  recommended_log_as: "doc already states the prefix behaviour (live page 2026-06-03); UI-hint improvement is the open part"
+- hypothesis_id: H-007
+  one_line: |-
+    Empty messages-list placeholder is hard-coded English ('No messages'), not t()-wrapped —
+    inconsistent with the t()-wrapped sibling LinkedItemsList.
+  dedup_status: net_new
+  recommended_log_as: "small-batch UI item — wrap MessagesList.tsx:70 placeholder in t(); i18n consistency"
+
+### functional_test_demands
+# Rule 11 / LSN-030 — every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# This is the bridge the confirmed-hypothesis path was missing: H-008 is CONFIRMED but has NO test,
+# so it surfaces HERE (NOT routes_to_finding: none). H-001/002/005/007 are real defects whose fix needs a
+# regression guard; H-003/004/006/011 guard the unmet/uncertain part. NONE were silently dropped.
+- use_case_id: F-197-UC-01
+  hypothesis_id: H-001
+  kind: render
+  promise: "On a default deployment (datacollaboration.enabled=false) the Discussions tab is NOT shown."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-01)"
+  proposed_test: "UI/e2e: with DATA_COLLABORATION absent from getActiveFeatures, assert the Discussions tab is not rendered on an entity detail page (regression guard for the PLT-032 fix)."
+- use_case_id: F-197-UC-02
+  hypothesis_id: H-002
+  kind: render
+  promise: "A failed thread fetch shows the user an error (toast/banner), not a silent navigate-away."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-02)"
+  proposed_test: "UI: mock relatedMessagesError; assert an error toast/banner renders before/instead of navigation (regression guard for PLT-032 Defect 2)."
+- use_case_id: F-197-UC-03
+  hypothesis_id: H-003
+  kind: render
+  promise: "A shared discussion URL reproduces entity + message + channel filter + scroll."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-03)"
+  proposed_test: "UI: select a channel filter + open a message; assert the resulting URL carries channelId (currently it does not) — pins the deep-link contract once channel state moves to useQueryParams."
+- use_case_id: F-197-UC-04
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "Channel autocomplete finds a channel by a substring of its name."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-04)"
+  proposed_test: "Integration: getSlackChannels(channel_name='platform') on a workspace with '#odd-platform-alerts' — characterization test pinning the startsWith (empty-result) behaviour; flips RED if changed to contains."
+- use_case_id: F-197-UC-05
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "Discussions reads/posts are scoped by RBAC Policy grants."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-05)"
+  proposed_test: "Security: authenticated non-owner posts to an entity in a foreign namespace — pin the current ungated behaviour (characterization), flips RED when a permission gate lands (regression guard for PLT-099)."
+- use_case_id: F-197-UC-06
+  hypothesis_id: H-006
+  kind: edit-reconcile
+  promise: "After a successful send, the just-posted message is visible in the list."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-06)"
+  proposed_test: "UI: post a message; assert it appears in the list without a manual reload (guards the isMessageCreating/lastId refetch window)."
+- use_case_id: F-197-UC-07
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "Empty discussions list shows a localized placeholder."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-07)"
+  proposed_test: "UI: render MessagesList with zero messages in a non-en locale; assert the placeholder is translated (RED on the hard-coded 'No messages')."
+- use_case_id: F-197-UC-08
+  hypothesis_id: H-008
+  kind: happy-path
+  promise: "Scrolling to the bottom of the messages list auto-loads older messages (infinite scroll)."
+  verdict: confirmed
+  coverage: unverified   # CONFIRMED but NO test exists — the LSN-030 fix: this is a hand-proven promise with no guard
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-08)"
+  proposed_test: "UI: render a >page-size message set; scroll within 200px of bottom; assert fetchNextMessages dispatched and older messages appended."
+- use_case_id: F-197-UC-11
+  hypothesis_id: H-011
+  kind: edit-reconcile
+  promise: "A user is informed in the UI when their message failed to reach Slack (ERROR_SENDING)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-197-UC-11) — gated on PENDING-F-197-1 probe outcome"
+  proposed_test: "UI: render a message row in ERROR_SENDING state; assert a failed indicator + retry affordance (test exists only if the probe confirms the UI should surface it)."
+
+### probes_emitted
+- probe_id: PENDING-F-197-1
+  hypothesis_id: H-011
+  hypothesis_text: |-
+    When a user posts a message and Slack delivery later fails (token revoked, channel
+    archived, text too long, rate-limited beyond retries), the user is informed in the UI
+    that their message did not reach Slack (the messages list renders the ERROR_SENDING
+    state with a failed indicator and/or a retry affordance).
+  local_execution: |-
+    Local docker-compose ODD Platform with datacollaboration.enabled=true + a Slack bot
+    token; enqueue a message via the Discussions Share dialog, then force failure (revoke the
+    token or target an archived channel) so the sender job marks the row ERROR_SENDING; open
+    the Discussions tab and observe whether the UI surfaces the failure. Playwright headless
+    drive of the UI is acceptable. All local — no remote/cloud dependency.
+  status: pending-reflection-verification
+  note: "PARALLEL-SAFE MODE — recorded here, NOT written as a probes/P-NNN.yaml file."
+
+### validation_gaps
+- id: VG-001
+  sidecar: "component:DataCollaboration, component:MessagesList, component:Channels, component:CurrentMessage, component:Thread, component:ThreadContent, component:ThreadMessage, component:MainThreadMessage, component:CreateMessageForm, component:Message, component:NoMessage"
+  field_insufficient: |-
+    ENTIRE UI sidecar absent (Rule 9). The feature is a UI surface (a per-entity tab) yet
+    NONE of its eleven React components has an enriched file-analyser sidecar — every chain
+    hop is sidecar:unresolved. This reflection validated UI-facing hypotheses against (a) the
+    feature-flow-builder's inline chain evidence (file:line extracted into F-197.yaml), (b)
+    the observed_vs_expected facets, and (c) two Rule-8-exception source reads
+    (DataEntityDetailsTabs.tsx + WithFeature.tsx). The message-state-to-UI rendering (H-011),
+    the exact channel-selector behaviour, and the create-form mount-trigger permission wrapper
+    (resolved only via PLT-095, not via a sidecar) remain under-covered. This reflection is
+    therefore CHAIN-EVIDENCE-GROUNDED, not UI-sidecar-grounded — honest per LSN-023: I did
+    NOT manufacture confident verdicts for the parts no artefact covers (H-011 is probe-needed).
+  proposed_refresh: |-
+    Run file-analyser over the eleven DataCollaboration React components (substrate Failure-F
+    gap — these are among the ~530 unenriched components from LSN-025). Priority: Message /
+    ThreadMessage / MainThreadMessage (message-state rendering, H-011) and DataCollaboration.tsx
+    (the useState-vs-URL + isMessageCreating refetch, H-003/H-006).
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration"
+  doc_says: |-
+    "The Discussions tab is visible even when Data Collaboration is disabled. The tab itself
+    is currently rendered regardless of the flag (only hidden when the entity status is
+    deleted)."
+  code_does: "DataEntityDetailsTabs.tsx:96-99 — tab hidden ONLY on isStatusDeleted; no feature-flag consult."
+  recommended_log_as: |-
+    NOT a doc-gap — the doc is ACCURATE (it documents the real behaviour). It documents a
+    code defect with the word 'currently'. Once PLT-032 ships the UI feature-flag gate, the
+    doc's 'currently rendered regardless of the flag' caveat must be removed. Tracked: the
+    F-197.yaml scanner_reviews F-197a STATE UPDATE already flagged this; PLT-032 Coordination
+    note already pairs the doc follow-up. No new DOC item needed.
+
+## maintainer_notes

@@ -1,0 +1,857 @@
+---
+feature_id: F-059
+pillar_anchored_id: P-03:F-003
+pillar: Master Data Management
+feature_name: |-
+  Lookup table rename — operator metadata edit silently renames the underlying
+  Postgres table, breaking every downstream pipeline that joined against the
+  documented public surface (lookup_tables_schema)
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__LookupTables.md
+  - odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      KEY CROSS-REFERENCE SHIFT vs the feature-flow's premise. The live doc page
+      has ALREADY been updated (DOC-182-class) to describe the rename hazard
+      EXPLICITLY and HONESTLY: "Renaming a Lookup Table silently breaks every
+      downstream BI / ETL pipeline that hardcoded the old name"; "issues
+      `ALTER TABLE … RENAME TO` against the underlying PostgreSQL table; from the
+      very next millisecond, queries against the old name return `relation
+      \"<old>\" does not exist`"; "does not create a PostgreSQL VIEW alias under
+      the old name"; "Renaming a Lookup Table emits no Activity Feed event —
+      post-mortems cannot answer 'who renamed which table when.'" The doc-gap is
+      therefore CLOSED — the doc matches the code. The feature's load-bearing
+      finding is no longer "doc is silent" (it is not) but "the PRODUCT still
+      ships a documented footgun with zero code-side mitigation": no UI warning,
+      no alias view, no audit emission. A maintainer who writes a precise caveat
+      about a data-loss footgun and then leaves the footgun fully armed has
+      documented the cliff, not fenced it.
+hypothesis_summary:
+  total: 11
+  confirmed: 5
+  contradicted: 4
+  partial: 2
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: |-
+      An operator renaming a lookup table through the UI metadata edit form (a
+      catalog action) silently issues ALTER TABLE RENAME on the documented public
+      lookup_tables_schema, breaking every downstream BI/ETL query against the old
+      physical name with no warning, no alias, and no audit trail.
+related_feature_flows: [F-026, F-058, F-028, F-057]
+related_concepts:
+  - lookup-tables
+  - master-data-management
+  - lsn-001-default-footgun
+related_drift_classes:
+  - ui_metadata_edit_silently_renames_documented_public_postgres_surface
+  - operator_action_layer_silent_data_contract_break_lsn_001_class
+  - audit_silence_on_gated_mutation_with_external_blast_radius
+new_drift_classes_proposed:
+  - documented_footgun_still_shipped_unmitigated_doc_describes_cliff_does_not_fence_it
+  - ddl_rename_blast_radius_wider_than_feature_flow_modelled_sequences_and_constraints_also_renamed
+---
+
+# Lookup table rename cascade — product-owner reflection
+
+## product_owner_narrative
+
+Master Data Management (pillar P-03) is ODD's home for operator-curated reference data — the canonical code tables, lookup values, and mapping lists that downstream pipelines and BI tools join against. The pillar is intentionally narrow: today it has exactly one user-observable surface, Lookup Tables, reached from the "Master Data" toolbar tab landing on `/master-data/lookup-tables` (per the LookupTables sidecar `understanding`, and system-mission.md P-03 lines 125-141). A steward creates a lookup table, gives it a name and a namespace, adds typed columns and rows, and — the load-bearing promise of this pillar — that table becomes **directly SQL-queryable** as a real PostgreSQL relation inside `lookup_tables_schema`. The live doc page states this plainly: "Direct database access is the recommended path for downstream consumers (BI tools, ETL jobs, ad-hoc queries)" (per WebFetch 2026-06-03). The physical relation is named `n_{namespaceId}__{lowercased_underscored_name}` — derived by `buildTableName`, which lowercases the display name and replaces spaces with underscores (per ReferenceDataServiceImpl.java:191-194, source-read-for-validation 2026-06-03).
+
+A user interacts with this feature through one screen and one modal. The list page (LookupTables) shows a counter, a search box, a permission-gated "+Add new" button, and an infinite-scroll table of every readable lookup table. Each row carries an Edit pencil (gated by `LOOKUP_TABLE_UPDATE`) that opens the `LookupTableForm` modal. The edit form presents a single Name field, a disabled Namespace field (`disabled={!!lookupTable}`), and a Description field (per LookupTables sidecar `bugs_limitations_corner_cases[2]`, `docs_link_semantic.doc_drift_findings[0]`, and the feature-flow hop-1 evidence LookupTableForm.tsx:84-93). To the operator this is an unambiguously *metadata* action: rename the catalog entry, the same way you would rename a dashboard or retitle a document. There is no warning dialog, no preview of the resulting physical table name, no opt-out, and no alias offer (per the feature-flow contributing_nodes[0] note + LookupTables sidecar).
+
+The hidden working part is the cascade. On submit of a renamed Name, `ReferenceDataServiceImpl.updateLookupTable` rebuilds the physical table name via `buildTableName(formData.getName(), table.namespacePojo())` and — *only if the rebuilt name differs from the current one* — calls `referenceDataRepository.updateLookupTable`, which issues `ALTER TABLE … RENAME TO` (plus rename of the table's sequences and constraints) against `lookup_tables_schema` (per ReferenceDataServiceImpl.java:107-124 and ReferenceDataRepositoryImpl.java:180-202, both source-read-for-validation 2026-06-03). From the next millisecond, every downstream consumer that hardcoded the old physical name receives `relation "<old>" does not exist` — the live doc page now says exactly this. There is no deprecation view, no notification fan-out, and no `ActivityEvent` recording who renamed which table when (per ReferenceDataController sidecar `bugs_limitations_corner_cases[7]` + the feature-flow audit-silence facet + WebFetch confirmation).
+
+This feature sits at the intersection of three pillars. Lookup tables are first-class Data Entities (`DataEntityTypeDto.LOOKUP_TABLE` inside `DATA_SET`), so the rename surfaces in Data Discovery's search and Catalog Overview (P-01 — system-mission.md cross-pillar line 475). The rename *should* feed the Activity Feed (P-07, feature F-021) but does not — the same audit-silence pattern F-057 (DQ severity edit) exhibits, which is why both are cross-pillar evidence for system-mission.md canonicalisation candidate 3 ("audit-log presence asymmetry — 2-tier audit story"). And the whole surface is read-collaborative: any authenticated user sees the global lookup-table count and every row, because the read endpoints carry no RBAC and the mutating permissions are `NO_CONTEXT` / global (per ReferenceDataController sidecar `security.known_security_gaps`).
+
+The edge cases a product owner would flag in a demo: a "cosmetic" rename that does not change the lowercased-underscored form (e.g. "Customer Lookups" → "Customer lookups", or editing only the Description) does NOT touch the physical table — the `getTableName().equals(...)` guard short-circuits the DDL (ReferenceDataServiceImpl.java:119-122). A rename that collides with an existing physical name in the same namespace surfaces a raw Postgres error as a generic 500, not a friendly 409 (per ReferenceDataController sidecar `bugs_limitations_corner_cases[2]`). And the rename DDL takes an `ACCESS EXCLUSIVE` lock on the table, blocking concurrent reads of a popular reference table for the lock duration (per ReferenceDataController sidecar `performance.known_performance_gaps[0]`). None of these is surfaced to the operator at rename time.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator renames a lookup table through the UI edit form (changing the
+    Name to a value whose lowercased-underscored form differs from the current one),
+    the platform issues ALTER TABLE ... RENAME TO against the underlying
+    lookup_tables_schema relation, so a downstream BI query SELECT-ing from the OLD
+    physical name (n_{nsId}__old_name) begins returning "relation does not exist" with
+    no prior warning, no deprecation alias, and no notification.
+  derivation: |-
+    The pillar promise is "direct SQL-joinable reference data"; the edit form presents
+    a single Name field framed as metadata; the service rebuilds the physical name on
+    rename. Endpoint shape (PUT .../table/{id}) + DTO field name (Name) + pillar mission.
+  seed_source: pillar
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The hypothesis predicts a silent, unwarned, unaliased physical rename — and that
+      is exactly what the implementation does, so the USER EXPECTATION (a metadata-only
+      rename) is contradicted by the implementation (a metadata rename PLUS destructive
+      DDL on a public contract). ReferenceDataServiceImpl.updateLookupTable rebuilds
+      tableName = buildTableName(formData.getName(), namespacePojo) and, when it differs
+      from the current physical name, calls referenceDataRepository.updateLookupTable,
+      which executes DSL.alterTable(...).renameTo(dto.getTableName()). No warning UI
+      precedes it (LookupTableForm has one Name field, no dialog), no CREATE VIEW alias
+      is issued, no notification fans out.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: bugs_limitations_corner_cases[7]
+        cite: "ReferenceDataServiceImpl.java:107-124 + ReferenceDataRepositoryImpl.java:181-202"
+        note: "Service rebuilds physical name on rename; repository issues ALTER TABLE RENAME; no alias/view."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: feature-flow contributing_nodes[0] + bugs_limitations_corner_cases[2]
+        cite: "LookupTableForm.tsx:84-93"
+        note: "Single Name field; no warning dialog, no physical-name preview, no opt-out."
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataServiceImpl.updateLookupTable
+        cite: "ReferenceDataServiceImpl.java:113-122"
+        note: "tableName(buildTableName(formData.getName(), table.namespacePojo())); rename DDL fires when names differ."
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataRepositoryImpl.updateLookupTable
+        cite: "ReferenceDataRepositoryImpl.java:192"
+        note: "DSL.alterTable(table(DSL.name(...))).renameTo(dto.getTableName()) — the destructive DDL, VERIFIED."
+      - sidecar: "(WebFetch cross-reference)"
+        section: live doc page
+        cite: "docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+        note: "Doc CONFIRMS the behaviour verbatim: 'queries against the old name return relation \"<old>\" does not exist'; 'does not create a PostgreSQL VIEW alias'."
+    operator_visible_failure: |-
+      (1) The company revenue dashboard / dbt model / Airflow DAG / notebook that
+      hard-codes lookup_tables_schema.n_5__customer_lookups breaks on its very next run
+      with a hard SQL error — no graceful degradation, no stale data, a total query
+      failure. (2) The break is silent at edit time: the steward who renamed "Customer
+      Lookups" to "Customer Lookup Codes" to clarify the concept gets a success toast and
+      no indication they just dropped a public contract. (3) No remediation path exists
+      after the fact short of renaming back — and the operator may not know the old name
+      to rename back to, because there is no audit record (see H-009). (4) The blast
+      radius is cross-team and cross-system: ODD has no visibility into who consumes the
+      physical table, so the platform cannot even warn the affected parties.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When an operator edits a lookup table and changes ONLY the Description (or makes a
+    Name edit that does not change the lowercased-underscored form, e.g. only letter-case
+    or trailing characters that normalise away), the underlying physical table is NOT
+    renamed and downstream queries continue to work.
+  derivation: |-
+    Negative-space + reading the service guard: a product owner expects a description-only
+    edit to be harmless. The service has an equals-guard before the DDL.
+  seed_source: negative-space
+  sme_consultation_recommended: false
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      updateLookupTable computes the new physical name and only calls the rename
+      repository path when table.tablesPojo().getTableName() does NOT equal the rebuilt
+      tableDto.getTableName(); otherwise it returns Mono.empty() for the DDL leg and
+      proceeds only with the catalog-side metadata update. A description-only edit, or a
+      Name change that lowercases+underscores to the identical string (e.g. "Customer
+      Lookups" -> "customer lookups"), leaves the physical table untouched. Downstream
+      queries keep working.
+    evidence:
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataServiceImpl.updateLookupTable
+        cite: "ReferenceDataServiceImpl.java:119-122"
+        note: "Ternary guard: getTableName().equals(tableDto.getTableName()) ? Mono.empty() : referenceDataRepository.updateLookupTable(...)."
+    operator_visible_failure: ""
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When an operator renames a lookup table, the rename DDL affects ONLY the physical
+    table (so the operator's mental model "I renamed the table" matches the database
+    change exactly).
+  derivation: |-
+    Endpoint/DTO shape implies a single rename target; verify the actual DDL scope
+    against that mental model (cross-layer name-vs-implementation scope check, Rule 4).
+  seed_source: response-shape
+  sme_consultation_recommended: false
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The DDL renames MORE than the table. ReferenceDataRepositoryImpl.updateLookupTable
+      renames (a) the table itself (ALTER TABLE ... RENAME TO), (b) every sequence whose
+      name matches the old-table prefix template (ALTER SEQUENCE IF EXISTS ... RENAME TO),
+      and (c) every constraint matching the old-table template (ALTER TABLE ... RENAME
+      CONSTRAINT ... TO ...). The blast radius is wider than the feature-flow's
+      terminal_side_effect modelled (which named only the table RENAME). For pure
+      catalog-consumers this is invisible; but any downstream tooling that referenced the
+      old SERIAL sequence name (e.g. nextval('lookup_tables_schema.n_5__customer_lookups_id_seq'))
+      ALSO breaks on rename — a second, undocumented break surface beyond the table name.
+    evidence:
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataRepositoryImpl.updateLookupTable
+        cite: "ReferenceDataRepositoryImpl.java:184-201"
+        note: "Renames table (L192), then matching sequences (L194-195), then matching constraints (L197-200)."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: feature-flow terminal_side_effect
+        cite: "lineage/odd-platform/feature-flows/detail/F-059.yaml:86-96"
+        note: "Feature-flow models only the table RENAME; sequence + constraint rename under-described."
+    operator_visible_failure: |-
+      A downstream job referencing the auto-generated id sequence by its old name (common
+      for TYPE_SERIAL columns when an ETL job pre-fetches ids) breaks on rename in addition
+      to the table itself — a failure mode neither the UI, the feature-flow model, nor the
+      doc page enumerates. The operator's mental model "I renamed one thing" is incomplete:
+      they renamed a table, its sequences, and its constraints atomically.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When an operator renames a lookup table to a Name that — after lowercasing and
+    space-replacement — collides with an EXISTING physical table in the same namespace,
+    the platform rejects the rename with a clear, actionable error (e.g. "a table with
+    that physical name already exists").
+  derivation: |-
+    A senior PO expects name collisions to fail safe and legibly. buildTableName is a
+    lossy normalisation with no documented uniqueness pre-check.
+  seed_source: negative-space
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No pre-check exists. buildTableName lowercases + space-replaces with no uniqueness
+      guard, and updateLookupTable calls the rename DDL directly. Two names that normalise
+      to the same physical string in one namespace (e.g. "Customer Lookups" and "customer
+      lookups", or "Customer Lookups" and "Customer  Lookups" with a double space) drive
+      ALTER TABLE ... RENAME TO an already-existing relation, which Postgres rejects with a
+      raw error surfaced as a generic 500 — not a friendly 409 / BadUserRequestException.
+      (The create path has the identically-shaped gap per the controller sidecar; the
+      rename path inherits it.)
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "ReferenceDataServiceImpl.java:191-194 + 73-86"
+        note: "buildTableName lossy normalisation; no uniqueness pre-check before the DDL."
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataServiceImpl.updateLookupTable
+        cite: "ReferenceDataServiceImpl.java:113-122"
+        note: "Rename path calls repository DDL directly with no collision pre-check."
+    operator_visible_failure: |-
+      (1) The operator sees a generic 500 / opaque server error with no hint that a name
+      collision caused it; they cannot tell whether the platform is broken or their input
+      was the problem. (2) Whether the original table survives the failed rename depends on
+      transaction boundaries the operator cannot see — partial-failure ambiguity on a
+      data-bearing table. (3) The lossy normalisation means two visually-distinct display
+      names silently share one physical namespace — a latent foot-gun even before any
+      collision error.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When an operator opens the edit form, the disabled Namespace field means "namespace
+    cannot be changed on edit" — and the platform does not transmit or act on a namespace
+    value on the update request.
+  derivation: |-
+    UI-label/control semantics (Rule 9): a disabled field promises "not editable"; verify
+    the wire matches the control. DTO field vs implementation drift (Rule 4).
+  seed_source: ui-label
+  sme_consultation_recommended: false
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The disabled control correctly communicates "namespace is not editable on update,"
+      and the server-side outcome matches that promise: the UPDATE schema
+      (LookupTableUpdateFormData) defines only name + description, and the service rebuilds
+      the physical name using the EXISTING table.namespacePojo() — never a client-supplied
+      namespace. SO THE USER-VISIBLE OUTCOME IS HONEST. The drift is on the wire only: the
+      form is typed as the CREATE shape (LookupTableFormData with namespaceName), so on
+      edit it SENDS namespace_name in the request body, which the server silently discards
+      (Jackson lenient binding). An operator inspecting the network tab sees namespace_name
+      on every edit, contradicting the "field disabled = field not sent" intuition.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[2] + stress_findings.request_inputs[1]
+        cite: "LookupTableForm.tsx:49, 60-66, 117-123 + components.yaml:3853-3862"
+        note: "Form typed as CREATE shape; namespace_name on the wire on edit; UPDATE schema rejects it; server discards (DRIFT_INPUT_NAME_VS_IMPLEMENTATION)."
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataServiceImpl.updateLookupTable
+        cite: "ReferenceDataServiceImpl.java:112-117"
+        note: "Service uses table.namespacePojo() (existing), never a request-supplied namespace — the namespace genuinely cannot change on edit."
+    operator_visible_failure: |-
+      Functionally benign for the end user (namespace genuinely cannot change), but two
+      smells for the developer/operator: (1) an operator reading the network tab is misled
+      into thinking namespace IS being changed; (2) the form contract is fragile — if the
+      server ever flips Jackson to FAIL_ON_UNKNOWN_PROPERTIES, every edit returns 400 and
+      rename becomes impossible. This is the same DTO-drift the LookupTables sidecar flags
+      (was P-191) — already a known finding.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    Before a rename that will break downstream consumers, the UI warns the operator —
+    naming the affected physical table and offering at least cancel vs proceed (and ideally
+    a rename-with-alias option), the way a destructive action of this blast radius should.
+  derivation: |-
+    Senior-PO UX seed (Rule 9: intuitive + safe). The expected mitigation (a) in the
+    feature-flow observed_vs_expected is exactly this warning dialog.
+  seed_source: ui-label
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No warning exists at any layer. LookupTableForm renders a single Name field and a
+      submit button with no rename-time confirmation dialog, no preview of the resulting
+      physical table name, no "this will break downstream queries" admonition, and no
+      alias offer. The action presents identically to renaming any other catalog entry.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: feature-flow contributing_nodes[0] note + bugs_limitations_corner_cases[2]
+        cite: "LookupTableForm.tsx:84-93"
+        note: "One name field; no warning dialog; no physical-name preview; no alias option."
+      - sidecar: "(WebFetch cross-reference)"
+        section: live doc page
+        cite: "docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+        note: "Doc confirms 'No warning is issued before the change' and 'provides no blocking warnings'."
+    operator_visible_failure: |-
+      The operator has no chance to reconsider or to choose a safer path. The single most
+      effective, cheapest mitigation for a documented data-contract footgun — a one-time
+      confirmation naming the physical table — is absent. The doc page now warns readers in
+      prose, but the warning lives where the operator is NOT looking (the manual), not where
+      the destructive click happens (the form). Documentation of a footgun is not a
+      substitute for fencing it at the point of action.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    Because the docs explicitly recommend querying lookup_tables_schema directly and bill
+    it as a stable contract, renaming offers a deprecation alias (a VIEW under the old
+    physical name) so downstream consumers get a migration window rather than an instant
+    break.
+  derivation: |-
+    Doc-claim seed: the doc promises direct SQL access as "the recommended path"; a
+    recommended contract surface that can be silently revoked is a contradiction. Expected
+    mitigation (b) in the feature-flow.
+  seed_source: doc-claim
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No alias is created. The repository renames the table in place (ALTER TABLE ... RENAME
+      TO) and renames its sequences and constraints; it does NOT issue CREATE VIEW
+      <old_name> AS SELECT * FROM <new_name>. The old physical name ceases to resolve
+      immediately. The doc page states this outright: "does not create a PostgreSQL VIEW
+      alias under the old name."
+    evidence:
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataRepositoryImpl.updateLookupTable
+        cite: "ReferenceDataRepositoryImpl.java:191-201"
+        note: "Only RENAME operations; no CREATE VIEW / alias anywhere in the rename path."
+      - sidecar: "(WebFetch cross-reference)"
+        section: live doc page
+        cite: "docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+        note: "Doc confirms no VIEW alias is created."
+    operator_visible_failure: |-
+      Downstream consumers get zero migration window — the break is instantaneous, not a
+      deprecation period. A reference table billed as a stable SQL contract can be revoked
+      by a single metadata edit. The mitigation that would reconcile the "recommended
+      direct-access path" promise with the rename behaviour (a TTL-configurable alias view)
+      is absent.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    The live documentation accurately tells an operator/consumer that renaming a lookup
+    table will break downstream queries against the old physical name.
+  derivation: |-
+    Doc-claim seed + Rule 1 cross-reference: verify whether the doc matches the code (the
+    feature-flow was seeded when the doc was believed silent on this).
+  seed_source: doc-claim
+  sme_consultation_recommended: false
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The doc page now matches the code precisely. It states "Renaming a Lookup Table
+      silently breaks every downstream BI / ETL pipeline that hardcoded the old name";
+      "issues ALTER TABLE … RENAME TO against the underlying PostgreSQL table; from the very
+      next millisecond, queries against the old name return relation \"<old>\" does not
+      exist"; and "does not create a PostgreSQL VIEW alias under the old name." Each claim
+      is corroborated by ReferenceDataServiceImpl.java:113-122 and
+      ReferenceDataRepositoryImpl.java:191-201. The DOC-GAP that seeded this feature
+      (DOC-182 Caveat 3 extension) is CLOSED — the doc no longer drifts from the code.
+    evidence:
+      - sidecar: "(WebFetch cross-reference)"
+        section: live doc page
+        cite: "docs.opendatadiscovery.org/features/master-data-management/lookup-tables (WebFetch 2026-06-03, status 200)"
+        note: "Doc describes rename hazard, ALTER TABLE RENAME, no-alias, and audit-silence verbatim."
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataServiceImpl + ReferenceDataRepositoryImpl
+        cite: "ReferenceDataServiceImpl.java:113-122 + ReferenceDataRepositoryImpl.java:191-201"
+        note: "Code matches every doc claim."
+    operator_visible_failure: ""
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    After a lookup table is renamed, an operator running a post-mortem ("why did the
+    revenue dashboard break last Tuesday?") can answer "who renamed which lookup table when"
+    from the platform — the Activity Feed (or some audit surface) records the rename.
+  derivation: |-
+    Pillar P-07 Activity Feed is the canonical audit sink; the feature-flow's audit-silence
+    facet + system-mission canonicalisation candidate 3 predict the gap.
+  seed_source: cross-pillar
+  sme_consultation_recommended: false
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No ActivityEvent / no last_modified_by / no version increment is emitted by
+      updateLookupTable. The service performs the catalog metadata update and the DDL with
+      no @ActivityLog and no audit emission, and there is no LOOKUP_TABLE_RENAMED event type.
+      The Activity Feed therefore has no record of the rename. The doc page confirms:
+      "Renaming a Lookup Table emits no Activity Feed event — post-mortems cannot answer
+      'who renamed which table when.'"
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: feature-flow observed_vs_expected facet=no_audit_emission_on_lookup_table_rename
+        cite: "ReferenceDataServiceImpl.java:107-124 (no @ActivityLog)"
+        note: "No audit emission on the rename path; no LOOKUP_TABLE_RENAMED event type."
+      - sidecar: "(source-read-for-validation)"
+        section: ReferenceDataServiceImpl.updateLookupTable
+        cite: "ReferenceDataServiceImpl.java:107-124"
+        note: "Pure metadata + DDL; no ActivityEvent.builder() emission."
+      - sidecar: "(WebFetch cross-reference)"
+        section: live doc page
+        cite: "docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+        note: "Doc confirms no Activity Feed event on rename."
+    operator_visible_failure: |-
+      (1) A post-mortem on a broken downstream pipeline cannot attribute the rename to a
+      user or a time from within ODD — the audit trail is blank. (2) Combined with H-001
+      (no remediation path), the operator may not even discover the OLD name to revert to.
+      (3) The asymmetry is jarring: entity description edits and tag changes DO appear in the
+      Activity Feed, but this far-more-destructive action does not — the same audit-silence
+      pattern as F-057 (DQ severity), making this the second confirmed instance of
+      canonicalisation candidate 3.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When an operator renames a popular reference table that downstream dashboards query
+    frequently, the rename does not stall concurrent reads of that table.
+  derivation: |-
+    Performance/UX seed: a metadata edit should not be a maintenance event. The controller
+    sidecar flags ACCESS EXCLUSIVE locks on the rename DDL.
+  seed_source: pillar
+  sme_consultation_recommended: false
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The rename runs as ALTER TABLE on a Postgres relation, which takes an ACCESS EXCLUSIVE
+      lock — blocking all concurrent reads and writes of that physical table for the lock
+      duration. For a small reference table the window is sub-second and effectively
+      invisible; for a large, hot reference table under read-heavy BI traffic, the rename
+      stalls every concurrent query until it completes (and the rename also waits to ACQUIRE
+      the lock behind in-flight long readers). There is no advisory-lock queue, no
+      offline-rebuild, and no operator signal that the edit is a locking operation. The
+      hypothesis holds for the common (small-table) case and fails for the
+      large-hot-table case.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: performance.known_performance_gaps[0] + resource_allocation
+        cite: "ReferenceDataRepositoryImpl.java:181-202"
+        note: "Rename DDL takes ACCESS EXCLUSIVE LOCK; no advisory-lock queue / offline rebuild."
+    operator_visible_failure: |-
+      On a large, frequently-queried reference table, a metadata rename behaves like an
+      unannounced maintenance event: concurrent BI queries block (and the operator sees the
+      edit hang while it waits for the lock). The UI gives no indication that "rename" is a
+      table-locking operation. Acceptable for typical operator-curated tables (small N);
+      a latent scaling cliff for large ones.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    Because LOOKUP_TABLE_UPDATE is documented as "renaming a lookup table or editing its
+    description," the permission scopes the rename to lookup tables the granting policy
+    actually intends — i.e. an operator granted UPDATE for their team's tables cannot rename
+    another team's table.
+  derivation: |-
+    Doc-claim + endpoint-shape seed: the permission name implies a bounded mutation right;
+    verify scope against the SecurityConstants resolver (Rule 4 param-vs-implementation).
+  seed_source: doc-claim
+  sme_consultation_recommended: false
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The hypothesis as worded is CONFIRMED in the narrow sense that LOOKUP_TABLE_UPDATE
+      does gate the rename endpoint (PUT /api/referencedata/table/{id} -> LOOKUP_TABLE_UPDATE
+      at SecurityConstants), AND the platform's actual scoping model is global by design and
+      the doc states this honestly: "LOOKUP_TABLE_* permissions are global — there is no
+      per-table RBAC today." So the permission behaves exactly as documented. The
+      product-owner caveat (surfaced, not a contradiction here because the doc is honest):
+      "their team's tables" is not a real boundary — any user with LOOKUP_TABLE_UPDATE via
+      any policy can rename ANY lookup table in any namespace (NO_CONTEXT resolver). The
+      blast radius of H-001 is therefore platform-wide, not team-scoped.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: security.authorization_assertions + known_security_gaps[2]
+        cite: "SecurityConstants.java:326-327 (UPDATE rule) + :114,325 (NO_CONTEXT resolver)"
+        note: "PUT .../table/{id} requires LOOKUP_TABLE_UPDATE; all LOOKUP_TABLE_* rules use NO_CONTEXT (global, not entity-scoped)."
+      - sidecar: "(WebFetch cross-reference)"
+        section: live doc page
+        cite: "docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+        note: "Doc confirms global scope: 'no per-table RBAC today.'"
+    operator_visible_failure: ""
+    severity: ""
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: |-
+    UI metadata rename of a lookup table silently issues ALTER TABLE RENAME on the
+    documented-public lookup_tables_schema, breaking downstream queries with no warning,
+    no alias, no audit.
+  dedup_status: already_tracked
+  tracked_as: DOC-182
+  distinct_from: ""
+  recommended_log_as: ""
+  proposed_fix_anchor: |-
+    The doc-side (DOC-182 Caveat 3) is DONE — the live page now warns accurately. The
+    CODE-side mitigation is the open work: it lives across LookupTableForm.tsx (rename-time
+    warning dialog) + ReferenceDataServiceImpl.updateLookupTable / ReferenceDataRepositoryImpl
+    (optional alias view). This reflection corroborates DOC-182 from the code side and
+    elevates the unresolved CODE remediation; recommend a NET-NEW backlog item (UI warning +
+    optional alias) distinct from the now-satisfied doc item.
+
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: |-
+    No rename-time warning dialog at the point of the destructive action — the documented
+    footgun is unfenced where the operator clicks.
+  dedup_status: net_new
+  tracked_as: ""
+  distinct_from: DOC-182
+  recommended_log_as: PLT-NNN (UI rename-time warning dialog naming the affected physical table + cancel/proceed)
+  proposed_fix_anchor: "LookupTableForm.tsx:84-93 — add a confirmation dialog on Name change for an existing table."
+
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: |-
+    No deprecation alias (CREATE VIEW under the old physical name) on rename — a
+    doc-recommended stable SQL contract is revocable with zero migration window.
+  dedup_status: net_new
+  tracked_as: ""
+  distinct_from: DOC-182
+  recommended_log_as: PLT-NNN (optional TTL-configurable alias VIEW on rename)
+  proposed_fix_anchor: "ReferenceDataRepositoryImpl.updateLookupTable:191-201 — optionally CREATE VIEW <old> AS SELECT * FROM <new> behind a config flag."
+
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: |-
+    No ActivityEvent on lookup-table rename — post-mortems cannot attribute the rename;
+    second confirmed instance of audit-log presence asymmetry (canonicalisation candidate 3).
+  dedup_status: already_tracked
+  tracked_as: DOC-182
+  distinct_from: ""
+  recommended_log_as: ""
+  proposed_fix_anchor: |-
+    Doc-side is satisfied (page states the audit-silence). CODE-side: emit
+    ActivityEvent (LOOKUP_TABLE_RENAMED) inside ReferenceDataServiceImpl.updateLookupTable;
+    add the enum to ActivityEventTypeDto. Cross-cuts F-057's DQ-severity audit-silence —
+    recommend folding both into one canonicalisation-candidate-3 remediation item.
+
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    Rename to a name colliding (after lossy lowercase+underscore normalisation) with an
+    existing physical table in the same namespace surfaces a raw 500, not a friendly 409.
+  dedup_status: net_new
+  tracked_as: ""
+  distinct_from: DOC-182
+  recommended_log_as: PLT-NNN (uniqueness pre-check on buildTableName output before rename/create DDL)
+  proposed_fix_anchor: "ReferenceDataServiceImpl.java:113-122 + 191-194 — pre-check rebuilt name uniqueness; raise BadUserRequestException(409) on collision."
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Rename DDL renames the table AND its sequences AND its constraints — blast radius wider
+    than the table name alone (a downstream job referencing the old SERIAL sequence also breaks).
+  dedup_status: net_new
+  tracked_as: ""
+  recommended_log_as: caveat in docs.opendatadiscovery.org/features/master-data-management/lookup-tables (extend the rename caveat to name sequences + constraints)
+
+- hypothesis_id: H-005
+  one_line: |-
+    Edit form sends namespace_name on the wire though the field is disabled and the UPDATE
+    schema discards it — UX-disabled is a hint, not a wire guarantee (was P-191).
+  dedup_status: already_tracked
+  tracked_as: PLT-191
+  recommended_log_as: ""
+
+- hypothesis_id: H-010
+  one_line: |-
+    Rename takes an ACCESS EXCLUSIVE lock — a metadata edit on a large hot reference table
+    behaves like an unannounced maintenance event blocking concurrent reads.
+  dedup_status: net_new
+  tracked_as: ""
+  recommended_log_as: caveat in docs.opendatadiscovery.org/features/master-data-management/lookup-tables (rename is a table-locking operation on large tables)
+
+- hypothesis_id: H-011
+  one_line: |-
+    LOOKUP_TABLE_UPDATE is global (NO_CONTEXT) — any user with the permission can rename ANY
+    lookup table in any namespace, so H-001's blast radius is platform-wide, not team-scoped.
+  dedup_status: net_new
+  tracked_as: ""
+  distinct_from: DOC-182
+  recommended_log_as: caveat (doc already states 'no per-table RBAC'); cross-link to F-026 RBAC finding
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# The existing tests (LookupDataServiceTest.updateLookupTableTest, ReferenceDataServiceImplTest)
+# cover the catalog-side metadata mapping and READ-path errors only — they MOCK tableRepository
+# and reactiveDataEntityRepository, so NONE exercises the physical ALTER TABLE RENAME, the
+# buildTableName transformation, the rename guard, the collision path, or the audit emission.
+- use_case_id: F-059-UC-001
+  hypothesis_id: H-001
+  kind: edit-reconcile
+  promise: |-
+    Renaming a lookup table (name normalises to a new physical name) issues ALTER TABLE
+    RENAME so the old physical relation no longer resolves.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-001)"
+  proposed_test: |-
+    Integration (WebTestClient + Testcontainers Postgres): PUT updateLookupTable with a
+    name that changes buildTableName output; assert lookup_tables_schema."n_{nsId}__new"
+    exists and "n_{nsId}__old" does NOT (pins the implicit physical-rename contract; goes
+    RED if a future refactor decouples business-from-physical name).
+
+- use_case_id: F-059-UC-002
+  hypothesis_id: H-002
+  kind: edit-reconcile
+  promise: |-
+    A description-only edit (or a name change that normalises to the same physical name)
+    does NOT rename the physical table; downstream queries keep working.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-002)"
+  proposed_test: |-
+    Unit (Mockito + StepVerifier on ReferenceDataServiceImpl): PUT with description-only
+    change; verify referenceDataRepository.updateLookupTable is NEVER invoked (the
+    equals-guard short-circuits the DDL). Guards the harmless-edit promise.
+
+- use_case_id: F-059-UC-003
+  hypothesis_id: H-003
+  kind: edit-reconcile
+  promise: |-
+    Rename DDL renames the table, its sequences, and its constraints atomically.
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-003)"
+  proposed_test: |-
+    Integration: after rename, assert the renamed table's id sequence resolves under the
+    NEW name and not the old, pinning the wider DDL blast radius.
+
+- use_case_id: F-059-UC-004
+  hypothesis_id: H-004
+  kind: edit-reconcile
+  promise: |-
+    A rename whose normalised name collides with an existing physical table fails with a
+    clear 409, not a raw 500.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-004)"
+  proposed_test: |-
+    Integration: create table A; create table B; rename B to a name normalising to A's
+    physical name; assert a 4xx with an actionable message (RED today — pins the missing
+    pre-check; characterization-pin the current behaviour if fix is deferred, per LSN-029).
+
+- use_case_id: F-059-UC-005
+  hypothesis_id: H-006
+  kind: render
+  promise: |-
+    A rename-time warning dialog names the affected physical table and offers cancel/proceed.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-005)"
+  proposed_test: |-
+    Integration e2e (Playwright, odd-platform/tests harness): open the edit form on an
+    existing lookup table, change the Name, assert a confirmation dialog naming the physical
+    table appears before submit. RED today (no dialog) — the regression guard for the fix.
+
+- use_case_id: F-059-UC-006
+  hypothesis_id: H-007
+  kind: resolve-later
+  promise: |-
+    Renaming creates a deprecation alias VIEW under the old physical name (migration window).
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-006)"
+  proposed_test: |-
+    Integration: after rename, assert SELECT from the old physical name still resolves
+    (via a VIEW). RED today — the guard for the alias-view mitigation if/when it ships.
+
+- use_case_id: F-059-UC-007
+  hypothesis_id: H-008
+  kind: grammar
+  promise: |-
+    The live doc accurately states that renaming breaks downstream queries against the old
+    physical name (doc-vs-code agreement).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-007)"
+  proposed_test: |-
+    Doc-link regression (existing live-site-verification harness / Gate 8): assert the
+    lookup-tables doc page still carries the rename-hazard caveat. Guards against a future
+    doc edit silently dropping the now-accurate warning (re-opening the DOC-182 gap).
+
+- use_case_id: F-059-UC-008
+  hypothesis_id: H-009
+  kind: teardown
+  promise: |-
+    A lookup-table rename emits an Activity Feed event answering who/when.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-008)"
+  proposed_test: |-
+    Integration: PUT updateLookupTable (name change); assert an activity_event row of type
+    LOOKUP_TABLE_RENAMED with old/new state + principal. RED today — future-pin AND the
+    regression guard for the canonicalisation-candidate-3 audit fix.
+
+- use_case_id: F-059-UC-009
+  hypothesis_id: H-010
+  kind: edit-reconcile
+  promise: |-
+    Renaming does not stall concurrent reads of the table (no surprise maintenance window).
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-009)"
+  proposed_test: |-
+    Performance/integration (deferred — large-table-only): characterize the ACCESS
+    EXCLUSIVE lock window on rename. Lower priority; document as caveat first.
+
+- use_case_id: F-059-UC-010
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: |-
+    LOOKUP_TABLE_UPDATE gates the rename endpoint (and is global by design / by doc).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-059-UC-010)"
+  proposed_test: |-
+    Integration (@WebFluxTest / WebTestClient): PUT updateLookupTable as a user WITHOUT
+    LOOKUP_TABLE_UPDATE -> 403; WITH it -> 200. Pins the documented permission gate
+    (cross-references F-026's lookup-table RBAC matrix).
+
+### probes_emitted
+[]
+
+### validation_gaps
+- sidecar: "(missing) odd-platform java service:ReferenceDataServiceImpl"
+  field_insufficient: |-
+    The service tier (ReferenceDataServiceImpl.updateLookupTable + buildTableName) has NO
+    dedicated sidecar — it is referenced only through ReferenceDataController coupling, and
+    the feature-flow marks hops 3-4 unresolved: true. This reflection validated H-001..H-004
+    by a Rule-8-exception source read (ReferenceDataServiceImpl.java:107-124, 191-194). A
+    dedicated sidecar would have carried the rename guard (L119-122), the buildTableName
+    transformation, and the test coverage state directly.
+  proposed_refresh: |-
+    Enrich a ReferenceDataServiceImpl sidecar covering updateLookupTable (the equals-guard,
+    buildTableName lossy normalisation, the no-audit-emission), so future reflections do not
+    rely on the exception read.
+
+- sidecar: "(missing) odd-platform java repository:ReferenceDataRepositoryImpl"
+  field_insufficient: |-
+    The persistence/DDL tier (ALTER TABLE RENAME + sequence/constraint renames at
+    ReferenceDataRepositoryImpl.java:180-202) has NO dedicated sidecar; hop 4 is unresolved.
+    This reflection found (H-003) that the DDL renames sequences and constraints in addition
+    to the table — a blast-radius detail the feature-flow's terminal_side_effect omitted, and
+    which only a source read surfaced.
+  proposed_refresh: |-
+    Enrich a ReferenceDataRepositoryImpl sidecar; record the full rename DDL scope (table +
+    sequences + constraints), the ACCESS EXCLUSIVE lock class, and the absence of any
+    CREATE VIEW alias.
+
+- sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+  field_insufficient: |-
+    tests_coverage_semantic states "no ReferenceDataController*Test exists" and lists only
+    LookupDataServiceTest as the service-tier test — but a ReferenceDataServiceImplTest.java
+    now EXISTS (covers READ-path NotFound/BadUserRequest for F-026), and
+    LookupDataServiceTest has an updateLookupTableTest. The sidecar's test inventory is stale.
+  proposed_refresh: |-
+    Refresh tests_coverage_semantic to include ReferenceDataServiceImplTest (read-path
+    coverage) + LookupDataServiceTest.updateLookupTableTest (catalog-side metadata mapping,
+    mocked repository — does NOT exercise the physical rename DDL).
+
+### doc_drift_findings
+[]
+# NOTE: NO doc-drift findings — this is itself the load-bearing cross-reference result.
+# The feature was seeded (SHB-047 / F-059a) on the premise that the doc was SILENT on the
+# rename hazard. As of WebFetch 2026-06-03 the live doc page describes the hazard, the
+# ALTER TABLE RENAME, the no-alias behaviour, and the audit-silence accurately and verbatim
+# (DOC-182 Caveat 3 has effectively landed). The doc is now CORRECT; the open work is the
+# CODE-side mitigation (H-006 warning, H-007 alias, H-009 audit), routed to bug_candidates.
+
+## maintainer_notes
+
+(Empty — no prior reflection. This block survives future refreshes; the feature-reflector
+leaves it alone. Note for the maintainer: the headline shift vs the feature-flow is that the
+documentation gap is CLOSED — the page now honestly warns about the footgun. The remaining
+finding is sharper and more uncomfortable: ODD documents a data-loss footgun in precise prose
+while shipping the footgun fully armed at the operator-action layer — no warning at the click,
+no alias, no audit. Documenting a cliff is not fencing it. The cheapest fence (H-006 confirmation
+dialog) and the audit emission (H-009, which also closes canonicalisation candidate 3 alongside
+F-057) are the highest-leverage code-side items.)

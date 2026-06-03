@@ -1,0 +1,880 @@
+---
+feature_id: F-046
+pillar_anchored_id: P-01:F-010
+pillar: P-01 Data Discovery
+feature_name: "Custom Metadata Field Catalogue — global non-deleted INTERNAL-origin field registry surfaced via GET /api/metadata/fields autocomplete on every per-entity Metadata edit form"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController.md
+  - odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl.md
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md  # cross-cited (F-013 write half; the getOrCreateMetadataFields mint path that grows this catalogue)
+notes_on_chain_resolution: |
+  The feature-flow chain marks ALL FIVE hops sidecar:unresolved. Two of the four
+  backend nodes HAVE enriched sidecars (MetadataFieldController controller-class;
+  ReactiveMetadataFieldRepositoryImpl) — the chain's `sidecar: unresolved` markers
+  are stale and do not reflect the substrate. MetadataFieldServiceImpl (hop 3) and
+  MetadataFieldMapperImpl (hop 5) have NO standalone sidecar but their behaviour is
+  cited verbatim inside the two that exist (service = pass-through MetadataFieldServiceImpl.java:37-40;
+  mapper = MetadataFieldMapperImpl.java:29-33 PageInfo construction). The UI node
+  (hop 1, MetadataCreateFormItem.tsx) has NO enriched sidecar at all — its behaviour
+  is described only INLINE within the two backend sidecars' `audiences` / `orderings`
+  blocks (citing MetadataCreateFormItem.tsx:24-109). See validation_gaps[0] (Rule 9).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-25T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Permissions catalog (verified live 2026-05-25 via the MetadataFieldController
+      sidecar's docs_link_semantic; not re-fetched this run to conserve quota). Lists
+      ONLY the three write-side permissions DATA_ENTITY_CUSTOM_METADATA_{CREATE,UPDATE,DELETE};
+      there is NO CUSTOM_METADATA_FIELD_READ permission. Cross-reference per Rule 1 —
+      the truth is whatever the code does (no read gate); the doc silence becomes a
+      doc-gap, not a contradiction of code.
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: "200 (page exists; feature absent from content)"
+    note: |
+      The P-01 Data Discovery landing page is the natural home for custom-metadata-as-
+      annotation. WebFetched live 2026-05-20 (via the repository sidecar): the page
+      lists tags / descriptions / attachments / statuses / business names but NOT custom
+      metadata. Candidate doc paths /active-platform-features/metadata + /custom-metadata
+      both returned 404 (2026-05-25). A load-bearing feature with zero operator docs.
+      DOC-189 is the tracked companion doc-gap (custom-metadata.md create).
+hypothesis_summary:
+  total: 12
+  confirmed: 2
+  contradicted: 6
+  partial: 3
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: |
+      The OpenAPI MetadataFieldList.page_info contract is a lie on the wire — total is
+      always items.length and has_next is always false; the SQL has no LIMIT/OFFSET, so
+      any SDK author building a "load more" autocomplete cannot detect overflow and any
+      client treating total as a catalogue-size signal reads back the array length it
+      already counted. (Convergent with PLT-025 Defect 3 — re-derived top-down.)
+dedup_note: |
+  This reflection independently re-derived the existing tracked issue PLT-025 ("Custom
+  Metadata hardening", draft, severity high — covers F-013 + F-046 paired). Three of this
+  reflection's contradictions map to PLT-025's enumerated defects: H-004 → Defect 3
+  (pageInfo theatre + no LIMIT); H-005 → Defect 4 (no CUSTOM_METADATA_FIELD_READ); H-006 →
+  Defect 4's "drive-by catalogue minting" clause. H-011 (no ORDER BY) is named as a
+  sub-clause of PLT-025 Defect 3. This is convergent validation (two independent methods
+  agreeing → high confidence), NOT new work — those candidates are tagged already_tracked
+  and NOT routed for re-filing. The reflection ADDS two net-new findings PLT-025 does not
+  cover: H-008 (concurrent same-new-name TOCTOU rollback) and H-010 (soft-deleted INTERNAL
+  field name is a permanent create-blocker).
+related_feature_flows:
+  - F-013   # Custom Metadata Field Editing — the WRITE/display half; its getOrCreateMetadataFields mint path is what GROWS the catalogue this reflection reads (no F-013 reflection exists yet)
+  - F-018   # Manual Object Tagging — IDENTICAL structural class: global namespace-free directory, side-channel mint, no read permission, case-sensitive duplicate rows, undocumented (F-018 reflection 2026-06-01)
+  - F-017   # Search Filter Facets — sibling global-vocabulary surface; the catalogue is the same shape of unscoped enumeration
+  - F-008   # Batch Ingestion — collectors mint EXTERNAL-origin fields via ingestMetadataFields into the SAME metadata_field table (excluded from this read by the hardcoded origin=INTERNAL filter)
+related_concepts:
+  - custom-metadata-field
+  - read-collaborative-posture
+  - openapi-pageinfo-pagination-lie
+related_drift_classes:
+  # drift classes from F-046's own drift_class_summary that THIS reflection re-derived top-down and confirmed
+  - pageinfo_theatre_no_pagination_unbounded_return
+  - no_read_permission_full_deployment_vocabulary_enumeration
+  - case_sensitive_partial_unique_index_allows_cost_centre_vs_Cost_centre_duplicates
+  - no_order_by_heap_scan_order_surfaces_as_ui_flicker
+  - feature_undocumented_no_live_doc_page
+  - auto_create_side_effect_grows_catalogue_without_explicit_user_action
+  - type_column_documentation_only_no_validation_at_write_time
+  - catalogue_unbounded_growth_no_delete_no_rate_limit
+new_drift_classes_proposed:
+  - soft_deleted_internal_field_name_is_a_permanent_create_blocker_dropdown_says_absent_create_throws_unique_constraint
+  - metadata_autocomplete_ui_surface_not_enriched_reflection_judges_freesolo_and_debounce_from_inline_backend_citations_only
+---
+
+# Custom Metadata Field Catalogue — product-owner reflection
+
+## product_owner_narrative
+
+The Custom Metadata Field Catalogue is the small autocomplete dropdown a catalog user
+meets the moment they decide to attach a bespoke key/value annotation to a data entity
+that the platform's built-in fields (tags, status, owners, description) do not cover —
+a `cost_centre`, a `pii_classification`, a `retention_days`. From the user's seat the
+feature is a single text box on the per-entity "Add metadata" form: they start typing, a
+list of existing field names appears, and they either pick one or keep typing to coin a
+new field (per the `MetadataCreateFormItem` autocomplete, described inline at
+`MetadataCreateFormItem.tsx:24-109` within the MetadataFieldController sidecar
+`audiences` block). The product promise is "reuse the team's existing custom-metadata
+vocabulary, and extend it when you need to." This is one half of the Custom Metadata
+feature: F-046 is the READ surface (the dropdown you pick from); F-013 is the WRITE
+surface (the value you actually save, and the auto-mint of a new field on a previously-
+unseen name).
+
+A user interacts with exactly one entry point: `GET /api/metadata/fields`, fired by the
+form's autocomplete on focus and on each keystroke, debounced 500ms (per the controller
+sidecar `understanding`, citing `MetadataCreateFormItem.tsx:43-51`). The one input is a
+free-text `query` string; the server answers with a `MetadataFieldList` of `{id, name,
+type, origin}` rows whose `name` contains the typed substring, case-insensitively, scoped
+to INTERNAL-origin non-deleted fields (per `ReactiveMetadataFieldRepositoryImpl.java:44-56`,
+confirmed by `ReactiveMetadataFieldRepositoryImplTest.testListInternalMetadata`). When the
+box is empty the server returns the entire INTERNAL catalogue. Collector-ingested EXTERNAL
+fields are never offered here — the origin filter is hardcoded (per
+`ReactiveMetadataFieldRepositoryImpl.java:46`).
+
+The working parts are deliberately thin, and that thinness is where the product promise and
+the implementation diverge. There is no real pagination: the OpenAPI response embeds a
+`page_info{total, has_next}` block (`components.yaml:2111-2120`) that signals "paged"
+to every SDK author, but the mapper hardcodes `total = items.length` and `has_next = false`
+on every response, and the SQL has no LIMIT/OFFSET/ORDER BY (per `MetadataFieldMapperImpl.java:29-33`
+and `ReactiveMetadataFieldRepositoryImpl.java:51-55`, both cited in the controller sidecar
+`stress_findings`). There is no read scoping: `/api/metadata/fields` has no SecurityRule, so
+any authenticated user — and under `auth.type=DISABLED` any anonymous caller — enumerates
+the entire deployment's custom-metadata vocabulary regardless of which entities they can see
+(per `SecurityConstants.java` by absence; the controller sidecar `auth_gates`). There is no
+ordering contract: rows return in Postgres heap-scan order, which drifts across vacuum cycles.
+And there is no case-folding: `cost_centre` and `Cost_centre` are distinct catalogue rows
+because the partial unique index is case-sensitive while the search box is case-insensitive
+(per the repository sidecar `invariants` and `bugs_limitations_corner_cases`).
+
+The integration story binds F-046 to three neighbours. Upstream, the catalogue is GROWN as a
+pure side effect of F-013's write path: `DataEntityServiceImpl.createMetadata` →
+`MetadataFieldServiceImpl.getOrCreateMetadataFields` silently mints an INTERNAL row whenever a
+user saves a value under a name not already in the catalogue (per the repository sidecar
+`upstream_callers` + the F-013 cross-cited sidecar). Sideways, the same `metadata_field` table
+is shared with the Collector ingestion pipeline (F-008), which writes EXTERNAL-origin rows the
+dropdown never shows. Downstream, the field names a user picks here become FTS-searchable tokens
+once a value is written (P-01 search). The catalogue is the vocabulary spine of the whole Custom
+Metadata feature, yet it is the least-governed surface in it — a fact already captured at the
+issue layer as PLT-025 (and its doc companion DOC-189), which this reflection re-derives top-down.
+
+In a demo a product owner would have to caveat several edge cases. The catalogue grows
+monotonically and has no UI delete — a typo'd `cost-centre` lives in the dropdown forever.
+A soft-deleted field is worse than permanent: it vanishes from the dropdown but its name still
+blocks re-creation with a `UniqueConstraintException`, so a user who "deleted" a field and tries
+to recreate it is told it both does not exist (empty dropdown) and already exists (create error)
+(per the repository sidecar `bugs_limitations_corner_cases[0]`). At 10,000 fields the endpoint
+still returns all of them in one payload on every keystroke-debounce. And nothing on the screen
+tells the user that coining a new field name publishes a directory entry visible to every other
+user in the deployment.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When a user types "cost" into the metadata-field autocomplete, the response contains every
+    INTERNAL-origin custom-metadata field whose name contains "cost" (case-insensitively), and
+    excludes collector-ingested (EXTERNAL-origin) and soft-deleted fields.
+  derivation: |
+    The `query` parameter is named generically as "Search text" (components.yaml:4231-4237); the
+    repository binds it to `nameField.containsIgnoreCase(query)` plus `origin = INTERNAL` plus the
+    soft-delete filter (ReactiveMetadataFieldRepositoryImpl.java:44-56).
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The chain MetadataFieldController.getMetadataFieldList(query) → listInternalMetadata(query)
+      → SELECT * FROM metadata_field WHERE origin='INTERNAL' AND deleted_at IS NULL AND
+      LOWER(name) LIKE LOWER('%query%'). The origin filter, soft-delete filter, and
+      case-insensitive substring are all present and exercised by an integration test.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: operations + invariants
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:44-56"
+        note: "origin=INTERNAL + addSoftDeleteFilter + containsIgnoreCase(query)"
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: tests_coverage_semantic.covered_behaviours
+        cite: "ReactiveMetadataFieldRepositoryImplTest.testListInternalMetadata:34-67"
+        note: "5 seeded (3 INTERNAL, 2 EXTERNAL) -> 3 returned; soft-delete one -> 2; substring filter -> 1 match"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "ReactiveMetadataFieldRepositoryImplTest.testListInternalMetadata"
+    test_demand: null
+    coverage_note: |
+      Verified at the REPOSITORY tier only. The repository test pins origin + soft-delete + that
+      a substring matches the exact field name. It does NOT prove case-INSENSITIVITY directly (it
+      filters by the exact full name, not a case-variant) and does NOT exercise the controller->
+      mapper chain. Treated as `verified` for the core happy-path promise (the load-bearing
+      origin/soft-delete/substring behaviour is asserted); the case-insensitivity sub-promise is
+      carried separately under H-009. routes_to_finding is `none` because a REAL test exists.
+
+- id: H-002
+  hypothesis: |
+    When a user opens the "Add metadata" form without typing anything, the autocomplete shows the
+    custom-metadata fields relevant to the entity they are editing.
+  derivation: |
+    Product expectation: an autocomplete on a per-entity form scopes its suggestions to that entity's
+    context (the form is opened FROM a specific data entity's Metadata panel — MetadataCreateFormItem.tsx).
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      An empty query returns the ENTIRE deployment-wide INTERNAL catalogue, identical for every
+      entity. The endpoint receives no entity id, consults no ownership or parent-entity context,
+      and the ServerWebExchange (which carries the caller principal) is declared but never read
+      (MetadataFieldController.java:20-22, "wired but unused"). The dropdown a user sees while editing
+      entity A is byte-identical to the one they see editing entity B.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: invariants + stress_findings.request_inputs
+        cite: "MetadataFieldController.java:18-23"
+        note: "no entity id parameter; exchange unused; empty query returns ALL non-deleted INTERNAL fields"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: implicit_adrs
+        cite: "V0_0_1__init.sql:166-173"
+        note: "metadata_field has no tenant/owner/entity scoping column — the registry is global by design"
+    operator_visible_failure: |
+      A user editing a narrow, sensitive entity is offered the whole organisation's field vocabulary —
+      including names other teams coined (`salary_band`, `phi_classification`). Two consequences: (1)
+      cross-team vocabulary leakage on every form open (the names themselves are the leak, even before
+      any value is written); (2) cognitive noise — in a large deployment the dropdown is hundreds of
+      unrelated fields with no entity relevance, defeating the "reuse YOUR vocabulary" promise.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |
+    When a user picks an existing field name from the dropdown, the form pre-fills the correct value
+    type (STRING / INTEGER / BOOLEAN / ...) for that field, so they cannot save a value of the wrong type.
+  derivation: |
+    The response carries a `type` field per row (MetadataFieldType enum, components.yaml:2077-2086);
+    a typed catalogue promises type-safe value entry.
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The dropdown DOES auto-populate the `type` SELECT when an existing field is picked (per the
+      controller sidecar audiences, MetadataCreateFormItem.tsx). But the `type` is documentation-only
+      at write time: the F-013 write path (upsertDataEntityMetadataFieldValue / createMetadata) stores
+      the raw value as text with NO coercion or validation against the field's declared type. So the
+      pre-fill is cosmetic guidance, not an enforced constraint — a value that contradicts the type is
+      accepted.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: bugs_limitations_corner_cases
+        cite: "components.yaml:2077-2086 + cross-ref batch L upsertDataEntityMetadataFieldValue invariants[3]"
+        note: "MetadataFieldType is a vocabulary, not a constraint; write side ignores it"
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: bugs_limitations_corner_cases (no_type_validation_against_metadata_field_type)
+        cite: "DataEntityServiceImpl.createMetadata / upsertMetadataFieldValue"
+        note: "raw text stored; no type coercion at write"
+    operator_visible_failure: |
+      A user picks a field declared INTEGER, types "n/a", and the platform saves it. Later consumers
+      (BI tools, downstream SDK clients reading metadata_field.type=INTEGER) parse the value as an
+      integer and fail or silently mis-type. The catalogue's `type` column promises a contract it does
+      not enforce; the read surface accurately REPORTS the type, the write surface ignores it — a
+      split-brain between F-046's display and F-013's storage.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |
+    When an SDK client reads MetadataFieldList.page_info.has_next, it can tell whether more fields
+    exist beyond this response and page through them; page_info.total reports the true catalogue size.
+  derivation: |
+    The OpenAPI response schema embeds PageInfo{total, has_next} (components.yaml:2111-2120) — the
+    universal ODD pagination contract every other list endpoint honours.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      page_info is theatre. MetadataFieldMapperImpl.java:29-33 constructs
+      `new PageInfo().total((long) pojos.size()).hasNext(false)` — total is ALWAYS items.length and
+      has_next is the constant false, on every response. The SQL has no LIMIT/OFFSET (no paging is
+      possible to begin with). A genuinely paginated endpoint builds PageInfo from Page<T>.total() /
+      Page<T>.hasNext(); this one builds it from a raw List<T>.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: stress_findings.name_behavior_pairs + bugs_limitations_corner_cases[0]
+        cite: "MetadataFieldMapperImpl.java:29-33 + components.yaml:2111-2120 + ReactiveMetadataFieldRepositoryImpl.java:44-56"
+        note: "total=items.length, hasNext=false constant; no LIMIT/OFFSET in SQL"
+    operator_visible_failure: |
+      (1) An SDK author implementing an infinite-scroll / "load more" field picker against the spec
+      cannot detect overflow — has_next is permanently false, so they render the first response as the
+      complete set even when 10k fields exist. (2) A monitoring client treating page_info.total as a
+      catalogue-size metric reads back exactly the array length it already has — a useless signal dressed
+      as a count. (3) The contract-vs-runtime mismatch is invisible until an integrator hits it in
+      production; the OpenAPI spec is silent about the theatre. (PLT-025 Defect 3 tracks this.)
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |
+      MetadataFieldMapperTest.mapPojosTest asserts total==2 and hasNext==false for a 2-pojo input —
+      but that test PINS the theatre as if correct (with 2 items, total==2 is coincidentally right).
+      No test asserts the FAILURE: total != true-row-count when the catalogue exceeds the response, or
+      that has_next stays false when more rows logically exist. The bug is mapper-pinned but not
+      regression-protected against the contract it violates.
+
+- id: H-005
+  hypothesis: |
+    Only a user granted a custom-metadata permission can read the deployment's custom-metadata field
+    catalogue; a user with no relevant permission (or an anonymous caller) cannot enumerate it.
+  derivation: |
+    Pillar P-09 gates mutations across the catalog; the Permissions page documents
+    DATA_ENTITY_CUSTOM_METADATA_{CREATE,UPDATE,DELETE}. A read of the vocabulary would normally have a
+    matching READ permission or owner-scoping.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `/api/metadata/fields` has NO SecurityRule in SecurityConstants and no @PreAuthorize — it falls
+      through to `pathMatchers("/**").authenticated()`. Any authenticated user (any role, any policy,
+      any owner scope, or none) gets the full INTERNAL catalogue. Under auth.type=DISABLED the endpoint
+      is anonymous (DisabledAuthSecurityConfiguration permitAll). There is NO CUSTOM_METADATA_FIELD_READ
+      permission anywhere in the codebase, and the live Permissions page (verified 2026-05-25 status 200)
+      documents only the three write-side permissions.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: stress_findings.auth_gates + security
+        cite: "SecurityConstants.java:95-355 (no /api/metadata/fields rule) + AuthorizationCustomizer.java:29-30 + DisabledAuthSecurityConfiguration.java:13-18"
+        note: "authenticated() fallback in every non-DISABLED mode; anonymous under DISABLED"
+    operator_visible_failure: |
+      (1) Every authenticated user enumerates the full deployment vocabulary — field names like
+      `pii_indicator`, `salary_band`, `legal_hold` leak the existence of governance concerns to users
+      who cannot see the entities they apply to. (2) Operators wiring policies for the per-VALUE write
+      surface reasonably assume the catalogue read is similarly scoped — it is not, and nothing tells
+      them. (3) On a dev/sandbox deployment running DISABLED, an unauthenticated network scan of
+      GET /api/metadata/fields dumps the entire custom-metadata schema. This is the read-collaborative
+      posture surfacing on the metadata-vocabulary surface (same class as F-018's tag directory).
+      (PLT-025 Defect 4 tracks this.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |
+    When a user saves a custom-metadata value under a brand-new field name, they understand they have
+    just created a directory entry that every other user in the deployment will now see in their dropdown.
+  derivation: |
+    Negative-space: the auto-create-on-miss side effect (getOrCreateMetadataFields) mints a GLOBAL
+    INTERNAL row, but the action is buried inside a per-entity value-save flow.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Coining a new field name is a silent side effect of saving a value. The freeSolo autocomplete
+      lets the user type any name; on submit the F-013 write path calls getOrCreateMetadataFields which
+      bulk-creates the INTERNAL row with no confirmation, no "this will be visible to everyone" signpost,
+      no rate-limit, no normalisation. The user believes they annotated one entity; they also published
+      a global vocabulary row.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: upstream_callers + coupling (auto-create asymmetry with the UI)
+        cite: "MetadataFieldServiceImpl.java:43-59 + MetadataCreateFormItem.tsx (freeSolo)"
+        note: "novel name -> bulkCreate INTERNAL row; no signpost"
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: bugs_limitations_corner_cases (auto-create-on-miss catalogue growth)
+        cite: "MetadataFieldServiceImpl.java:43-59"
+        note: "no rate-limit, no normalisation, no allowlist; grows monotonically; no UI delete"
+    operator_visible_failure: |
+      (1) Catalogue pollution — every typo, case variant, and one-off experiment becomes a permanent
+      dropdown entry (no UI delete path). (2) Governance surprise — a user adding `internal_test_xyz` to
+      their own draft entity publishes that name org-wide. (3) Over a deployment lifetime the dropdown
+      degrades into a noisy mix of canonical and junk names, which compounds H-002's already-unscoped
+      list. This is the same side-channel-mint shape F-018 surfaced for tags. (PLT-025 Defect 4's
+      "drive-by catalogue minting" clause tracks this.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |
+    The get-or-create catalogue path is idempotent — saving a value under a field name that already
+    exists reuses the existing field row and never creates a duplicate.
+  derivation: |
+    Response-shape + cross-pillar (F-013 write): getOrCreateMetadataFields is intended as a true upsert —
+    only missing keys are minted, existing keys are reused.
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      getOrCreateMetadataFields(keys) reads existing keys via listByKey, diffs out the ones already
+      present, bulkCreates ONLY the missing ones, and returns the union of pre-existing + newly created.
+      A behavioral unit test (Mockito + StepVerifier + ArgumentCaptor) seeds one existing ("A") and one
+      missing ("B") key and asserts bulkCreate is called with exactly {B} and the result is {A, B}.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: operations (listByKey) + implicit_adrs
+        cite: "MetadataFieldServiceImpl.java:43-59 + ReactiveMetadataFieldRepositoryImpl.java:58-71"
+        note: "listByKey existence-diff then bulkCreate only the absent keys"
+      - sidecar: SOURCE-READ
+        section: test
+        cite: "MetadataFieldServiceImplTest.getOrCreateMetadataFields_createsOnlyMissingFields:55-69"
+        note: "asserts bulkCreate captor == {missing} only; result == union {existing, missing}; test carries @validates F-046"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "MetadataFieldServiceImplTest.getOrCreateMetadataFields_createsOnlyMissingFields"
+    test_demand: null
+    source_read_for_validation: true
+    source_read_cite: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/MetadataFieldServiceImplTest.java:55-69 (test carries @validates F-046)"
+
+- id: H-008
+  hypothesis: |
+    When two users concurrently save a value under the SAME brand-new field name, the catalogue ends up
+    with exactly one field row and both saves succeed.
+  derivation: |
+    Negative-space + concurrency: the get-or-create path is read-then-write (listByKey then bulkCreate);
+    a naive implementation races.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The UI tier uses plain inherited bulkCreate with NO ON CONFLICT clause (unlike the ingestion path's
+      idempotent ingestData). Two concurrent createMetadata requests with the same novel
+      (name, type, INTERNAL) key both pass listByKey ("absent"), both INSERT; the second collides on
+      IX_UNIQUE_INTERNAL_NAME and raises UniqueConstraintException → the losing user's ENTIRE createMetadata
+      operation rolls back (DataEntityServiceImpl.createMetadata is @ReactiveTransactional). Exactly one row
+      results, but the loser's whole metadata save fails, not just the field mint.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: invariants (TOCTOU race) + bugs_limitations_corner_cases[1]
+        cite: "MetadataFieldServiceImpl.java:42-59 + ReactiveAbstractCRUDRepository.java:113-126 (no ON CONFLICT) + ExceptionUtils.java:63-65"
+        note: "listByKey->bulkCreate TOCTOU; INTERNAL collision throws UniqueConstraintException; createMetadata TX rolls back"
+    operator_visible_failure: |
+      Under concurrent load (two operators annotating different entities with the same new field name at
+      the same instant), one operator's metadata save fails with a 4xx/5xx and they must retry — the
+      failure is on the whole value-save, not a graceful "field already created, reusing it". The window is
+      sub-millisecond but reliably reproducible under bench load (per the sidecar). It is data-safe (no
+      corruption, exactly one row) but is a UX failure, not the seamless merge the user expects. NOT covered
+      by PLT-025 (which does not name the TOCTOU race) — net-new.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |
+    The catalogue treats field names case-insensitively, so a user cannot accidentally create
+    `cost_centre` and `Cost_centre` as two separate fields meaning the same thing.
+  derivation: |
+    UI-label + negative-space: the search box is case-insensitive (containsIgnoreCase), so a user
+    naturally assumes the catalogue itself is case-insensitive end-to-end.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Case-sensitivity is asymmetric. The search (listInternalMetadata) is case-INSENSITIVE
+      (LOWER(name) LIKE LOWER('%q%')), but the uniqueness index IX_UNIQUE_INTERNAL_NAME and the
+      auto-create diff (listByKey uses case-SENSITIVE .eq() on name) treat `cost_centre` and
+      `Cost_centre` as distinct. So a user who types a different casing on a second entity mints a
+      SECOND row; both then appear together in any case-insensitive search. There is no LOWER(name)
+      index and no input normalisation.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: invariants (case-sensitivity asymmetry) + bugs_limitations_corner_cases[2]
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:48 (containsIgnoreCase) vs :65 (NAME.eq) + V0_0_1__init.sql:242-244"
+        note: "search insensitive; lookup + unique index sensitive; no normalisation"
+    operator_visible_failure: |
+      The dropdown shows `cost_centre` AND `Cost_centre` as two pickable options with identical intent,
+      and a user typing either casing on a fresh entity creates yet another variant. Values fragment across
+      near-duplicate fields; aggregations and downstream consumers see the same concept under multiple keys.
+      Combined with H-006 (no signpost) and the no-delete limitation, the catalogue accretes case-variant
+      duplicates with no cleanup path. (SHB-008 drift_class tracks this; not in PLT-025's 5 defects.)
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |
+      The repository test's substring assertion uses the EXACT field name, never a case-variant — so
+      neither the case-insensitive search nor the case-sensitive duplicate-mint is regression-protected.
+
+- id: H-010
+  hypothesis: |
+    When a user soft-deletes a custom-metadata field, they can later re-create a field with the same
+    name (the name is freed for reuse).
+  derivation: |
+    Negative-space: soft-delete normally frees the user-visible name; the field disappears from the
+    dropdown, so re-creation would succeed.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The metadata_field partial unique indexes filter ONLY by origin, NOT by deleted_at (unlike the
+      sibling tag_name_unique which WAS migrated to exclude soft-deleted rows in V0_0_64). So a
+      soft-deleted INTERNAL field with name `foo` is filtered OUT of listInternalMetadata (dropdown says
+      "absent") but STILL occupies IX_UNIQUE_INTERNAL_NAME — re-creating `foo` throws
+      UniqueConstraintException("Internal metadata with this name already exists"). There is no hard-delete
+      path in the codebase, so the name is a permanent blocker until a manual DBA UPDATE.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: bugs_limitations_corner_cases[0] + invariants (partial unique index mismatch)
+        cite: "V0_0_1__init.sql:238-244 (no deleted_at predicate) + V0_0_64 (Tag fixed, metadata not) + ExceptionUtils.java:63-65"
+        note: "soft-deleted name filtered from read but still blocks create; no hard-delete path"
+    operator_visible_failure: |
+      A user "removes" a custom-metadata field, sees it gone from the dropdown, then tries to recreate it
+      (perhaps with a corrected type) and is told it already exists — while the dropdown insists it does
+      not. The two surfaces actively contradict each other. The only resolution is a DBA hard-DELETE, which
+      no UI/API exposes. This is the highest-confusion edge case in the feature and is entirely undocumented.
+      NOT covered by PLT-025's 5 defects — net-new (and distinct from the case-sensitivity defect).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |
+    The autocomplete returns the same fields in the same order across sessions, so a user sees a stable,
+    predictable list.
+  derivation: |
+    UI-label: a dropdown a user returns to repeatedly is expected to be stable; ordering normally has a
+    contract (alphabetical, recency, relevance).
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      There is NO ORDER BY at the SQL layer — Postgres returns rows in heap-scan order, which is roughly
+      insertion order on a freshly vacuumed table but becomes arbitrary after creates + soft-deletes +
+      vacuum cycles. The UI's MUI Autocomplete preserves input order (it filters but does not re-sort), so
+      the operator-visible order IS the heap-scan order. For a small, static catalogue the order is stable
+      in practice; for a churning catalogue it drifts between sessions and across deployment generations.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: stress_findings.orderings + bugs_limitations_corner_cases[2]
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:51-55 (no orderBy) + MetadataCreateFormItem.tsx:94-109 (MUI preserves input order)"
+        note: "contract-less ordering; UI does not re-sort"
+    operator_visible_failure: |
+      In a stable small deployment the user sees no problem (hence partial, not contradicted). In a
+      long-running deployment with heavy create/delete churn, the same query yields different orderings
+      between sessions — the field a user expected near the top moves unpredictably, and there is no
+      alphabetical fallback to anchor recognition. Purely UX-shaped (no data loss). (PLT-025 Defect 3
+      names the no-ORDER-BY fact as a sub-clause.)
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: |
+    With 10,000 custom-metadata fields in the deployment, the autocomplete stays responsive — each
+    keystroke-debounce returns quickly and the payload is bounded.
+  derivation: |
+    Negative-space + performance: an autocomplete fired on every debounced keystroke is expected to be
+    cheap; a typical paginated list endpoint bounds its payload.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Statically: the SQL has no LIMIT, so each call materialises the ENTIRE filtered INTERNAL catalogue
+      (N MetadataFieldPojo + N MetadataField DTOs + the wire payload), and the autocomplete fires this on
+      focus + each debounced (500ms) keystroke (per the controller sidecar). At 10k fields this is a large
+      unbounded payload per keystroke-window with no cache (no @Cacheable anywhere in the chain). The
+      latency + payload-size at scale require measurement on a local stand to assign a severity verdict.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: bugs_limitations_corner_cases[1] + resource_boundaries
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:44-56 (no LIMIT) + MetadataCreateFormItem.tsx:43-51 (debounced dispatch) + no @Cacheable"
+        note: "unbounded return amplified by per-keystroke dispatch; no cache"
+    operator_visible_failure: |
+      (predicted, pending probe) At high catalogue cardinality the dropdown becomes laggy on every
+      keystroke and the response payload balloons; the amplification scales linearly with row count. The
+      severity is LOW at typical tens-of-rows scale and rises toward HIGH at thousands — the exact knee
+      requires the local probe to quantify. (PLT-025 Defect 3 notes the "1-2 MB response on every
+      autocomplete keystroke" claim; this probe quantifies it.)
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-046-1
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-046-1"
+    local_execution_blocked: false
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |
+    MetadataFieldList.page_info is theatre — total=items.length and has_next=false constant; SQL has no
+    LIMIT/OFFSET. SDK authors building paged field pickers cannot detect overflow; total is a useless count.
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: |
+    PLT-025 Defect 3 (F-046a) covers this exactly (MetadataFieldMapperImpl.java:28-33 + unbounded SQL).
+    Convergent re-derivation, NOT new work — corroboration recorded; not routed for re-filing. PLT-025
+    Suggested-fix Thread C anchors the fix (real LIMIT/OFFSET + COUNT(*) + truthful hasNext, OR drop
+    PageInfo from components.yaml:2111-2120).
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: |
+    Soft-deleted INTERNAL field name is a permanent create-blocker — dropdown says "absent" (filtered by
+    deleted_at) but create throws UniqueConstraintException (partial unique index ignores deleted_at). The
+    two surfaces contradict each other; only a DBA hard-DELETE resolves it.
+  dedup_status: net_new
+  distinct_from: PLT-025
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: |
+    Migrate IX_UNIQUE_INTERNAL_NAME and IX_UNIQUE_EXTERNAL_NAME_TYPE to include `WHERE deleted_at IS NULL`
+    (mirror the V0_0_64 tag_name_unique fix that was applied to Tag but NOT to metadata_field) at
+    V0_0_1__init.sql:238-244. PLT-025 enumerates 5 defects and does NOT name the soft-delete-resurrection
+    blocker — this is a 6th, distinct defect in the same feature; recommend folding it into PLT-025 as
+    Defect 6 OR filing a focused BUG.
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: |
+    The "Add metadata" autocomplete is deployment-global, not entity-scoped — every entity's form shows
+    the same full INTERNAL vocabulary; no entity id or principal is consulted.
+  dedup_status: already_tracked
+  tracked_as: SHB-008
+  note: "Feature-flow drift_class (no_read_permission_full_deployment_vocabulary_enumeration covers the scope); not in PLT-025's 5 defects as a standalone entity-scoping caveat."
+- hypothesis_id: H-003
+  one_line: |
+    The field `type` shown in the dropdown is documentation-only — the F-013 write path stores raw text
+    with no coercion, so a value contradicting the declared type is accepted.
+  dedup_status: already_tracked
+  tracked_as: SHB-008
+  note: "Tracked as the F-046 drift_class type_column_documentation_only_no_validation_at_write_time + the F-013 no-type-validation finding; not one of PLT-025's 5 enumerated defects."
+- hypothesis_id: H-005
+  one_line: |
+    No read permission on the catalogue — any authenticated user (anonymous under DISABLED) enumerates the
+    full deployment custom-metadata vocabulary; field names leak governance intent across owner scopes.
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: "PLT-025 Defect 4 (F-046b) covers this exactly; Suggested-fix Thread D (introduce CUSTOM_METADATA_FIELD_READ OR document the posture). Convergent corroboration."
+- hypothesis_id: H-006
+  one_line: |
+    Coining a new field name silently publishes a global directory row visible to every user — no signpost,
+    no confirmation, no rate-limit, no UI delete; the catalogue grows monotonically.
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: "PLT-025 Defect 4 names the 'drive-by catalogue minting' side-channel explicitly (any user with DATA_ENTITY_CUSTOM_METADATA_UPDATE on one entity mints catalogue rows visible to all). Convergent corroboration."
+- hypothesis_id: H-008
+  one_line: |
+    Concurrent same-new-name saves: one user's ENTIRE metadata save rolls back with a UniqueConstraintException
+    (UI path uses bulkCreate with no ON CONFLICT) — data-safe but a UX failure, not a graceful merge.
+  dedup_status: net_new
+  distinct_from: PLT-025
+  recommended_log_as: caveat in custom-metadata.md (DOC-189) once authored; or a focused PLT defect
+- hypothesis_id: H-009
+  one_line: |
+    Case-sensitivity asymmetry — search is case-insensitive but uniqueness/auto-create is case-sensitive, so
+    cost_centre and Cost_centre coexist as duplicate fields with identical intent.
+  dedup_status: already_tracked
+  tracked_as: SHB-008
+  note: "Feature-flow drift_class case_sensitive_partial_unique_index_allows_cost_centre_vs_Cost_centre_duplicates; not in PLT-025's 5 defects."
+- hypothesis_id: H-011
+  one_line: |
+    No ORDER BY — the dropdown order is Postgres heap-scan order, stable for small/static catalogues but
+    drifting across vacuum cycles for churning ones; no alphabetical anchor.
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: "Named as a sub-clause of PLT-025 Defect 3 ('no LIMIT/OFFSET/ORDER BY') and as the F-046 drift_class no_order_by_heap_scan_order_surfaces_as_ui_flicker."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# (The two CONFIRMED promises H-001/H-007 each HAVE a real test, so they are coverage:verified and owe NO
+# demand — they correctly do NOT appear here. No confirmed-but-untested promise exists in this feature.)
+- use_case_id: F-046-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "Empty-query autocomplete returns the full deployment INTERNAL catalogue, identical for every entity (no entity/owner scoping)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-2)"
+  proposed_test: |
+    WebTestClient GET /api/metadata/fields (no query) seeded with fields used on two different entities ->
+    assert ALL INTERNAL fields returned regardless of entity context (pins the global-scope contract + guards
+    against a future regression that silently narrows it). Currently NO controller-tier test exists.
+- use_case_id: F-046-UC-3
+  hypothesis_id: H-003
+  kind: edit-reconcile
+  promise: "Picking an existing field pre-fills its type; the saved value is type-consistent with that field."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-3)"
+  proposed_test: |
+    Integration: read a field with type=INTEGER from the catalogue, write value 'n/a' via the F-013 path,
+    assert the CURRENT (no-validation) behaviour as a characterization pin (RED the instant type validation
+    is added). Pairs with F-013's no-type-validation gap.
+- use_case_id: F-046-UC-4
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "page_info.total reports true catalogue size and has_next signals overflow."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-4)"
+  proposed_test: |
+    Controller/mapper test seeding MORE rows than any logical page -> assert page_info.total != true row count
+    and has_next stays false (characterization pin of the theatre, RED when real pagination lands per PLT-025
+    Thread C). The existing MetadataFieldMapperTest pins total==items.length only coincidentally with 2 rows.
+- use_case_id: F-046-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "Catalogue read requires a permission; anonymous/unscoped callers cannot enumerate it."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-5)"
+  proposed_test: |
+    Security: WebTestClient GET /api/metadata/fields under LOGIN_FORM/OAUTH2/LDAP unauthenticated -> assert
+    401/302; under DISABLED -> assert 200 full catalogue (locks the no-read-permission posture so a future
+    CUSTOM_METADATA_FIELD_READ gate per PLT-025 Thread D is a deliberate, test-flipping change). None exists.
+- use_case_id: F-046-UC-6
+  hypothesis_id: H-006
+  kind: resolve-later
+  promise: "A novel field name minted via the value-save flow is understood by the user to be globally published."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-6)"
+  proposed_test: |
+    Integration: save a value under a novel name on entity A; assert the name now appears in GET /api/metadata/fields
+    visible to a DIFFERENT user/entity (pins the side-channel-mint global-visibility contract; pairs with F-018).
+- use_case_id: F-046-UC-8
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "Concurrent same-new-name saves converge to one row with both saves succeeding."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-8)"
+  proposed_test: |
+    Concurrency integration: two parallel createMetadata with the same novel (name, type) -> assert exactly one
+    row AND that the losing call surfaces UniqueConstraintException / a rolled-back save (characterization pin of
+    the current TOCTOU resolution; RED if a future ON CONFLICT upsert makes it graceful).
+- use_case_id: F-046-UC-9
+  hypothesis_id: H-009
+  kind: empty/no-match
+  promise: "The catalogue is case-insensitive end-to-end; no case-variant duplicates."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-9)"
+  proposed_test: |
+    Repository integration: create cost_centre (INTERNAL); create Cost_centre (INTERNAL) -> assert BOTH rows
+    persist (characterization pin of the case-sensitive uniqueness); and assert listInternalMetadata('cost')
+    returns BOTH (pins the case-insensitive search). RED the instant case-folding normalisation is added.
+- use_case_id: F-046-UC-10
+  hypothesis_id: H-010
+  kind: teardown-constraint
+  promise: "A soft-deleted field's name is free for re-creation."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-10)"
+  proposed_test: |
+    Repository integration: bulkCreate foo:STRING:INTERNAL -> soft-delete it -> assert listInternalMetadata
+    excludes it AND a fresh bulkCreate of foo:STRING:INTERNAL throws UniqueConstraintException (characterization
+    pin of the resurrection blocker; flips GREEN-to-RED when the partial index is migrated to exclude deleted_at).
+- use_case_id: F-046-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "Autocomplete order is stable across sessions."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-046-UC-11)"
+  proposed_test: |
+    Lower priority. Repository test asserting NO orderBy contract (documents the heap-scan order); or an e2e
+    snapshot tolerant of reordering. Mainly a doc-caveat; test value is LOW.
+- use_case_id: F-046-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "Autocomplete stays responsive and payload bounded at 10k fields."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-046-1 (performance); after probe, TEST-GAP-NNN if a LIMIT/bound is added"
+  proposed_test: |
+    Performance probe PENDING-F-046-1 (see probes_emitted) — local stand, 10k INTERNAL fields, measure
+    GET /api/metadata/fields latency + payload size + assert has_next=false despite total>1000. Matches the
+    feature-flow's proposed_local_probes P-shb-008-001.
+
+### probes_emitted
+- probe_id: PENDING-F-046-1
+  hypothesis_id: H-012
+  type: performance
+  local_execution: true
+  expected_outcome: |
+    "With 10,000 custom-metadata fields in the deployment, the autocomplete stays responsive — each
+    keystroke-debounce returns quickly and the payload is bounded." Probe: local docker-compose / Testcontainers
+    + local Postgres; insert 10k INTERNAL metadata_field rows; call GET /api/metadata/fields (empty query) and
+    with a substring; measure response latency + payload bytes; assert page_info.has_next == false even though
+    total > 1000 (locks the unbounded-return + theatre at scale). Mirrors feature-flow proposed_local_probes
+    P-shb-008-001. PARALLEL-SAFE: recorded here only; no probes/P-NNN.yaml file created this run.
+
+### validation_gaps
+- sidecar: odd-platform (UI axis) — react-component:MetadataCreateFormItem
+  field_insufficient: |
+    THE UI HOP IS NOT ENRICHED (Rule 9 / APPROACH.md §0.2). MetadataCreateFormItem.tsx has NO standalone
+    sidecar; the feature-flow chain marks hop 1 `sidecar: unresolved`. This reflection's UI-facing verdicts
+    (H-002, H-003 pre-fill, H-006 freeSolo, H-011 MUI ordering) are reasoned from INLINE citations of
+    MetadataCreateFormItem.tsx:24-109 embedded in the two BACKEND sidecars' `audiences`/`orderings` blocks —
+    not from a senior-PO UX analysis of the screen itself. This reflection is therefore substantially API-shaped:
+    it can judge the freeSolo + debounce mechanics that the backend sidecars happened to cite, but it CANNOT
+    judge what the user actually experiences — whether the form signposts that a name is global (H-006), whether
+    the type pre-fill is visible/clear (H-003), whether the dropdown communicates "no match, will create" vs
+    "existing field", convenience/intuitiveness, customisation, or cross-device behaviour. Per Rule 9 this is
+    surfaced FIRST: a confident set of confirmed verdicts for a user-facing feature must NOT be produced from
+    its API alone (the F-031 / LSN-023 mistake).
+  proposed_refresh: |
+    Enrich MetadataCreateFormItem.tsx (and the searchMetadata thunk metadata.thunks.ts:78-88, MetadataCreateForm
+    parent) as a first-class ui react-component sidecar so the next F-046 reflection can verdict the screen — the
+    create-vs-pick affordance, the global-publish signpost (or its absence), the type-select UX, mobile rendering.
+    This is the same UI-axis substrate gap (Failure F / LSN-025) that left ~530 React components un-noded.
+- sidecar: odd-platform__java__service (hop 3) — MetadataFieldServiceImpl + mapper (hop 5) — MetadataFieldMapperImpl
+  field_insufficient: |
+    Neither MetadataFieldServiceImpl nor MetadataFieldMapperImpl has a standalone sidecar; their behaviour was
+    validated via verbatim citations inside the controller + repository sidecars (service = pass-through
+    :37-40; mapper = :29-33). Sufficient for this reflection, but the feature-flow chain's hop-3/hop-5
+    `sidecar: unresolved` markers are stale relative to the actual enrichment coverage.
+  proposed_refresh: |
+    Either emit standalone sidecars for the service + mapper, OR update the feature-flow chain hops 2-5 to
+    point at the two existing sidecars (MetadataFieldController controller-class + ReactiveMetadataFieldRepositoryImpl)
+    so the chain's `unresolved` flags reflect reality.
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+  doc_says: |
+    Lists DATA_ENTITY_CUSTOM_METADATA_CREATE / UPDATE / DELETE only; silent on any read access to the
+    custom-metadata field catalogue.
+  code_does: |
+    The catalogue read (/api/metadata/fields) has NO permission gate at all — any authenticated user, anonymous
+    under DISABLED. The doc silence is not wrong about the three write permissions; it omits the read posture entirely.
+  recommended_log_as: "DOC-189 (custom-metadata.md create — the tracked companion doc-gap for the whole feature)"
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference (OpenAPI spec, components.yaml:2111-2120)"
+  doc_says: |
+    The OpenAPI MetadataFieldList response schema embeds PageInfo{total, has_next}, signalling pagination to SDK authors.
+  code_does: |
+    No pagination exists; total=items.length and has_next=false constant. The spec actively misleads integrators.
+  recommended_log_as: "DOC-189 (caveat) + PLT-025 Thread C (spec fix — implement pagination or remove PageInfo)"
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery"
+  doc_says: |
+    The Data Discovery landing page lists tags / descriptions / attachments / statuses / business names as the
+    entity-annotation surfaces; custom metadata is absent (verified 2026-05-20 status 200).
+  code_does: |
+    Custom metadata is a fully-shipped annotation surface with a global auto-minted vocabulary catalogue. The
+    feature has zero operator documentation describing the catalogue, the autocomplete, the auto-mint side effect,
+    INTERNAL-vs-EXTERNAL origin, case-sensitivity, or the soft-delete blocker.
+  recommended_log_as: "DOC-189 (the tracked load-bearing feature-wide doc gap; SHB-008-anchored)"
+
+## maintainer_notes
+
+(Reserved for maintainer hand-edits; preserved across refreshes.)

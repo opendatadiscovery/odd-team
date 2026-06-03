@@ -1,0 +1,584 @@
+---
+feature_id: F-119
+pillar_anchored_id: P-09:F-119
+pillar: Security & Access Control
+feature_name: "Deployment-Info Introspection Surface (`/api/appInfo`)"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+  - odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md
+  - odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10.md
+  - odd-platform__ts__react-component__component__Overview.md
+  - odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      SUBSTANTIALLY UPDATED since the sidecars were enriched (2026-05-12 / 2026-05-20).
+      The page now documents the `/api/appInfo` fingerprint surface verbatim: "GET
+      /api/appInfo returns the precise platform version (buildProperties.getVersion())
+      and the active auth.type value, with no authentication" + a "Fingerprint matrix
+      (passive recon)" + "a passive network scanner can confirm the deployment IS ODD
+      Platform, learn its version (CVE-scoping), and learn the auth-mode value in one
+      unauthenticated GET". DOC-GAP-037 is therefore CLOSED on the doc side (confirmed
+      live). The page does NOT document the auth.type validation / typo / empty-value
+      no-SecurityWebFilterChain failure mode — that doc-gap persists (and the CODE
+      defect is tracked at PLT-077).
+hypothesis_summary:
+  total: 11
+  confirmed: 6
+  contradicted: 2
+  partial: 3
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: "A typo'd or empty auth.type makes the UI render the OwnerAssociation card on a deployment whose backend wired NO SecurityWebFilterChain — the screen says 'auth is on, associate yourself' while the platform is wide open, the exact inverse of the operator's intent."
+related_feature_flows: [F-009, F-035, F-085, F-090]
+related_concepts:
+  - "deployment-fingerprint-surface"
+  - "auth-type-config-key-no-default"
+  - "reporter-not-reactor-appinfo-reads-raw-string"
+related_drift_classes:
+  - disabled_mode_bypass_unauthenticated_fingerprint_surface
+  - appinfo_path_not_in_whitelist_but_open_under_disabled
+  - authtype_value_unvalidated_typo_silent_no_chain
+  - openapi_no_security_element_on_appinfo_operation
+new_drift_classes_proposed:
+  - appinfo_authtype_roundtrip_ungated_ui_owner_association_misgate
+---
+
+# Deployment-Info Introspection Surface (`/api/appInfo`) — product-owner reflection
+
+## product_owner_narrative
+
+`/api/appInfo` is the platform's **runtime self-description endpoint**. It answers exactly one question for a caller: "which ODD Platform am I talking to, and how does it want me to log in?" The answer is two strings — the build version (`projectVersion`) and the active authentication mode (`authType`, one of `DISABLED / LOGIN_FORM / OAUTH2 / LDAP`) (per `AppInfoController`:understanding, `AppInfoController.java:24-28`). Its single real consumer is the React single-page app, which calls it once at boot to decide which login flow to render and whether to show the self-service Owner-Association card on the home page (per `Overview.md`:understanding, `Overview.tsx:25-27`). The endpoint is a pure **reporter, not a reactor**: it reads `auth.type` as a raw `@Value` string and echoes it, while every other consumer of the same key branches on it via `@ConditionalOnProperty(havingValue=...)` (per `AppInfoController.controller-class`:implicit_adrs, contrasting `AppInfoController.java:18` with `DisabledAuthSecurityConfiguration.java:10`).
+
+A user never types into this feature and never sees a button for it — the feature is *infrastructure the UI consumes on the user's behalf*. The user-observable surface is two screens fed by the endpoint: (1) the **App Info menu** behind the information icon in the top toolbar, which renders the platform version as a clickable GitHub link (per `AppInfoMenu.md`:understanding, `AppInfoMenu.tsx:37-53`); and (2) the **home page (Overview)**, whose self-service Owner-Association card is shown only when `authType !== 'DISABLED'` (per `Overview.md`:concepts.invariants, `Overview.tsx:25-27`). So the product promise has two faces: a deliberate disclosure (the SPA must know the auth mode before the user authenticates) and a deliberate gate (the Owner-Association affordance only makes sense when there is an identity to associate).
+
+The working parts are minimal and that is the point: no filtering, no sorting, no pagination, no request body — the only "input" is the deployment's own `auth.type` configuration, and the only output is the two-field DTO (per `AppInfoController.controller-class`:performance, `AppInfoController.java:25-28`). The interesting behaviour is entirely in the **edges**: what the endpoint discloses to whom (it carries no `@PreAuthorize`, is not in `SecurityConstants.WHITELIST_PATHS`, and is therefore open under DISABLED but authenticated under the other three modes — per `AppInfoController.controller-class`:bugs[2], `SecurityConstants.java:95-96` + `DisabledAuthSecurityConfiguration.java:13-18`), and what happens when the `auth.type` value it round-trips is not one of the four documented words (nothing validates it, at either the backend `@Value` or the UI string-compare — per `AppInfoController.java:18` + `Overview.tsx:26`).
+
+The integration story anchors this feature in **Pillar P-09 (Security & Access Control)** and makes it the adjacency point for two neighbours. It feeds P-08 (Management): every Management affordance assumes `auth.type` is a real value, and the Owner-Association card the home page gates is itself the entry to the Management owner-association flow (per F-119 feature-flow `cross_pillar_relationships`, P-08 shares_data_with). It is part of P-11 (the public API surface) but historically was absent from the developer-guides API reference — now tracked and delivered via DOC-240. It is the controller-class member of the broader **REFACTOR-185 DISABLED-mode-bypass pattern** (this is the 19th supporting sidecar in that cluster — per `AppInfoController.controller-class`:security.known_security_gaps[0]).
+
+In a demo a product owner would highlight three edge behaviours an operator hits in the field: (1) on a default `auth.type=DISABLED` deployment, an anonymous network caller gets version + auth-mode in one GET — now documented as a passive-recon fingerprint on the live disabled-authentication page (confirmed via WebFetch 2026-06-03); (2) a typo in `auth.type` (`OUATH2`) silently produces a deployment with NO `SecurityWebFilterChain` AND a home page that still shows the Owner-Association card as if auth were healthy (per `Overview.md`:bugs[0], `Overview.tsx:25-27` + `AppInfoController.java:18`); and (3) the App Info menu that displays the version is hover-only and keyboard-inaccessible, so the disclosure that exists for machines is partly unreachable for the humans it is rendered to (per `AppInfoMenu.md`:bugs[1], `AppInfoMenu.tsx:78-82`).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When any caller issues GET /api/appInfo, the response body is exactly two fields — the deployment's build version (`projectVersion`) and the active authentication mode (`authType`) — and nothing more (no hostname, no build SHA, no OAuth issuer, no LDAP URI)."
+  derivation: "Response-shape seed — the AppInfo DTO has exactly two properties (`components.yaml:2493-2499`); the controller constructs it from two captured-at-construction values."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The controller returns `new AppInfo().projectVersion(buildProperties.getVersion()).authType(authType)`
+      and nothing else; the OpenAPI schema declares only `projectVersion` and `authType`. The
+      sidecar explicitly records the NON-disclosure: no OAuth provider name, no LDAP URI, no
+      issuer URL, no build SHA, no hostname — a deliberate "expose mode, hide provider" contract
+      shared with IdentityController.whoami (which also has no `provider` field).
+    evidence:
+      - sidecar: odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+        section: implicit_adrs[2] + security.data_exposure[3]
+        cite: "AppInfoController.java:24-28 + components.yaml:2493-2499"
+        note: "DTO has exactly two fields; the non-disclosure of provider-level detail is recorded as a deliberate ADR."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  note: |
+    Confirmed-but-untested. The sidecar's own gaps section names this as the highest regression risk:
+    "a future contributor adds a new field to AppInfo containing operator-sensitive metadata (build SHA,
+    hostname, deployment-id, OAuth issuer URI) — no test would catch the expanded disclosure surface."
+
+- id: H-002
+  hypothesis: "When the SPA boots, GET /api/appInfo tells it the active auth mode so it can render the correct login flow before the user has authenticated."
+  derivation: "Pillar-mission anchor (P-09 'pick a UI auth mode') + the implicit ADR that the endpoint exists to let the SPA discover the mode without a prior auth round-trip."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The endpoint DOES expose `authType` by design and the SPA DOES read it. But the
+      "before the user has authenticated" half holds ONLY under DISABLED. `/api/appInfo` is
+      NOT in `SecurityConstants.WHITELIST_PATHS` and has no SECURITY_RULES entry, so under
+      LOGIN_FORM / OAUTH2 / LDAP it falls through to `.pathMatchers("/**").authenticated()`
+      — i.e. the endpoint that supposedly tells the SPA which login form to draw is itself
+      behind the login wall under exactly the three modes that HAVE a login form. The
+      auth.type@L18 sidecar flags this explicitly as a "potential broken-UI bug under
+      LOGIN_FORM OR a missing whitelist entry — either way, undocumented behaviour" and could
+      not statically resolve which (the SPA may reach it via a path the sidecar did not trace,
+      or the LOGIN_FORM landing renders without the call).
+    evidence:
+      - sidecar: odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md
+        section: bugs_limitations_corner_cases[4]
+        cite: "SecurityConstants.java:95-96 + SecurityConstants.java:98-355 + LoginFormSecurityConfiguration.java:49-57"
+        note: "/api/appInfo absent from WHITELIST_PATHS and SECURITY_RULES → authenticated() fall-through under the 3 login-bearing modes."
+      - sidecar: odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+        section: bugs_limitations_corner_cases[2] + security.auth_mode_relevance
+        cite: "DisabledAuthSecurityConfiguration.java:13-18 + LoginFormSecurityConfiguration.java:49-57"
+        note: "Open under DISABLED, authenticated under the other three modes — the pre-auth-discovery promise holds only under DISABLED."
+    operator_visible_failure: |
+      Two operator-visible shapes, depending on which way the untraced SPA call resolves
+      (this is the `probe-needed`-adjacent gap — see note): (a) if the SPA fetches /api/appInfo
+      from a public route before sign-in under LOGIN_FORM, the current config would 401/302 it
+      and the SPA would have to fall back to a default login render — a fragile dependency on an
+      endpoint that is gated exactly when it is needed; (b) if the SPA only calls it post-auth,
+      then the "discover the mode before authenticating" rationale is not actually exercised
+      under LOGIN_FORM/OAUTH2/LDAP and the endpoint's pre-auth value is real only under DISABLED.
+      Either way the design intent ("know the mode before the auth round-trip") is not delivered
+      uniformly across modes, and no test or doc pins which behaviour ships.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+  note: |
+    The clean resolution is a runtime probe (boot LOGIN_FORM locally, observe whether the SPA's
+    /api/appInfo fetch happens pre- or post-auth and whether it 401s). Recorded as
+    PENDING-F-119-1 in probes_emitted rather than a hard contradiction, because the verdict
+    genuinely needs the running stack to settle which of (a)/(b) ships.
+
+- id: H-003
+  hypothesis: "When a deployment runs the shipped default auth.type=DISABLED and is reachable on a network, an unauthenticated caller can read the deployment's exact version and auth mode from GET /api/appInfo (a passive fingerprint)."
+  derivation: "Endpoint-shape + negative-space — the controller has no @PreAuthorize and DISABLED wires .anyExchange().permitAll(); a security reviewer expects deployment metadata to be gated by default."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Under `auth.type=DISABLED` (the application.yml:34 shipped default),
+      `DisabledAuthSecurityConfiguration` wires `.anyExchange().permitAll()`, and `/api/appInfo`
+      (which carries no @PreAuthorize and is not whitelisted) is therefore anonymously reachable
+      and returns `{projectVersion, authType}`. The sidecar names this the single highest-signal-
+      density fingerprint in the platform and the 19th supporting sidecar of REFACTOR-185. The
+      live disabled-authentication doc page now WARNS about exactly this (WebFetch 2026-06-03:
+      "GET /api/appInfo returns the precise platform version ... and the active auth.type value,
+      with no authentication" + a "Fingerprint matrix (passive recon)").
+    evidence:
+      - sidecar: odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+        section: security.known_security_gaps[0,1]
+        cite: "AppInfoController.java:18-29 + application.yml:34 + DisabledAuthSecurityConfiguration.java:13-18 + SecurityConstants.java:95-96"
+        note: "Anonymous version+auth-mode disclosure under DISABLED — REFACTOR-185 19th sidecar."
+      - sidecar: WebFetch
+        section: live disabled-authentication page
+        cite: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+        note: "Doc now documents the /api/appInfo fingerprint surface verbatim — DOC-GAP-037 CLOSED on the doc side, confirmed live 2026-06-03."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  note: |
+    The DISCLOSURE is intended (the SPA needs authType); the RISK is the DISABLED-default reach.
+    Doc-warning side is now CLOSED (DOC-239 delivered + live-confirmed). The remaining gap is a
+    REGRESSION GUARD: no test asserts /api/appInfo is open under DISABLED and gated under the
+    other three modes. IT-009 verifies the GENERAL boundary on a different endpoint
+    (/api/dataentities/classes) but not /api/appInfo specifically — see H-004.
+
+- id: H-004
+  hypothesis: "When the deployment runs LOGIN_FORM / OAUTH2 / LDAP, an unauthenticated caller cannot read GET /api/appInfo (it requires authentication), so the version+auth-mode fingerprint is NOT anonymously available on a hardened deployment."
+  derivation: "Pillar-mission anchor (P-09 'enabling a UI auth mode protects the UI/API surface') applied to the appInfo path; the inverse of H-003."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Under LOGIN_FORM/OAUTH2/LDAP the path is not whitelisted and has no SECURITY_RULES entry,
+      so it falls through to `.pathMatchers("/**").authenticated()` — an unauthenticated caller
+      gets 401/302, not the DTO. This is the same mechanism IT-009 verifies generically (DISABLED
+      open vs LOGIN_FORM authenticated for a non-whitelisted endpoint), so the boundary IS pinned
+      at the chain level by an existing integration test — but on the proxy endpoint
+      /api/dataentities/classes, NOT on /api/appInfo. The behaviour is confirmed by trace; the
+      appInfo-specific assertion is not in any test.
+    evidence:
+      - sidecar: odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+        section: security.auth_mode_relevance + bugs_limitations_corner_cases[2]
+        cite: "LoginFormSecurityConfiguration.java:49-57 + SecurityConstants.java:95-96"
+        note: "Non-whitelisted /api/appInfo → authenticated() fall-through under the 3 login-bearing modes."
+      - sidecar: source_read_for_validation
+        section: IT-009 protocol (workspace integration-tests)
+        cite: "integration-tests/protocols/IT-009-auth-mode-boundary.md:54-56"
+        note: "IT-009 verifies DISABLED-open-vs-LOGIN_FORM-authenticated for /api/dataentities/classes, not /api/appInfo — the boundary mechanism is tested, the appInfo path is not."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  note: |
+    `source_read_for_validation: true` — I read the IT-009 protocol file (workspace, not odd-platform
+    source) to confirm the boundary is tested on a different endpoint. No odd-platform source file was read.
+
+- id: H-005
+  hypothesis: "When a user opens the App Info menu (information icon in the top toolbar), they see the deployment's platform version displayed inline as a clickable link to the ODD Platform GitHub repo."
+  derivation: "UI-label seed — AppInfoMenu renders projectVersion under the literal label 'ODD Platform version' hyperlinked to github.com/opendatadiscovery/odd-platform."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      AppInfoMenu reads `appInfo.projectVersion` via useAppInfo() and, when truthy, renders it in
+      a `<Typography variant='h4'>` wrapped in a `<Link to={githubLink}>`. When projectVersion is
+      empty/missing (BuildProperties absent, or unauthenticated under the 3 login modes), the entire
+      version row is suppressed (early-return null) rather than showing a placeholder — a deliberate
+      "don't render over render-blank" ADR.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: implicit_adrs[2] + concepts.operations
+        cite: "AppInfoMenu.tsx:37-53"
+        note: "projectVersion rendered conditionally on truthiness; GitHub-linked; suppressed when absent."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  note: "Confirmed-but-untested — no test exists for AppInfoMenu (grep across src/**/*.test.* + cypress returns 0 hits per the sidecar)."
+
+- id: H-006
+  hypothesis: "When an operator INTENDS to enable authentication but typos auth.type (e.g. `OUATH2` for `OAUTH2`), the platform either fails to start or clearly signals the misconfiguration — it does NOT silently run wide-open while the UI behaves as though auth is healthy."
+  derivation: "Negative-space + endpoint-shape — auth.type is round-tripped with no @Value default and no enum validation at the backend (AppInfoController.java:18) and no validation at the UI string-compare (Overview.tsx:26)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      A typo'd auth.type (`OUATH2`) is injected verbatim by `@Value("${auth.type}")` with no
+      default and no enum constraint; EVERY `@ConditionalOnProperty(havingValue=...)` then fails
+      to match, so NO SecurityWebFilterChain bean is wired (no boot fail-fast, no WARN — the
+      DisabledAuthSecurityConfiguration itself is `@Slf4j`-less and silent). /api/appInfo echoes
+      `OUATH2` back. The UI's gate `Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED')`
+      evaluates TRUE for `OUATH2`, so the home page RENDERS the OwnerAssociation card as if auth
+      were healthy — on a deployment that actually has no security chain wired. The two layers'
+      missing validation COMPOUND: the backend doesn't catch the typo and the UI doesn't catch
+      the backend's silence. (Empty `AUTH_TYPE=` is the mirror failure: gate evaluates FALSE,
+      card HIDDEN as if DISABLED were intended, masking the same broken-chain deployment.)
+    evidence:
+      - sidecar: odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+        section: bugs_limitations_corner_cases[0,1]
+        cite: "AppInfoController.java:18 + the four @ConditionalOnProperty(havingValue=...) configs"
+        note: "No @Value default, no enum validation; typo/empty silently produces no SecurityWebFilterChain."
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "Overview.tsx:25-27"
+        note: "String-equality gate renders OwnerAssociation TRUE for any non-DISABLED string incl. typos; FALSE for empty — both wrong vs operator intent, no diagnostic."
+      - sidecar: odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10.md
+        section: bugs_limitations_corner_cases[1,6]
+        cite: "DisabledAuthSecurityConfiguration.java:1-19 (no @Slf4j) + :10 (no matchIfMissing)"
+        note: "Silent boot; no WARN; missing-key/typo produces no bean from any of the four configs."
+    operator_visible_failure: |
+      (1) An operator who deploys with `auth.type: OUATH2` believing they enabled OAuth sees a
+      home page that shows the self-service Owner-Association card (the screen LOOKS like a
+      healthy authenticated deployment) while the platform actually serves every endpoint
+      unauthenticated — the worst silent security failure, with the UI actively reassuring the
+      operator that auth is on. (2) An operator who clears `auth.type` (empty) sees the
+      Owner-Association card disappear as if they had chosen DISABLED, masking that the security
+      chain is unwired for a non-DISABLED reason. (3) In both cases there is no boot WARN, no
+      toast, no fail-fast — the operator's only signal is the (misleading) UI state. This is the
+      LSN-001 class: an insecure outcome an operator inherits without realising.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When the deployment runs auth.type=DISABLED, the home page does NOT render the self-service Owner-Association card (there is no identity to associate)."
+  derivation: "View-mode/UI-label seed — Overview gates OwnerAssociation on `authType !== 'DISABLED'`; the live catalog-overview doc states 'On auth-disabled deployments the section is hidden'."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `isShowOwnerAssociation = Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED')`
+      evaluates FALSE when authType is exactly 'DISABLED', so the `<OwnerAssociation>` wrapper does
+      not render. The live catalog-overview doc agrees on the user-visible outcome ("On auth-disabled
+      deployments the section is hidden"). The outcome is correct for the EXACT 'DISABLED' literal;
+      the fragility (empty/typo'd values reaching the wrong branch) is the separate H-006 finding.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: concepts.invariants + docs_link_semantic.doc_drift_findings[1]
+        cite: "Overview.tsx:25-27"
+        note: "Gate evaluates FALSE for exact 'DISABLED'; doc agrees the card is hidden under DISABLED."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  note: "Confirmed-but-untested — no Overview.test.tsx exists; the gate predicate has zero coverage."
+
+- id: H-008
+  hypothesis: "When an API consumer building their own SPA-equivalent client reads the developer-guides API reference, they find GET /api/appInfo documented (purpose, response shape, DISABLED-mode reachability)."
+  derivation: "Doc-claim seed + cross-pillar (P-11 public API surface) — the feature flow notes a DOC-NNN to add /api/appInfo to the api-reference page; the sidecar confirmed the live api-reference page omitted it as of 2026-05-20."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      As of the sidecar enrichment (2026-05-20) the live developer-guides/api-reference page did
+      NOT enumerate /api/appInfo. That gap is now tracked and DELIVERED via DOC-240
+      ("developer-guides/api-reference.md — enumerate /api/identity/whoami + /api/appInfo +
+      /api/resource/.../permissions"), which records a PASS for the `GET /api/appInfo` section with
+      response shape + authType enumeration, and cross-references this exact feature (F-119a). The
+      doc-side promise is satisfied by an already-tracked, delivered item.
+    evidence:
+      - sidecar: odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+        section: docs_link_semantic.doc_drift_findings[0]
+        cite: "WebFetch developer-guides/api-reference 2026-05-20 (no /api/appInfo listed) + openapi.yaml:2704-2717"
+        note: "Endpoint was in the published OpenAPI contract but absent from operator-facing api-reference."
+      - sidecar: source_read_for_validation
+        section: DOC-240 backlog item (workspace)
+        cite: "backlog/docs/DOC-240.md:23,31,57"
+        note: "DOC-240 enumerates /api/appInfo in api-reference.md; PASS recorded; cross-refs F-119a."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  note: "`source_read_for_validation: true` — read the DOC-240 backlog item (workspace), no odd-platform source."
+
+- id: H-009
+  hypothesis: "When an API consumer reads the OpenAPI spec for getAppInfo, the spec encodes the intended security posture (e.g. that the endpoint is intentionally open under DISABLED / gated otherwise), so a reader does not assume it is unconditionally server-authenticated."
+  derivation: "Doc-claim/spec seed — the feature flow's drift_class `openapi_no_security_element_on_appinfo_operation` (openapi.yaml:2704-2717 has no security: element)."
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The OpenAPI operation `getAppInfo` (openapi.yaml:2704-2717) carries NO `security:` element,
+      and the generated AppInfoApi interface has no @PreAuthorize — so the spec layer does not encode
+      the "open under DISABLED, authenticated otherwise" posture at all; a reader sees an endpoint
+      with no security marker and may assume it is server-authenticated. This is genuinely under-
+      specified. It is tracked at SPC-002 (spec tightening for getAppInfo security: [] declaration,
+      co-listed with PermissionResourceType). PARTIAL because the actual runtime posture is correct
+      and now documented in prose (disabled-authentication page), but the machine-readable spec
+      contract still does not express it.
+    evidence:
+      - sidecar: odd-platform__java__AppInfoController__controller-class__AppInfoController.md
+        section: security.authorization_assertions
+        cite: "openapi.yaml:2704-2717 (no security element) + AppInfoApi generated interface"
+        note: "Spec encodes no security posture for getAppInfo; reader cannot infer the mode-dependent reachability."
+      - sidecar: source_read_for_validation
+        section: SPC-002 backlog item (workspace)
+        cite: "backlog/docs/DOC-240.md:44 cross-ref to SPC-002"
+        note: "SPC-002 tracks the getAppInfo security: [] spec-tightening."
+    operator_visible_failure: |
+      An API consumer reading the spec (or a generated SDK) cannot tell from the contract that
+      /api/appInfo is reachable pre-auth under DISABLED and gated under the other three modes; they
+      may build a client that assumes the endpoint is always authenticated (and breaks under
+      DISABLED) or always open (and breaks under LOGIN_FORM). The runtime is correct; the spec is
+      silent — a contract-vs-behaviour gap that surfaces only when the consumer reads the spec as
+      truth.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When a user on a touch device or a keyboard-only / screen-reader user wants to see the platform version, they can open the App Info menu and read it — the disclosure that exists for the SPA is reachable by the humans it is rendered for."
+  derivation: "Senior-PO UX seed (Rule 9 — 'does the user understand how to use this from what is on screen; how does it behave across device types') applied to the only user-facing render of the version."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The App Info menu opens ONLY on `onMouseEnter` of the icon button (AppInfoMenu.tsx:81) —
+      there is no onClick, no onKeyDown, no onFocus. Touch-device users (iOS Safari, Android
+      Chrome on phone/tablet) generate no mouseenter and cannot open the menu at all; keyboard and
+      screen-reader users cannot open it either. The widget carries `aria-haspopup='true'` +
+      `aria-controls` ARIA attributes that PROMISE keyboard activation the code does not wire — a
+      WCAG 2.1 SC 2.1.1 (Keyboard) violation. So the version (and the operator-configured links in
+      the same menu) are unreachable for an entire class of users and devices.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: bugs_limitations_corner_cases[1] + security.known_security_gaps[3]
+        cite: "AppInfoMenu.tsx:78-82"
+        note: "Hover-only activation; aria-haspopup/aria-controls present but no keyboard/click/focus handler — WCAG 2.1 SC 2.1.1."
+    operator_visible_failure: |
+      (1) A user on a phone or tablet can never open the App Info menu — the version, the
+      Documentation/Slack/Feedback shortcuts, and any operator-configured navigation links are all
+      unreachable. (2) A keyboard-only or screen-reader user is told by the ARIA attributes that the
+      control is a popup-trigger but cannot activate it, which is both an accessibility regression
+      and a broken-promise (the platform claims keyboard support it does not deliver). (3) A user
+      filing a bug report cannot read the version they are asked to quote unless they are on a
+      mouse-driven desktop.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When an operator edits the deployment's auth.type and restarts the backend, a user who already has the SPA open sees the change reflected after a normal page reload (the UI does not show a stale auth-mode-derived state indefinitely)."
+  derivation: "Negative-space + UX seed — the AppInfo response is React-Query cached; the gate (Overview) and the version (AppInfoMenu) both derive from it, and AppInfoMenu uses keepMounted."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      useAppInfo() sets no staleTime, so a fresh mount refetches — a normal full page reload DOES
+      pick up a changed auth.type. But the AppInfoMenu uses MUI `keepMounted` (AppInfoMenu.tsx:90)
+      and there is no invalidateQueries('appInfo') anywhere in the UI, so within a single SPA
+      session the menu's first-mount snapshot persists; and the Overview gate, while recomputed per
+      render, only re-reads appInfo when the query refetches (on remount). So: across a full reload,
+      correct; within a live session without reload, the auth-mode-derived UI can lag the actual
+      deployment state. For auth.type specifically this is low-impact (operators restart the backend
+      and reload), but it is the same staleness shape the sidecar flags for operator-configured links.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: stress_findings.resource_boundaries (cache) + bugs_limitations_corner_cases[2]
+        cite: "AppInfoMenu.tsx:90 + lib/hooks/api/appInfo.ts:4-17"
+        note: "keepMounted + no staleTime + no invalidateQueries → first-mount snapshot persists within a session."
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "Overview.tsx:24-32"
+        note: "appInfo not in the loading composition; gate re-reads only on query refetch (remount)."
+    operator_visible_failure: |
+      An operator who changes auth.type on a running deployment and tells a user 'refresh' will get
+      correct behaviour on a true reload; a user who merely navigates within the SPA (no reload) may
+      continue to see the old auth-mode-derived UI (e.g. the OwnerAssociation card present/absent per
+      the pre-change mode) until they hard-reload. Low practical risk for auth.type (a backend
+      restart forces reconnection), but a real staleness window for the same-session case.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Typo'd/empty auth.type silently wires NO SecurityWebFilterChain while the home page renders OwnerAssociation as if auth were healthy (typo) or hides it as if DISABLED were intended (empty) — no boot WARN, no fail-fast, no UI diagnostic; the two missing-validation layers compound."
+  dedup_status: already_tracked
+  tracked_as: PLT-077
+  proposed_fix_anchor: "PLT-077's proposed @Pattern(regexp='DISABLED|LOGIN_FORM|OAUTH2|LDAP') on the auth.type @Value consumers + a boot-time fail-fast/WARN; UI-side, normalise/validate authType against the enum before gating (Overview.tsx:26)."
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: "App Info menu (the only user-facing render of the platform version) is hover-only — touch, keyboard, and screen-reader users cannot open it; aria-haspopup/aria-controls promise keyboard support that is not wired (WCAG 2.1 SC 2.1.1)."
+  dedup_status: already_tracked
+  tracked_as: PLT-088
+  proposed_fix_anchor: "PLT-088's AppInfoMenu hardening pack — add onClick/onKeyDown activation alongside onMouseEnter (the keyboard-inaccessibility item is already enumerated in PLT-088)."
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: "Under the DISABLED default, /api/appInfo is an anonymous version+auth-mode fingerprint (REFACTOR-185 19th sidecar)."
+  dedup_status: already_tracked
+  tracked_as: DOC-239
+  note: "Doc-warning side CLOSED — DOC-239 delivered + live-confirmed via WebFetch 2026-06-03 ('Fingerprint matrix (passive recon)' names /api/appInfo). Broader DISABLED-mode hardening at PLT-072; DOC-GAP-037 CLOSED, DOC-GAP-045 partially closed (appInfo covered)."
+- hypothesis_id: H-002
+  one_line: "/api/appInfo is gated under LOGIN_FORM/OAUTH2/LDAP (not whitelisted) — the SPA's pre-auth mode-discovery promise holds uniformly only under DISABLED; under the three login modes the discovery endpoint is itself behind the login wall."
+  dedup_status: net_new
+  distinct_from: PLT-077
+  recommended_log_as: "caveat on disabled-authentication / authentication doc page OR a whitelist decision (DOC-NNN)"
+  note: "Distinct from PLT-077 (that is about typo/empty values); this is about the whitelist gap for the valid LOGIN_FORM/OAUTH2/LDAP modes. Resolve the pre-vs-post-auth-fetch ambiguity via PENDING-F-119-1 before filing as a bug; until then it is a documentation caveat."
+- hypothesis_id: H-011
+  one_line: "Auth-mode-derived UI (OwnerAssociation gate + version) can lag a live auth.type change within a single SPA session (keepMounted + no invalidateQueries + no staleTime); correct only across a full reload."
+  dedup_status: net_new
+  recommended_log_as: "caveat in catalog-overview / odd-platform config doc (low priority); same staleness shape already noted for operator-configured links in AppInfoMenu sidecar"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — F-119 ships with test_matrix all-GAP and related_test_gaps: [] (the F-056 hole:
+# a behaviourally load-bearing feature with NO functional test obligation anywhere). Every hand-proven
+# promise below is the highest-value guard to write. None route to `none`.
+- use_case_id: F-119-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "GET /api/appInfo returns exactly {projectVersion, authType} — no extra operator-sensitive field."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-001)"
+  proposed_test: "@WebFluxTest(AppInfoController) — assert GET /api/appInfo body has exactly two keys (projectVersion, authType); a new field added to AppInfo fails the assertion (disclosure-surface regression guard)."
+- use_case_id: F-119-UC-002
+  hypothesis_id: H-003
+  kind: render
+  promise: "Under auth.type=DISABLED an unauthenticated GET /api/appInfo returns 200 + the DTO."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-002)"
+  proposed_test: "Integration (extend IT-009 family): on the DISABLED stack, anonymous GET /api/appInfo → 200 with projectVersion+authType. Pins the appInfo-specific DISABLED reachability that IT-009 only proves generically."
+- use_case_id: F-119-UC-003
+  hypothesis_id: H-004
+  kind: render
+  promise: "Under LOGIN_FORM/OAUTH2/LDAP an unauthenticated GET /api/appInfo is rejected (401/302)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-003)"
+  proposed_test: "Integration (extend IT-009): on the LOGIN_FORM stack, anonymous GET /api/appInfo → 401/302. The appInfo-specific assertion IT-009 omits (it probes /api/dataentities/classes)."
+- use_case_id: F-119-UC-004
+  hypothesis_id: H-005
+  kind: render
+  promise: "The App Info menu displays the deployment's projectVersion as a GitHub-linked label; suppresses the row when version is absent."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-004)"
+  proposed_test: "AppInfoMenu RTL test — given useAppInfo returns {projectVersion:'1.2.3'}, the version label renders inside a Link to github.com/opendatadiscovery/odd-platform; given empty/undefined projectVersion, the version row is absent."
+- use_case_id: F-119-UC-005
+  hypothesis_id: H-007
+  kind: render
+  promise: "Under authType='DISABLED' the home page hides the OwnerAssociation card; under a valid non-DISABLED mode it shows it."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-005)"
+  proposed_test: "Overview RTL test — gate predicate: authType='DISABLED' → no OwnerAssociation; authType='LDAP' → OwnerAssociation mounted. The gate has zero coverage today and is the literal that, if typo'd, silently mis-gates every deployment."
+- use_case_id: F-119-UC-006
+  hypothesis_id: H-006
+  kind: edit-reconcile
+  promise: "A typo'd/empty auth.type does NOT silently produce a wide-open deployment with a misleading UI — it fails fast OR validates."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-006) — regression guard for the PLT-077 fix"
+  proposed_test: "After PLT-077's @Pattern lands: boot-context test asserting an invalid auth.type fails application startup (or a documented WARN+safe-default); UI test asserting Overview rejects/normalises a non-enum authType rather than rendering OwnerAssociation."
+- use_case_id: F-119-UC-007
+  hypothesis_id: H-010
+  kind: render
+  promise: "The App Info menu (version + links) is openable by touch, keyboard, and screen-reader users, not mouse-hover only."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-007) — regression guard for the PLT-088 fix"
+  proposed_test: "AppInfoMenu a11y test — the icon is focusable and opens the menu on Enter/Space (not only onMouseEnter); pairs with P-173's Playwright keyboard-activation check."
+- use_case_id: F-119-UC-008
+  hypothesis_id: H-002
+  kind: resolve-later
+  promise: "The SPA can discover the auth mode before authenticating across all modes (the endpoint's reason to exist)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-119-UC-008) — gated on PENDING-F-119-1"
+  proposed_test: "After the probe resolves: integration test on the LOGIN_FORM stack asserting the SPA's pre-auth /api/appInfo fetch succeeds (if whitelisted) OR documenting that the SPA renders login without it."
+
+### probes_emitted
+- probe_id: PENDING-F-119-1
+  hypothesis_id: H-002
+  hypothesis: "When the SPA boots under LOGIN_FORM/OAUTH2/LDAP, does it call GET /api/appInfo from a PUBLIC route before sign-in (which the current non-whitelisted config would 401/302), or only AFTER authentication? The answer settles whether the pre-auth mode-discovery promise is delivered under the three login-bearing modes or only under DISABLED, and whether /api/appInfo needs a WHITELIST_PATHS entry."
+  local_execution_blocked: false
+  proposed_probe: "Boot the odd-loginform local stack (lineage/_extractor/probe-stacks/odd-loginform.docker-compose.yml, :18082); with a clean browser session observe the network tab on first SPA load — record whether GET /api/appInfo fires pre-auth (and its status) or only after login. Cross-check Overview/login-flow render against the response timing."
+  note: "Parallel-safe mode — recorded here only; no P-NNN file created."
+
+### validation_gaps
+- sidecar: odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md
+  field_insufficient: "bugs_limitations_corner_cases[4] — the sidecar itself flags 'Verify: does the SPA currently call /api/appInfo from a public route, or after auth?' as an open question it could not resolve statically."
+  proposed_refresh: "On the next file-analyser refresh of this node, resolve the pre-vs-post-auth SPA fetch question (trace the SPA's appInfo call-site against the active route guard, or attach the PENDING-F-119-1 probe outcome), so H-002's partial verdict can settle to confirmed or contradicted."
+- sidecar: feature-flow F-119.yaml
+  field_insufficient: "pillar_anchored_id is 'P-09:F-007' while feature_id is F-119 and pillar_anchored_feature_name is 'Deployment-Info Introspection Surface' — the :F-007 suffix looks like a copy-paste from another feature's anchor (F-007 is a different feature)."
+  proposed_refresh: "Feature-flow-builder should reconcile the pillar_anchored_id suffix to match this feature (P-09:F-119) on the next refresh; this reflection uses P-09:F-119."
+
+### doc_drift_findings
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+  doc_says: "GET /api/appInfo returns the precise platform version and the active auth.type value with no authentication (with a 'Fingerprint matrix (passive recon)')."
+  code_does: "Exactly that — AppInfoController.java:24-28 + DisabledAuthSecurityConfiguration.java:13-18 under the DISABLED default."
+  recommended_log_as: "NO ACTION — doc now AGREES with code (DOC-GAP-037 CLOSED, confirmed live 2026-06-03). Recorded as convergence, not a gap."
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+  doc_says: "Nothing about auth.type validation, typos, empty values, or missing-SecurityWebFilterChain behaviour (confirmed absent via WebFetch 2026-06-03)."
+  code_does: "Typo'd/empty auth.type silently wires no SecurityWebFilterChain and produces misleading UI (H-006)."
+  recommended_log_as: "doc-gap (caveat) — fold into the DISABLED-mode-hardening doc family; the CODE fix is PLT-077, the DOC caveat about the failure mode is not yet on the live page."
+
+## maintainer_notes
+
+This reflection is a strong CONVERGENT-VALIDATION case: 8 of the 11 hypotheses re-derive findings already tracked by the scanner/harvest pipeline (PLT-077, PLT-088, DOC-239, DOC-240, SPC-002) — two independent methods agreeing is high-confidence signal, not wasted work. The genuinely NEW outputs are (a) the H-002 whitelist-vs-login-mode caveat (distinct from PLT-077's typo finding) pending the PENDING-F-119-1 probe, (b) the H-011 same-session staleness caveat, and (c) the eight functional test demands (the LSN-030 promise layer) — this feature shipped with test_matrix all-GAP and related_test_gaps:[], the exact F-056 hole, so EVERY confirmed/contradicted/partial promise becomes a missing-functional TEST-GAP candidate. The doc-side has materially improved since the sidecars were enriched: the /api/appInfo fingerprint is now documented (DOC-GAP-037 CLOSED, live-confirmed). The one doc-gap that persists is the auth.type-typo failure mode (code fix PLT-077; doc caveat unfiled).

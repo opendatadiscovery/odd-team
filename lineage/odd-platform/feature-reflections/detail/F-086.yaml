@@ -1,0 +1,847 @@
+---
+feature_id: F-086
+pillar_anchored_id: P-09:F-007
+pillar: P-09 Security & Access Control
+feature_name: |-
+  OAuth Logout Token-Revocation Semantics — operator-observable per-provider
+  asymmetry: Google + GitHub actively revoke at the IdP; Azure + Cognito +
+  ODD_IAM invalidate only the local session, leaving IdP-issued tokens
+  valid for the rest of their natural TTL
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__AppToolbar.md
+  - odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md
+  - odd-platform__java__auth__logout__CognitoLogoutSuccessHandler.md
+  - odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md
+contributing_sidecars_unresolved:
+  # GoogleLogoutSuccessHandler / GithubLogoutSuccessHandler / ODDIAMLogoutSuccessHandler
+  # have NO own sidecar, but their behaviour is densely cited with file:line via sibling
+  # comparison blocks inside the Azure / Cognito / OAuthSecurityConfiguration sidecars
+  # (e.g. GoogleLogoutSuccessHandler.java:43-54 POSTs to /revoke;
+  # GithubLogoutSuccessHandler.java:51-63 DELETEs /applications/{client_id}/grant).
+  # Traceable but second-hand — surfaced as a validation_gap.
+  - GoogleLogoutSuccessHandler (sibling-cited only)
+  - GithubLogoutSuccessHandler (sibling-cited only)
+  - ODDIAMLogoutSuccessHandler (sibling-cited only)
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The live OAuth2/OIDC page has been UPDATED since the sidecars were extracted
+      (sidecar reads at commit 80637ed/ede5d277 reported the per-provider revocation
+      asymmetry as UNdocumented). The page now states the per-provider logout matrix
+      explicitly (GitHub/Google revoke; Cognito does NOT call /oauth2/revoke; Azure
+      cannot per RFC-7009/v2.0; Okta/Keycloak/Custom-OIDC local-session-only) AND the
+      Azure logout-uri NPE. This converts several sidecar doc-gap facets from
+      "contradicted-by-silence" to "confirmed-documented" — the doc now matches the
+      code reality. The doc was almost certainly authored FROM the same finding set
+      (DOC-236 / PLT-073 / PLT-130), so it CONFIRMS the code, it does not contradict it.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      A Cognito / Azure / ODD_IAM user who clicks Logout has their IdP-issued
+      access + refresh tokens left fully valid (access ~1h, Cognito refresh up
+      to 90d) — a previously-exfiltrated token keeps working against
+      IdP-protected resources for the entire residual window, while the user
+      believes they are fully signed out.
+related_feature_flows: [F-011, F-089]
+related_concepts:
+  - oauth_provider_quirks_strategy_pattern
+  - OAuth2-end-session-flow
+  - WebSession-invalidation
+  - auth-mode
+related_drift_classes:
+  # facets from F-086's own observed_vs_expected that this reflection independently re-confirmed
+  - cognito_revocation_endpoint_exists_but_handler_does_not_call
+  - azure_no_revocation_in_v2_protocol_handler_silent
+  - token_exfiltration_window_60min_to_90day_post_logout
+  - rp_initiated_logout_state_parameter_omitted_csrf_low_risk
+  - okta_keycloak_fall_through_to_default_oidc_handler_no_revocation
+  - ui_provides_no_feedback_on_revocation_outcome
+  - zero_logout_test_coverage
+new_drift_classes_proposed:
+  - cognito_empty_logout_uri_silent_no_op_also_skips_local_session_invalidate
+    # Cognito's StringUtils.isEmpty(logoutUri) early-return at lines 33-35 sits
+    # BEFORE the WebSession::invalidate at line 49 — so a missing logout-uri leaves
+    # the user logged in LOCALLY too, not merely un-revoked at the IdP. This is a
+    # distinct, sharper failure than the documented "no IdP revocation": the user
+    # clicks Logout and stays signed into ODD itself, with zero error signal.
+  - logout_undefined_under_disabled_auth_mode_falls_through_to_no_handler
+    # AppToolbar fires window.location.href='/logout' in ALL modes incl. DISABLED,
+    # but DisabledAuthSecurityConfiguration wires no .logout(...) — the click hits an
+    # endpoint with no handler.
+---
+
+# OAuth Logout Token-Revocation Semantics — product-owner reflection
+
+## product_owner_narrative
+
+OAuth Logout Token-Revocation Semantics is not a feature an operator switches on — it is the **observable behaviour of the single "Logout" affordance** that every OAuth2-mode deployment of ODD Platform ships in its top toolbar. When a signed-in user clicks Logout, the SPA performs one action: a full-page browser navigation to the backend `/logout` URL (`AppToolbar.tsx:35-37` — `window.location.href = '/logout'`, per the AppToolbar sidecar). Everything that happens next is decided entirely on the backend by a chain of five provider-specific handlers, and the central, undocumented-until-recently truth of this feature is that **the five providers do five materially different things, and the user cannot tell which one they got** (per the AppToolbar sidecar `security.known_security_gaps[3]` + the Azure/Cognito sidecars). The audience is every `platform-operator` and `odd-platform-ui-end-user` on an OAUTH2 deployment, and the people most exposed are those on shared or public workstations who trust "Logout" to mean "my session is dead everywhere."
+
+A user interacts with the feature through exactly one button. They provide no input; they observe a redirect that lands them back at a login page. There is no per-provider UI, no confirmation prompt (`AppToolbar.tsx:117`, AppToolbar sidecar `bugs[2]`), and no message telling them whether their IdP tokens were revoked. The backend dispatch is a chain-of-responsibility: `OAuthLogoutSuccessHandler` reads the active token's provider and routes to the matching `*LogoutSuccessHandler.shouldHandle(provider)` (`OAuthLogoutSuccessHandler.java:36-48`, per the Azure sidecar), falling back to Spring's `OidcClientInitiatedServerLogoutSuccessHandler` for any provider without a dedicated handler (`OAuthSecurityConfiguration.java:180-183`).
+
+The working parts, described as a product owner would demo them: for **Google**, Logout actively revokes the access token by POSTing to `oauth2.googleapis.com/revoke` (`GoogleLogoutSuccessHandler.java:43-54`, sibling-cited in the Azure sidecar `implicit_adrs[0]`); for **GitHub**, it revokes the whole grant via `DELETE /applications/{client_id}/grant` (`GithubLogoutSuccessHandler.java:51-63`). For **Cognito**, it redirects to Cognito's `/logout` endpoint and invalidates the local Spring `WebSession`, but it does **not** call Cognito's documented `/oauth2/revoke` endpoint — so the access token (≈1h TTL) and refresh token (up to 90 days) stay valid at AWS (`CognitoLogoutSuccessHandler.java:33-50`, Cognito sidecar `bugs[3]`). For **Azure**, it redirects to the end-session endpoint and invalidates the local session, with no revocation call — and here the platform's hands are partly tied: Azure AD v2.0 does not expose an RFC-7009 revocation endpoint at all (`AzureLogoutSuccessHandler.java:31-48`, Azure sidecar `implicit_adrs[0]`). For **ODD_IAM** and for any **Okta / Keycloak / Custom-OIDC** provider with no dedicated handler, only the local session is invalidated (`OAuthSecurityConfiguration.java:180-183`, OAuthSecurityConfiguration sidecar `security.known_security_gaps[5]`).
+
+This feature does not feed other features so much as it **terminates the session lifecycle** that the cross-pillar P-09 mission opens: `system-mission.md` P-09 frames authentication as "three independently-configured authentication surfaces … Enabling one does not protect the other," and logout is the dual of authentication — every auth mode that mints a session needs a teardown path. F-011 (Principal-to-Owner Resolution) is the login-side chokepoint; F-086 is the logout-side surface; F-089 (Post-Logout Redirect Provenance) is the redirect half of the same flow. The Cognito sidecar's `back_links` makes the bookend relationship explicit.
+
+The edge cases a product owner would flag in a demo are exactly where this feature hurts. A Cognito deployment that omits the optional-looking `logout-uri` makes the Logout button a **silent no-op** — the handler returns `Mono.empty()` before it ever reaches session invalidation, so the user clicks Logout and stays logged into ODD itself, with no error (`CognitoLogoutSuccessHandler.java:33-35`, Cognito sidecar `bugs[0]`). An Azure deployment that omits the same parameter does the opposite extreme — an unguarded `URI.create(null)` NPE returns HTTP 500 and nobody can log out at all (`AzureLogoutSuccessHandler.java:39`, Azure sidecar `bugs[0]`). And under `auth.type=DISABLED`, the Logout button points at an endpoint with no handler wired at all (`DisabledAuthSecurityConfiguration` has no `.logout(...)`, AppToolbar sidecar `bugs[3]`). Across all six production classes there is **zero test coverage** — `find … -name '*Logout*.java'` in the test tree returns nothing (verified live this run; F-086 `zero_logout_test_coverage` facet).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a Google-authenticated or GitHub-authenticated user clicks Logout, the
+    OAuth2 token the IdP issued is actively revoked at the IdP (not merely the
+    local ODD session ended), so a previously-copied token stops working against
+    Google/GitHub-protected resources promptly after logout.
+  derivation: |-
+    Endpoint/handler shape: GoogleLogoutSuccessHandler POSTs to a /revoke endpoint;
+    GithubLogoutSuccessHandler DELETEs the grant. The pillar mission ("logout is the
+    dual of authentication") implies a real teardown.
+  seed_source: pillar + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      GoogleLogoutSuccessHandler.java:43-54 POSTs to https://oauth2.googleapis.com/revoke;
+      GithubLogoutSuccessHandler.java:51-63 issues DELETE /applications/{client_id}/grant
+      (revokes ALL tokens for the user+app pair). Both perform genuine server-side
+      revocation in addition to local WebSession invalidation. The live doc now states
+      this verbatim ("GitHub … DELETE /applications/{client_id}/grant"; "Google … POSTs
+      to oauth2.googleapis.com/revoke").
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md
+        section: implicit_adrs[0]
+        cite: "GoogleLogoutSuccessHandler.java:43-54 + GithubLogoutSuccessHandler.java:51-63"
+        note: "Sibling-comparison block names both revocation calls with file:line."
+      - sidecar: WebFetch
+        section: oauth2-oidc live page
+        cite: "https://docs.opendatadiscovery.org/.../oauth2-oidc"
+        note: "Doc now documents the GitHub + Google revocation calls explicitly."
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      MEDIUM not HIGH: the Google/GitHub handlers have NO own sidecar — the trace is
+      second-hand via the Azure sidecar's sibling-comparison citation. Confirmed, but
+      the lack of a direct sidecar is itself a validation_gap (see cross_references).
+
+- id: H-002
+  hypothesis: |-
+    When a Cognito-authenticated user clicks Logout, the access + refresh tokens
+    Cognito issued are revoked at AWS, so a stolen/copied token cannot continue to
+    be used against Cognito-protected resources after the user has logged out.
+  derivation: |-
+    Negative-space + response-shape: an enterprise OAuth2 provider's "Logout" is
+    expected to revoke; Cognito documents an /oauth2/revoke endpoint, so the user
+    expects parity with Google/GitHub.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      CognitoLogoutSuccessHandler.java:33-50 redirects to Cognito's /logout (which only
+      drops the User Pool session cookie) and invalidates the local Spring WebSession.
+      It does NOT call Cognito's /oauth2/revoke endpoint — which AWS documents as
+      available on every User Pool. The access token (default ~1h) and refresh token
+      (up to 90 days) remain valid at AWS until natural TTL. This is a platform CHOICE,
+      not a protocol limit — Google/GitHub siblings show revocation is achievable; the
+      one-line difference is the absent /revoke POST.
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__CognitoLogoutSuccessHandler.md
+        section: bugs_limitations_corner_cases[3] + security.known_security_gaps[0]
+        cite: "CognitoLogoutSuccessHandler.java:33-50 (no /revoke) + GoogleLogoutSuccessHandler.java:43-54 (contrast)"
+        note: "Handler tail invalidates session only; no outbound revoke."
+      - sidecar: WebFetch
+        section: oauth2-oidc live page
+        cite: "Cognito … does not call /oauth2/revoke; residual ~1h access + up to 90d refresh"
+        note: "Doc now confirms the code behaviour."
+    operator_visible_failure: |-
+      (1) A user on a shared/public workstation clicks Logout, sees the login page, and
+      reasonably believes their session is dead everywhere — but a token captured before
+      logout (non-HttpOnly localStorage copy, MITM, OS-keychain export) keeps working
+      against any Cognito-protected downstream resource for up to ~1h (access) and up to
+      90 days (refresh). (2) Incident response cannot rely on "force all users to log
+      out" to contain a token compromise on Cognito deployments — the tokens survive.
+      (3) The asymmetry vs Google/GitHub is invisible: the same Logout button gives a
+      strictly weaker guarantee with no signal.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When an Azure-authenticated user clicks Logout, the Azure-issued tokens are
+    revoked at the IdP, matching the revocation guarantee a user would assume from
+    the GitHub/Google behaviour.
+  derivation: |-
+    Negative-space: a user assumes "Logout" means full token revocation regardless
+    of provider; the response-shape promise of the single button is uniform.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      AzureLogoutSuccessHandler.java:31-48 redirects to the Azure end-session endpoint
+      and invalidates the local WebSession, with NO revocation call. UNLIKE Cognito, this
+      is partly forced: Azure AD v2.0 does not expose an RFC-7009 token-revocation
+      endpoint, so even attempting revocation would 404 (Azure sidecar implicit_adrs[0],
+      doc confirms "Azure AD v2.0 does not expose RFC 7009 token revocation"). The
+      end-session redirect DOES invalidate Azure's own SSO session cookie. So the
+      hypothesis holds for the IdP session (the next interactive login re-prompts) but
+      FAILS for issued access/refresh tokens (they live to natural TTL: access ~1h,
+      refresh per tenant policy).
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md
+        section: implicit_adrs[0] + bugs_limitations_corner_cases[2]
+        cite: "AzureLogoutSuccessHandler.java:31-48 (no outbound revocation HTTP)"
+        note: "Session invalidate + end-session redirect only; protocol has no revoke."
+      - sidecar: WebFetch
+        section: oauth2-oidc live page
+        cite: "Azure AD v2.0 does not expose RFC 7009 token revocation"
+        note: "Doc confirms the protocol constraint."
+    operator_visible_failure: |-
+      Same residual-token window as Cognito for any previously-captured access/refresh
+      token — but because the root cause is a Microsoft protocol limitation, NOT an ODD
+      omission, the only remediation is documentation + a shorter token-lifetime tenant
+      policy. The operator-visible gap is the SILENCE: an operator with strict
+      immediate-revocation compliance requirements cannot tell from the product which
+      providers honour revocation. (The live doc now closes the documentation half.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a user clicks Logout, the platform always at minimum invalidates the local
+    ODD session, so regardless of provider the user is signed out of ODD itself.
+  derivation: |-
+    Pillar mission: "logout is the dual of authentication." The minimum a Logout
+    button must deliver is local sign-out — the universal tail of every handler.
+  seed_source: pillar + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The local-session-invalidate tail (exchange.getSession().flatMap(WebSession::invalidate))
+      is the documented common tail of all five handlers — BUT in CognitoLogoutSuccessHandler
+      the StringUtils.isEmpty(provider.getLogoutUri()) guard at lines 33-35 returns
+      Mono.empty() BEFORE reaching the line-49 invalidate. So if a Cognito deployment omits
+      logout-uri, the local session is NOT invalidated and the user remains signed into ODD
+      with NO error, NO redirect, HTTP 200. The "minimum guarantee" is therefore not
+      universal — it is gated on a config value the docs mark optional for non-Azure providers.
+      (Azure's opposite failure: omitting logout-uri NPEs to HTTP 500, also denying logout.)
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__CognitoLogoutSuccessHandler.md
+        section: bugs_limitations_corner_cases[0] + security.known_security_gaps[1]
+        cite: "CognitoLogoutSuccessHandler.java:33-35 (early return BEFORE invalidate at line 49)"
+        note: "Empty logout-uri short-circuits the whole handler incl. local cleanup."
+      - sidecar: odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "AzureLogoutSuccessHandler.java:39 (URI.create(null) NPE -> HTTP 500)"
+        note: "Opposite failure mode for the same missing config on Azure."
+    operator_visible_failure: |-
+      On a Cognito deployment misconfigured without logout-uri: the user clicks Logout,
+      the page does nothing visible, and they remain fully authenticated to ODD — a
+      genuine "logout that doesn't log out" on the local session, not just the IdP token.
+      No log line, no error toast — the only way an operator discovers it is by clicking
+      Logout and watching the session survive. This is the LSN-001-shaped silent
+      permissive-default failure applied to logout.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When an Azure operator deploys per the docs but does not set logout-uri, the
+    platform either boots with a clear fail-fast error or logs the user out anyway —
+    it does not silently accept the config and then fail at runtime.
+  derivation: |-
+    Endpoint-shape + negative-space: a required-but-unvalidated parameter is the
+    classic deferred-failure trap; a user expects fail-fast at boot, not HTTP 500 at
+    first logout.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      ODDOAuth2Properties.validate() (lines 17-28) checks only clientId + provider for
+      non-empty; logoutUri is unchecked, so an Azure deployment without logout-uri BOOTS
+      SUCCESSFULLY. AzureLogoutSuccessHandler.java:39 then calls URI.create(provider.getLogoutUri())
+      with no null-guard -> NPE -> HTTP 500 at the FIRST logout attempt. The sibling
+      Cognito handler carries the StringUtils.isEmpty guard; Azure does not (asymmetric,
+      hence a bug not a deliberate ADR). The live doc warns of exactly this NPE.
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "AzureLogoutSuccessHandler.java:39 + ODDOAuth2Properties.java:17-28 + CognitoLogoutSuccessHandler.java:33-35"
+        note: "Unvalidated logout-uri + no null-guard, asymmetric vs Cognito."
+      - sidecar: odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "ODDOAuth2Properties.java:17-28 (validate checks only clientId + provider)"
+        note: "Second corroboration of the unvalidated-logoutUri site."
+    operator_visible_failure: |-
+      An Azure operator who follows the documented example but treats logout-uri as
+      optional ships a deployment where EVERY Logout click returns HTTP 500 — no user can
+      log out at all, and the failure only surfaces at runtime (not at boot, not in any
+      config-lint). On a shared workstation this is doubly bad: users cannot end their
+      session even when they try.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When an operator deploys Okta or Keycloak (documented as supported providers) and
+    a user logs out, they receive the same provider-specific logout treatment as the
+    five enum'd providers.
+  derivation: |-
+    Doc-claim seed: the docs list Okta + Keycloak + Custom-OIDC as supported; a user
+    assumes "supported" includes a logout handler.
+  seed_source: doc-claim + view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      For any provider without a dedicated *LogoutSuccessHandler (Okta / Keycloak /
+      Custom-OIDC), OAuthLogoutSuccessHandler falls through to the default
+      OidcClientInitiatedServerLogoutSuccessHandler (OAuthSecurityConfiguration.java:180-183).
+      For an OIDC-compliant provider this issues an end_session_endpoint request — so the
+      IdP session IS ended. But there is no provider-specific token revocation, and for an
+      OAuth2-only (non-OIDC) provider no server-side teardown happens at all. So logout
+      "works" (local session + OIDC end-session) but at a strictly weaker tier than the
+      Google/GitHub revocation. The live doc now states this ("Okta, Keycloak, Custom OIDC
+      … invalidates only the local session"). NOTE: PLT-082 indicates the provider set may
+      now include a CustomOIDCUserHandler / CUSTOM_OIDC enum value not present in the
+      sidecar's commit-80637ed read — see validation_gap.
+    evidence:
+      - sidecar: odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md
+        section: bugs_limitations_corner_cases[4] + security.known_security_gaps[3]
+        cite: "OAuthSecurityConfiguration.java:180-183 (defaultOidcLogoutHandler fallback) + Provider.java:3-5"
+        note: "Fall-through to default OIDC handler for non-enum'd providers."
+      - sidecar: WebFetch
+        section: oauth2-oidc live page
+        cite: "Okta, Keycloak, Custom OIDC … invalidates only the local session"
+        note: "Doc confirms the local-session-only fall-through."
+    operator_visible_failure: |-
+      An operator who picks Okta/Keycloak for its admin-group mapping gets a working login
+      but a logout that neither revokes tokens nor (for OAuth2-only IdPs) ends the IdP
+      session — the same residual-token window as Cognito, with even less in-product
+      signal. Compounds with PLT-082 (a provider TYPO also lands here silently).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: view-mode
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    The Logout UI tells the user what kind of logout happened — at minimum
+    distinguishing "you are fully revoked at the IdP" (Google/GitHub) from "only your
+    local ODD session ended; your IdP tokens are still live" (Azure/Cognito/ODD_IAM).
+  derivation: |-
+    UI-label / senior-PO UX seed (Rule 9): the user lives the flow through one button;
+    a security-material asymmetry behind identical UI is an intuitiveness/consistency
+    defect a senior PO flags unprompted.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      AppToolbar.tsx:35-37 fires window.location.href='/logout' identically for all
+      providers and all four auth modes. There is no provider awareness in the SPA
+      (the Identity wire schema has no provider field — AppToolbar sidecar
+      security.known_security_gaps[2]), no post-logout confirmation screen, and no
+      message about revocation outcome. The user sees the same redirect-to-login for a
+      full IdP revoke and for a local-session-only teardown.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__AppToolbar.md
+        section: security.known_security_gaps[3] + invariants
+        cite: "AppToolbar.tsx:35-37 (identical click handler, all modes)"
+        note: "No SPA-side provider awareness or revocation feedback."
+    operator_visible_failure: |-
+      The most dangerous case is the shared/public workstation: the user clicks Logout,
+      gets the login page, and has zero way to know that on Cognito/Azure their IdP tokens
+      are still alive. The UI's uniformity actively misleads — it presents a strong-logout
+      affordance over a weak-logout reality. There is also no confirmation prompt, so a
+      single mis-click signs the user out (a separate low-severity UX nit).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a user clicks Logout, the post-logout redirect lands them back on the
+    legitimate ODD platform (their canonical URL), not on an attacker-controlled
+    destination.
+  derivation: |-
+    Negative-space + endpoint-shape: post-logout redirect targets are a known
+    open-redirect class; a user expects to return to ODD's own login page.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      All five handlers derive the post-logout redirect target from the INBOUND request's
+      Host header via UriUtils.getBaseUri(requestUri) (AzureLogoutSuccessHandler.java:38-44,
+      CognitoLogoutSuccessHandler.java:43, etc.). There is NO platform.base-url allowlist,
+      NO Host validation (Grep for platform.base-url/odd.platform-url/allowed.redirect
+      returns zero). In a single-host deployment with a fixed reverse-proxy Host this is
+      safe; behind a proxy that trusts X-Forwarded-Host, an attacker-forged host propagates
+      into the IdP end-session redirect, and if the IdP's own allowlist is permissive
+      (e.g. *.example.com) the user lands on the attacker domain AFTER an authenticated
+      logout. The IdP-side allowlist is the only guard.
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md
+        section: bugs_limitations_corner_cases[1] + security.known_security_gaps[1]
+        cite: "AzureLogoutSuccessHandler.java:40 + UriUtils.java:11-22 (Host-derived, no allowlist)"
+        note: "Redirect target from inbound Host; no platform-side allowlist."
+    operator_visible_failure: |-
+      Conditional open-redirect after authenticated logout: only exploitable when the
+      reverse proxy honours user-controlled X-Forwarded-Host AND the IdP allowlist is
+      permissive — but when it triggers, the victim is delivered to an attacker domain at
+      the moment they trust the app most (right after logging out), enabling convincing
+      credential-phishing. Already tracked as PLT-075.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    The post-logout redirect carries a state/nonce binding it to the user's session,
+    so a forged logout link cannot CSRF a victim into logging out.
+  derivation: |-
+    Doc-claim/standard seed: OIDC RP-Initiated Logout 1.0 §5 RECOMMENDS state on the
+    end-session redirect; a security-conscious user expects CSRF protection on logout.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No handler emits a state or nonce parameter on the end-session redirect — only
+      post_logout_redirect_uri + client_id (AzureLogoutSuccessHandler.java:38-44; same
+      omission across all five siblings, Azure sidecar security.known_security_gaps[3]).
+      OIDC RP-Initiated Logout 1.0 §5 recommends state to prevent logout CSRF.
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md
+        section: security.known_security_gaps[3]
+        cite: "AzureLogoutSuccessHandler.java:38-44 (no .queryParam(\"state\", ...))"
+        note: "No state/nonce on any handler's end-session redirect."
+    operator_visible_failure: |-
+      A logout-CSRF is feasible: an attacker who induces a victim's browser to hit
+      /logout (or the crafted end-session URL) can force the victim out. Severity is
+      genuinely LOW — the worst outcome is an unwanted logout, no auth bypass — but it is
+      a real, standards-recommended control that is absent platform-wide.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When a user clicks Logout under auth.type=DISABLED, the platform responds
+    coherently (a defined logout outcome), not an undefined fall-through.
+  derivation: |-
+    View-mode seed: AppToolbar mounts and fires /logout unconditionally in all four
+    auth modes; a user expects each mode to handle its own Logout.
+  seed_source: view-mode
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      AppToolbar.tsx:35-37 fires window.location.href='/logout' in ALL modes including
+      DISABLED, but DisabledAuthSecurityConfiguration wires no .logout(...) — the chain
+      is only .csrf().disable() + permitAll() (AppToolbar sidecar bugs[3]). The exact
+      response to GET /logout with no logout handler under WebFlux (404 vs the SPA's
+      static index.html SPA-fallback vs 200 empty) cannot be determined from the
+      sidecars — it depends on Spring's resource-handler fallback ordering, which is
+      runtime behaviour. DISABLED is dev-only per docs, but the dangling button exists
+      in every mode's identical toolbar.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__AppToolbar.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "DisabledAuthSecurityConfiguration.java:14-17 (no .logout) + AppToolbar.tsx:35-37"
+        note: "Logout button present + fired in DISABLED, no handler wired."
+    operator_visible_failure: |-
+      In a DISABLED-mode deployment (dev/demo), the visible Logout button likely lands the
+      user on a 404 or a silent re-render of the SPA shell rather than any logout — a
+      confusing dead affordance. Low real-world impact (DISABLED is dev-only) but a
+      product-coherence defect: the toolbar offers an action the mode cannot fulfil.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-086-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: PENDING-F-086-1
+
+- id: H-011
+  hypothesis: |-
+    The per-provider logout matrix (who revokes, who only ends the local session) is
+    locked by a test, so a refactor cannot silently regress (e.g.) Google from
+    "revokes" to "session-only" or swap which handler a provider routes to.
+  derivation: |-
+    Pillar mission ("deterministic gates") + tests_coverage_semantic: a security-material
+    behaviour with five branches and a fall-through is the textbook case for a regression
+    guard.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      There is ZERO test coverage of the entire auth/logout/ package: a live Glob this run
+      for **/*Logout*.java under odd-platform returns only the six PRODUCTION classes and
+      no test files; a Grep of odd-platform-api/src/test for LogoutSuccessHandler / revoke
+      endpoints returns nothing. No test pins shouldHandle dispatch, the Google/GitHub
+      revoke calls, the Cognito empty-logout-uri short-circuit, the Azure NPE, or the
+      provider->handler routing. All four sidecars independently report covered_behaviours: [].
+    evidence:
+      - sidecar: odd-platform__java__auth__logout__CognitoLogoutSuccessHandler.md
+        section: tests_coverage_semantic.gaps
+        cite: "grep -rln 'CognitoLogoutSuccessHandler' .../src/test/ -> zero matches"
+        note: "Whole logout chain uncovered."
+      - sidecar: live Glob/Grep (this run)
+        section: odd-platform test tree
+        cite: "Glob **/*Logout*.java -> 6 production classes only; Grep LogoutSuccessHandler in src/test -> none"
+        note: "Re-verified at reflection time; zero logout tests exist."
+    operator_visible_failure: |-
+      Any of the five provider behaviours can silently regress in a refactor with no test
+      signal: a Map<Provider,Handler> migration could mis-route a provider; removing the
+      trailing WebSession::invalidate would produce a logout that doesn't clear the local
+      session; flipping Google's handler to session-only would silently drop revocation.
+      The security-material matrix is entirely unguarded.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    Cognito Logout does not call the documented /oauth2/revoke endpoint — IdP tokens
+    survive logout (access ~1h, refresh up to 90d).
+  dedup_status: already_tracked
+  tracked_as: PLT-073
+  distinct_from: PLT-041
+  proposed_fix_anchor: |-
+    Add the /oauth2/revoke POST to CognitoLogoutSuccessHandler before the line-49
+    session invalidation, pattern-mirroring GoogleLogoutSuccessHandler.java:43-54
+    (PLT-073 Thread A). PLT-041 tracks the SAME Defect 1 + Defect 2 pair — the two
+    drafts are duplicates of each other; recommend collapsing PLT-041 into PLT-073.
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |-
+    Cognito empty-logout-uri short-circuit (Mono.empty at lines 33-35) sits BEFORE the
+    local WebSession::invalidate — a missing logout-uri leaves the user signed into ODD
+    itself, silently, not merely un-revoked at the IdP.
+  dedup_status: net_new
+  distinct_from: PLT-073
+  recommended_log_as: PLT-NNN
+  proposed_fix_anchor: |-
+    Distinct from PLT-073 (which is about the absent /oauth2/revoke call). This is the
+    SHARPER local-session failure: reorder so WebSession::invalidate runs even on the
+    empty-logout-uri path (or fail-fast validate logout-uri for Cognito at boot). The
+    Cognito sidecar files this under bugs[0]/security.known_security_gaps[1] as a
+    silent-no-op; surfaced here as a new drift_class
+    (cognito_empty_logout_uri_silent_no_op_also_skips_local_session_invalidate).
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |-
+    Azure logout-uri unvalidated at boot + no null-guard at AzureLogoutSuccessHandler.java:39
+    -> NPE -> HTTP 500 at first logout when omitted.
+  dedup_status: already_tracked
+  tracked_as: PLT-130
+  proposed_fix_anchor: |-
+    Add the StringUtils.isEmpty early-return guard at AzureLogoutSuccessHandler.java:39
+    matching Cognito, and validate logoutUri in ODDOAuth2Properties.validate when
+    provider=azure (PLT-130 suggested fix).
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |-
+    Logout UI gives no feedback distinguishing full-IdP-revoke (Google/GitHub) from
+    local-session-only (Azure/Cognito/ODD_IAM); identical button over asymmetric reality.
+  dedup_status: already_tracked
+  tracked_as: PLT-073
+  proposed_fix_anchor: |-
+    PLT-073 Defect 2 covers exactly this (AppToolbar.tsx:35-37 no feedback). The
+    fuller PO framing (post-logout confirmation surface + provider awareness in the SPA)
+    extends PLT-073's UI thread; no separate item needed.
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Azure logout cannot revoke issued tokens (Azure AD v2.0 has no RFC-7009 endpoint) —
+    tokens live to natural TTL; only remediation is docs + short token lifetime.
+  dedup_status: already_tracked
+  tracked_as: DOC-236
+  recommended_log_as: |-
+    The live oauth2-oidc page now states the Azure protocol limit + the residual window
+    explicitly, so the documentation half is largely closed (DOC-236 / the page refresh).
+    Verify DOC-236 names the Azure-specific "tokens valid to TTL; tighten tenant token
+    lifetime for strict compliance" remediation; if not, that is the residual caveat.
+- hypothesis_id: H-006
+  one_line: |-
+    Okta/Keycloak/Custom-OIDC fall through to the default OIDC logout handler — local
+    session + OIDC end-session only, no token revocation; OAuth2-only IdPs get no
+    server-side teardown.
+  dedup_status: already_tracked
+  tracked_as: PLT-082
+  recommended_log_as: |-
+    PLT-082 covers the provider-string-vs-enum fallback (and names the
+    logout-revocation loss as a consequence). The live doc now states the
+    local-session-only behaviour. Residual caveat (if any): an explicit doc note that
+    OAuth2-only non-OIDC custom providers get NO end-session either.
+- hypothesis_id: H-008
+  one_line: |-
+    Post-logout redirect target is derived from the inbound Host header with no
+    platform-side allowlist — conditional open-redirect via X-Forwarded-Host when the
+    IdP allowlist is permissive.
+  dedup_status: already_tracked
+  tracked_as: PLT-075
+  recommended_log_as: |-
+    PLT-075 tracks this across all five handlers with the X-Forwarded-Host attack
+    scenario; DOC-236 is its doc companion. No new item.
+- hypothesis_id: H-009
+  one_line: |-
+    No state/nonce on any end-session redirect — logout-CSRF feasible (LOW: worst case
+    is forced logout, no auth bypass).
+  dedup_status: net_new
+  distinct_from: PLT-075
+  recommended_log_as: caveat in oauth2-oidc.md OR fold a LOW-severity note into PLT-075
+  note: |-
+    Distinct from PLT-075 (open-redirect via Host) — this is the MISSING state/nonce
+    CSRF binding, a different control on the same redirect. Both sidecars (Azure
+    security.known_security_gaps[3]; Cognito bugs[5]) record it; not currently in any
+    PLT/DOC item. LOW severity — recommend folding as a one-line note into PLT-075's
+    redirect-hardening rather than a standalone item.
+
+### functional_test_demands
+# LSN-030 (Rule 11): F-086 is one of the platform's highest-stakes user-facing promises
+# (sign-out semantics on shared workstations) and sits at use_case_coverage 0/11 — ZERO
+# of its promises are guarded by a test, and the feature-flow carried related_test_gaps: [].
+# Every promise below is a missing-functional TEST-GAP candidate. Confirmed promises
+# (H-001) are INCLUDED — a hand-proven revoke-on-Google behaviour with no regression guard
+# is exactly the LSN-030 hole.
+- use_case_id: F-086-UC-11
+  hypothesis_id: H-011
+  kind: grammar
+  promise: |-
+    The per-provider logout matrix (Google/GitHub revoke; Cognito/Azure/ODD_IAM
+    session-only; unknown providers fall through to default OIDC) is locked so a
+    refactor cannot silently re-route a provider or drop revocation.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-11)"
+  proposed_test: |-
+    Unit: per-provider shouldHandle dispatch test (OAuthLogoutSuccessHandler resolves
+    'google'->GoogleLogoutSuccessHandler etc., unknown->defaultOidcLogoutHandler), plus
+    a WireMock integration test asserting Google POSTs /revoke and GitHub DELETEs the
+    grant while Cognito/Azure issue NO outbound revoke. This single suite guards H-001,
+    H-002, H-003, H-006 simultaneously.
+- use_case_id: F-086-UC-01
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Google + GitHub logout actively revokes the IdP-issued token."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-01)"
+  proposed_test: |-
+    WireMock integration: capture access token, click logout as a Google user, assert
+    a POST hit on oauth2.googleapis.com/revoke; as a GitHub user, assert a DELETE on
+    /applications/{client_id}/grant. The confirmed-but-untested guard for H-001.
+- use_case_id: F-086-UC-02
+  hypothesis_id: H-002
+  kind: teardown
+  promise: "Cognito logout revokes the IdP token (currently FALSE — regression guard for the fix)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-02)"
+  proposed_test: |-
+    Characterization test pinning CURRENT behaviour (no /oauth2/revoke call on Cognito
+    logout — RED the instant the PLT-073 fix lands), flipping to a positive revoke
+    assertion when PLT-073 ships. Pairs with PLT-073.
+- use_case_id: F-086-UC-04
+  hypothesis_id: H-004
+  kind: teardown
+  promise: |-
+    Logout always at minimum invalidates the local ODD session (currently violated on
+    Cognito empty-logout-uri).
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-04)"
+  proposed_test: |-
+    Unit: CognitoLogoutSuccessHandler with empty logout-uri asserts WebSession::invalidate
+    STILL runs (RED today — pins the bug per the pin-known-bugs protocol; flips GREEN
+    when the H-004 fix reorders the guard).
+- use_case_id: F-086-UC-05
+  hypothesis_id: H-005
+  kind: teardown-constraint
+  promise: "Azure missing logout-uri fails fast at boot, not HTTP 500 at first logout."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-05)"
+  proposed_test: |-
+    Unit/boot test: ODDOAuth2Properties.validate rejects an Azure client with empty
+    logout-uri (RED today; GREEN when PLT-130 adds the validator). Plus a handler test
+    pinning the current NPE->500 as characterization until the guard lands.
+- use_case_id: F-086-UC-03
+  hypothesis_id: H-003
+  kind: teardown-constraint
+  promise: "Azure logout ends the IdP session via end-session redirect (token revoke not possible)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-03)"
+  proposed_test: |-
+    Unit: AzureLogoutSuccessHandler issues 302 to the configured end-session URI with
+    post_logout_redirect_uri + client_id and invalidates the session; assert NO outbound
+    revoke (documents the protocol constraint as intended behaviour).
+- use_case_id: F-086-UC-06
+  hypothesis_id: H-006
+  kind: view-mode
+  promise: "Unknown/Okta/Keycloak providers fall through to default OIDC end-session logout."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-06)"
+  proposed_test: |-
+    Unit: a provider with no dedicated handler resolves to defaultOidcLogoutHandler in
+    OAuthLogoutSuccessHandler (guards the fall-through + the documented-provider-set gap).
+- use_case_id: F-086-UC-07
+  hypothesis_id: H-007
+  kind: render
+  promise: "The Logout UI signals revoke-vs-session-only outcome to the user."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-07)"
+  proposed_test: |-
+    Playwright e2e (reuse odd-platform/tests harness): after the UI feedback ships
+    (PLT-073 Defect 2), assert the post-logout surface reflects the active provider's
+    revocation outcome. Until then, documents the absence.
+- use_case_id: F-086-UC-08
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "Post-logout redirect cannot be hijacked to an attacker domain."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-08)"
+  proposed_test: |-
+    Integration: with a forged X-Forwarded-Host, assert the end-session redirect target
+    is the configured platform base-url, not the forged host (RED today; GREEN when
+    PLT-075 adds the allowlist).
+- use_case_id: F-086-UC-09
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "The end-session redirect carries a CSRF-binding state parameter."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-086-UC-09)"
+  proposed_test: |-
+    Unit: assert each handler's end-session URL includes a per-session state param
+    (RED today; LOW priority — pair with the H-009 caveat decision).
+- use_case_id: F-086-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "Logout under DISABLED mode produces a coherent outcome, not a dead button."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "Probe PENDING-F-086-1 (then TEST-GAP-NNN once the runtime response is known)"
+  proposed_test: |-
+    Probe first (PENDING-F-086-1): observe GET /logout under auth.type=DISABLED on a
+    local instance. Then either hide the Logout button in DISABLED mode or wire a
+    coherent response, guarded by an e2e.
+
+### probes_emitted
+- probe_id: PENDING-F-086-1
+  hypothesis_id: H-010
+  probe_path: "(parallel-safe mode — not materialised; record only)"
+  expected_outcome: |-
+    Determine the actual HTTP response to GET /logout under auth.type=DISABLED (404 vs
+    SPA index.html fallback vs 200 empty), to decide whether the toolbar Logout button
+    should be hidden in DISABLED mode or wired to a coherent outcome. Local-only:
+    docker-compose with auth.type=DISABLED + curl -i /logout. local_execution_blocked: false.
+
+### validation_gaps
+- sidecar: GoogleLogoutSuccessHandler / GithubLogoutSuccessHandler / ODDIAMLogoutSuccessHandler
+  field_insufficient: |-
+    No own sidecar exists for three of the five logout handlers. The feature-flow chain
+    lists every hop's sidecar as `unresolved`, and only Azure + Cognito (+ the
+    OAuthSecurityConfiguration dispatcher + AppToolbar UI) are enriched. The
+    Google/GitHub/ODD_IAM behaviours are traced second-hand via sibling-comparison
+    citations inside the Azure/Cognito sidecars (with file:line), which is sufficient to
+    verdict H-001 at MEDIUM confidence but not HIGH.
+  proposed_refresh: |-
+    file-analyser should enrich GoogleLogoutSuccessHandler, GithubLogoutSuccessHandler,
+    and ODDIAMLogoutSuccessHandler as first-class nodes so the Google/GitHub revoke
+    promises (H-001) trace to a primary sidecar, and update F-086's chain to resolve
+    those hops.
+- sidecar: odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md (Provider enum)
+  field_insufficient: |-
+    The sidecar reads Provider.java:3-5 as FIVE values (COGNITO, GITHUB, GOOGLE,
+    ODD_IAM, AZURE) at commit 80637ed/ede5d277, but PLT-073/PLT-082 (also ede5d277)
+    reference a CustomOIDCUserHandler and a CUSTOM_OIDC provider value plus a Cognito
+    domain config — suggesting the provider/handler set has shifted since enrichment.
+    This affects H-006's exact fall-through set.
+  proposed_refresh: |-
+    Re-extract the auth/ package (Provider enum + auth/handler/impl/ + auth/logout/) at
+    HEAD; confirm whether CUSTOM_OIDC is now an enum value and whether a dedicated Custom
+    OIDC user/logout handler exists, and reconcile with PLT-082.
+- sidecar: feature-flows/detail/F-086.yaml (chain hops)
+  field_insufficient: |-
+    Every hop in F-086's `chain` block marks `sidecar: unresolved`, but the AppToolbar
+    UI hop IS enriched (odd-platform__ts__react-component__component__AppToolbar.md) and
+    so are Azure + Cognito. The chain's sidecar pointers are stale.
+  proposed_refresh: |-
+    feature-flow-builder should resolve the chain's sidecar pointers to the existing
+    AppToolbar / Azure / Cognito sidecars on next refresh (per Rule 9 the UI surface IS
+    present — this reflection is NOT API-only).
+
+### doc_drift_findings
+- hypothesis_id: H-002, H-003, H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+  doc_says: |-
+    The live page now documents the per-provider logout matrix verbatim (GitHub/Google
+    revoke; Cognito does NOT call /oauth2/revoke with ~1h access + up to 90d refresh
+    residual; Azure cannot per RFC-7009/v2.0; Okta/Keycloak/Custom-OIDC local-session-only)
+    AND the Azure logout-uri NPE warning.
+  code_does: |-
+    Exactly what the doc now says (verified against the Azure/Cognito/OAuthSecurityConfiguration
+    sidecars). The doc was UPDATED since the sidecars were extracted — the sidecars'
+    doc-gap facets ("the platform does not document the constraint anywhere") are now
+    STALE in the documentation-silence direction.
+  recommended_log_as: |-
+    NOT a doc-drift (no contradiction) — a doc-gap-CLOSED note. The doc now matches the
+    code; the contributing sidecars' doc_drift_findings about logout-revocation silence
+    should be marked resolved on their next file-analyser refresh. DOC-236 appears to be
+    the change that landed this. The ONE residual doc check: confirm the Cognito
+    silent-no-op-on-empty-logout-uri (H-004, the LOCAL-session failure) is documented —
+    the page documents the no-IdP-revoke but the sharper "stays logged into ODD" failure
+    is the net-new finding and is likely still undocumented.
+
+## maintainer_notes
+# (preserved across refreshes — only block the maintainer hand-edits)

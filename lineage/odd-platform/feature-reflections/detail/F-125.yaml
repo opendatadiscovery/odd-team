@@ -1,0 +1,737 @@
+---
+feature_id: F-125
+pillar_anchored_id: P-08:F-017
+pillar: "P-08 Management & Administration (Ingestion Credential Storage & Lifecycle)"
+feature_name: "Ingestion Credential Lifecycle — orphan tokens never housekept, plaintext at rest, no rotation grace period"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+  - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+  - odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+  - odd-platform__java__service__service__HousekeepingJobManager.md
+  - odd-platform__ts__react-component__component__DataSourceItemToken.md     # UI hop — Datasources tab token control
+  - odd-platform__ts__react-component__component__CollectorsList.md          # UI hop — Collectors tab (CollectorItemToken)
+  # NOT-ENRICHED contributing nodes (validated via cross-citation + a confirming test-source read; surfaced as validation_gaps):
+  #   TokenGeneratorImpl, ReactiveTokenRepositoryImpl, CollectorServiceImpl, V0_0_28__add_token, V0_0_33__add_token_constraints, ReactiveDataSourceRepositoryImpl
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-22T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      NOT re-fetched live this session (parallel-safe batch; no per-reflector WebFetch budget spent). Status carried
+      from the DataSourceItemToken + CollectorsList sidecars' live WebFetch (2026-05-22 / 2026-05-20, both HTTP 200).
+      The page shows the Datasources/Collectors tabs with "a partially-redacted Collector token with a Regenerate
+      action" and "Issue new tokens ... regenerate or revoke" but is SILENT on: the confirmation dialog, the no-grace
+      destructive-rotation consequence, the one-time plaintext reveal, the orphan-token accumulation, and plaintext-at-rest.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-21T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Names COLLECTOR_TOKEN_REGENERATE + DATA_SOURCE_TOKEN_REGENERATE verbatim as MANAGEMENT-tier permissions; gives
+      ZERO operational guidance on rotation mechanics. Carried from the regenerate*Token sidecars' WebFetch.
+hypothesis_summary:
+  total: 12
+  confirmed: 6
+  contradicted: 2
+  partial: 3
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "An operator deleting a retired collector/datasource expects its credential to be cleaned up; the token row is orphaned forever — token has no deleted_at and HousekeepingJobManager's five-job cascade never touches the token table, so every credential ever minted accumulates monotonically in PostgreSQL."
+related_feature_flows: [F-020, F-031, F-010, F-121, F-008]
+related_concepts:
+  - "ingestion-credential-auth-path"
+  - "no-audit-log-on-rbac-mutations"
+related_drift_classes:
+  - token_table_no_deleted_at_no_housekeeping_orphans_forever
+  - token_plaintext_at_rest_no_encryption_no_hash
+  - regenerate_no_grace_period_old_token_immediately_invalid
+  - token_rotation_delete_no_audit_log_no_activity_event
+  - data_source_token_parallel_orphan_surface_same_class
+  - regenerate_token_ui_one_click_no_confirmation_modal
+  - token_value_no_unique_constraint_theoretical_collision_risk
+new_drift_classes_proposed:
+  - regenerate_ui_confirmation_dialog_exists_but_carries_no_consequence_warning   # corrects the feature-flow's "one-click no confirmation modal" drift class — a dialog DOES exist; the real gap is its silence on the destructive consequence
+  - housekeeping_cascade_has_no_token_cleanup_leg_orphan_purge_is_net_new_across_both_credential_surfaces
+---
+
+# Ingestion Credential Lifecycle — product-owner reflection
+
+## product_owner_narrative
+
+The Ingestion Credential Lifecycle is the operator-facing flow for the 40-character bearer tokens that every ODD collector and push-client presents on `POST /ingestion/*` to prove it is allowed to write to the catalog. From the operator's seat it lives on two Management tabs — **Collectors** (`/management/collectors`, the `CollectorsList` → `CollectorItem` → `CollectorItemToken` tree) and **Datasources** (`/management/datasources`, the `DataSourceItem` → `DataSourceItemToken` control) — and it is the SECURITY-load-bearing infrastructure beneath pillar P-09 (the token IS the ingestion auth credential) and pillar P-10 (every integration depends on a token minted here) (per system-mission P-08 sub-feature seed "Collectors tab — issue + rotate tokens"; per the F-125 cross_pillar_relationships feeds P-09 + P-10). The audiences are the **platform-operator** rotating a leaked or scheduled-rotation credential, and — at the wire — the **odd-collector runtime** whose next ingestion call breaks the instant a token is rotated out from under it.
+
+A user interacts with the feature in four moves. First, **issuing**: registering a collector/datasource returns a 40-char plaintext token in the response body, rendered once on screen with a Copy button and the one-time warning "Save token in a secure location. You will not be able to retrieve it again." (per DataSourceItemToken understanding + CollectorItem.tsx:87-98). Second, **viewing**: every subsequent list fetch returns the token masked as `******`+last-6, and the UI infers "this is masked, show Regenerate not Copy" from a literal `token.value.substring(0,6) === '******'` prefix sniff (per DataSourceItemToken implicit_adrs[0] + CollectorsList concepts.invariants[2]). Third, **rotating**: the permission-gated "Regenerate" button (`DATA_SOURCE_TOKEN_REGENERATE` / `COLLECTOR_TOKEN_REGENERATE`, MANAGEMENT tier) opens a ConfirmationDialog ("Are you sure you want to regenerate token for this datasource?") and on confirm fires `PUT /api/{datasources|collectors}/{id}/token`, which does a destructive in-place `UPDATE token SET value=<new>` — the old value is irrecoverably overwritten with no overlap window (per regenerateDataSourceToken understanding + ReactiveTokenRepositoryImpl.java:30-39 via the sidecar). Fourth, **retiring**: deleting a collector/datasource soft-deletes the parent (`UPDATE ... SET deleted_at=NOW()`) but leaves the token row dangling — the `token` table has no `deleted_at` column at all (per ReactiveCollectorRepositoryImpl invariants[1] + V0_0_28__add_token.sql:1-9 cited therein).
+
+The working parts an operator would want explained, phrased as they live them: (a) rotation is **instant and binary** — there is no "old + new both valid for 24h" grace window, so the collector deployed on the operator's own infrastructure must be reconfigured with the new token at the moment of rotation or ingestion stops with 401 `Token is not correct` (per regenerateCollectorToken bugs[0], HIGH); (b) the new plaintext is **one-time-reveal** — navigate away or let the list refetch before copying and the only recovery is to Regenerate AGAIN, i.e. another destructive rotation (per DataSourceItemToken bugs[2]); (c) the credential is **plaintext at every layer** — generated verbatim by `RandomStringUtils.randomAlphanumeric(40)`, stored in `token.value VARCHAR(40)` with no hash and no UNIQUE constraint, matched by literal SQL `.eq()` on the always-on `IngestionDataSourceFilter` path (per ReactiveCollectorRepositoryImpl implicit_adrs[0] + the `CollectorTokenStorageKnownBugTest` PLT-085 pin); (d) rotation and delete are **forensically near-silent** — no Activity Event, no audit-log row, only `token.updated_by` (which is NULL under `auth.type=DISABLED`) which is overwritten on the next rotation (per regenerateCollectorToken bugs[1], HIGH).
+
+The integration story makes the stakes concrete. This feature is the credential-MINTING side; pillar P-09's ingestion filters (`IngestionDataSourceFilter` always-on, `IngestionDataEntitiesFilter` opt-in via `auth.ingestion.filter.enabled`) are the credential-VALIDATING side, and they consume `token.value` by plaintext equality (per ReactiveCollectorRepositoryImpl coupling). Every collector and datasource in pillar P-10 depends on a token from this flow; the cleanup of retired credentials is owned by F-010's HousekeepingJobManager — but that job iterates exactly FIVE cleanup beans (Alert, SearchFacets, DataEntity, ActivityEmptyPartitions, MessageEmptyPartitions) and NONE of them touches the `token` table (per HousekeepingJobManager understanding + concepts.entities — five jobs enumerated, no token job). The fix surface for the orphan problem therefore straddles three features (the credential UI here, the delete paths in F-020/F-031, and the housekeeping cascade in F-010).
+
+Edge cases a product owner would flag in a demo, and which the docs are silent on: a deployment running for a year accumulates every historical credential of every long-gone collector in a single PG table (a backup/replica/pg_dump leak then exposes ALL of them, not just the live ones); an operator who clicks Regenerate during active ingestion breaks a running pipeline with no warning at the point of decision (the dialog asks "are you sure?" but never says "this kills the old token immediately"); and an operator on a default `auth.ingestion.filter.enabled=false` deployment who rotates a "leaked" token has changed a credential that has ZERO security effect on `/ingestion/entities` (which is anonymously reachable regardless) — the UI promises a security property the default deployment does not enforce (per CollectorsList bugs[4], HIGH).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator deletes a retired collector or datasource, the bearer token it used is cleaned up (removed, or at minimum prevented from accumulating), so an operator auditing the `token` table after a year of churn does not find every credential the platform has ever minted still sitting there."
+  derivation: "Pillar mission (P-08 operator hygiene) + the feature name 'Credential Lifecycle' promises a full lifecycle including retirement; an operator's default mental model is that deleting the parent reclaims its secret. Tested against the token table's schema + the housekeeping cascade's job list."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The token row is orphaned FOREVER, on BOTH credential surfaces. (1) The `token` table has no `deleted_at` /
+      `is_deleted` / STATUS column at all (V0_0_28__add_token.sql:1-9 — only id, value, created_at/by, updated_at/by,
+      cited in the ReactiveCollectorRepositoryImpl sidecar invariants[1]). (2) Collector/datasource soft-delete does
+      `UPDATE ... SET deleted_at=NOW()` on the PARENT only and never deletes the token (ReactiveCollectorRepositoryImpl
+      bugs[1]; the partial unique index `collector_token_unique ON collector(token_id) WHERE deleted_at IS NULL` even
+      EXPLICITLY allows a soft-deleted collector's token_id to persist). (3) The HousekeepingJobManager iterates exactly
+      five cleanup beans (Alert, SearchFacets, DataEntity, ActivityEmptyPartitions, MessageEmptyPartitions) — none touches
+      the token table; a grep for `DELETE FROM token` across src/main/java returns zero matches (HousekeepingJobManager
+      concepts.entities + the feature-flow's own drift evidence). The credential lifecycle has an issue/rotate/view path
+      but no retire path.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "concepts.invariants[1] + bugs_limitations_corner_cases[1] + security.known_security_gaps[3]"
+        cite: "V0_0_28__add_token.sql:1-9 (no deleted_at) + V0_0_33__add_token_constraints.sql:1 (partial index allows orphan) + ReactiveAbstractSoftDeleteCRUDRepository.java:50-58"
+        note: "Token has no soft-delete column; soft-deleting the parent leaves the token row live and discoverable."
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: "understanding + concepts.entities (the five-job enumeration)"
+        cite: "HousekeepingJobManager.java:23,31 (List<HousekeepingJob> of 5 beans, none token-related)"
+        note: "The cleanup cascade has no token leg; nothing ever purges orphaned tokens."
+    operator_visible_failure: |
+      (1) Unbounded growth: an operator auditing `SELECT count(*) FROM token` vs `SELECT count(*) FROM collector WHERE
+      deleted_at IS NULL` finds the gap widening monotonically with every delete + every rotation, with no obvious source
+      (the parent rows are soft-deleted and invisible). (2) Security blast-radius amplification: combined with plaintext-at-rest
+      (H-005), a single pg_dump / replica / backup leak exposes EVERY collector token the platform has EVER minted — including
+      every retired collector's — not just the live set. (3) The fix is genuinely cross-feature: a per-delete cleanup in
+      DataSourceServiceImpl.delete is proposed in PLT-087 D1 for the DataSource side ONLY; the Collector side and the
+      housekeeping-cascade daily-sweep (`DELETE FROM token WHERE id NOT IN (SELECT token_id FROM collector WHERE deleted_at
+      IS NULL) AND id NOT IN (SELECT token_id FROM data_source WHERE deleted_at IS NULL)`) are NOT tracked anywhere — this is
+      the net_new reflection contribution.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator rotates a token, the previous token keeps working for a short grace period so they can reconfigure the running collector without an ingestion outage."
+  derivation: "Endpoint shape: the operation is named 'regenerate'/'rotate'; a senior operator's mental model of credential rotation in a production system (cf. AWS access-key rotation, GitHub PAT regeneration) defaults to a make-before-break overlap window. Tested against the repository write path."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no grace period — rotation is a destructive in-place UPDATE of the single token row. TokenGeneratorImpl
+      mutates the existing TokenPojo's value to a fresh 40-char string in memory; ReactiveTokenRepositoryImpl.updateToken
+      issues `UPDATE token SET value=<new> WHERE id=:id`. There is exactly ONE token row (1:1 with the collector/datasource
+      via token_id), no `previous_token` column, no `valid_until`. The cutover is atomic and binary: the instant the UPDATE
+      commits, the old value no longer exists anywhere and `IngestionDataSourceFilter`/`IngestionDataEntitiesFilter` start
+      returning 401 `Token is not correct` for any in-flight request carrying it (regenerateCollectorToken/regenerateDataSourceToken
+      sidecars; the latter's stress name_behavior_pair explicitly classifies this as "instantaneous and binary, no grace window").
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+        section: "bugs_limitations_corner_cases[0] + concepts.invariants[1] + security.known_security_gaps[5]"
+        cite: "ReactiveTokenRepositoryImpl.java:30-39 (UPDATE not INSERT) + IngestionDataEntitiesFilter.java:55-58 (single-value equality)"
+        note: "In-place UPDATE; old token 401s the moment the rotation commits."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: "stress_findings.name_behavior_pairs[regenerate revoke-then-issue?] + bugs[1]"
+        cite: "ReactiveTokenRepositoryImpl.java:33-38 (single DSL.update) + DataSourceServiceImpl.java:99-106"
+        note: "Sidecar's own Category-F check confirms: no instant of two-valid, no instant of zero-valid — binary cutover."
+    operator_visible_failure: |
+      An operator rotating a collector's token during active ingestion locks out ingestion until the collector picks up the
+      new token — which is typically a config-file edit + process restart on the operator's OWN infrastructure, possibly
+      minutes-to-hours of coordination away. There is no "old+new both valid for 24h" pattern, so an unplanned mid-load
+      rotation is an ingestion incident. This is operationally fragile but is a documented behaviour (DOC-252/DOC-255 done)
+      — it routes to caveat at the doc/UX level rather than a code bug, EXCEPT that the proper fix (a graceful 24h dual-token
+      window with a `superseded_at` column) is a real feature the maintainer flagged in notes_for_maintainer; recorded as a
+      caveat-candidate with the grace-window enhancement noted.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an operator clicks Regenerate, the UI warns them — before the destructive action commits — that the old token stops working immediately and any collector still using it will break."
+  derivation: "UI label + senior-PO UX seed (is the interaction safe / does the user understand the consequence?). The feature-flow's drift class `regenerate_token_ui_one_click_no_confirmation_modal` asserts there is NO confirmation modal; this hypothesis tests whether the user is protected at the point of decision."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      A ConfirmationDialog DOES exist on BOTH token controls (DataSourceItemToken.tsx:37-49 + CollectorItemToken.tsx:37-49) —
+      so the feature-flow's drift class `regenerate_token_ui_one_click_no_confirmation_modal` is FACTUALLY WRONG as stated
+      (it is NOT one-click; there is a confirm step). BUT the dialog body text is `Regenerate token for "{name}"?` and asks
+      only "Are you sure?" — it says NOTHING about the consequence: not that the old token dies instantly, not that a running
+      collector will start 401-ing, not that there is no grace period. So the dialog MITIGATES the accidental click and does
+      NOT inform the intentional one. The protection is half-present: the barrier exists, the warning does not.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: "implicit_adrs[2] + bugs_limitations_corner_cases[0] + concepts.invariants[5]"
+        cite: "DataSourceItemToken.tsx:37-49 (ConfirmationDialog exists) + :42-46 (body names only the datasource, no consequence)"
+        note: "Confirm step present; consequence warning absent. Corrects the feature-flow drift-class wording."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "bugs_limitations_corner_cases[3] + security.known_security_gaps[3]"
+        cite: "CollectorItemToken.tsx:38-49 (dialog text 'Are you sure?' only)"
+        note: "Same shape on the Collector side; the no-grace-period consequence is not surfaced."
+    operator_visible_failure: |
+      An operator who knowingly clicks Regenerate (perhaps believing it is additive/safe — "get a new token") is given a
+      yes/no prompt with no statement that they are about to break every running collector bound to this credential. The
+      accidental-click case is covered (a misclick is intercepted); the informed-click case is not (the operator confirms a
+      destructive action they don't understand the blast radius of). This is the DRIFT_NAME_VS_BEHAVIOR the UI sidecars flag
+      on the "Regenerate" label. Tracked as PLT-038 (dialog-text enrichment, both token controls) + DOC-218 doc-side.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When an operator regenerates a token, the new 40-char plaintext value is shown to them exactly once so they can copy it into the collector's config."
+  derivation: "Response shape: the rotation response carries `token.value`; the UI renders it with a Copy button. A senior PO expects the secret-reveal-once pattern (Stripe / GitHub PAT). Tested against the response showToken flag + the UI render branch."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The rotation response returns the token in plaintext (`showToken=true` set by ReactiveTokenRepositoryImpl.updateToken
+      at :38, vs the masked `******{last6}` form TokenMapper produces on list/get reads). The UI's `useEffect` recomputes
+      `isHidden=false` from the absence of the `******` prefix, swaps the Regenerate button for a Copy button, and the parent
+      renders the one-time warning "Save token in a secure location. You will not be able to retrieve it again." The
+      secret-reveal-once contract is delivered as the hypothesis predicts.
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+        section: "implicit_adrs[2] + understanding"
+        cite: "TokenMapper.java:15-18 + ReactiveTokenRepositoryImpl.java:38 (new TokenDto(.., true))"
+        note: "Plaintext on regenerate, masked on read — deliberate per-call-site visibility choice."
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: "understanding + downstream_side_effects[page-render] + concepts.invariants[1]"
+        cite: "DataSourceItemToken.tsx:25-27,34,51-53 + DataSourceItem.tsx:110-121 (the one-time warning)"
+        note: "UI flips Regenerate->Copy + shows the 'save it once' warning on the plaintext branch."
+    severity: ~
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a DBA reads the `token` table (a replica, a pg_dump, a backup, a stray SQL log line), the bearer credentials are NOT recoverable in the clear — a secret-bearing column is hashed or encrypted at rest."
+  derivation: "Negative-space + pillar P-09 security posture: an operator's default expectation of any credential store is that the secret is not plaintext at rest (industry-canonical: bcrypt/argon2 hash + validate-by-digest). Tested against the storage schema + the validation path."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The token is plaintext at rest at every layer. `TokenGeneratorImpl` writes `RandomStringUtils.randomAlphanumeric(40)`
+      verbatim into `token.value VARCHAR(40)` (no hash, no salt, no encryption, no separate value_hash column —
+      V0_0_28__add_token.sql:4). The always-on `IngestionDataSourceFilter` resolves a token via `getByToken` →
+      `TOKEN.VALUE.eq(token)` (plaintext SQL equality, ReactiveCollectorRepositoryImpl.java:94), and the opt-in
+      `IngestionDataEntitiesFilter` does `tokenPojo.getValue().equals(token)` (non-constant-time Java equality). A DB-side
+      reader recovers every live credential with a single SELECT. This is a CONFIRMED, pinned bug — `CollectorTokenStorageKnownBugTest`
+      is a GREEN characterization pin (PLT-085) asserting the plaintext `TOKEN.VALUE.eq(token)` lookup is in place, RED the
+      moment storage is hashed (LSN-029 protocol).
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "implicit_adrs[0] + bugs_limitations_corner_cases[0] + security.known_security_gaps[0]"
+        cite: "V0_0_28__add_token.sql:4 + TokenGeneratorImpl.java:34-42 + ReactiveCollectorRepositoryImpl.java:94 + IngestionDataEntitiesFilter.java:55-58"
+        note: "Plaintext write, plaintext SQL match, non-constant-time app equality — consistency-across-layers IS the (implicit) decision."
+      - sidecar: odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+        section: "security.known_security_gaps[3] + implicit_adrs[3]"
+        cite: "ReactiveTokenRepositoryImpl.java:21-39 (stored as-is) + IngestionDataEntitiesFilter.java:55-58"
+        note: "Confirms no hashing layer end-to-end; HIGH severity."
+        source_read_for_validation: true
+    operator_visible_failure: |
+      Operators running PgBackup / pgaudit / DB observability / read-replica pipelines have production credentials in their
+      logs and backup archives. A compromised backup, a leaked replica snapshot, or a pg_dump artefact dropped in a chat
+      channel exposes every live collector/datasource credential; combined with H-001 (orphans never purged) it exposes
+      every credential ever minted. Recovery means rotating every token AND treating every backup-history reader as a
+      compromise. ALREADY TRACKED: PLT-085 (Collector plaintext-at-rest, with the GREEN pin) + PLT-087 D3 (DataSource
+      plaintext response cache-control) + DOC-252/DOC-255 (done). Convergent validation — this reflection independently
+      re-derives a high-confidence, already-pinned finding.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: verified
+    test_ref: "repository.reactive.CollectorTokenStorageKnownBugTest.collectorTokenLookedUpByPlaintextEquality_knownBug_PLT085 (GREEN @pins PLT-085 — characterization pin of the CURRENT plaintext behaviour; flips RED when storage is hashed)"
+
+- id: H-006
+  hypothesis: "When a security reviewer asks 'who rotated this collector's token at 02:13 last Tuesday, and who rotated it before that?', the platform can answer from an audit trail (an Activity Event or an append-only audit-log row)."
+  derivation: "Negative-space + pillar P-09 audit expectation + concept `no-audit-log-on-rbac-mutations`. A credential rotation is a security-significant mutation; a senior reviewer expects it to be auditable. Tested against the rotation path's side-effects."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Rotation (and delete) emit NO Activity Event and write NO audit-log row. There is no `log.info/warn` on the path
+      (grep against CollectorController/CollectorServiceImpl/TokenGeneratorImpl/ReactiveTokenRepositoryImpl returns zero
+      matches per the regenerateCollectorToken sidecar). The ONLY forensic trace is `token.updated_by` (stamped from
+      AuthIdentityProvider.getCurrentUser(), which is NULL under auth.type=DISABLED per TokenGeneratorImpl.java:27-32) plus
+      `token.updated_at` — and BOTH are OVERWRITTEN on the next rotation, so the record is single-state, not append-only.
+      "Who rotated it before the last rotation" is unrecoverable. The COLLECTOR/DATA_SOURCE row's updated_at is not even
+      touched, so an investigator looking at the parent sees no rotation timestamp at all.
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+        section: "bugs_limitations_corner_cases[1] + security.known_security_gaps[2]"
+        cite: "TokenGeneratorImpl.java:28-52 (no log; updated_by overwritten + null under DISABLED) + CollectorServiceImpl.java:82-90 (no audit emit)"
+        note: "Single-state updated_by is the only trace; overwritten each rotation."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "bugs_limitations_corner_cases[2] + security.known_security_gaps[5]"
+        cite: "CollectorServiceImpl.java:71-90 (no ActivityEvent) + ReactiveTokenRepositoryImpl.java:33-36"
+        note: "Cross-confirms: no COLLECTOR_TOKEN_REGENERATED event class; COLLECTOR.updated_at untouched."
+    operator_visible_failure: |
+      A security incident review of credential rotation/retirement has minimal-to-no forensic data. The audit-presence
+      asymmetry (entity-metadata changes ARE on the Activity Feed; credential mutations are NOT) is a known platform pattern
+      (concept `no-audit-log-on-rbac-mutations`). The fix is the cross-cutting platform_event/audit-log architecture
+      (deferred to the ADR family DOC-181/DOC-251 per PLT-087's out-of-scope note) — so this routes to a caveat-candidate at
+      the credential-lifecycle level + a cross-link to that ADR, NOT a standalone bug fix. Note: @ActivityLog is BLOCKED as
+      a fix because the Activity Feed is data-entity-scoped (activity.data_entity_id NOT NULL) — confirmed by the F-125d
+      scanner finding's F-021a cross-link; a distinct audit mechanism is required.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When an operator without the token-regenerate permission opens the Collectors/Datasources tab, the Regenerate affordance is not shown to them (the UI honours the RBAC capability)."
+  derivation: "UI label + pillar P-09 RBAC. The button is wrapped in WithPermissions(DATA_SOURCE_TOKEN_REGENERATE / COLLECTOR_TOKEN_REGENERATE); a non-holder should see no button. Tested against the WithPermissions render gate."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The Regenerate control is wrapped in `<WithPermissions permissionTo={Permission.DATA_SOURCE_TOKEN_REGENERATE}>`
+      (DataSourceItemToken.tsx:36) / `COLLECTOR_TOKEN_REGENERATE` (CollectorItemToken.tsx:36), and WithPermissions renders
+      `null` when `usePermissions().hasAccessTo` is false (WithPermissions.tsx:27-29) — so a non-holder sees the masked token
+      string and NO button (hidden, not merely disabled — the consistent platform convention). This is a UX gate only; the
+      authoritative boundary is the backend SecurityConstants rule (the regenerate*Token sidecars). The hypothesis (button
+      hidden for non-holders) is confirmed for the three authenticated modes.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: "concepts.invariants[3] + implicit_adrs[1] + security.authorization_assertions"
+        cite: "DataSourceItemToken.tsx:36 + WithPermissions.tsx:27-29"
+        note: "Hidden-not-disabled for non-holders; consistent WithPermissions convention across Edit/Delete/Regenerate."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "concepts.invariants[0] + security.authorization_assertions"
+        cite: "CollectorItemToken.tsx:36 + CollectorItem.tsx:39,52 (same wrapper pattern)"
+        note: "Mirror on the Collector side; UI gates parity with SECURITY_RULES."
+    severity: ~
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When the platform runs in the default `auth.type=DISABLED` mode, the token-regenerate operation is NOT freely available to any anonymous caller (the UI hides the button AND the backend rejects the call)."
+  derivation: "Cross-pillar (P-08->P-09) + auth-mode posture seed. Tested against the UI gate AND the backend SecurityConstants enforcement under DISABLED."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Split outcome. UI side: under DISABLED, /api/identity returns empty permissions, so WithPermissions hides the
+      Regenerate (and Add/Edit/Delete) buttons — the UI LOOKS read-only. BUT backend side: under DISABLED the
+      SecurityWebFilterChain bypasses every SECURITY_RULES entry, so a crafted `PUT /api/{collectors|datasources}/{id}/token`
+      succeeds anonymously and returns the new plaintext token (regenerate*Token sidecars' DISABLED-bypass HIGH finding +
+      TokenGeneratorImpl.java:31 no-user fallback rotating with updated_by NULL). So the protection is real in the UI and
+      ABSENT in the API — a credential-rotation-hijack surface where an attacker on a DISABLED deployment can break ingestion
+      platform-wide and harvest the new tokens, while the UI's read-only appearance lulls the operator.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "bugs_limitations_corner_cases[1] + security.known_security_gaps[0] (REFACTOR-185 19th facet)"
+        cite: "CollectorsList.tsx:91-101 + WithPermissions.tsx:11-32 + DisabledAuthSecurityConfiguration.java:11-19 + SecurityConstants.java:127-137"
+        note: "UI hides buttons under DISABLED; backend accepts anonymous mutations — the UI-vs-API asymmetry."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: "bugs_limitations_corner_cases[2] + security.known_security_gaps[0]"
+        cite: "SecurityConstants.java:124-126 (enforced only by LOGIN_FORM/OAUTH2/LDAP) + TokenGeneratorImpl.java:31"
+        note: "DISABLED bypasses the permission gate entirely on the rotation endpoint."
+    operator_visible_failure: |
+      On a network-reachable DISABLED deployment (the shipped default for auth.type), anyone who can reach the platform can
+      rotate any collector/datasource token and read the new plaintext — breaking ingestion and harvesting credentials —
+      while operators clicking the UI see no action buttons and may conclude the deployment is locked down. ALREADY TRACKED:
+      this is the COLLECTOR_*/DATA_SOURCE_* facet of REFACTOR-185 (the 18->19 sidecar DISABLED-mode bypass) + the PLT-083
+      family. Convergent corroboration; not re-filed.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When an operator rotates a 'leaked' token on a default deployment, the rotation actually has a security effect on the ingestion write path (the old token can no longer write to `/ingestion/entities`)."
+  derivation: "Doc-claim seed: the Management doc says 'rotate a leaked token', implying rotation hardens the write path. Tested against the `auth.ingestion.filter.enabled` default + the /ingestion/entities filter registration."
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      It depends entirely on a config flag the UI never surfaces. `IngestionDataEntitiesFilter` (the filter that validates
+      the token on `POST /ingestion/entities`) is `@ConditionalOnProperty("auth.ingestion.filter.enabled", havingValue="true")`,
+      and that flag defaults to FALSE (application.yml:48). So on a default deployment, `/ingestion/entities` is anonymously
+      reachable REGARDLESS of token value — rotating a leaked token there is a no-op for that path. (The sibling always-on
+      `IngestionDataSourceFilter` on `/ingestion/datasources` DOES validate the token unconditionally, so rotation is NOT a
+      total no-op — it does invalidate the old token on the datasources-registration path.) The doc's "rotate a leaked token"
+      promise holds only when the operator has flipped the filter on; the default deployment does not enforce the property the
+      UI/doc implies.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "bugs_limitations_corner_cases[4] + security.known_security_gaps[4] + dependencies_semantic.requires-config"
+        cite: "application.yml:48 (filter default false) + IngestionDataEntitiesFilter.java:19-20 (@ConditionalOnProperty)"
+        note: "Default-OFF filter => rotation has zero effect on /ingestion/entities until the operator opts in."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "coupling[IngestionDataSourceFilter-asymmetric] + security.known_security_gaps[4]"
+        cite: "IngestionDataSourceFilter.java:15-22 (always-on, no @ConditionalOnProperty) vs IngestionDataEntitiesFilter.java:19-20"
+        note: "Asymmetry: /ingestion/datasources always validates; /ingestion/entities only when the flag is on."
+    operator_visible_failure: |
+      An operator responding to a leaked-credential incident on a default deployment rotates the token expecting to cut off
+      the attacker's write access to `/ingestion/entities` — and does not, because that endpoint never checked the token.
+      The UI promises a security property (rotate-to-revoke) the default deployment does not enforce; a Cornerstone-3
+      configuration-as-separate-audience failure that compounds with REFACTOR-185. Tracked via the IngestionDataEntitiesFilter
+      default-OFF finding (REFACTOR-185 family) + DOC caveats; routed as a caveat-candidate here (the credential-lifecycle
+      surface should warn that rotation's effect is gated on auth.ingestion.filter.enabled).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When an operator double-clicks Regenerate (a slow click, a network retry, or closing and re-opening the dialog), the token is rotated only once, so the plaintext value they just copied stays valid."
+  derivation: "Endpoint shape (idempotency) + senior-PO convenience seed. The PUT is not idempotent; the UI dialog has a spinner. Tested against the controller's idempotency posture + the UI pending-guard."
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static analysis: the PUT is NOT idempotent — each call generates a fresh random token and overwrites the row (no
+      idempotency key, no If-Match ETag; regenerate*Token sidecars' resource_boundaries). The UI's ConfirmationDialog shows a
+      loading spinner that blocks a second confirm WITHIN one open dialog, but the component places NO pending-guard on the
+      dispatch, and nothing stops the operator closing+reopening the dialog or (once the row re-masks) clicking Regenerate
+      again. Two rapid rotations => the operator copies a token (from response 1) that response 2 has already invalidated.
+      Backend is last-write-wins with no corruption, but the exact behaviour under a fast double-confirm-across-reopen needs
+      runtime — the DataSourceItemToken sidecar emitted P-082 specifically for this, and the regenerateDataSourceToken sidecar
+      emitted P-050 (concurrent double-rotation). Verdict requires running the system.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: "stress_findings.resource_boundaries[idempotency] + bugs_limitations_corner_cases[3] + probes_emitted[P-082]"
+        cite: "DataSourceItemToken.tsx:29-30 (bare dispatch, no pending guard) + ConfirmationDialog.tsx:24-35 (spinner is dialog-scoped)"
+        note: "UI dialog spinner blocks intra-dialog double-confirm; no guard across reopen — PROBE-NEEDED P-082."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: "stress_findings.resource_boundaries[transactional] + probes_emitted[P-050]"
+        cite: "ReactiveTokenRepositoryImpl.java:33-36 (no @Version / optimistic lock) + DataSourceController.java:53-59 (no If-Match)"
+        note: "Backend last-write-wins, no corruption; the observable defect (stale copied token) needs runtime — P-050."
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-125-1
+    routes_to_finding: probe-needed
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When the backend changes the token-mask format (e.g. from 6 asterisks to a different placeholder), the UI continues to correctly distinguish a masked token from a plaintext one (so it never offers Copy on a useless masked string or Regenerate on a live plaintext token)."
+  derivation: "Cross-layer naming/format drift (Rule 4): the UI's masked/plaintext decision is a literal `substring(0,6) === '******'` prefix sniff hard-coupled to TokenMapper.mapValue. Tested against the coupling between the UI sentinel and the backend mask format."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The hypothesis (UI stays correct across a mask-format change) is FALSE — confirmed as a real fragility. The UI's entire
+      masked/plaintext decision is `token.value.substring(0,6) === '******'` (DataSourceItemToken.tsx:26 +
+      CollectorItemToken.tsx:26), hard-coupled to the backend `TokenMapper.mapValue` emitting EXACTLY six asterisks
+      (TokenMapper.java:15-18). If the backend mask ever changes (5 or 7 asterisks, a Unicode block char, a leading space),
+      the substring test silently false-negatives and the UI classifies every token as plaintext — offering Copy on a useless
+      masked `******abc`-style string and never reaching the Regenerate branch. There is no typed `showToken` field exposed to
+      the UI (it is server-side only), so the UI legitimately has nothing typed to bind to — but the prefix-sniff contract is
+      undefended by any test.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: "bugs_limitations_corner_cases[1] + stress_findings.tunables[masked-token sentinel] + implicit_adrs[0]"
+        cite: "DataSourceItemToken.tsx:26 + TokenMapper.java:15-18 (the 6-asterisk mask the sniff depends on)"
+        note: "Cross-repo string-format coupling; a backend mask change silently mis-classifies tokens in the UI."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "concepts.invariants[2] + bugs_limitations_corner_cases[0] + security.known_security_gaps[2]"
+        cite: "CollectorItemToken.tsx:25-27"
+        note: "Identical sniff on the Collector side; same fragility."
+    operator_visible_failure: |
+      No operator-visible failure TODAY (the 6-asterisk literal matches the backend). The latent risk: a backend mask-format
+      change (a routine-looking edit to TokenMapper) silently flips the UI to offer Copy on a masked value — leaking
+      `******{last6}` fragments to the operator's clipboard — or to show Regenerate on a live plaintext token. A unit test
+      pinning both render branches against the exact backend mask is the cheapest regression guard. Tracked statically as the
+      UI sidecars' MEDIUM bug; net_new (no PLT for the prefix-sniff fragility specifically).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When an operator regenerates a token and then navigates away (or the list refetches) before copying it, the platform still lets them recover the value without performing another destructive rotation."
+  derivation: "Senior-PO convenience/customisability seed: the one-time reveal is a known pattern, but a usable system gives a non-destructive recovery path (re-reveal). Tested against the UI re-mask behaviour + the only recovery affordance."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The hypothesis (a non-destructive recovery path exists) is FALSE — confirmed. The plaintext is one-time-reveal: after a
+      successful rotation the row shows the plaintext + Copy, but the moment the list refetches (or the operator navigates
+      away and back), the API returns the masked `******{last6}` form and `isHidden` recomputes to true — the only way to see
+      a usable token again is to Regenerate AGAIN, i.e. another destructive in-place rotation that invalidates the just-issued
+      token and re-breaks any collector that picked it up. The UI does not auto-copy, does not focus the Copy button, and does
+      not block navigation. There is no "reveal token" affordance.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: "bugs_limitations_corner_cases[2] + concepts.invariants[1,2] + downstream_side_effects[page-render]"
+        cite: "DataSourceItemToken.tsx:25-27,51-53 + DataSourceItem.tsx:110-121 + datasources.slice.ts:41-42 (upsertOne replaces row)"
+        note: "Re-mask on refetch; only recovery is a second destructive Regenerate."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "concepts.invariants[1]"
+        cite: "CollectorItemToken.tsx:25-27 (one-shot; no 'show token again' affordance)"
+        note: "Same one-shot model on the Collector side."
+    operator_visible_failure: |
+      An operator who fails to copy on first display (a phone call, a tab switch, an accidental refresh) loses the credential
+      with no recovery short of a destructive rotation — which itself breaks any collector that already picked up the token,
+      cascading into the H-002 no-grace outage. This compounds the no-grace fragility into a "lose-it-and-you-must-break-it"
+      trap. Tracked statically as the UI sidecars' MEDIUM bug; the doc-side one-time-reveal silence is part of the DOC-GAP
+      candidate. net_new at the recovery-path level.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "Token rows are orphaned forever on BOTH credential surfaces — token has no deleted_at, soft-delete-parent leaves the token live, and HousekeepingJobManager's five-job cascade has no token-cleanup leg; every credential ever minted accumulates in PostgreSQL monotonically."
+  dedup_status: net_new
+  distinct_from: PLT-087
+  tracked_as: ~
+  recommended_log_as: SEC-NNN OR PLT-NNN (HIGH)
+  proposed_fix_anchor: |
+    PLT-087 D1 proposes a per-delete TOKEN cleanup in DataSourceServiceImpl.delete (DataSource side ONLY). This finding is
+    DISTINCT and BROADER: (a) the Collector-side soft-delete (CollectorServiceImpl.delete) has the same orphan with NO
+    tracked fix; (b) neither PLT-087 nor any item proposes the HOUSEKEEPING-CASCADE sweep F-125 notes_for_maintainer
+    recommends — a new HousekeepingJob bean issuing `DELETE FROM token WHERE id NOT IN (SELECT token_id FROM collector WHERE
+    deleted_at IS NULL) AND id NOT IN (SELECT token_id FROM data_source WHERE deleted_at IS NULL) AND id NOT IN (...every
+    table with a token_id FK)`, scheduled daily, added to HousekeepingJobManager's List<HousekeepingJob>. The per-delete fix
+    (PLT-087) and the housekeeping-sweep (this finding) are complementary; the sweep also reclaims tokens orphaned before the
+    per-delete fix ships. Fix locus: HousekeepingJobManager.java:23 (the bean list) + a new housekeeping/job/TokenOrphanHousekeepingJob.
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "Collector + datasource tokens are stored plaintext in token.value VARCHAR(40) (no hash/encryption), matched by plaintext SQL .eq() / non-constant-time Java .equals(); a backup/replica/pg_dump leak recovers every live credential."
+  dedup_status: already_tracked
+  tracked_as: PLT-085
+  recommended_log_as: ~
+  proposed_fix_anchor: "PLT-085's hash-at-rest migration (value_hash column + bcrypt + validate-by-digest); GREEN-pinned by CollectorTokenStorageKnownBugTest (flips RED on fix). DataSource-side plaintext-response cache-control is PLT-087 D3."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "Rotation is a destructive in-place UPDATE with no grace window — the old token 401s the instant the rotation commits; an operator rotating during active ingestion locks out ingestion until the collector is reconfigured + restarted."
+  dedup_status: already_tracked
+  tracked_as: DOC-252
+  recommended_log_as: "documented (DOC-252 Collector + DOC-255 DataSource, both done). The make-before-break 24h dual-token enhancement (superseded_at column) the maintainer flagged is a net_new FEATURE candidate, not yet an item — note for the maintainer."
+- hypothesis_id: H-003
+  one_line: "The Regenerate ConfirmationDialog exists (so the feature-flow 'one-click no confirmation modal' drift class is WRONG) but its body says only 'Are you sure?' — it warns nothing about the destructive no-grace consequence; the accidental click is intercepted, the informed click is uninformed."
+  dedup_status: already_tracked
+  tracked_as: PLT-038
+  recommended_log_as: "PLT-038 (dialog-text enrichment, both DataSourceItemToken + CollectorItemToken) + DOC-218 doc-side. ALSO a feature-flow drift-class CORRECTION write-back (see new_drift_classes_proposed)."
+- hypothesis_id: H-006
+  one_line: "Token rotation + collector/datasource delete emit no Activity Event and no audit-log row; only single-state token.updated_by (NULL under DISABLED, overwritten each rotation) is the forensic trace — 'who rotated it before last' is unrecoverable."
+  dedup_status: net_new
+  distinct_from: ~
+  tracked_as: ~
+  recommended_log_as: "caveat + cross-link to the platform_event/audit-log ADR family (DOC-181/DOC-251, per PLT-087 out-of-scope note). @ActivityLog is blocked (Activity Feed is data-entity-scoped, F-021a) — needs a distinct audit mechanism. F-125d scanner finding already flags this MEDIUM; this reflection routes it to the ADR family."
+- hypothesis_id: H-008
+  one_line: "Under default auth.type=DISABLED the UI hides the Regenerate button (looks read-only) but the backend accepts an anonymous PUT and returns the new plaintext — a credential-rotation-hijack surface masked by the read-only UI appearance."
+  dedup_status: already_tracked
+  tracked_as: PLT-083
+  recommended_log_as: "the COLLECTOR_*/DATA_SOURCE_* facet of REFACTOR-185 (18->19 sidecar DISABLED-mode bypass) + PLT-083 family. Convergent corroboration, not re-filed."
+- hypothesis_id: H-009
+  one_line: "Rotating a 'leaked' token on a default deployment is a no-op against /ingestion/entities (IngestionDataEntitiesFilter is @ConditionalOnProperty default-OFF); the UI/doc promise rotate-to-revoke the default does not enforce. /ingestion/datasources (always-on filter) IS affected — so not a total no-op."
+  dedup_status: already_tracked
+  tracked_as: DOC-252
+  recommended_log_as: "the IngestionDataEntitiesFilter default-OFF finding (REFACTOR-185 family) + DOC-252/255 caveats. The credential-lifecycle surface should additionally warn rotation's effect is gated on auth.ingestion.filter.enabled."
+- hypothesis_id: H-011
+  one_line: "The UI masked/plaintext decision is a literal substring(0,6)==='******' prefix sniff hard-coupled to TokenMapper's 6-asterisk mask; a backend mask-format change silently flips the UI to offer Copy on a masked value (leaking ******{last6}) or Regenerate on a live plaintext token."
+  dedup_status: net_new
+  distinct_from: ~
+  tracked_as: ~
+  recommended_log_as: "caveat + a UI unit-test demand (pin both render branches against the exact backend mask) — net_new (no PLT for the prefix-sniff fragility specifically; the UI sidecars record it as a MEDIUM bug only)."
+- hypothesis_id: H-012
+  one_line: "The one-time plaintext reveal has no non-destructive recovery path — refetch/navigate-away re-masks the token, and the only way to see it again is a second destructive Regenerate that re-breaks any collector that picked up the first one."
+  dedup_status: net_new
+  distinct_from: PLT-128
+  tracked_as: ~
+  recommended_log_as: "caveat + UX enhancement candidate (focus/auto-copy the new token, or a confirm-before-leave guard). Distinct from PLT-128 (delete stuck-modal). net_new at the recovery-path level; part of the DOC-GAP one-time-reveal candidate."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — the credential lifecycle's promise layer. Every UNVERIFIED promise (use_case) becomes a
+# missing-functional TEST-GAP candidate, INCLUDING the confirmed-but-untested ones (H-004, H-007, H-012) which the
+# pre-v0.3.0 path would have dropped to routes_to_finding: none. H-005 is the ONE verified promise (PLT-085 pin).
+- use_case_id: F-125-UC-001
+  hypothesis_id: H-001
+  kind: teardown
+  promise: "Deleting a retired collector/datasource reclaims its token (no unbounded orphan accumulation)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — regression guard for the orphan-purge fix"
+  proposed_test: "Integration test (Testcontainers PG): create N collectors + M datasources, soft-delete half of each, run the (new) TokenOrphanHousekeepingJob, assert `SELECT count(*) FROM token` == count of LIVE collectors+datasources; AND a characterization pin asserting that WITHOUT the new job, orphan count > live count after deletes (pins the current orphan-forever behaviour, RED on fix — mirrors the LSN-029 PLT-085 pin shape)."
+- use_case_id: F-125-UC-002
+  hypothesis_id: H-002
+  kind: edit-reconcile
+  promise: "A rotated-out token keeps working for a grace window so the collector can be reconfigured without an outage."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — pins the binary no-grace cutover"
+  proposed_test: "Integration test: register a datasource, capture token T1, rotate to T2, assert POST /ingestion/datasources with T1 => 401 'Token is not correct' AND with T2 => non-401 (pins the binary cutover; flips when a grace window is added). Pairs with sidecar probes P-051 (binary cutover)."
+- use_case_id: F-125-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "The Regenerate confirmation warns the operator the old token dies immediately and breaks running collectors."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — pairs with PLT-038 (the dialog-text fix)"
+  proposed_test: "UI/component test (Playwright or RTL): clicking Regenerate opens the ConfirmationDialog AND (post-PLT-038) the body text contains the no-grace consequence ('the current token stops working immediately; any collector still using it will stop ingesting'). Until PLT-038 lands, the test documents the missing warning."
+- use_case_id: F-125-UC-004
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "Regeneration shows the new 40-char plaintext exactly once with a Copy button."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — confirmed-but-untested; the LSN-030 fix (was previously dropped to none)"
+  proposed_test: "Component test (DataSourceItemToken / CollectorItemToken): given a 40-char token.value with no '******' prefix, assert isHidden===false, the Copy button renders, the Regenerate button does NOT, and the parent 'save it once' warning shows; given a '******...'-prefixed value, assert the inverse (also covers H-011's prefix-sniff branch)."
+- use_case_id: F-125-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "Tokens are not recoverable in the clear from the DB (hashed/encrypted at rest)."
+  verdict: contradicted
+  coverage: verified
+  test_ref: "repository.reactive.CollectorTokenStorageKnownBugTest (GREEN @pins PLT-085)"
+  recommended_log_as: "VERIFIED — pinned by CollectorTokenStorageKnownBugTest (characterization pin of the current plaintext behaviour; flips RED when storage is hashed). No new functional demand; the regression guard already exists. The FIX (hash-at-rest) is PLT-085."
+- use_case_id: F-125-UC-006
+  hypothesis_id: H-006
+  kind: render
+  promise: "Credential rotation/retirement is auditable (who rotated it, and who before that)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — guards the future audit-log/platform_event mechanism"
+  proposed_test: "Once the audit mechanism exists: integration test asserting a regenerate + a delete each write an append-only audit row carrying actor + timestamp + before/after. Until then, the demand documents the missing audit surface (the @ActivityLog route is blocked — Activity Feed is data-entity-scoped)."
+- use_case_id: F-125-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "The Regenerate affordance is hidden for a user without the *_TOKEN_REGENERATE permission."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — confirmed-but-untested; the LSN-030 fix"
+  proposed_test: "Component/security test: render DataSourceItemToken/CollectorItemToken with usePermissions().hasAccessTo(DATA_SOURCE_TOKEN_REGENERATE|COLLECTOR_TOKEN_REGENERATE)=false; assert no Regenerate button (WithPermissions renders null); =true asserts it renders. Pairs with sidecar probe P-084."
+- use_case_id: F-125-UC-008
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "Token rotation is not freely available to an anonymous caller under default auth.type=DISABLED."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — the security-matrix gap (REFACTOR-185 family)"
+  proposed_test: "Security integration test (the 32-cell auth matrix, probe P-052): under LOGIN_FORM a non-holder PUT /api/{collectors,datasources}/{id}/token => 403, a holder => 200; under DISABLED any caller => 200 (pins the bypass so a future lockdown is detectable)."
+- use_case_id: F-125-UC-009
+  hypothesis_id: H-009
+  kind: edit-reconcile
+  promise: "Rotating a leaked token has a real security effect on the ingestion write path."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — pins the filter-default-gated effect"
+  proposed_test: "Integration test parameterised on auth.ingestion.filter.enabled: with =false, POST /ingestion/entities with a rotated-out token still succeeds (no-op rotation); with =true, the rotated-out token => 401. Documents that rotation's effect on /ingestion/entities is config-gated, while /ingestion/datasources (always-on) is always affected."
+- use_case_id: F-125-UC-010
+  hypothesis_id: H-010
+  kind: edit-reconcile
+  promise: "A double-click / retry on Regenerate rotates the token only once (the copied value stays valid)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — pairs with probes PENDING-F-125-1 / P-082 / P-050"
+  proposed_test: "UI integration (Playwright): rapid double-trigger of Regenerate (confirm, reopen, confirm); assert how many PUTs fire and whether the first response's token is invalidated by the second. Backend last-write-wins is known; the operator-facing stale-token outcome needs the runtime probe."
+- use_case_id: F-125-UC-011
+  hypothesis_id: H-011
+  kind: grammar
+  promise: "The UI correctly distinguishes masked vs plaintext tokens even if the backend mask format changes."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — confirmed-as-fragile; guards the cross-repo mask coupling"
+  proposed_test: "Component test pinning BOTH render branches against the exact backend mask string ('******'+last6): assert a masked value shows Regenerate (not Copy) and a plaintext value shows Copy (not Regenerate). A cross-repo contract test would assert TokenMapper.mapValue still emits exactly the 6-asterisk prefix the UI sniffs."
+- use_case_id: F-125-UC-012
+  hypothesis_id: H-012
+  kind: edit-reconcile
+  promise: "A non-destructive recovery path exists if the operator misses the one-time reveal."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id set) — confirmed-as-absent; guards a future re-reveal/UX affordance"
+  proposed_test: "Component test: after a successful regeneration, simulate a list refetch (re-fetch returns the masked value), assert isHidden flips back to true and there is NO 'reveal token' affordance — pinning that the only recovery is a destructive Regenerate (the gap a future UX fix would close)."
+
+### probes_emitted
+- probe_id: PENDING-F-125-1
+  hypothesis_id: H-010
+  one_line: "Double-confirm / reopen-and-reconfirm Regenerate — how many rotations fire and is the first-copied token invalidated? (mirrors sidecar P-082 UI + P-050 backend)."
+  full_hypothesis: "When an operator triggers Regenerate, confirms the ConfirmationDialog, then (a) closes and re-opens the dialog and confirms again, or (b) the row re-masks and they click Regenerate twice in quick succession — how many PUT /api/{datasources|collectors}/{id}/token requests fire, and is the plaintext token returned by the first response invalidated by the second before the operator can use it? Backend is last-write-wins with no corruption (no @Version, no If-Match), and the UI dialog spinner only blocks an intra-dialog double-confirm; verify the operator-visible stale-token outcome and whether any client-side de-bounce is missing. Local-only: docker-compose odd-platform + Playwright driving the Datasources tab, intercept the PUT count and compare the two responses' token.value."
+  local_execution_blocked: false
+  note: "Parallel-safe mode: recorded here, NOT written as a P-NNN file. Corresponds to the DataSourceItemToken sidecar's already-emitted P-082 (UI confirm-flow/double-confirm) + the regenerateDataSourceToken sidecar's P-050 (concurrent double-rotation)."
+
+### validation_gaps
+- sidecar: "(missing) TokenGeneratorImpl"
+  field_insufficient: "No dedicated sidecar for service/TokenGeneratorImpl.java (a primary contributing node of F-125 — the generator of every token value and the updated_by-stamping logic). Its behaviour (RandomStringUtils.randomAlphanumeric(40), in-place regenerate mutation, null-username fallback under DISABLED) was validated entirely from cross-citations in the regenerate*Token + ReactiveCollectorRepositoryImpl sidecars."
+  proposed_refresh: "Enrich service/TokenGeneratorImpl.java as an auth/credential sidecar; correct the F-125 substrate node-id package path (feature-flow says auth/, actual is service/ — the F-125e scanner finding's own observation). Capture: RNG-not-SecureRandom (PLT-126), the null updated_by DISABLED fallback (TokenGeneratorImpl.java:27-32), the in-place regenerate mutation."
+- sidecar: "(missing) ReactiveTokenRepositoryImpl"
+  field_insufficient: "No dedicated sidecar for repository/reactive/ReactiveTokenRepositoryImpl.java (the SQL write path for create + updateToken — the actual UPDATE that performs the destructive in-place rotation, and the showToken=true setting). Validated from cross-citations only."
+  proposed_refresh: "Enrich ReactiveTokenRepositoryImpl.java; capture updateToken (UPDATE token SET value=.. WHERE id, returning showToken=true), the absence of any history/append, the no-soft-delete-column reality."
+- sidecar: "(missing) HousekeepingJobManager — token-cleanup-leg absence"
+  field_insufficient: "The HousekeepingJobManager sidecar is enriched and ADEQUATE for this reflection (it enumerates the five cleanup jobs and confirms none is token-related), but it does NOT explicitly record the token-orphan-NOT-covered fact as a bug/limitation — it is inferable from the five-job list but not stated. The orphan-token housekeeping gap (H-001) is the load-bearing net_new finding and deserves an explicit sidecar entry."
+  proposed_refresh: "Add a bugs_limitations_corner_cases entry to the HousekeepingJobManager sidecar: 'no token-orphan cleanup leg — the five-job cascade never DELETEs orphaned token rows; tokens orphaned by collector/datasource soft-delete (token has no deleted_at) accumulate forever; the fix is a new TokenOrphanHousekeepingJob bean. Cross-link F-125 H-001 + PLT-087 D1 (per-delete DataSource cleanup, the complementary half).'"
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "(silent / partial) Shows 'a partially-redacted Collector token with a Regenerate action' and 'rotate a leaked token' but says nothing about the destructive no-grace in-place rotation."
+  code_does: "Rotation is a destructive in-place UPDATE; the old token 401s immediately; any collector still using it breaks until reconfigured."
+  recommended_log_as: "DOC-252 (Collector) + DOC-255 (DataSource) — both DONE; this confirms they remain the canonical home. No new doc-gap."
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "(silent) Does not describe the confirmation dialog, the one-time reveal + copy flow, or the consequence the dialog should carry."
+  code_does: "A ConfirmationDialog exists (correcting the feature-flow drift class) but carries no consequence warning; the new token is one-time-reveal with a Copy button."
+  recommended_log_as: "doc-gap-NNN — the management page should describe the one-time-reveal + copy flow and the destructive consequence (pairs with PLT-038 the UI-text fix). Part of the CollectorsList sidecar's DOC-GAP candidate."
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "'rotate a leaked token' implies rotation hardens the write path."
+  code_does: "On a default deployment (auth.ingestion.filter.enabled=false) rotation is a no-op against /ingestion/entities; the doc/UI promise a security property the default does not enforce."
+  recommended_log_as: "DOC-252/255 caveats (done) cover the token surface; the rotation-effect-is-config-gated nuance should be added to the credential-lifecycle caveat. Cross-link REFACTOR-185 family."
+
+## maintainer_notes
+
+UI/GUI IS present and enriched for this feature (Rule 9): the credential lifecycle has a real user-facing surface — the
+Collectors tab (CollectorsList -> CollectorItem -> CollectorItemToken) and the Datasources tab (DataSourceItem ->
+DataSourceItemToken). This reflection is NOT API-only; the highest-leverage findings (H-003 dialog-warning gap, H-011
+prefix-sniff fragility, H-012 no-recovery) come precisely from reasoning about the screen the operator lives through. This
+is the correct shape — the F-031 mistake (an API-only reflection of a UI-driven feature) is avoided because the UI hops are
+in the chain and enriched.
+
+FEATURE-FLOW DRIFT-CLASS CORRECTION (H-003, write-back candidate): the feature-flow's drift class
+`regenerate_token_ui_one_click_no_confirmation_modal` is FACTUALLY WRONG as stated — a ConfirmationDialog DOES exist on both
+token controls (DataSourceItemToken.tsx:37-49 + CollectorItemToken.tsx:37-49). The real gap is that the dialog carries NO
+consequence warning. Proposed replacement drift class:
+`regenerate_ui_confirmation_dialog_exists_but_carries_no_consequence_warning`. The maintainer should fold this correction
+into F-125's observed_vs_expected (and the UX severity stays HIGH because the informed-click footgun is real).
+
+NET_NEW LOAD-BEARING FINDING (H-001): the orphan-token-never-housekept problem is only PARTIALLY tracked. PLT-087 D1 covers
+the DataSource-side per-delete cleanup; NOTHING covers (a) the Collector-side per-delete cleanup or (b) the
+housekeeping-cascade daily sweep that reclaims tokens orphaned before any per-delete fix ships. The sweep
+(`DELETE FROM token WHERE id NOT IN (...every token_id FK...)` as a new HousekeepingJob bean) is the F-125
+notes_for_maintainer recommendation and is the genuinely new contribution of this reflection vs the already-tracked corpus.
+
+DEDUP SUMMARY (convergent validation — per the project_reflection_dedup_and_convergence memory): of the 8 routed findings,
+5 are already_tracked (H-005->PLT-085 with a GREEN pin; H-002->DOC-252; H-003->PLT-038; H-008->PLT-083/REFACTOR-185;
+H-009->DOC-252/REFACTOR-185) and 3 are net_new (H-001 orphan-housekeeping-sweep; H-011 prefix-sniff fragility; H-012
+no-recovery-path). H-006 (audit silence) is net_new at the credential-lifecycle level but routes to the existing
+platform_event ADR family rather than a standalone item. This reflection's high already_tracked ratio is the expected
+signal for a security-load-bearing feature the scanners have already swept — convergent agreement, not wasted work.

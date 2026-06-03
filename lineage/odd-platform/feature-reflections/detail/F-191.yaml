@@ -1,0 +1,694 @@
+---
+feature_id: F-191
+pillar_anchored_id: P-01:F-009-ui
+pillar: Data Discovery
+feature_name: "Dataset Schema Revision Compare Viewer (UI surface) — the side-by-side per-field diff page at /dataentities/{id}/structure/compare?firstVersionId=&secondVersionId=, operator-observable counterpart of the GET /api/datasets/{id}/structure/diff backend endpoint F-045 anchors"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataSetController__controller-class__DataSetController.md   # backend hop 4 — shared with F-045; full Stress Protocol on the diff endpoint; traces DatasetVersionServiceImpl + ReactiveDatasetVersionRepositoryImpl by file:line
+  # UI hops 0-3 (DatasetStructureCompare / CompareHeader / CompareList / CompareListItem) — NO enriched sidecar on disk (Glob understanding/*Compare* empty). Evidence is the F-191 feature-flow facets + the F-045 batch-extension ui-review-2026-05-26-K narrative + Rule-8-exception source reads (see source_read_for_validation flags).
+source_reads_for_validation:
+  # Rule 8 exception — single-purpose confirmation reads where the UI sidecar is absent and a load-bearing line was needed; recorded so the next file-analyser UI pass enriches these nodes.
+  - "odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureCompare/DatasetStructureCompare.tsx:1-61 (URL->hook mapping, single AppErrorPage, EmptyContentPlaceholder, no client-side version validation)"
+  - "odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureCompare/DatasetStructureCompareHeader/DatasetStructureCompareHeader.tsx:1-150 ('Revision compare' title, Show-changes-only checkbox, From/To pickers, Close button, picker self-disable, setQueryParams on pick)"
+  - "odd-platform-ui/src/lib/hooks/api/datasetApi/datasetApi.ts:6-34 (useDatasetStructureCompare — RESOLVES the ui_unverified showChangesOnly contract: showChangesOnly is NOT in the request; full fieldList fetched; makeCompareFieldsTree applies it CLIENT-SIDE in select(); queryKey excludes showChangesOnly so the toggle does not refetch)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/schema-diff"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      MAJOR FINDING — the live schema-diff page now documents the Compare-viewer UI behaviour AND
+      its defects verbatim (the DOC-192/DOC-311 caveat set shipped since this surface was seeded
+      2026-05-26). The page names the exact compare URL "/dataentities/{id}/structure/compare?
+      firstVersionId=...&secondVersionId=..." (so deep-linking IS a documented workflow), and
+      documents the two UI-tier defects this reflection re-derives: (a) "A pasted URL whose
+      version_ids come from a different dataset returns 200 with a structurally-valid but
+      semantically-nonsense diff" (= the no-client-side-validation amplifier, H-004); (b) "the
+      operator sees the same 'something went wrong' regardless of whether they mistyped a
+      version-id or whether the platform is actually broken" (= the undifferentiated AppErrorPage,
+      H-005). It also states "'Latest version' means the highest version integer, not the most
+      recently created". CONSEQUENCE: the code-vs-doc contradictions are CLOSED on the doc side —
+      the UI defects are documented-as-known-limitations, not silently misrepresented. They remain
+      CODE bugs (tracked PLT-028 Threads B + D) until the fix ships. The page does NOT mention the
+      "Show changes only" filter, nor the side-by-side CREATED/UPDATED/DELETED status treatment in
+      detail (a doc-completeness gap, not a contradiction — see doc_drift_findings).
+hypothesis_summary:
+  total: 12
+  confirmed: 5
+  contradicted: 3
+  partial: 2
+  probe_needed: 2
+  note: "11 of the 12 hypotheses are user-facing falsifiable promises and project 1:1 to use_cases F-191-UC-001..011 on the feature-flow; H-000 is the mandatory Rule-9 reflection-confidence meta-hypothesis (verdict partial) that routes to the primary validation_gap, not a use_case. The 11 use_cases carry confirmed:5 / contradicted:3 / partial:1 / probe-needed:2; H-000 is the extra partial. This is a UI-surface reflection: UX verdicts lean on the feature-flow facets + Rule-8-exception source reads (concrete file:line) but the UI components have no Stress-Protocol-interrogated sidecar — confidence is MEDIUM for pure-UX claims, HIGH where a source read pinned the behaviour."
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: "The Compare viewer reads firstVersionId/secondVersionId from the URL query-params straight into the fetch hook with NO validation against the dataset's loaded revision list (DatasetStructureCompare.tsx:24-35) — a pasted URL with another dataset's version-ids renders a confident, legitimate-looking, semantically-nonsense cross-dataset diff (the client-side half of the F-045 cross-dataset leak)."
+related_feature_flows: [F-045, F-001]
+related_concepts:
+  - dataset-version
+  - schema-diff
+  - revision-compare-viewer
+  - read-collaborative-posture
+new_drift_classes_proposed: []
+related_drift_classes:
+  - compare_url_query_params_not_validated_against_loaded_dataset_versions_list_cross_dataset_paste_attack_silent
+  - compare_error_page_does_not_differentiate_4xx_vs_5xx_operator_cannot_distinguish_wrong_id_from_platform_broken
+  - show_changes_only_is_client_side_filter_full_diff_payload_still_transferred
+  - revision_picker_disabled_only_on_self_no_cross_dataset_validation
+  - close_button_returns_to_structure_path_drops_compare_state_no_url_history_preservation
+---
+
+# Dataset Schema Revision Compare Viewer (UI surface) — product-owner reflection
+
+## product_owner_narrative
+
+The Revision Compare Viewer is the screen a data engineer opens to answer one concrete question: *"what changed in this dataset's schema between two points in time?"* It is the operator-observable face of F-045's diff endpoint — where F-045 reflects the wire contract, this reflection is about the page the user actually lives through. The promise to a customer: open any dataset, click **Revision compare**, and get a side-by-side view of two revisions with every added, removed, and changed field called out in colour, plus a one-click "show only the fields that changed" filter (per the F-045 batch-extension ui-review-2026-05-26-K and `DatasetStructureCompareHeader.tsx:60-145`). The audience is the `data-engineer-analyst` doing downstream-impact analysis after a breaking change and the `odd-platform-ui-end-user` browsing a dataset (system-mission.md P-01 audiences; "view per-dataset schema-diff against revisions" is a named P-01 primary user action).
+
+The user reaches it from the **Structure** tab: the "Revision compare" button in `DatasetStructureHeader.tsx:144-150` (disabled until the dataset has at least two revisions) navigates to `/dataentities/{id}/structure/compare?firstVersionId=&secondVersionId=`, pre-seeding the two pickers with the OLDEST and NEWEST version ids from the sorted revision list (per the feature-flow `discovered_from_entry_point`). On that screen, `DatasetStructureCompare.tsx:24-35` reads the two version ids from the URL query-params and fires `useDatasetStructureCompare`, which calls `GET /api/datasets/{id}/structure/diff` (`datasetApi.ts:13-26`, source-read). The four render states are Loading (`AppLoadingPage`), Error (`AppErrorPage`), Empty (`EmptyContentPlaceholder`), and Success (`DatasetStructureCompareList`) — `DatasetStructureCompare.tsx:37-57`.
+
+The working parts a product owner would demo: (a) **two revision pickers** ("From" / "To") that each disable the option the other picker already holds, and write the chosen id back into the URL query-param (`DatasetStructureCompareHeader.tsx:89-144`, source-read — the URL is the source of truth for the selection); (b) a **side-by-side per-field diff**, one row per field, where the row container colour is driven by the backend's `CREATED`/`UPDATED`/`DELETED` status and nested struct/list fields expand recursively (`DatasetStructureCompareListItem.tsx:31-37,113-117`); (c) a **"Show changes only" checkbox** that filters the visible rows; and (d) a **Close** button. A decisive detail resolved by source-read this pass (`datasetApi.ts:19-32`): "Show changes only" is a purely CLIENT-SIDE prune — the hook always fetches the full diff payload and `makeCompareFieldsTree` applies the filter in React Query's `select`; the `queryKey` deliberately excludes `showChangesOnly`, so toggling the checkbox re-derives from cache without a re-fetch.
+
+The integration story: this surface renders exactly what F-045's diff endpoint returns, so every F-045 backend defect has a UI consequence here. The cross-dataset version-id leak (F-045 H-001/H-002) reaches this screen through the URL query-params, which the viewer does NOT validate against the loaded revision list — the client-side half of the leak. The asymmetric 500-vs-400 error model (F-045 H-004) lands as a single undifferentiated full-page error. The schema payload it diffs carries the tags + glossary terms from Manual Object Tagging (F-018), so the leak is wider than raw column metadata. The viewer lives inside the data-entity detail page that Detail-Page View Tracking (F-001) enters.
+
+Edge cases a senior product owner would flag in a demo, all load-bearing here: what happens when a user pastes a compare URL someone shared in chat — does the viewer check the ids belong to this dataset (it does not — the headline finding)? What does the user see when a version id is stale or wrong (a full-page outage-style error indistinguishable from "the platform is down")? What does the Close button do — go back, or go somewhere (it navigates to the latest-structure path, dropping the compare state, not a browser-back)? Does "Show changes only" save a slow network round-trip on a 10K-field schema (no — the full payload is always transferred)? And the question that frames the trust in the whole screen for a security reviewer: *can the viewer be made to show me a confident, legitimate-looking diff of a dataset my team does not own?* The answer — yes, via a hand-edited URL, with no warning — is the spine of this UI reflection.
+
+## hypotheses
+
+- id: H-000
+  hypothesis: "(Rule 9 meta) The Compare viewer's user experience can be judged as a senior product owner would — from the screen and the flow the user lives through — at full evidentiary confidence."
+  derivation: "Rule 9 / APPROACH.md §0.2 — F-191 IS a UI surface (its whole purpose) and its UI hops are all `unresolved` in the chain; a UI feature with no enriched UI sidecar cannot be reflected from the feature-flow facets alone at HIGH confidence without source reads."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      F-191's four UI components (DatasetStructureCompare / CompareHeader / CompareList /
+      CompareListItem) have NO enriched sidecar on disk (Glob understanding/*Compare* is empty;
+      the F-045 hop-1 DataSetController sidecar lists every UI caller as unresolved:true). This
+      reflection is therefore NOT a Stress-Protocol-grounded UI reflection. It is grounded in
+      three things, in descending strength: (1) Rule-8-exception SOURCE READS of the three
+      load-bearing files (DatasetStructureCompare.tsx, DatasetStructureCompareHeader.tsx,
+      datasetApi.ts) — these pin the actual behaviour and raise the specific verdicts they touch
+      to HIGH; (2) the F-191 feature-flow `facets` block (5 drift_class facets with file:line);
+      (3) the F-045 batch-extension ui-review-2026-05-26-K narrative. UX-quality hypotheses that
+      are NOT pinned by a source read (intuitiveness, device behaviour) remain MEDIUM confidence.
+    evidence:
+      - sidecar: "(feature-flow F-191)"
+        section: "chain[hop 0-3].sidecar"
+        cite: "F-191.yaml:36,48,59,68 (all UI hops `sidecar: unresolved`)"
+        note: "Every UI hop in the chain is unresolved — no enriched UI node exists."
+      - sidecar: "(feature-flow F-191)"
+        section: "observed_vs_expected.facets"
+        cite: "F-191.yaml:116-192 (5 UI-tier drift facets, file:line cited)"
+        note: "The UI evidence base, supplemented by source reads this pass."
+    operator_visible_failure: |
+      Not an operator failure — a reflection-confidence gap, and the reason this whole reflection
+      is the FIRST validation_gap below (Rule 9). The risk is the reflection-layer F-031 mistake
+      (LSN-023): emitting confident UX verdicts for a UI feature whose UI is not in the ontology.
+      Mitigated this pass by source-reading the three load-bearing components, but a proper
+      file-analyser UI pass on the four components is still owed.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-001
+  hypothesis: "When a user clicks the 'Revision compare' button on the Structure tab, the viewer opens pre-loaded with a meaningful default comparison (the oldest revision vs the newest) so the user sees a non-empty diff on the first click without understanding the version-id model."
+  derivation: "UI-label / Rule 9 intuitiveness seed — the affordance is a labelled button; a senior PO asks whether the first click yields something useful or a blank picker."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The "Revision compare" button (DatasetStructureHeader.tsx:144-150, disabled when
+      datasetVersions.length < 2) navigates to datasetStructureComparePath seeded with
+      sortedVersions[0].id (oldest) and sortedVersions[last].id (newest), per the F-045
+      batch-extension and the F-191 discovered_from_entry_point. On the compare screen the header
+      sorts the revision list ascending by .version (DatasetStructureCompareHeader.tsx:56-58,
+      source-read) and the two pickers default to those seeded ids (lines 90-91, 120-121). So the
+      first click produces oldest-vs-newest — the maximally-informative default diff. Disabling the
+      button below two revisions is the correct guard (you cannot diff a single revision).
+    evidence:
+      - sidecar: "(feature-flow F-191 + source read)"
+        section: "discovered_from_entry_point + DatasetStructureCompareHeader.tsx"
+        cite: "DatasetStructureHeader.tsx:144-150 + DatasetStructureCompareHeader.tsx:56-58,90-91,120-121"
+        note: "Button seeds oldest+newest; header sorts ascending; pickers default to the seeded ids."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When a user changes either the 'From' or 'To' revision picker, the diff re-renders for the newly chosen pair, the URL updates to reflect the selection (so it is shareable/bookmarkable), and the picker prevents selecting the same revision in both slots."
+  derivation: "UI-label / endpoint-shape — two SELECT controls feed the firstVersionId/secondVersionId query params; a PO asks whether the controls behave consistently with the rest of the platform's picker+URL pattern."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Each picker's onChange calls setQueryParams to write the chosen rev.id into the
+      firstVersionId/secondVersionId URL query-param (DatasetStructureCompareHeader.tsx:35-47,
+      source-read), and DatasetStructureCompare reads those query-params back into the fetch hook
+      (DatasetStructureCompare.tsx:24-35), whose queryKey includes firstVersionId+secondVersionId
+      (datasetApi.ts:20) — so a change re-fetches and re-renders. The URL IS the source of truth
+      for the selection, which makes the comparison deep-linkable (consistent with the
+      doc-documented deep-link workflow). Each picker disables the option equal to the OTHER
+      picker's current value (lines 99, 129), so identical-revision selection is prevented in the
+      UI (matching the backend's typed-400 guard, F-045 H-007). This is a request field whose
+      meaning is exactly the UI control feeding it (Rule 9) — the pattern is correct.
+    evidence:
+      - sidecar: "(source read)"
+        section: "DatasetStructureCompareHeader.tsx"
+        cite: "DatasetStructureCompareHeader.tsx:35-47,99,129"
+        note: "Picker onChange -> setQueryParams (URL is source of truth); option disabled == other picker's value."
+      - sidecar: "(source read)"
+        section: "datasetApi.ts"
+        cite: "datasetApi.ts:19-26"
+        note: "queryKey includes both version ids -> change re-fetches; queryFn calls GET .../structure/diff."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user views the diff, each field row is visually marked by what happened to it (added / removed / changed / unchanged), and nested struct/list fields can be expanded to see child-field changes."
+  derivation: "Response-shape — the backend returns a per-field status enum (CREATED/UPDATED/DELETED/NO_CHANGES); the response shape promises a status-driven visual treatment per row."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      DatasetStructureCompareList renders one DatasetStructureCompareListItem per fieldDiff in
+      data.structureDiffList (F-191 chain hop 2). The list item reads the `from`/`to` states from
+      fieldDiff.states[firstVersionId] / [secondVersionId], computes isTypeChanged /
+      isIsNullableChanged / isPrimaryKeyChanged flags, and renders side-by-side via S.FieldWrapper
+      with $status={fieldDiff.status} driving the visual treatment from the backend's
+      CREATED/UPDATED/DELETED status; nested fields recurse via renderCompareItem on
+      fieldDiff.childFields (DatasetStructureCompareListItem.tsx:31-37,113-117, per F-191 chain
+      hops 2-3). The hook flags isNested when any diff has childFields (datasetApi.ts:30,
+      source-read), so the expand affordance is data-driven. This is the central happy path; the
+      backend diff that feeds it is the ONE behaviour with a real test (F-045
+      DatasetVersionDiffTest), but the UI rendering of it has none.
+    evidence:
+      - sidecar: "(feature-flow F-191)"
+        section: "chain[hop 2-3].evidence + terminal_side_effect"
+        cite: "DatasetStructureCompareListItem.tsx:31-37,113-117 + F-191.yaml:88-97"
+        note: "Per-field status-driven row colour + recursive nested-field expand."
+      - sidecar: "(source read)"
+        section: "datasetApi.ts"
+        cite: "datasetApi.ts:27-31"
+        note: "select() builds structureDiffList tree + isNested flag from the full fieldList payload."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a user navigates to a compare URL whose firstVersionId/secondVersionId belong to a DIFFERENT dataset than the one in the path (e.g. a stale or hand-edited URL pasted from chat), the viewer detects the mismatch and refuses to render a cross-dataset diff — it does not silently present a confident, legitimate-looking comparison of data the user is not looking at."
+  derivation: "Negative-space + Rule 9 — the URL query-params are user-supplied input; the viewer reads `datasetVersions` (the dataset's own revision list) and could validate against it. A trusted audit surface should not render a diff it cannot vouch for."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The viewer performs NO client-side validation of the URL version-ids. DatasetStructureCompare
+      reads firstVersionId/secondVersionId from useQueryParams (DatasetStructureCompare.tsx:24-26,
+      source-read) and passes them straight into useDatasetStructureCompare (lines 30-35) which
+      fires GET .../structure/diff. The component DOES load datasetVersions
+      (DatasetStructureCompare.tsx:28, source-read) but only forwards that array to the header for
+      the picker dropdowns — it never checks that the URL-supplied ids are members of it. Paired
+      with F-045's backend cross-dataset leak (the diff SQL filters DATASET_VERSION.ID.in(...) with
+      no dataset predicate, ReactiveDatasetVersionRepositoryImpl.java:147-157), a pasted URL with
+      another dataset's version-ids returns 200 and the list-item renders it AS IF a valid diff.
+      The pickers' self-disable logic (H-002) is a NORMAL-PATH safety only; it cannot constrain
+      the URL, which bypasses the pickers entirely.
+    evidence:
+      - sidecar: "(source read)"
+        section: "DatasetStructureCompare.tsx"
+        cite: "DatasetStructureCompare.tsx:24-35 + 28"
+        note: "URL version-ids -> fetch hook with no membership check against the loaded datasetVersions array."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: "stress_findings.request_inputs[firstVersionId / secondVersionId]"
+        cite: "ReactiveDatasetVersionRepositoryImpl.java:147-157"
+        note: "Backend half: diff SQL filters ID.in() only; dataEntityId discarded -> cross-dataset 200."
+      - sidecar: "(feature-flow F-191)"
+        section: "observed_vs_expected.facets[0]"
+        cite: "F-191.yaml:117-131"
+        note: "compare_url_query_params_not_validated_against_loaded_dataset_versions_list facet (severity MEDIUM)."
+    operator_visible_failure: |
+      (1) The Compare viewer is a TRUSTED audit surface — an operator reasoning about "what changed
+      between V1 and V2" can be handed a forged or stale URL (chat, docs, bookmark) and shown a
+      confident, legitimate-looking diff of a dataset they are not authorised to (or did not intend
+      to) inspect, with NO error or warning. This is the most damaging failure of the surface
+      because it does not look like a failure. (2) It is the client-side delivery vector for the
+      F-045 backend cross-dataset schema-disclosure leak (column names/types/descriptions/tags/
+      terms). (3) Even after the backend fix (PLT-028 Thread A) lands, the absence of client-side
+      validation means a wrong-dataset id will surface as the H-005 undifferentiated error rather
+      than an actionable "this revision isn't part of this dataset" message.
+    severity: HIGH
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a compare request fails, the user sees an error that distinguishes what went wrong — a wrong/stale version-id (their input) versus a platform outage — so they can self-correct rather than escalate to support."
+  derivation: "Rule 9 intuitive-error-recovery seed + endpoint-shape — the backend returns distinct status codes (400 identical / 500 missing per F-045 H-004); a PO asks whether the UI surfaces that distinction usefully."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      DatasetStructureCompare renders a SINGLE undifferentiated <AppErrorPage showError={isError}
+      ...> whenever the diff hook returns ANY error (DatasetStructureCompare.tsx:47-51, source-read).
+      It does not branch on 4xx vs 5xx. Paired with F-045's backend asymmetry (missing version-id
+      -> 500, identical -> 400) every failure mode collapses to the same full-page error: "I typed
+      a wrong id" looks identical to "the platform is down". Worse, the most dangerous case
+      (cross-dataset 200 nonsense diff, H-004) is NOT an error at all and renders as a normal diff.
+      The live schema-diff doc documents this exactly: "the operator sees the same 'something went
+      wrong' regardless of whether they mistyped a version-id or whether the platform is actually
+      broken" — so this is documented-as-known, not a doc contradiction.
+    evidence:
+      - sidecar: "(source read)"
+        section: "DatasetStructureCompare.tsx"
+        cite: "DatasetStructureCompare.tsx:46-51"
+        note: "One AppErrorPage for all errors; no status branch."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: "bugs_limitations_corner_cases[2]"
+        cite: "DatasetVersionServiceImpl.java:56-71"
+        note: "Backend asymmetry: missing id -> 500 (bare RuntimeException), identical id -> 400 (typed)."
+      - sidecar: "(WebFetch)"
+        section: "schema-diff doc page"
+        cite: "https://docs.opendatadiscovery.org/features/data-discovery/schema-diff"
+        note: "Doc documents the undifferentiated-error behaviour verbatim (DOC-192/DOC-311)."
+    operator_visible_failure: |
+      (1) A user who pastes a stale/wrong compare URL sees a full-page outage-style error and cannot
+      tell it was their input — they may escalate to support thinking the platform is down. (2) The
+      500-vs-400 asymmetry means even the error TYPE is uninformative through this surface. (3) The
+      single most damaging case (cross-dataset 200) is silent — it is not even routed to this error
+      path (it renders as a normal diff, H-004), so the error UX gap and the validation gap compound.
+    severity: MEDIUM
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When two revisions are identical in structure (no field differs), the viewer shows a clear empty/no-changes state rather than a blank screen or a broken layout."
+  derivation: "Negative-space / response-shape — the empty diff is a normal outcome (a re-ingest that changed nothing structurally); a PO asks what the user sees in that case."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      DatasetStructureCompare renders an <EmptyContentPlaceholder isContentLoaded={isSuccess}
+      isContentEmpty={!data?.structureDiffList.length} ...> when the success payload has no diff
+      rows (DatasetStructureCompare.tsx:52-56, source-read), and the list is only rendered when
+      data.structureDiffList.length > 0 (line 40). So an empty/no-change diff yields the shared
+      EmptyContentPlaceholder, not a blank or broken screen. This is correct, consistent platform
+      UX. Confidence MEDIUM: the EmptyContentPlaceholder's own copy/affordance is not inspected
+      (no component sidecar) — only that the empty branch is wired.
+    evidence:
+      - sidecar: "(source read)"
+        section: "DatasetStructureCompare.tsx"
+        cite: "DatasetStructureCompare.tsx:40,52-56"
+        note: "List rendered only when length>0; EmptyContentPlaceholder wired on empty success."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: MEDIUM
+    source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a user toggles 'Show changes only', the view filters to changed fields instantly (no network round-trip), so the filter is responsive even on a large schema."
+  derivation: "UI-label + performance — the checkbox is labelled 'Show changes only'; the F-191 facet flagged whether this is a server param or client filter as ui_unverified. A PO asks whether toggling is fast and whether it saves bandwidth."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      RESOLVES the F-191 ui_unverified facet via source read. showChangesOnly is NOT sent to the
+      server: useDatasetStructureCompare calls getDataSetStructureDiff({ dataEntityId,
+      firstVersionId, secondVersionId }) with showChangesOnly absent from the request
+      (datasetApi.ts:22-26). The full fieldList is fetched, and makeCompareFieldsTree({ ...,
+      showChangesOnly }) applies the filter CLIENT-SIDE inside React Query's select()
+      (datasetApi.ts:27-32). The queryKey is ['datasetStructureCompare', dataEntityId,
+      firstVersionId, secondVersionId] — it deliberately EXCLUDES showChangesOnly (line 20), so
+      toggling the checkbox does NOT refetch; React Query re-runs select() on the cached payload.
+      The toggle is therefore instant (no round-trip) and the promise of responsiveness holds.
+    evidence:
+      - sidecar: "(source read)"
+        section: "datasetApi.ts useDatasetStructureCompare"
+        cite: "datasetApi.ts:19-32"
+        note: "showChangesOnly applied in select() (client-side); queryKey excludes it -> toggle re-derives from cache, no refetch."
+      - sidecar: "(feature-flow F-191)"
+        section: "observed_vs_expected.facets[2]"
+        cite: "F-191.yaml:145-166 (ui_unverified facet, now resolved)"
+        note: "Confirms the show_changes_only_is_client_side_filter facet; the ui_unverified flag is now resolvable to confirmed."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a user opens the compare on a pathologically wide/nested schema (e.g. 10K fields), the 'Show changes only' filter spares them the cost of transferring and rendering the unchanged fields."
+  derivation: "Performance + negative-space — a senior PO asks whether the headline filter ALSO bounds the network/render cost, since the whole point of 'show changes only' on a huge schema is to cut the noise."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      It does NOT spare the transfer cost. Because showChangesOnly is a client-side prune over an
+      already-downloaded full payload (H-007), the FULL diff fieldList is always fetched and held
+      in memory regardless of the checkbox state (datasetApi.ts:22-32, source-read). On the backend
+      side F-045 confirms the diff endpoint loads both versions' full field lists in-memory with no
+      pagination and no row-count guard (DatasetVersionServiceImpl.java:156-180, diff_in_memory_
+      load_no_pagination_no_row_count_guard). So for a 10K-field nested schema the cost is paid in
+      full — the backend materialises everything, the wire carries everything, the browser builds
+      the full tree in select(), and only the final render is filtered. The user's expectation that
+      "show changes only" makes a huge diff cheap is wrong on every tier except the final paint.
+    evidence:
+      - sidecar: "(source read)"
+        section: "datasetApi.ts"
+        cite: "datasetApi.ts:22-32"
+        note: "Full fieldList fetched + full tree built in select() before the client-side filter."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: "performance.known_performance_gaps + bugs_limitations_corner_cases[5]"
+        cite: "DatasetVersionServiceImpl.java:156-180"
+        note: "Backend diff loads both versions' full field lists in-memory; no pagination/row-count guard."
+    operator_visible_failure: |
+      (1) On a wide/nested schema the compare page is slow to load and memory-heavy on both server
+      and browser even when the user only wants the handful of changed fields — the filter does not
+      help where it would matter most. (2) Pathological schemas risk exceeding
+      spring.codec.max-in-memory-size on the response (F-045 performance note). This is a MEDIUM
+      UX/perf caveat, not a correctness bug — the diff is correct, just not cheap.
+    severity: MEDIUM
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a user clicks 'Close' on the compare viewer, they return to where they came from (the structure view they were on), with their context preserved."
+  derivation: "Rule 9 consistency seed + UI-label — the 'Close' control implies a return-to-previous; a PO asks whether it behaves as a back action or navigates elsewhere."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      "Close" does NOT do a browser-back / restore-previous. handleCloseClick navigates to
+      datasetStructurePath(dataEntityId) — the latest-structure path with NO version-id
+      (DatasetStructureCompareHeader.tsx:31-33, source-read). This triggers the F-045
+      DatasetStructureOverview latest-fetch + silent URL-replace flow (F-045 H-010), landing the
+      user on the LATEST revision regardless of which revision they had been viewing before they
+      opened compare. So "Close" is operationally a "go to latest structure", not a "go back". The
+      compare query-state is dropped; the browser back button may bring them BACK to the compare
+      URL and re-fetch. TRUE that it returns to the structure tab; FALSE that context is preserved.
+    evidence:
+      - sidecar: "(source read)"
+        section: "DatasetStructureCompareHeader.tsx"
+        cite: "DatasetStructureCompareHeader.tsx:31-33"
+        note: "handleCloseClick -> datasetStructurePath(dataEntityId) (no versionId)."
+      - sidecar: "(feature-flow F-191)"
+        section: "observed_vs_expected.facets[4]"
+        cite: "F-191.yaml:181-192"
+        note: "close_button_returns_to_structure_path_drops_compare_state facet (severity LOW)."
+    operator_visible_failure: |
+      A user who navigated from revision N to the compare screen, then clicks Close, is taken to the
+      latest revision (not back to N) — a small but real surprise/consistency defect. Browser-back
+      from there re-enters the compare URL and re-fetches the diff. Low severity (no data risk),
+      but it breaks the platform's general expectation that "Close" on a sub-view returns to the
+      view that opened it.
+    severity: LOW
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "The Compare viewer is usable across device types — the side-by-side two-column diff layout remains legible and the pickers operable on a narrow/tablet viewport."
+  derivation: "Rule 9 mandatory device-type UX seed — a side-by-side two-column layout is the canonical responsive-design risk; a PO must ask how it behaves below desktop width."
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The header lays the two pickers out as two xs={6} MUI Grid columns
+      (DatasetStructureCompareHeader.tsx:85,115, source-read) and the diff is described as a
+      side-by-side two-column field layout (S.FieldWrapper, F-191 terminal_side_effect). Whether
+      the two-column diff collapses gracefully, scrolls horizontally, or overflows on a narrow
+      viewport cannot be determined from the .tsx + styled-component names alone — the responsive
+      breakpoints live in the S.* styled definitions and MUI theme, which are not in any sidecar
+      and were not source-read this pass. This needs a rendered observation (headless browser at
+      multiple viewport widths), not static reading. Per Rule 6, locally executable (Playwright at
+      set viewport sizes against the local stack).
+    evidence:
+      - sidecar: "(source read)"
+        section: "DatasetStructureCompareHeader.tsx"
+        cite: "DatasetStructureCompareHeader.tsx:85,115"
+        note: "Pickers are xs=6 grid columns; diff layout is two-column — responsive behaviour not statically determinable."
+    operator_visible_failure: |
+      Unknown until probed. If the two-column diff does not collapse, a tablet/narrow-laptop user
+      doing field-level review (a real data-engineer-analyst context) may get a cramped or
+      horizontally-scrolling layout. Surfaced as a probe rather than asserted, per Rule 3 / no
+      banned hedge.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-191-2
+    source_read_for_validation: true
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "PENDING-F-191-2"
+
+- id: H-011
+  hypothesis: "When a user picks a revision pair where one revision belongs to this dataset but the diff result-set comes back empty because a version-id silently 404'd, the viewer tells the user which input was bad — it does not show an empty 'no changes' diff that misrepresents a lookup failure as 'nothing changed'."
+  derivation: "Negative-space — the EmptyContentPlaceholder (H-006) and a not-found version-id (F-045 H-004 -> 500) are different failures that could surface identically; a PO asks whether 'no changes' and 'one side missing' are distinguishable to the user."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The two paths CAN collide ambiguously but the exact rendered outcome needs verification. If a
+      version-id does not exist, the backend diff returns size != 2 and throws -> 500 (F-045 H-004),
+      which would route to the H-005 AppErrorPage (an error, distinguishable from empty). BUT the
+      makeCompareFieldsTree select() runs over whatever fieldList the payload carries; if a
+      cross-dataset or partially-resolving pair produces a structurally-valid-but-empty
+      structureDiffList, the EmptyContentPlaceholder (H-006) fires and the user sees "no changes" —
+      indistinguishable from a genuine no-op diff. Which branch a given bad-input pair takes
+      (error vs empty) depends on the backend's exact size-check and the select() output, which is
+      not fully traceable from the available evidence without running the pair. Needs a probe.
+    evidence:
+      - sidecar: "(source read)"
+        section: "DatasetStructureCompare.tsx + datasetApi.ts"
+        cite: "DatasetStructureCompare.tsx:40,47-56 + datasetApi.ts:27-31"
+        note: "Empty vs error branch selection depends on backend size-check and select() output for partially-resolving pairs."
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+        section: "bugs_limitations_corner_cases[2]"
+        cite: "DatasetVersionServiceImpl.java:69-71"
+        note: "size != 2 -> RuntimeException -> 500 (would route to error, not empty) for a fully-missing id."
+    operator_visible_failure: |
+      If the empty branch can fire for a bad-input pair, a user is shown "no changes" when in fact a
+      revision id failed to resolve — they conclude the schema is unchanged when really their input
+      was wrong. Verdict deferred to a probe per Rule 3; surfaced so the gap is not silently
+      assumed away.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-191-1
+    source_read_for_validation: true
+    routes_to_finding: validation-gap
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: "PENDING-F-191-1"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Compare viewer reads URL firstVersionId/secondVersionId straight into the fetch hook with no validation against the loaded datasetVersions list (DatasetStructureCompare.tsx:24-35); a forged/stale URL renders a confident cross-dataset nonsense diff with no warning — the client-side half of the F-045 leak."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "PLT-028 Thread B — validate firstVersionId ∈ datasetVersions AND secondVersionId ∈ datasetVersions before firing the hook; render an inline 'invalid version' message distinct from AppErrorPage. (Backend Thread A closes the leak server-side; Thread B is the defence-in-depth client half this hypothesis names exactly.)"
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: "Compare viewer renders one undifferentiated AppErrorPage for every error (DatasetStructureCompare.tsx:46-51) — no 4xx-vs-5xx branch; a wrong/stale version-id looks identical to a platform outage."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "PLT-028 Thread D — branch AppErrorPage on error status: 4xx -> typed inline error ('invalid/identical version-id'), 5xx -> outage page. Pairs with backend Thread C (typed 404 on missing id)."
+
+### caveat_candidates
+- hypothesis_id: H-008
+  one_line: "'Show changes only' is a client-side prune over an already-downloaded FULL diff payload; on a 10K-field nested schema the full diff is fetched + tree-built + held in memory regardless of the toggle — the filter does not bound network/server/parse cost, only the final paint."
+  dedup_status: net_new
+  distinct_from: PLT-028
+  recommended_log_as: "caveat — net-new performance/UX caveat NOT in PLT-028 (which is correctness/security + error-UX). The show_changes_only client-side-filter behaviour is documented in the F-191 feature-flow facet but the PERFORMANCE consequence (no transfer/parse saving on large schemas) is a fresh finding. Log as a doc caveat on the schema-diff page (the page currently omits the 'show changes only' filter entirely — see doc_drift_findings) OR a low-pri PLT perf item; cross-ref F-045 diff_in_memory_load_no_pagination_no_row_count_guard. Distinct from PLT-028: that issue does not mention show-changes-only or large-schema transfer cost."
+- hypothesis_id: H-009
+  one_line: "'Close' on the compare viewer navigates to the latest-structure path (no version-id), not a browser-back — it drops compare state and lands the user on the latest revision regardless of where they came from; browser-back re-enters compare and re-fetches."
+  dedup_status: net_new
+  distinct_from: PLT-028
+  recommended_log_as: "caveat / low-pri UI polish — net-new, captured in the F-191 feature-flow facet (close_button_returns_to_structure_path_drops_compare_state) but NOT in PLT-028 (which is correctness/security + error-UX, not navigation). Consider an inline doc note or a small PLT UI item; severity LOW (no data risk, consistency defect)."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — the net-new contribution of this UI reflection. PLT-028 + DOC-192 track the
+# DEFECTS and DOC caveats for this surface, but the Compare viewer has ZERO tests of any kind:
+# no .test.* unit test for any of the 4 components, no Playwright e2e (IT-023 covers only the
+# Structure tab column render, not compare/diff), and the only backend diff test (F-045
+# DatasetVersionDiffTest) does not exercise this UI. So use_case_coverage is 0/11 verified — the
+# headline coverage finding. Every promise below needs a guard: the contradicted ones (H-004/H-005)
+# need regression guards FOR the PLT-028 fix; the confirmed happy-paths (H-001/H-002/H-003/H-006/
+# H-007) are hand-proven-but-untested (the exact LSN-030 hole); the partial/probe ones (H-008/H-009/
+# H-010/H-011) guard the documented behaviour.
+- use_case_id: F-191-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "Clicking 'Revision compare' opens the viewer pre-seeded oldest-vs-newest with a non-empty diff; the button is disabled below two revisions."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-001) — e2e"
+  proposed_test: "Playwright (new tests/ui/pages/data_entity/structure_compare.ts page object): seed a dataset with >=2 revisions; assert 'Revision compare' button enabled; click; assert URL has firstVersionId=oldest & secondVersionId=newest and a non-empty diff renders. Also seed a 1-revision dataset; assert the button is disabled. CONFIRMED-but-untested promise (LSN-030)."
+- use_case_id: F-191-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "Changing a revision picker re-renders the diff, writes the choice into the URL (shareable), and prevents picking the same revision in both slots."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-002) — e2e + component"
+  proposed_test: "Playwright/component: open compare; change the 'From' picker; assert the URL firstVersionId updates and a new /diff fires; assert the value currently in 'To' is disabled in the 'From' dropdown. CONFIRMED-but-untested promise."
+- use_case_id: F-191-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "Each field row is colour-coded by CREATED/UPDATED/DELETED status; nested struct/list fields expand to show child diffs."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-003) — component + e2e"
+  proposed_test: "Component test (DatasetStructureCompareListItem) with a fixture diff: assert added field -> CREATED treatment, removed -> DELETED, type-change -> UPDATED flag; assert a field with childFields renders an expand control that reveals the nested diff. CONFIRMED-but-untested promise — guards the central happy path the UI has no coverage for."
+- use_case_id: F-191-UC-004
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "A compare URL with version-ids from another dataset is refused client-side, not rendered as a confident cross-dataset diff."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-004) — security/regression + e2e"
+  proposed_test: "Playwright: seed datasets A and B; navigate to /dataentities/{A.id}/structure/compare?firstVersionId={B.v1}&secondVersionId={B.v2}; assert an inline 'invalid version-id' message and that NO /diff request fires (RED today: a diff renders). Regression guard for PLT-028 Thread B."
+- use_case_id: F-191-UC-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "A failed compare shows a differentiated, self-correctable error (wrong/stale id vs platform outage)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-005) — component + e2e"
+  proposed_test: "Component test: mock the diff hook to return a 4xx then a 5xx; assert 4xx renders a typed inline message and 5xx renders the AppErrorPage outage treatment (RED today: both render the same AppErrorPage). Regression guard for PLT-028 Thread D."
+- use_case_id: F-191-UC-006
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "Two identical revisions show a clear empty 'no changes' state, not a blank/broken screen."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-006) — component"
+  proposed_test: "Component test: mock the hook with isSuccess + structureDiffList=[]; assert EmptyContentPlaceholder renders and DatasetStructureCompareList does not. CONFIRMED-but-untested promise."
+- use_case_id: F-191-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "Toggling 'Show changes only' filters instantly with no network round-trip."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-007) — component"
+  proposed_test: "Component test: render compare with a mixed diff; toggle 'Show changes only'; assert NO new network request fires (queryKey unchanged) and only changed-status rows remain visible. CONFIRMED-but-untested promise — guards the client-side-filter contract resolved this pass."
+- use_case_id: F-191-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "On a 10K-field schema, 'Show changes only' spares the transfer/parse cost of unchanged fields."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-008) — performance/characterization"
+  proposed_test: "Characterization/perf test (pins current behaviour per LSN-029): assert the /diff request payload size and the select() input are identical with the toggle ON vs OFF (the full payload is always fetched) — documents that the filter is paint-only. Flips if a server-side filter is ever added."
+- use_case_id: F-191-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "'Close' returns the user to where they came from with context preserved."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-009) — e2e"
+  proposed_test: "Playwright: open structure at revision N; open compare; click Close; assert navigation to the structure path (documents that it lands on latest, not N — expected-or-bug per the caveat). Characterization e2e."
+- use_case_id: F-191-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: "The side-by-side diff + pickers remain legible/operable on narrow/tablet viewports."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-010) — e2e responsive; blocked on PENDING-F-191-2"
+  proposed_test: "Playwright at viewport widths {desktop, 768, 375}: open compare; assert the two-column diff + From/To pickers remain operable (no overflow/overlap). Resolve PENDING-F-191-2 first to set the assertion."
+- use_case_id: F-191-UC-011
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "A bad/missing version-id surfaces as an actionable error, not a misleading empty 'no changes' diff."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-191-UC-011) — integration; blocked on PENDING-F-191-1"
+  proposed_test: "Integration/e2e: navigate compare with one valid + one non-existent version-id; assert the user sees an error (not EmptyContentPlaceholder 'no changes'). Resolve PENDING-F-191-1 to confirm which branch fires today."
+
+### probes_emitted
+- probe_id: PENDING-F-191-1
+  hypothesis_id: H-011
+  full_hypothesis: "When a user picks a revision pair where one version-id silently fails to resolve (e.g. non-existent or cross-dataset), does the viewer show the H-005 error path OR the H-006 EmptyContentPlaceholder 'no changes' state? A bad/missing version-id must surface as an actionable error, NOT an empty 'no changes' diff that misrepresents a lookup failure as 'nothing changed'. (Verdict requires running the pair: which branch fires depends on the backend size-check at DatasetVersionServiceImpl.java:69-71 and the makeCompareFieldsTree select() output at datasetApi.ts:27-31 for partially-resolving pairs.)"
+  local_execution_blocked: false
+  note: "Parallel-safe mode — recorded here only; no P-NNN file created. Local probe shape: against the local docker-compose stack, seed a dataset with revisions; navigate the compare URL with (a) one valid + one non-existent version-id and (b) one valid + one cross-dataset version-id; observe whether AppErrorPage or EmptyContentPlaceholder renders, and the /diff HTTP status. Overlaps with F-045 PENDING-F-045 family + P-shb-007-002."
+- probe_id: PENDING-F-191-2
+  hypothesis_id: H-010
+  full_hypothesis: "Is the Compare viewer's side-by-side two-column diff layout (S.FieldWrapper) + the two xs=6 From/To pickers legible and operable on narrow/tablet viewports, or does it overflow/overlap below desktop width? (Verdict requires a rendered observation at multiple viewport widths — the responsive breakpoints live in the S.* styled-component definitions + MUI theme, not in any sidecar and not source-read this pass.)"
+  local_execution_blocked: false
+  note: "Parallel-safe mode — recorded here only; no P-NNN file created. Local probe shape: Playwright against the local stack, open the compare page at viewport widths {1440, 768, 375}, screenshot + assert no horizontal overflow on the diff container and that both pickers are clickable. Rule-6 local-executable."
+
+### validation_gaps
+- sidecar: "(UI components — DatasetStructureCompare / DatasetStructureCompareHeader / DatasetStructureCompareList / DatasetStructureCompareListItem)"
+  field_insufficient: "no enriched sidecar exists on disk for ANY of the 4 Compare components (Glob understanding/*Compare* empty); the F-045 hop-1 DataSetController sidecar lists the Compare UI caller as unresolved:true. This is the PRIMARY Rule-9 gap and the reason H-000 leads this reflection."
+  proposed_refresh: |
+    PRIMARY GAP (Rule 9). F-191 IS a UI surface — its entire purpose is the screen the user lives
+    through — yet its UI is not in the ontology. This reflection raised the load-bearing verdicts to
+    HIGH via Rule-8-exception source reads of DatasetStructureCompare.tsx, DatasetStructureCompareHeader.tsx,
+    and datasetApi.ts (which resolved the ui_unverified showChangesOnly facet to confirmed client-side
+    filtering — H-007/H-008). But a proper file-analyser UI pass should enrich the 4 components as
+    react-component sidecars, in particular: (a) DatasetStructureCompare (no client-side version
+    validation H-004; single AppErrorPage H-005; empty branch H-006); (b) DatasetStructureCompareListItem
+    (the per-field status rendering + recursion H-003 — the central happy path, currently MEDIUM
+    confidence because the styled-component status treatment was not source-read); (c) the S.*
+    styled-component definitions for the responsive question (H-010/PENDING-F-191-2). Enriching these
+    converts H-003/H-006 from MEDIUM to HIGH and resolves PENDING-F-191-2 without a probe.
+- sidecar: "(feature-flow F-191 facet: show_changes_only_is_client_side_filter)"
+  field_insufficient: "the F-191 facet[2] carried ui_unverified: true with a probe-candidate note, but the contract is now RESOLVED by source-read this pass (datasetApi.ts:19-32)."
+  proposed_refresh: |
+    The next feature-flow-builder refresh on F-191 can flip facet[2]
+    (show_changes_only_is_client_side_filter_full_diff_payload_still_transferred) from
+    ui_unverified: true to ui_unverified: false and set the top-level F-191 ui_unverified flag to
+    false: useDatasetStructureCompare (datasetApi.ts:19-32) confirms showChangesOnly is applied
+    CLIENT-SIDE in select() (not a server query-param), the full fieldList is always fetched, and
+    the queryKey excludes showChangesOnly so the toggle re-derives from cache without a refetch. The
+    H-008 performance consequence (filter does not bound transfer/parse cost) follows directly.
+
+### doc_drift_findings
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/schema-diff"
+  doc_says: "The page documents the compare URL, the cross-dataset 200-nonsense-diff caveat, the undifferentiated-error caveat, and the max(version) caveat — but does NOT mention the 'Show changes only' filter at all, nor describe the side-by-side per-field CREATED/UPDATED/DELETED status treatment in detail."
+  code_does: "The Compare viewer ships a prominent 'Show changes only' checkbox (DatasetStructureCompareHeader.tsx:65-80) that client-side-filters the diff (datasetApi.ts:27-32), and renders a status-colour-coded side-by-side per-field diff with recursive nested-field expansion (DatasetStructureCompareListItem.tsx:31-37,113-117)."
+  recommended_log_as: "doc-gap (completeness, low severity): the schema-diff page now accurately documents the DEFECTS (DOC-192/DOC-311 caveat set, verified live 2026-06-03) but UNDER-documents the working feature — the 'Show changes only' filter and the status-driven side-by-side layout are not described. Add a short 'Using the compare viewer' subsection. Note for the doc author: state that 'Show changes only' is a view filter (the full diff is still loaded), which sets correct expectations on large schemas (H-008)."
+
+## maintainer_notes

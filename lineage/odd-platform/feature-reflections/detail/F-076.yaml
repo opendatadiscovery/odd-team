@@ -1,0 +1,968 @@
+---
+feature_id: F-076
+pillar_anchored_id: P-08:F-016
+pillar: P-08 — Management & Administration
+feature_name: |-
+  Cross-Management cascade-on-delete protection pattern — Owner / Namespace
+  / DataSource (the three Management-tab parent rows whose delete paths
+  guard against orphaning referents) share a uniform architectural shape
+  AND a uniform defect: the existence-check + soft-delete pair is NOT
+  atomic with concurrent referent INSERTs.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+maintainer_curated: false
+contributing_sidecars_read:
+  - odd-platform__java__service__service__OwnerServiceImpl.md
+  - odd-platform__java__NamespaceController__controller-class__NamespaceController.md
+  - odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+  - odd-platform__ts__react-component__component__DataSourceItem.md
+  # UI-tier confirmation-dialog evidence for the Owner + Namespace arms is in
+  # F-076.yaml:ui_review_2026_05_26 (EditableOwnerItem.tsx / EditableNamespaceItem.tsx);
+  # those two item components are NOT separately enriched as sidecars — see validation_gaps.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-22T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Inherited from the contributing sidecars (deleteDataSource WebFetched
+      2026-05-21 status 200; DataSourceItem 2026-05-22 status 200; Namespace
+      2026-05-20 status 200). The page's ONLY mention of deletion across all
+      three surfaces is workflow one-liners ("remove a source no longer
+      ingested"). It is silent on the cascade-block contract, the soft-delete
+      semantics, the orphan referents, and the TOCTOU window. No
+      WebFetch re-run this session — within the contributing sidecars' freshness window.
+hypothesis_summary:
+  total: 12
+  confirmed: 2
+  contradicted: 7
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      "Delete permanently" is the promise on all three confirmation dialogs, but
+      the delete is a guarded SOFT-delete that 400s on any live referent — the
+      operator's mental model (unconditional destruction) is wrong in both directions.
+related_feature_flows: [F-019, F-028, F-031, F-006, F-011]
+related_concepts:
+  - cascade-on-delete-protection-pattern
+  - soft-delete-toctou-race
+  - audit-log-presence-asymmetry-2-tier-audit-story
+related_drift_classes:
+  - cascade_check_toctou_race_window_three_management_surfaces_uniform
+  - namespace_delete_not_reactive_transactional_chain_non_atomic_with_itself
+  - orphan_referent_rows_pass_fk_at_insert_but_point_at_soft_deleted_parent
+  - missing_cascade_leg_owner_association_request_orphans_on_owner_delete
+  - fk_no_on_delete_clauses_pg_cascade_not_relied_on
+new_drift_classes_proposed:
+  - confirmation_dialog_promises_permanent_deletion_but_delete_is_guarded_soft_delete_three_surfaces_uniform
+  - cascade_block_contract_invisible_until_operator_fails_no_preflight_no_forewarning
+---
+
+# Cross-Management cascade-on-delete protection pattern — product-owner reflection
+
+## product_owner_narrative
+
+The Management section of ODD Platform gives an operator three sibling parent
+entities they can delete from a list of cards or rows: an **Owner** (the
+Management → Owners tab), a **Namespace** (Management → Namespaces), and a
+registered **DataSource** (Management → Datasources). Each parent has dependent
+"referent" rows — an Owner is referenced by ownership / term-ownership /
+user-owner-mapping rows; a Namespace by data sources / collectors / terms /
+data entities; a DataSource by ingested data entities (and a connection token).
+F-076 is not a single user feature — it is the **structural class** that all
+three delete paths belong to: each one runs an existence-check across its
+referents, blocks the delete with `CascadeDeleteException` (HTTP 400, USR004) if
+any referent is live, and otherwise SOFT-deletes the parent
+(`UPDATE … SET deleted_at = NOW()`) (per OwnerServiceImpl.md:understanding;
+NamespaceController.md:concepts.invariants; deleteDataSource.md:understanding).
+
+From the operator's seat, the feature is "I am cleaning up the catalog — let me
+remove this owner / namespace / datasource I no longer use." They reach it from
+a card or row with a Delete affordance gated by the matching
+`*_DELETE` permission, click it, and get a `ConfirmationDialog` that says the
+thing "will be deleted permanently" (per F-076.yaml:ui_review_2026_05_26 — the
+three dialogs ship near-identical terse text; DataSourceItem.md:implicit_adrs
+confirms the DataSource dialog). On confirm, the UI dispatches a single DELETE
+request. The promised outcome is removal.
+
+The working parts the operator depends on, phrased as they would describe them:
+"if this thing still has stuff attached to it, the platform should stop me from
+orphaning that stuff" (the cascade-BLOCK — the protective half), and "if it has
+nothing attached, it should go away" (the soft-delete — the destructive half).
+The cascade-block is a 3-leg parallel `Mono.zip` of `existsBy*` predicates for
+Owner (OwnerServiceImpl.java:90-93), a 4-leg zip for Namespace
+(NamespaceServiceImpl.java:75-87), and a single `existsNonDeletedByDataSourceId`
+check for DataSource (DataSourceServiceImpl.java:88-95). Where the operator's
+expectation and the implementation diverge is the load-bearing finding of this
+reflection: the check and the soft-delete are not atomic against a concurrent
+referent INSERT (no row lock, no advisory lock, READ COMMITTED), and the
+Namespace path is not even wrapped in a transaction at HEAD
+(NamespaceServiceImpl.java:74 — `delete` has no `@ReactiveTransactional`, while
+`update` at line 63 does — confirmed at commit 107c9aa this session).
+
+This feature shares data with Security & Access Control (P-09 — every delete is
+gated by a MANAGEMENT-tier `*_DELETE` permission with NO per-owner scoping) and
+with Active Platform Features (P-07 — the Activity Feed, which records NONE of
+these three deletes; OwnerServiceImpl and DataSourceServiceImpl emit no
+`@ActivityLog`, per OwnerServiceImpl.md:bugs[1] + deleteDataSource.md:bugs). The
+edge cases a senior product owner would demo: deleting an actively-ingested
+datasource (it 400s, and the UI dialog gets stuck — DataSourceItem.md:bugs);
+deleting an Owner that still has a pending association request (it succeeds and
+orphans the request — OwnerServiceImpl.md:bugs[3]); and deleting a Namespace
+through a network blip (it can leave the row half-deleted with no compensation —
+NamespaceController.md:bugs[6]).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator deletes an Owner / Namespace / DataSource that still has a
+    live referent attached (a live ownership/term/user-mapping for Owner; a live
+    datasource/collector/term/data-entity for Namespace; a live data-entity for
+    DataSource), the platform blocks the delete with an error and does NOT
+    remove the parent — protecting the referent from being orphaned.
+  derivation: |-
+    The cascade-block is the protective promise of the whole pattern; each
+    service runs existence predicates and throws CascadeDeleteException before
+    any soft-delete write.
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      All three services implement the block. Owner: Mono.zip of
+      termOwnership.existsByOwner + ownership.existsByOwner +
+      userOwnerMapping.isOwnerAssociated, OR'd, .filter(!exists) →
+      CascadeDeleteException (OwnerServiceImpl.java:90-96). Namespace: 4-leg zip
+      of existsByNamespace checks (NamespaceServiceImpl.java:75-87). DataSource:
+      existsNonDeletedByDataSourceId → CascadeDeleteException
+      (DataSourceServiceImpl.java:88-95). The block is real and is the
+      mechanically dominant path. Verified-by-test this session: the cascade-block
+      legs are now unit-covered for all three services (the sidecars predate these tests).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: concepts.operations.delete
+        cite: "OwnerServiceImpl.java:90-96"
+        note: "3-leg OR cascade-block → CascadeDeleteException"
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController.md
+        section: concepts.invariants
+        cite: "NamespaceServiceImpl.java:75-87"
+        note: "4-leg existsByNamespace zip-block"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: concepts.invariants
+        cite: "DataSourceServiceImpl.java:88-95"
+        note: "1-leg existsNonDeletedByDataSourceId block"
+      - sidecar: source_read_for_validation
+        section: tests
+        cite: "OwnerServiceImplTest.java:81-123 + DataSourceServiceImplTest.java:72-87 + NamespaceServiceImplTest.java:210-319"
+        note: |-
+          source_read_for_validation: true — the contributing sidecars recorded
+          ZERO tests (extracted at 9ac6436e / 80637ed); at HEAD 107c9aa the
+          cascade-block + happy-path are mock-based StepVerifier-covered for all
+          three services. The next file-analyser refresh of OwnerServiceImpl /
+          deleteDataSource must update tests_coverage_semantic.
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: verified
+    test_ref: "OwnerServiceImplTest.delete_ownerWithExistingOwnership_errorsCascadeDeleteAndNeverDeletes; DataSourceServiceImplTest.delete_dataSourceWithDataEntities_errorsCascadeDeleteWithoutDeleting; NamespaceServiceImplTest.testDeleteTiedNamespaceWith{Collector,DataSource,Term,DataEntity}"
+
+- id: H-002
+  hypothesis: |-
+    When an operator clicks Delete and the confirmation dialog says the entity
+    "will be deleted permanently", confirming actually deletes it permanently —
+    the entity and its footprint are gone.
+  derivation: |-
+    The three ConfirmationDialogs ship near-identical text promising permanent
+    deletion; that is the literal user-facing promise on screen.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The delete is neither unconditional NOR permanent. (1) It is a GUARDED
+      soft-delete: if any live referent exists the operator gets HTTP 400 and
+      NOTHING is deleted (H-001) — the dialog's "will be deleted permanently"
+      over-promises destruction. (2) When it does succeed it sets deleted_at =
+      NOW() — the row, and for DataSource its token + FTS vector + historical
+      child entities, all PERSIST in the database (deleteDataSource.md:understanding;
+      OwnerServiceImpl.md:downstream_side_effects). The word "permanently" is
+      wrong in both directions: the dialog implies unconditional irreversible
+      destruction; the reality is conditional, blockable, and a soft-delete that
+      retains the row (and frees the name for reuse via the partial unique index).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+        section: implicit_adrs
+        cite: "DataSourceItem.tsx:58-74"
+        note: "dialog text 'Are you sure you want to delete this datasource?' — no cascade-block forewarning"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: stress_findings.name_behavior_pairs
+        cite: "DataSourceController.java:47-51 + DataSourceServiceImpl.java:85-96"
+        note: "DRIFT_NAME_VS_BEHAVIOR — 'delete' is a guarded soft-delete"
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: implicit_adrs
+        cite: "OwnerServiceImpl.java:97-98"
+        note: "soft-delete UPDATE; row persists with deleted_at set (name-reuse)"
+    operator_visible_failure: |-
+      (a) The operator who reads "deleted permanently" and is then blocked with
+      a 400 is confused — they were told it would be destroyed unconditionally.
+      (b) The operator who wants a HARD delete (e.g. removing a name they
+      mistyped, or purging PII) believes the row is gone — it is not; the
+      soft-deleted Owner is still readable by-id (OwnerServiceImpl.md:bugs[9]
+      visibility asymmetry), the soft-deleted DataSource's token persists as a
+      plaintext secret at rest (deleteDataSource.md:security), and the name is
+      silently freed for a future collision. (c) The word "permanently" makes an
+      operator MORE likely to hesitate over a reversible action and LESS likely
+      to understand that referents block it.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When an operator clicks Delete on a DataSource that is actively ingesting
+    (has live data entities), the UI tells them — in product terms — why the
+    delete failed and what to do, and the dialog recovers to a usable state.
+  derivation: |-
+    A senior PO expects the cascade-block 400 to surface as comprehensible
+    guidance, not a stuck modal; this is the convenience + intuitiveness UX seed.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      On the 400, the thunk calls showServerErrorToast surfacing the RAW backend
+      string ("Data source cannot be deleted: there are still data entities
+      attached") in a generic red toast, AND ConfirmationDialog's onConfirm does
+      action().then(close).catch(() => {}) — the .catch SWALLOWS the rejection,
+      so handleClose() is never called (the modal stays open) and
+      setIsLoading(false) is never called (the confirm button stays
+      spinner-locked). The operator is left with a stuck-loading modal plus a
+      backend-jargon toast and zero in-product guidance to stop the collector or
+      soft-delete the entities first (DataSourceItem.md:bugs[1],
+      ConfirmationDialog.tsx:28-34).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+        section: bugs_limitations_corner_cases
+        cite: "DataSourceItem.tsx:31,58-74 + ConfirmationDialog.tsx:28-34 + errorHandling.tsx:48-68"
+        note: ".catch(() => {}) swallows the 400; modal never recovers; raw backend toast"
+    operator_visible_failure: |-
+      The operator sees a permanently-spinning Delete button on an open modal
+      that never closes, plus a red toast carrying database-implementation jargon.
+      They cannot tell whether the delete is in progress, failed, or hung. The
+      only escape is to dismiss the modal manually (if the overlay allows) or
+      reload the page. They are given no hint that the fix is to remove the
+      data entities (or stop the collector) — and per H-004 the source is
+      effectively undeletable while the collector runs.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When an operator wants to delete a DataSource that is no longer needed, they
+    can complete the deletion through the UI (soft-delete its entities, then
+    delete the source) and it succeeds.
+  derivation: |-
+    The Management page frames the Delete control as "remove a source no longer
+    ingested" — the implied promise is that an operator CAN remove it.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      It succeeds ONLY if no collector re-ingests between the two steps. Because
+      data_entity rows are collector-created and re-created on the next ingest
+      tick, an operator who soft-deletes all entities and then deletes the source
+      RACES the collector: a re-ingest re-creates live data_entity rows and the
+      next delete 400s again. The delete does NOT take the getIdByOddrnForUpdate
+      row lock the ingestion path uses, so it does not serialise against ingestion.
+      The only reliable path is to stop the collector first — which neither the
+      doc nor the UI mentions (deleteDataSource.md:bugs[2] + stress_findings.resource_boundaries).
+    evidence:
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: bugs_limitations_corner_cases
+        cite: "DataSourceServiceImpl.java:88-95 + ReactiveDataEntityRepositoryImpl.java:158-163"
+        note: "actively-ingested source is effectively undeletable; races the collector"
+    operator_visible_failure: |-
+      An operator following the documented workflow ("remove a source no longer
+      ingested") on a source whose collector is still scheduled hits an endless
+      cycle: soft-delete entities → delete source → 400 → entities re-appeared.
+      They have no documented or in-product instruction to stop the collector,
+      and (per H-003) the failure surfaces as a stuck modal. The convenient,
+      intuitive path the doc promises is an operational dead-end without the
+      undocumented prerequisite.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When an operator deletes an Owner / Namespace / DataSource and a concurrent
+    request creates a new referent for that same parent at the same moment, the
+    platform either blocks the delete or blocks the referent-create — it never
+    leaves a live referent pointing at a soft-deleted parent.
+  derivation: |-
+    The cascade-block exists precisely to prevent orphaned referents; an operator
+    expects that guarantee to hold under concurrency, not just single-threaded.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      None of the three delete paths acquires a row-level lock (SELECT FOR UPDATE)
+      or a Postgres advisory lock on the parent id, and all run under READ
+      COMMITTED. The existence-check SELECT(s) and the soft-delete UPDATE are a
+      classic TOCTOU pair: a concurrent INSERT into a referent table (e.g.
+      POST /api/dataentities/{id}/ownership for Owner; dataSourceService.create
+      with namespace_id for Namespace; collector re-ingest for DataSource) can
+      land in the window AFTER the exists-check returns false and BEFORE the
+      soft-delete commits. The result is a live referent row that satisfied its
+      FK at insert time but now points at a deleted_at-non-NULL parent
+      (OwnerServiceImpl.md:bugs[2] / REFACTOR-430; NamespaceController.md:bugs[2];
+      deleteDataSource.md:stress_findings.resource_boundaries). The FKs carry NO
+      ON DELETE clause and the parent is soft-deleted (UPDATE, not DELETE FROM),
+      so the FK is never consulted — nothing at the schema tier closes the gap.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "OwnerServiceImpl.java:88-100"
+        note: "cascade-read + soft-delete in one @ReactiveTransactional but no FOR UPDATE; READ COMMITTED"
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController.md
+        section: bugs_limitations_corner_cases
+        cite: "NamespaceServiceImpl.java:73-90"
+        note: "no @ReactiveTransactional, no SELECT FOR UPDATE, no advisory lock"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: stress_findings.resource_boundaries
+        cite: "DataSourceServiceImpl.java:87-95"
+        note: "does not take getIdByOddrnForUpdate; does not serialise vs ingestion"
+    operator_visible_failure: |-
+      The protective promise of the entire feature silently fails under
+      sustained admin load + concurrent ingestion. An orphan ownership row, an
+      orphan datasource-under-a-deleted-namespace, or a live entity under a
+      soft-deleted datasource is produced with no error to either caller. The
+      orphan is HIDDEN from list endpoints (soft-delete filter) but surfaces via
+      by-id reads (OwnerServiceImpl.md:bugs[9] visibility asymmetry; F-019
+      cross-link), producing forensic ambiguity for an auditor and dangling
+      references for downstream consumers. The window is narrow (bounded by 1-4
+      EXISTS queries) but it is real and unguarded, and it widens across
+      multiple platform replicas (NamespaceController.md:performance.scaling).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When an operator deletes a Namespace, the cascade-check and the soft-delete
+    happen atomically — a partial failure (e.g. a network blip mid-operation)
+    never leaves the namespace half-deleted while the UI reports success.
+  derivation: |-
+    Owner and DataSource deletes carry @ReactiveTransactional; an operator would
+    reasonably expect the sibling Namespace delete to have the same atomicity.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      NamespaceServiceImpl.delete (line 74, confirmed at HEAD 107c9aa this
+      session) has NO @ReactiveTransactional — while NamespaceServiceImpl.update
+      at line 63 DOES. The cascade-check zip + soft-delete UPDATE chain is
+      therefore non-atomic with ITSELF, even single-threaded: a partial failure
+      between the existsByNamespace predicates and the namespaceRepository.delete
+      UPDATE leaves the namespace as deleted_at IS NULL (still present) while the
+      reactive chain may have already signalled toward completion. This is the
+      WORST of the three surfaces — Owner and DataSource at least have a
+      transaction boundary (NamespaceController.md:bugs[6]; OwnerServiceImpl.md;
+      deleteDataSource.md:requires-runtime).
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController.md
+        section: bugs_limitations_corner_cases
+        cite: "NamespaceServiceImpl.java:62-71 (@ReactiveTransactional) vs 73-90 (no annotation)"
+        note: "update transactional, delete NOT — asymmetry confirmed at HEAD"
+      - sidecar: source_read_for_validation
+        section: head-recheck
+        cite: "NamespaceServiceImpl.java:63 (@ReactiveTransactional on update) + :74 (delete — none)"
+        note: "source_read_for_validation: true — re-confirmed at commit 107c9aa this session"
+    operator_visible_failure: |-
+      An operator who deletes a namespace and sees a success response may have a
+      namespace that is still present in the database (deleted_at IS NULL) if the
+      delete UPDATE partially failed — there is no compensating action. The UI
+      shows it as gone on the optimistic path but the next list refresh re-surfaces
+      it, or worse the operator believes the cleanup succeeded when it did not.
+      Combined with H-005, the namespace delete has neither single-thread
+      atomicity nor concurrency protection.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When an operator deletes an Owner, every kind of row that points at that
+    Owner is checked by the cascade-block, so deleting an Owner never leaves a
+    dangling reference anywhere in the catalog.
+  derivation: |-
+    The cascade-block enumerates the Owner's referent tables; an operator expects
+    that enumeration to be complete (all owner-bearing tables, not a subset).
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The Owner cascade-block is 3-leg — termOwnership + ownership +
+      userOwnerMapping (OwnerServiceImpl.java:90-91) — but it OMITS a 4th
+      owner-bearing table: owner_association_request. Its FK to owner(id)
+      (V0_0_51:11) has NO ON DELETE clause, and because Owner uses soft-delete the
+      FK is never consulted. A PENDING or APPROVED association request for the
+      just-deleted Owner persists as an orphan and can even be approved onto a
+      dead Owner (OwnerServiceImpl.md:bugs[3]; tracked PLT-132).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "OwnerServiceImpl.java:90-91 + V0_0_51__add_owner_association_request.sql:11"
+        note: "3-leg cascade omits owner_association_request; FK no ON DELETE"
+    operator_visible_failure: |-
+      After an operator deletes an Owner, the Associations tab can still surface a
+      pending/approved request pointing at the now-deleted owner; an admin can
+      approve that request onto a dead Owner, producing a user-owner mapping to a
+      soft-deleted owner. The forensic History becomes ambiguous. This is the
+      asymmetric, surface-specific instance of the same incompleteness the whole
+      F-076 class warns about.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When an operator deletes an Owner / Namespace / DataSource, the action is
+    recorded in the Activity Feed so an auditor can later see who deleted what
+    and when.
+  derivation: |-
+    P-08 is the operator-mutating surface and P-07's Activity Feed is the audit
+    surface; an auditor expects directory deletions to be auditable.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      None of the three delete paths emits an activity event. OwnerServiceImpl
+      carries NO @ActivityLog on any of create/update/delete (verified by Grep
+      across service/*.java: 10 services carry it, none is OwnerServiceImpl —
+      OwnerServiceImpl.md:invariants). DataSourceServiceImpl emits no ActivityEvent
+      (deleteDataSource.md:bugs). The only trace of a delete is the deleted_at
+      timestamp, which carries no actor. This is the audit-log-presence-asymmetry
+      pattern (entity-metadata mutations ARE logged; directory + RBAC mutations
+      are not).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: security.known_security_gaps
+        cite: "OwnerServiceImpl.java:38-122 (no @ActivityLog) + Grep service/*.java"
+        note: "Owner directory mutation surface forensically silent"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: bugs_limitations_corner_cases
+        cite: "DataSourceServiceImpl.java:85-96 (no activityEventEmitter)"
+        note: "no audit trail of who deleted a data source"
+    operator_visible_failure: |-
+      An auditor asking "who deleted this datasource / owner / namespace and
+      when" has no answer — there is no actor, no event, nothing in the Activity
+      Feed. Combined with the destructive role-rebind on Owner and the orphan
+      consequences above, a directory mutation (including a destructive one) is
+      invisible to the audit surface the platform advertises. NOTE: this is a
+      known cross-feature pattern (F-019/F-006 audit-silence); surfaced here as
+      the F-076-class instance, deduped to the existing tracking.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an operator deletes a DataSource successfully, its connection token is
+    invalidated / removed so a stale credential is not left behind.
+  derivation: |-
+    A DataSource owns a connection token (a secret); deleting the source should
+    not leave a usable/stale secret at rest.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The soft-delete sets only data_source.deleted_at; it never touches the
+      token row, and the token table has NO deleted_at column (V0_0_28:1-9) so it
+      cannot even be soft-deleted. No code path GCs orphan tokens. Each
+      register-then-delete cycle leaks one token row — a 40-char plaintext token
+      value persisting unreferenced (deleteDataSource.md:bugs[1] + security;
+      tracked PLT-087).
+    evidence:
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: security.known_security_gaps
+        cite: "V0_0_28__add_token.sql:1-13 + ReactiveAbstractSoftDeleteCRUDRepository.java:106-110"
+        note: "orphan plaintext token persists after delete; stale-secret-at-rest"
+    operator_visible_failure: |-
+      A DB-level reader of the token table sees credentials that no longer map to
+      any live data source; the table grows without bound across register/delete
+      cycles. An operator who deletes a source believing they revoked its access
+      has actually left the token valid-shaped at rest. Deduped to PLT-087.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When an operator without the relevant *_DELETE permission views a Management
+    card/row, they do not see a Delete control — the destructive affordance is
+    gated.
+  derivation: |-
+    Destructive controls should be permission-gated in the UI; this is the
+    security-posture + consistency seed.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      For DataSource, the Delete (and Edit) control is wrapped in
+      <WithPermissions permissionTo={DATA_SOURCE_DELETE}> which renders the child
+      only if usePermissions().hasAccessTo is true and returns null otherwise —
+      the control is HIDDEN, not disabled (DataSourceItem.md:invariants +
+      WithPermissions.tsx:27-29). The server independently gates DELETE
+      /api/datasources/{id} on DATA_SOURCE_DELETE (SecurityConstants.java:121-123),
+      so the UI gate is UX-only and the security boundary is server-side.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+        section: concepts.invariants
+        cite: "DataSourceItem.tsx:44-75 + WithPermissions.tsx:27-29"
+        note: "Edit/Delete hidden (return null) without permission"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: security.authorization_assertions
+        cite: "SecurityConstants.java:121-123"
+        note: "server-side DATA_SOURCE_DELETE gate"
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      MEDIUM confidence: confirmed for the DataSource arm from an enriched UI
+      sidecar; the Owner/Namespace arms are inferred from the same WithPermissions
+      pattern (their item components are not separately enriched — see
+      validation_gaps). The wrong-role render is itself PROBE-NEEDED at the UI
+      sidecar (P-080). Routed to a functional test demand: no test pins the gating.
+
+- id: H-011
+  hypothesis: |-
+    When an operator deletes the same parent twice (or deletes one that was
+    already deleted), the second delete is a harmless no-op — not an error and
+    not a double-effect.
+  derivation: |-
+    Idempotency seed — a double-click or a stale card should not corrupt state or
+    produce a confusing error.
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      At the data layer it is idempotent: the soft-delete UPDATE carries
+      WHERE id = ? AND deleted_at IS NULL, so a second delete matches 0 rows and
+      mutates nothing (deleteDataSource.md:stress_findings.resource_boundaries;
+      OwnerServiceImpl.md:bugs[5]). BUT the response/UX is asymmetric and
+      under-specified: Owner delete has NO switchIfEmpty(NotFoundException), so a
+      delete of a non-existent OR already-deleted owner returns a silent HTTP 204
+      — the caller cannot distinguish "deleted it", "already gone", and "never
+      existed" (REFACTOR-429). The non-existent-id response shape for DataSource
+      is statically undetermined (204 vs 404 vs 500 — P-049).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "OwnerServiceImpl.java:88-100 (no switchIfEmpty) vs :69-85 (update has it)"
+        note: "silent-204 idempotency; delete vs update asymmetry"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+        section: bugs_limitations_corner_cases
+        cite: "DataSourceServiceImpl.java:87-95 + ReactiveAbstractSoftDeleteCRUDRepository.java:50-58"
+        note: "non-existent-id response shape statically undetermined (P-049)"
+    operator_visible_failure: |-
+      The data layer is safe, but a script or integration cannot tell from the
+      204 whether its delete had any effect — a missing-id typo and a successful
+      delete look identical. Two operators on stale cards both get success-shaped
+      responses for the same row. The gap is contract clarity, not corruption.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: |-
+    When two operators (or a fast double-click) confirm the delete of the same
+    DataSource at the same instant, exactly one DELETE is dispatched and the UI
+    does not dispatch the thunk twice.
+  derivation: |-
+    Double-submit protection seed for the confirm dialog — the dialog sets an
+    in-flight loading flag; an operator expects it to prevent a double dispatch.
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      ConfirmationDialog sets isLoading=true on confirm (ConfirmationDialog.tsx:27)
+      which the DialogWrapper uses to disable the action button while the promise
+      is in flight. Whether that in-flight disable RELIABLY prevents a fast
+      double-confirm from dispatching deleteDataSource twice is not statically
+      certain — it depends on the render timing between the onClick and the
+      disabled-prop commit. The backend deleted_at IS NULL guard makes a
+      duplicate harmless at the data layer, so the only observable risk is a
+      second DELETE request + a second toast. Recorded PROBE-NEEDED at the UI
+      sidecar (P-079).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+        section: stress_findings.resource_boundaries
+        cite: "DataSourceItem.tsx:31 + ConfirmationDialog.tsx:24-35"
+        note: "double-confirm guard timing — PROBE-NEEDED (P-079)"
+    confidence: LOW
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: "PENDING-F-076-1 (P-079 double-confirm guard)"
+    probe_id: PENDING-F-076-1
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    All three Management delete dialogs promise "deleted permanently" but the
+    delete is a guarded soft-delete (400s on referents; retains the row + token +
+    FTS); the on-screen promise is wrong in both directions.
+  dedup_status: net_new
+  distinct_from: PLT-038
+  recommended_log_as: PLT-NNN (UI dialog-copy + behaviour-contract correction, cross-Management)
+  proposed_fix_anchor: |-
+    Rewrite the three ConfirmationDialog texts to state the cascade-block + soft-delete
+    reality (additionalContent warning about dependent rows; drop "permanently"); cross-link
+    F-076 structural-class. Distinct from PLT-038 (Owner-Association dialog grammar, different dialog).
+
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: |-
+    DataSource delete on an actively-ingested source surfaces the 400 as a raw
+    backend toast and leaves the ConfirmationDialog stuck-open (swallowed .catch).
+  dedup_status: already_tracked
+  tracked_as: PLT-128
+  proposed_fix_anchor: |-
+    ConfirmationDialog.tsx:33 — stop swallowing the rejection; reset isLoading +
+    surface a product-language message + close or recover. Reflection independently
+    re-derived PLT-128 (convergent validation, HIGH confidence).
+
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    Cascade-check + soft-delete is a TOCTOU pair on all three surfaces — no row
+    lock, no advisory lock, READ COMMITTED — a concurrent referent INSERT orphans
+    a row past the check.
+  dedup_status: net_new
+  distinct_from: PLT-132
+  recommended_log_as: PLT-NNN (cross-Management TOCTOU race — Owner/Namespace/DataSource uniform; REFACTOR-430 is the Owner-only scope)
+  proposed_fix_anchor: |-
+    Acquire SELECT FOR UPDATE on the parent row (or a pg_advisory_xact_lock on a
+    namespaced parent id) spanning the cascade-check + soft-delete; or add ON DELETE
+    RESTRICT and rely on the DB. Distinct from PLT-132 (missing 4th cascade LEG, a
+    different defect class — completeness, not atomicity). REFACTOR-430 is filed for
+    the Owner arm only; this is the structural-class generalisation across all three.
+
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: |-
+    NamespaceServiceImpl.delete is NOT @ReactiveTransactional (update is) — the
+    cascade-check + soft-delete chain is non-atomic with itself even single-threaded.
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN (the F-076b / PLT-022 candidate was never filed; this is its filing)
+  proposed_fix_anchor: |-
+    Add @ReactiveTransactional to NamespaceServiceImpl.delete (line 74) to match
+    update (line 63). Confirmed still missing at HEAD 107c9aa. Fold the TOCTOU fix
+    (H-005) in at the same time since both touch the same method.
+
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |-
+    Owner cascade-block checks 3 of 4 owner-bearing tables — omits
+    owner_association_request — leaving approvable orphan requests on a dead Owner.
+  dedup_status: already_tracked
+  tracked_as: PLT-132
+  proposed_fix_anchor: |-
+    Add a 4th cascade leg checking owner_association_request, OR set ON DELETE on
+    the FK (V0_0_51:11), OR cross-check getOwnerId().deleted_at on the approve path.
+    Reflection independently re-derived PLT-132 (convergent validation).
+
+### caveat_candidates
+- hypothesis_id: H-004
+  one_line: |-
+    An actively-ingested DataSource is effectively undeletable from the UI — the
+    delete races the collector; the only reliable path (stop the collector first)
+    is undocumented.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/management (datasource delete prerequisite) — fold into the F-076a doc-gap
+
+- hypothesis_id: H-008
+  one_line: |-
+    No Activity Feed event is recorded for any Owner / Namespace / DataSource
+    delete — directory deletions are unauditable (no actor).
+  dedup_status: already_tracked
+  tracked_as: DOC-255
+  recommended_log_as: |-
+    Audit-silence is the cross-feature F-019/F-006 pattern; DOC-255 documents the
+    backend delete semantics caveat. No new item — corroboration only.
+
+- hypothesis_id: H-009
+  one_line: |-
+    Deleting a DataSource orphans its plaintext connection token (no deleted_at on
+    token, no GC) — stale secret at rest.
+  dedup_status: already_tracked
+  tracked_as: PLT-087
+  recommended_log_as: |-
+    PLT-087 covers the orphan-token + uncleared-FTS backend cleanup. Reflection
+    re-derived it (convergent validation); no new item.
+
+- hypothesis_id: H-011
+  one_line: |-
+    Delete is data-layer-idempotent but returns a silent 204 for missing/already-deleted
+    ids (Owner), and the DataSource non-existent-id response shape is undetermined.
+  dedup_status: net_new
+  distinct_from: PLT-087
+  recommended_log_as: caveat in api-reference (delete idempotency/204 contract) — low priority; ties to REFACTOR-429 + P-049
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# The cascade-BLOCK happy/empty path (H-001) is NOW unit-verified (the sidecars predate the tests);
+# it routes to a regression-guard demand only at the integration tier. Every other promise is unverified.
+- use_case_id: F-076-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: |-
+    The delete confirmation dialog's on-screen text matches the actual delete
+    semantics (guarded soft-delete, not unconditional permanent deletion).
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-002)"
+  proposed_test: |-
+    IT (Playwright, existing datasources-page.ts/owners-page.ts/namespaces-page.ts POs):
+    assert the dialog text reflects cascade-block + soft-delete after the copy fix lands
+    (regression guard for the H-002 bug fix).
+
+- use_case_id: F-076-UC-003
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: |-
+    Deleting an actively-ingested DataSource surfaces a comprehensible message
+    and the ConfirmationDialog recovers (closes / unlocks), not a stuck modal.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-003)"
+  proposed_test: |-
+    IT: register a datasource, ingest one entity, attempt delete via the Datasources
+    tab, assert (a) a product-language error is shown and (b) the dialog button
+    un-spins and the modal is dismissable. Pairs with probe P-078. Regression guard for PLT-128.
+
+- use_case_id: F-076-UC-001
+  hypothesis_id: H-001
+  kind: empty/no-match
+  promise: |-
+    A parent with a live referent cannot be deleted (cascade-block); a parent with
+    no referents can.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-001)"
+  proposed_test: |-
+    IT (e2e): the unit tier now covers the service-tier block (verified) but NO
+    end-to-end test drives the UI Delete → 400 / Delete → 204 user flow through the
+    real Management tab + SECURITY_RULES chain. The integration cell is the gap.
+
+- use_case_id: F-076-UC-004
+  hypothesis_id: H-004
+  kind: teardown
+  promise: |-
+    An operator can complete a DataSource teardown through the documented workflow.
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-004)"
+  proposed_test: |-
+    IT: soft-delete entities then delete the source with the collector stopped → 204;
+    with a concurrent re-ingest → 400. Pins the documented teardown + its undocumented prerequisite.
+
+- use_case_id: F-076-UC-005
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: |-
+    The cascade-block holds under concurrency — no orphan referent past the check.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-005)"
+  proposed_test: |-
+    Concurrency IT (Testcontainers + local Postgres): drive a delete and a concurrent
+    referent INSERT for the same parent id; assert (current behaviour pin) an orphan
+    CAN appear, flipping to RED once the lock fix (H-005) lands. Local-only.
+
+- use_case_id: F-076-UC-006
+  hypothesis_id: H-006
+  kind: teardown-constraint
+  promise: |-
+    The Namespace delete is atomic (cascade-check + soft-delete in one transaction).
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-006)"
+  proposed_test: |-
+    Unit/IT: inject a failure between the existsByNamespace zip and the delete UPDATE;
+    assert the namespace row is rolled back (RED until @ReactiveTransactional is added; H-006 fix guard).
+
+- use_case_id: F-076-UC-007
+  hypothesis_id: H-007
+  kind: teardown-constraint
+  promise: |-
+    Deleting an Owner is blocked by every owner-bearing referent, including association requests.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-007)"
+  proposed_test: |-
+    Unit (OwnerServiceImplTest): seed an owner_association_request for the owner; assert
+    delete is blocked (RED until the 4th leg is added; PLT-132 fix guard). The existing
+    3 leg tests do not cover the 4th table.
+
+- use_case_id: F-076-UC-008
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: |-
+    Owner / Namespace / DataSource deletes are recorded in the Activity Feed.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-008)"
+  proposed_test: |-
+    Unit/IT audit-silence regression pin: exercise each delete; assert ZERO activity
+    events (the current contract); flip to assert an event once @ActivityLog is added.
+
+- use_case_id: F-076-UC-009
+  hypothesis_id: H-009
+  kind: teardown
+  promise: |-
+    Deleting a DataSource does not leave a stale token.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-009)"
+  proposed_test: |-
+    IT: register + delete a datasource; assert the token row is orphaned (current
+    behaviour pin; PLT-087 fix guard).
+
+- use_case_id: F-076-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: |-
+    A user without *_DELETE sees no Delete control on the Management card/row.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-010)"
+  proposed_test: |-
+    UI test (security class) + IT: a user without DATA_SOURCE_DELETE/NAMESPACE_DELETE/
+    OWNER_DELETE sees the card without the Delete control (WithPermissions returns null).
+    Pairs with probe P-080. Confirmed-but-untested promise.
+
+- use_case_id: F-076-UC-011
+  hypothesis_id: H-011
+  kind: teardown
+  promise: |-
+    Repeated / stale deletes are harmless no-ops with a clear contract.
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-011)"
+  proposed_test: |-
+    Unit: delete twice → second is a 0-row no-op; pin the silent-204-on-missing contract
+    (Owner) and the DataSource non-existent-id response shape (resolves P-049).
+
+- use_case_id: F-076-UC-012
+  hypothesis_id: H-012
+  kind: cross-actor
+  promise: |-
+    A double-confirm dispatches the delete only once.
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-076-UC-012)"
+  proposed_test: |-
+    UI test: fast double-click the confirm button; assert exactly one deleteDataSource
+    dispatch. Resolves probe PENDING-F-076-1 (P-079).
+
+### probes_emitted
+- probe_id: PENDING-F-076-1
+  hypothesis_id: H-012
+  status: pending-reflection-verification
+  hypothesis_text: |-
+    When two operators (or a fast double-click) confirm the delete of the same
+    DataSource at the same instant, exactly one DELETE is dispatched and the UI
+    does not dispatch the thunk twice. (ConfirmationDialog sets isLoading=true on
+    confirm; whether the in-flight disable reliably blocks a fast double-confirm
+    is render-timing-dependent — needs a headless-browser probe; equals the
+    existing UI-sidecar probe P-079.)
+  local_execution: "Playwright headless double-click against a local docker-compose platform — local-only, satisfies Rule 6."
+
+### validation_gaps
+- sidecar: "F-076.yaml:ui_review_2026_05_26 (EditableOwnerItem.tsx + EditableNamespaceItem.tsx)"
+  field_insufficient: |-
+    The Owner and Namespace delete confirmation dialogs are described only in the
+    feature-flow's ui_review block, not as enriched UI-component sidecars. The
+    DataSource arm has a full sidecar (DataSourceItem.md) proving the stuck-modal /
+    no-recovery / no-forewarning chain end-to-end; the Owner + Namespace arms are
+    asserted to share the "identical minimal ConfirmationDialog text" but their
+    error-recovery behaviour (does EditableNamespaceItem also swallow the 400?) is
+    NOT independently traced. H-002, H-003, H-010 are therefore HIGH-confidence for
+    DataSource and inferred-by-pattern for the other two arms.
+  proposed_refresh: |-
+    Enrich EditableOwnerItem.tsx and EditableNamespaceItem.tsx as UI-component
+    sidecars (their delete-confirm flow + error handling) so the cross-Management
+    UX-uniformity claim is proven, not pattern-inferred. This is a partial-UI-coverage
+    gap, NOT an API-only reflection — the DataSource UI arm IS enriched (Rule 9 satisfied for one arm).
+
+- sidecar: "odd-platform__java__service__service__OwnerServiceImpl.md + deleteDataSource.md"
+  field_insufficient: |-
+    tests_coverage_semantic on both sidecars records ZERO tests (extracted at
+    9ac6436e / 80637ed). At HEAD 107c9aa, OwnerServiceImplTest + DataSourceServiceImplTest
+    + NamespaceServiceImplTest exist and cover the cascade-block + happy path
+    (mock-based StepVerifier). The sidecars are stale on the test axis.
+  proposed_refresh: |-
+    Re-enrich the three service sidecars' tests_coverage_semantic at HEAD — the
+    cascade-block legs + happy path are now covered_behaviours, not uncovered. The
+    TOCTOU / atomicity / orphan / UI-recovery behaviours remain genuine gaps.
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: |-
+    Delete is described only as workflow one-liners ("remove a source no longer
+    ingested"); the dialogs say "deleted permanently".
+  code_does: |-
+    Guarded SOFT-delete that 400s on any live referent and retains the row + token
+    + FTS vector; "permanently" is wrong in both directions.
+  recommended_log_as: |-
+    DOC-NNN — fold into F-076a (scanner finding, already on the feature flow:
+    "/features/management silent on cascade-block contract for Owner/Namespace/DataSource").
+
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "'remove a source no longer ingested' — implies the operator can remove it."
+  code_does: |-
+    An actively-ingested source is effectively undeletable; the reliable path
+    (stop the collector first) is undocumented.
+  recommended_log_as: "DOC-NNN — datasource-delete prerequisite caveat; fold into F-076a."
+
+## maintainer_notes
+
+(none — auto-derived reflection; maintainer-curated entries preserved on refresh.)

@@ -1,0 +1,947 @@
+---
+feature_id: F-148
+pillar_anchored_id: P-01:F-012
+pillar: P-01 Data Discovery
+feature_name: |-
+  Search Result Class-Tab Filter — the 9-tab strip at the top of the
+  /search results (All / My Objects / Datasets / Transformers / Data
+  Consumers / Data Inputs / Quality Tests / Groups / Relationships).
+  Looks like ordinary tab-switching; ACTUALLY dispatches a facet mutation
+  on the `entityClasses` facet (string sentinels 'all' / 'my' normalised
+  in the reducer; numeric class IDs written to facetState) that flows
+  through the same F-017 backbone (POST / PUT /api/search/.../facets →
+  1500ms debouncer → backend tsquery).
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__Search.md  # F-017 backbone page-root sidecar (resolved); the parent of Results+SearchResultsTabs
+  - feature-flows/detail/F-017.yaml  # the 7-facet backbone — fully-resolved backend chain (SearchController.facets → SearchServiceImpl → ReactiveSearchFacetRepositoryImpl)
+source_reads_for_validation:
+  # Rule 8 exception — the three F-148 contributing UI nodes have NO enriched
+  # sidecar (all chain hops 1-3 are `unresolved` / `ui-incomplete`). The
+  # load-bearing facets were read directly at primary source this run:
+  - "odd-platform-ui/src/components/Search/Results/SearchResultsTabs/SearchResultsTabs.tsx:1-95 (the 9-tab construction; mixed string/numeric values; no useTranslation import; selectedTab index-0 fallback)"
+  - "odd-platform-ui/src/components/Search/Results/Results.tsx:83-114 (onSearchClassChange dispatch + the grid-size searchClass typeof branch)"
+  - "odd-platform-ui/src/redux/slices/dataEntitySearch.slice.ts:139-203 (changeDataEntitySearchFacet reducer — the myObjects normalisation at :173-174 + the typeof-number facetState guard at :187-188 + facetSingle unselect-previous at :151-170)"
+  - "odd-platform/tests/features/filters/filters.spec.ts:75-87 (test-case 70 — the ONLY test that clicks a class tab: Transformers)"
+  - "odd-platform/tests/features/search/search.spec.ts (text-search coverage; clicks no class tab)"
+  - "odd-platform/tests/features/search/search_in_data_entity.spec.ts (ENTIRELY commented out)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The live page NOW describes the 9-tab class strip in full (a table of
+      the nine tabs + "Selecting a tab narrows the result list to entities of
+      that class (or the personal scope, for My Objects) and unlocks the Type
+      sidebar facet" + "tab counts update with the active query and facet
+      selection"). This SUPERSEDES the F-148 feature-flow's
+      `related_doc_gaps: DOC-GAP-NNN (live doc silent on the 9 class tabs)` —
+      that doc-gap is now STALE. A residual doc-drift remains (the doc frames
+      My Objects as "the personal-namespace tab" / owner-scoped, which is
+      accurate for the RESULT LIST but the doc does not warn that the tab
+      COUNTS are catalog-wide per F-017 — see H-011).
+hypothesis_summary:
+  total: 12
+  confirmed: 5
+  contradicted: 3
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: MEDIUM
+    one_line: |-
+      Browser Back after a tab click does not restore the previous tab — the
+      tab is a server-side facet mutation, not a navigation; Back leaves
+      /search entirely (or to the same UUID showing the latest mutated state),
+      so the 9-tab strip violates the navigation mental model its tab shape
+      promises.
+related_feature_flows: [F-017, F-024, F-001]
+related_concepts:
+  - search-result-tabs
+  - entity-classes-facet
+  - my-objects-toggle
+related_drift_classes:
+  - search_class_tab_string_sentinel_my_all_vs_numeric_class_id_mixed_in_same_facet_dispatch_payload
+  - my_objects_tab_dispatches_entityClasses_facet_not_myObjects_boolean_silent_double_toggle
+  - 9_tabs_appears_as_navigation_actually_facet_mutation_tab_back_does_not_undo
+  - tab_value_numeric_zero_falsy_compared_with_truthy_string_searchClass_zero_vs_all_collision
+  - relationships_tab_present_only_when_backend_returns_RELATIONSHIP_count_silently_missing_otherwise
+  - t_function_not_used_on_tab_names_Datasets_Transformers_etc_i18n_gap_six_tabs
+  - catalog_wide_count_design_my_objects_not_a_boundary
+new_drift_classes_proposed:
+  - selected_tab_findindex_returns_minus_one_no_tab_highlighted_when_searchClass_has_no_matching_tab_value_on_url_restore
+---
+
+# Search Result Class-Tab Filter — product-owner reflection
+
+## product_owner_narrative
+
+The Search Result Class-Tab Filter is the horizontal strip of tabs an operator
+sees directly above their Catalog search results: **All · My Objects · Datasets ·
+Transformers · Data Consumers · Data Inputs · Quality Tests · Groups ·
+Relationships**. It is the single most-clicked control on the Catalog page —
+operators reach for these tabs far more than the seven-facet sidebar to its
+left, because "show me only the datasets" is the most common refinement a data
+practitioner makes. The feature belongs to Pillar P-01 Data Discovery, whose
+one-line capability is "find existing data entities in the catalog" (per
+system-mission.md P-01); the class tabs are the second, faster filtering axis
+that sits alongside free-text search and the facet sidebar.
+
+A user interacts with it by clicking a tab. There is no form, no submit, no
+dialog — one click. Clicking "Datasets" narrows the list to dataset-class
+entities; clicking "My Objects" narrows it to entities the logged-in user owns;
+clicking "All" returns the unscoped catalog. Each tab carries a count badge (its
+"hint") so the operator can see the per-class cardinality before committing to a
+tab. Mechanically, every tab click dispatches a single Redux action —
+`changeDataEntitySearchFacet({facetName: 'entityClasses', ...})` (per
+Results.tsx:83-97) — onto the SAME `entityClasses` facet the sidebar's class
+filtering would use, and that flows through the F-017 backbone: the 1500ms
+facet-debouncer in Search.tsx, then `PUT /api/search/{searchId}/facets`, then
+the SearchServiceImpl tsquery aggregator, then a re-fetch of the result list
+(per F-017.yaml chain hops 1-4).
+
+The working part that distinguishes this surface from the sidebar is its
+**value-typing trick**. The class tabs carry numeric backend class IDs
+(`totals[SET].id` etc.), but the All and My Objects tabs carry *string
+sentinels* — the literal strings `'all'` and `'my'` (per SearchResultsTabs.tsx:26-27).
+When a string sentinel hits the reducer, two things happen (per
+dataEntitySearch.slice.ts:173-174, 187-188): the `'my'` sentinel flips the
+separate `myObjects: true` boolean (the owner-scoping switch), and BOTH string
+sentinels are filtered OUT of the `entityClasses` facet array by a
+`typeof facetOptionId === 'number'` guard — so the strings never reach the
+backend's numeric `entityClasses` field. This is the load-bearing fact that
+turns what looks like a type-confusion bug (mixing strings and numbers in one
+payload) into a deliberate, correct normalisation. A class tab, by contrast,
+writes its numeric id into `entityClasses` and leaves `myObjects: false`.
+
+The feature integrates tightly with the rest of P-01. It shares the entire
+backend session machinery with F-017 (the 7-facet sidebar) and F-024 (Term
+Search) — the same `search_facets` server-side session row, the same broken
+1500ms debouncer (F-017 batch-ZL), the same read-collaborative posture where the
+result list spans all owners unless My Objects is toggled (system-mission.md
+line 267). It feeds the Type sidebar facet: per the live doc, selecting a class
+tab "unlocks the Type sidebar facet, which is hidden until a specific class is
+chosen" — the tabs and the sidebar are coupled, not independent.
+
+In a demo a product owner would highlight the edge cases that bite: the tab
+strip is **not** navigation even though it looks like a tab bar — browser Back
+does not restore the previous tab; the strip has nine English-only labels that
+never localise even though the rest of the platform's tables are fully
+translated; the Relationships tab silently disappears if a deployment's backend
+does not return a RELATIONSHIP class count; and on a deep-linked / reloaded
+session whose saved class has a count of zero, no tab is highlighted at all
+(findIndex returns -1). None of these are catastrophic, but each is a small
+sharp edge on the most-used control of the most-used page.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user clicks the "Datasets" tab, the result list narrows to
+    dataset-class (DataEntityClassNameEnum.SET) entities and excludes entities
+    of other classes.
+  derivation: |-
+    SearchResultsTabs.tsx:29-31 carries `value: totals[SET].id` (numeric class
+    id); the live doc states "Selecting a tab narrows the result list to
+    entities of that class". Endpoint-shape + doc-claim seed.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The Datasets tab's value is the numeric class id `totals[SET].id`
+      (SearchResultsTabs.tsx:29-31). onTabChange→onSearchClassChange looks the
+      id up in dataEntityClassesDict (Results.tsx:85), so facetOptionId stays
+      numeric; the reducer writes it into facetState because it passes the
+      `typeof facetOptionId === 'number'` guard (slice.ts:187-188) and sets
+      `myObjects: false` (slice.ts:173-174, since the value !== 'my'). The
+      numeric entityClasses constraint flows to the backend per the F-017 chain
+      and the result re-fetch scopes to that class. filters.spec.ts:75-87
+      (test-case 70) exercises exactly this for the Transformers tab and
+      asserts the expected item is visible after switching class — behavioural
+      proof for the numeric-class-tab path.
+    evidence:
+      - sidecar: "(source read)"
+        section: SearchResultsTabs.tsx
+        cite: "SearchResultsTabs.tsx:29-31"
+        note: "Datasets tab value = totals[SET].id (numeric)"
+      - sidecar: "(source read)"
+        section: Results.tsx
+        cite: "Results.tsx:83-97"
+        note: "numeric id → entityClasses facet dispatch, facetSingle:true"
+      - sidecar: "(source read)"
+        section: filters.spec.ts
+        cite: "filters.spec.ts:75-87"
+        note: "test-case 70 clicks Transformers class tab → asserts filtered item visible (sibling numeric-class-tab proof)"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "filters.spec.ts :: Check filters > When apply single filter > Should display the expected item with Type filter (test-case 70 — clicks Transformers class tab)"
+    test_demand: none
+    note: |-
+      Datasets-tab specifically is NOT directly tested, but the
+      sibling-numeric-class-tab path (Transformers) is — and the two share the
+      identical code path (a numeric class id through the same dispatch +
+      reducer). Treated as verified-by-equivalence for the numeric-tab class;
+      H-002 demands the My Objects branch which is NOT equivalent.
+
+- id: H-002
+  hypothesis: |-
+    When a user clicks the "My Objects" tab, the result list is scoped to
+    entities the authenticated user has an ownership association with — and the
+    backend `myObjects` boolean is set true (NOT a string 'my' pushed into the
+    numeric entityClasses array).
+  derivation: |-
+    The My Objects tab carries the string sentinel `value: 'my'`
+    (SearchResultsTabs.tsx:27); FacetStateDto has a SEPARATE `myObjects` boolean
+    (F-017). This is the headline drift facet of the F-148 flow (facets 1+2).
+    Endpoint-shape + view-mode seed.
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      RESOLVES the F-148 flow's two HIGH-severity ui_unverified facets (1 and 2)
+      at primary source. The reducer at dataEntitySearch.slice.ts:173-174 reads
+      `const myObjects = facetName === 'entityClasses' ? facetOptionId === 'my'
+      : state.myObjects` — so the 'my' sentinel flips the dedicated `myObjects`
+      boolean to true. The string is then NOT written into the entityClasses
+      facetState because the only facetState write is guarded by
+      `typeof facetOptionId === 'number'` (slice.ts:187-188), which a string
+      fails. So 'my' never enters the numeric entityClasses array; it cleanly
+      toggles the separate boolean. On the next PUT/POST the backend's
+      `state.isMyObjects()` branch (SearchServiceImpl.java:104-108 per
+      concepts.yaml:4019) applies the owner predicate to the RESULT LIST. The
+      F-148 flow's facets 1 (mixed-payload, HIGH) and 2 (double-toggle, MEDIUM)
+      are therefore architectural-clarification only, NOT bugs — exactly as the
+      batch-11 scanner_review (F-148b, SR-20260527T2330Z) recommended
+      downgrading to LOW.
+    evidence:
+      - sidecar: "(source read)"
+        section: dataEntitySearch.slice.ts
+        cite: "dataEntitySearch.slice.ts:173-174"
+        note: "'my' sentinel flips the myObjects boolean (not pushed to entityClasses)"
+      - sidecar: "(source read)"
+        section: dataEntitySearch.slice.ts
+        cite: "dataEntitySearch.slice.ts:187-188"
+        note: "typeof-number guard filters string sentinels out of facetState"
+      - sidecar: feature-flows/detail/F-017.yaml
+        section: "chain hop 3c + observed_vs_expected catalog_wide_count facet"
+        cite: "SearchServiceImpl.java:104-108 (via concepts.yaml:4019)"
+        note: "myObjects=true triggers the only owner-scoping branch on the result list"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      CONFIRMED-but-UNTESTED (LSN-030 path). NO test clicks the My Objects tab
+      anywhere in the odd-platform Playwright suite (grep of tests/ for
+      'My Objects' / clickTab returns only the Transformers numeric-class case).
+      The 'my' string-sentinel → myObjects-boolean normalisation is the single
+      most behaviourally-subtle branch of this feature and has zero guard. This
+      is the highest-value functional test to mint.
+
+- id: H-003
+  hypothesis: |-
+    When a user clicks "Datasets" and then clicks "All", the previously-applied
+    Datasets class filter is cleared and the result list returns to the full
+    cross-class catalog.
+  derivation: |-
+    The All tab carries `value: 'all'` (SearchResultsTabs.tsx:26); the dispatch
+    passes `facetSingle: true` (Results.tsx:95). The integration test matrix
+    names this exact case ("Click Datasets → switch to All → assert previous
+    class filter cleared"). View-mode + negative-space seed.
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      onSearchClassChange always dispatches with `facetSingle: true`
+      (Results.tsx:95). In the reducer the facetSingle branch (slice.ts:151-170)
+      finds the previously-selected option in the entityClasses facet and
+      builds a `selectedOptionState` with `selected: false` — i.e. it unselects
+      the prior class. For the All tab, facetOptionId resolves to the string
+      'all' (dict lookup misses → falls through to tabValue, Results.tsx:85-86),
+      which (a) sets myObjects=false (slice.ts:173-174, since 'all' !== 'my')
+      and (b) is filtered from the new facetState write by the typeof-number
+      guard — so no new class constraint is added while the old one is
+      unselected. Net: switching Datasets→All clears the Datasets constraint and
+      restores the unscoped catalog.
+    evidence:
+      - sidecar: "(source read)"
+        section: Results.tsx
+        cite: "Results.tsx:89-96"
+        note: "facetSingle:true on every tab dispatch"
+      - sidecar: "(source read)"
+        section: dataEntitySearch.slice.ts
+        cite: "dataEntitySearch.slice.ts:151-170"
+        note: "facetSingle unselects the previously-selected class option"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      CONFIRMED-but-UNTESTED. The integration test matrix names this case but
+      it is not implemented — no spec performs a two-tab sequence (click class →
+      click All) and asserts the clear. Functional test demand.
+
+- id: H-004
+  hypothesis: |-
+    The tab COUNT badge next to each class tab reflects the count of entities of
+    that class scoped to the authenticated user (i.e. the My Objects count is
+    per-user, and class counts respect the active My Objects scope).
+  derivation: |-
+    The doc states "tab counts update with the active query and facet
+    selection" and frames My Objects as the user's personal subset. A user
+    reading per-class counts would assume they reflect what they will see.
+    Response-shape + doc-claim seed.
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The COUNTS are catalog-wide, not user-scoped — this is the F-017
+      `catalog_wide_count_design_my_objects_not_a_boundary` posture inherited
+      wholesale. SearchServiceImpl.getFacetsData (SearchServiceImpl.java:122-155
+      per F-017.yaml hop 2) computes the class-facet aggregate counts with NO
+      owner predicate (ReactiveSearchFacetRepositoryImpl has no OWNERSHIP join);
+      only the `myObjectsTotal` value (the My Objects tab's own hint,
+      SearchResultsTabs.tsx:27) is owner-scoped. So: the My Objects tab badge IS
+      per-user (correct), but the Datasets/Transformers/etc. badges are
+      catalog-wide regardless of whether My Objects is active — they do NOT
+      re-scope to the user's owned subset. A user on the My Objects tab sees a
+      result list of (say) 3 owned datasets but a Datasets-tab badge of 4000.
+      The doc's "counts update with the active query and facet selection" is
+      true for query+facets but silent on the my-objects-vs-counts asymmetry.
+    evidence:
+      - sidecar: feature-flows/detail/F-017.yaml
+        section: "observed_vs_expected catalog_wide_count_design_my_objects_not_a_boundary"
+        cite: "SearchServiceImpl.java:122-155 + ReactiveSearchFacetRepositoryImpl.java:163-534"
+        note: "facet counts catalog-wide; only myObjectsTotal owner-scoped"
+      - sidecar: "(source read)"
+        section: SearchResultsTabs.tsx
+        cite: "SearchResultsTabs.tsx:26-62"
+        note: "class-tab hints from totals[CLASS].count (catalog-wide); My Objects hint from totals.myObjectsTotal (owner-scoped)"
+    operator_visible_failure: |-
+      An operator on the My Objects tab sees a short result list (their owned
+      entities) but the per-class tab badges show the full-catalog cardinality.
+      Clicking from My Objects to Datasets jumps from "3 results" to "4000
+      results" with no visual cue that the scope boundary changed — the operator
+      may believe their owned-dataset count is 4000. The asymmetry is the same
+      one F-017 documents for the sidebar; it is undocumented for the tab
+      counts specifically. Severity MEDIUM (misleading count, not data loss).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      The unmet part (counts do not re-scope to My Objects) routes to a
+      caveat-candidate (document the asymmetry). The functional test demand
+      pins the CURRENT behaviour: assert the Datasets badge is identical with
+      My Objects active vs inactive (a characterization pin per the
+      pin-known-behaviour discipline).
+
+- id: H-005
+  hypothesis: |-
+    When the user clicks a class tab, exactly one PUT /api/search/{id}/facets
+    request is sent (the tab click is a single facet mutation).
+  derivation: |-
+    The terminal_side_effect of the F-148 flow claims "1 PUT + 1 GET per tab
+    click". But the F-017 batch-ZL debouncer-recreated bug amplifies facet
+    dispatches. Endpoint-shape + negative-space seed.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The tab dispatch goes through the SAME Search.tsx facet path as the
+      sidebar (changeDataEntitySearchFacet → searchFacetParams change →
+      Search.tsx:67-71 debounced updateSearchFacets). F-017 batch-ZL established
+      that the 1500ms debouncer is RECREATED on every facet-state change
+      (useCallback deps include searchFacetParams), with `{leading: true}`, so
+      each facet mutation fires a PUT immediately and the debounce does not
+      coalesce. A single tab click produces a single searchFacetParams change,
+      so on the deliberate-single-click path one PUT is expected — but rapid
+      tab-clicking (e.g. clicking through All→Datasets→Transformers within
+      1.5s) would fire N PUTs, not the coalesced 1. Whether a single tab click
+      ALSO double-fires via the LSN-017 smell #3 re-fire vector
+      (Search.tsx:67-71, searchFacetsSynced read but not in deps) cannot be
+      determined statically — it depends on selector reference stability during
+      the in-flight PUT window. This requires running the system.
+    evidence:
+      - sidecar: feature-flows/detail/F-017.yaml
+        section: "batch ZL notes (2) debouncer-recreated + (1) LSN-017 smell #3"
+        cite: "Search.tsx:50-65 + Search.tsx:67-71"
+        note: "debouncer-recreated defeats throttling; smell #3 is an active re-fire vector"
+    operator_visible_failure: |-
+      If the tab strip double-fires or N-fires under rapid clicking, the server
+      sees amplified PUT load on the search_facets row (which also re-runs the
+      tsquery aggregators) and the result list may flicker through intermediate
+      states. Severity inherited from F-017's debouncer finding (MEDIUM).
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-148-1
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: "probe PENDING-F-148-1"
+    note: |-
+      Shares the F-017 debouncer finding's root cause; the probe pins the
+      tab-specific cardinality. Routes to bug-candidate as a DISTINCT
+      invocation site of the F-017 debouncer bug (the tab strip, not the
+      sidebar) — see distinct_from in cross_references.
+
+- id: H-006
+  hypothesis: |-
+    When a user clicks a class tab and then presses the browser Back button,
+    the previous tab (and its result scope) is restored.
+  derivation: |-
+    The control is rendered as a tab strip (AppTabs); a tab bar promises
+    navigation semantics where Back returns to the prior tab. UI-label +
+    negative-space seed.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Tab clicks dispatch a Redux facet mutation and a PUT to the server-side
+      session row; they do NOT push to the URL (the route stays
+      /search/{searchId} — the same UUID, per F-017 batch-ZI URL-shape
+      finding). The tab state lives in `state.dataEntitySearch.facetState` +
+      `myObjects`, mirrored to the server row, not in browser history. Pressing
+      Back therefore navigates AWAY from /search entirely (to wherever the user
+      came from) — it does not restore the previous tab. If the user navigates
+      back to /search/{sameUuid}, the restored session reflects the LATEST
+      mutated facet state (the server row was overwritten on each tab click),
+      not the pre-click tab. There is no history entry per tab.
+    evidence:
+      - sidecar: feature-flows/detail/F-017.yaml
+        section: "batch ZI notes (2)(c) tab navigation drops the session + URL semantics"
+        cite: "Results.tsx:83-97 (dispatch, no navigate) + searchRoutes.ts URL-shape"
+        note: "tab click mutates server-side row; URL unchanged; no per-tab history entry"
+      - sidecar: "(source read)"
+        section: Results.tsx
+        cite: "Results.tsx:83-100"
+        note: "onSearchClassChange only dispatches; no useNavigate/router push"
+    operator_visible_failure: |-
+      Multiple operator-visible failures: (a) an operator who clicks Datasets,
+      then Transformers, then presses Back expecting to return to Datasets is
+      instead thrown off the Catalog page entirely (or, if they had history on
+      /search, to a stale state); (b) the tab selection cannot be bookmarked or
+      shared as a URL distinct from any other tab on the same session — every
+      tab on a session shares one UUID; (c) this compounds the F-017
+      `searchid_url_param_promises_saved_search_id...` finding — sharing a
+      /search/{uuid} link conveys whatever tab the sharer LAST clicked, mutating
+      under them. The tab-bar affordance actively mis-signals navigation.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      The highest-severity contradiction of this reflection. Routes to a
+      bug-candidate (the fix is either URL-push per-tab or a relabel away from
+      tab-as-navigation) AND a functional regression-pin test demand.
+
+- id: H-007
+  hypothesis: |-
+    The nine tab labels (All / My Objects / Datasets / Transformers / Data
+    Consumers / Data Inputs / Quality Tests / Groups / Relationships) localise
+    when the platform language is switched, consistent with the rest of the UI.
+  derivation: |-
+    Pillar P-01 serves multiple audiences; the platform has i18n
+    (useTranslation) and TableHeader wraps every column in t(). A user switching
+    language expects the tab strip to follow. UI-label + cross-pillar-consistency
+    seed.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      SearchResultsTabs.tsx does NOT import useTranslation at all (verified
+      line-by-line, :1-95) — all nine tab names are hardcoded English string
+      literals (`name: 'All'`, `'My Objects'`, `'Datasets'`, ... `'Relationships'`
+      at :26-62). By contrast the platform's TableHeader and most catalog
+      surfaces wrap labels in t(). Six of the nine labels are multi-word
+      English-only strings that never localise under any language setting.
+    evidence:
+      - sidecar: "(source read)"
+        section: SearchResultsTabs.tsx
+        cite: "SearchResultsTabs.tsx:1-5, 24-63"
+        note: "no useTranslation import; all 9 names hardcoded English"
+    operator_visible_failure: |-
+      A non-English operator (the platform ships i18n infrastructure precisely
+      to serve these users) sees a fully-translated catalog except this one
+      most-clicked strip, which stays English. The inconsistency is jarring and
+      makes the most-used control the least-localised. Severity LOW (cosmetic /
+      i18n-completeness, no functional or data impact) but a real
+      cross-platform-consistency defect a senior PO would not ship silently.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      Matches the F-148 flow's facet 8 (i18n gap) and the batch-11
+      scanner_review F-148c (ontology-confirmed). dedup: already tracked.
+
+- id: H-008
+  hypothesis: |-
+    The Relationships tab always appears in the strip, regardless of backend
+    version or feature configuration.
+  derivation: |-
+    SearchResultsTabs.tsx:59-62 sets the Relationships tab value to
+    `totals[RELATIONSHIP].id`. If the backend omits the RELATIONSHIP key the
+    value is undefined. Negative-space seed.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The tab is ALWAYS rendered (the array at SearchResultsTabs.tsx:24-63 is
+      unconditional — all nine entries are always pushed). But when the backend
+      `totals` response does not include a RELATIONSHIP key (older backend, or
+      a deployment with Relationships disabled per P-02), the tab renders with
+      `hint: 0` (the `|| 0` fallback at :60) and `value: undefined` (no `?.id`
+      fallback). Clicking it then calls onSearchClassChange(undefined) →
+      `tabValue ? ... : null` (Results.tsx:85) → facetOptionId resolves to null
+      → the dispatch sends facetOptionId: null on the entityClasses facet, which
+      the reducer treats as no class constraint (null is not a number; not
+      'my'), effectively behaving like the All tab but with the Relationships
+      tab visually selected. So the tab is present-but-inert rather than
+      missing — the F-148 flow's facet description ("silently missing
+      otherwise") is imprecise: it is present-and-dead, not absent.
+    evidence:
+      - sidecar: "(source read)"
+        section: SearchResultsTabs.tsx
+        cite: "SearchResultsTabs.tsx:58-62"
+        note: "Relationships value = totals[RELATIONSHIP]?.id; undefined if key absent"
+      - sidecar: "(source read)"
+        section: Results.tsx
+        cite: "Results.tsx:84-86"
+        note: "undefined tabValue → facetOptionId null → behaves as no-class"
+    operator_visible_failure: |-
+      On a backend that does not return a RELATIONSHIP count, the operator sees
+      a Relationships tab with a 0 badge that, when clicked, silently shows the
+      full catalog (behaves like All) while appearing selected as
+      Relationships. The operator believes they are viewing relationships and
+      sees everything. Severity LOW (rare config; misleading rather than
+      data-losing).
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      Refines the F-148 flow's facet 6. The functional test demand pins the
+      present-and-inert behaviour (render with empty totals → assert
+      Relationships tab present with hint 0).
+
+- id: H-009
+  hypothesis: |-
+    When a backend class id of 0 is returned for any class, the corresponding
+    tab is selectable and distinguishable from the "All" tab.
+  derivation: |-
+    SearchResultsTabs.tsx:69 uses `searchClass ? findIndex : 0` (truthy check)
+    and Results.tsx:84 uses `tabValue ? ... : null`. A numeric class id of 0 is
+    falsy → collides with the no-class / All semantics. Negative-space seed.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The truthiness collision is real in the code: in SearchResultsTabs.tsx:69
+      `searchClass ? tabs.findIndex(...) : 0` forces selectedTab to index 0 (the
+      All tab) whenever searchClass is 0; in Results.tsx:84
+      `tabValue ? get(...) : null` treats a class id of 0 as no-class. So IF the
+      backend ever allocates DataEntityClassNameEnum id 0, that class's tab
+      would be unselectable (always falls back to All) and clicking it would
+      clear the class filter. Whether this is reachable depends entirely on the
+      backend's DataEntityClassNameEnum id allocation — Filters.tsx:53 uses
+      `searchClass > 0` which implies ids start at 1, but this is not verified
+      against the enum/migration. Requires inspecting the actual class-id
+      allocation in the running system / the DataEntityClassNameEnum source.
+    evidence:
+      - sidecar: "(source read)"
+        section: SearchResultsTabs.tsx
+        cite: "SearchResultsTabs.tsx:68-70"
+        note: "selectedTab = searchClass ? findIndex : 0 — class id 0 collides with All"
+      - sidecar: "(source read)"
+        section: Results.tsx
+        cite: "Results.tsx:84"
+        note: "tabValue ? ... : null — class id 0 treated as no-class"
+    operator_visible_failure: |-
+      IF a class id 0 exists, that class's tab cannot be selected (always shows
+      All as active) and clicking it clears the class filter — the class is
+      effectively unreachable via the tab strip. If ids start at 1 (as
+      Filters.tsx:53 implies) the bug is unreachable dead-defensive-code.
+      Severity LOW pending the probe.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-148-2
+    routes_to_finding: validation-gap
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: "probe PENDING-F-148-2"
+    note: |-
+      Matches the F-148 flow's facet 4. The probe pins whether class id 0 is
+      reachable; until then this is a latent collision, not a confirmed bug.
+
+- id: H-010
+  hypothesis: |-
+    On reload / deep-link of a session whose saved class tab is set, the correct
+    tab is highlighted as active when the page restores.
+  derivation: |-
+    SearchResultsTabs.tsx:68-70 computes selectedTab via
+    `tabs.findIndex(tab => tab.value === searchClass)`. If no tab value matches
+    searchClass, findIndex returns -1. Response-shape + negative-space seed.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      When searchClass is set (truthy) the selected index is
+      `tabs.findIndex(tab => tab.value === searchClass)` (SearchResultsTabs.tsx:69).
+      If the restored searchClass is a numeric class id whose tab value is
+      currently `undefined` (e.g. the backend totals on restore did not include
+      that class, so the tab's `value: totals[CLASS]?.id` is undefined), or if
+      tabs has not yet populated (the tabs-building effect at :24-64 runs on a
+      separate render cycle from the selectedTab effect at :68-70), findIndex
+      returns -1. AppTabs receives selectedTab=-1, so NO tab is highlighted —
+      the strip shows results scoped to a class with no visual indication which
+      class is active. Because the tabs array is rebuilt on every `totals`
+      change (no memoization) and selectedTab depends on `[tabs, searchClass]`,
+      there is a window on restore where the strip shows no active tab.
+    evidence:
+      - sidecar: "(source read)"
+        section: SearchResultsTabs.tsx
+        cite: "SearchResultsTabs.tsx:68-70"
+        note: "findIndex returns -1 when no tab.value === searchClass → no tab highlighted"
+      - sidecar: "(source read)"
+        section: SearchResultsTabs.tsx
+        cite: "SearchResultsTabs.tsx:22-64"
+        note: "tabs rebuilt on every totals change; runs on a different render than the selectedTab effect"
+    operator_visible_failure: |-
+      A deep-linked or reloaded session that had a class tab active can restore
+      with the result list class-scoped but NO tab highlighted, so the operator
+      cannot tell which class they are viewing or which tab to click to widen.
+      Transient on the common path (resolves once totals + searchClass settle)
+      but persistent if the saved class's totals key is absent. Severity LOW-to-
+      MEDIUM (orientation loss, no data impact).
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      NEW drift class proposed
+      (selected_tab_findindex_returns_minus_one...) — not in the F-148 flow's
+      8 facets. Net-new finding from this reflection's primary-source read.
+
+- id: H-011
+  hypothesis: |-
+    The My Objects tab (per the live doc, "the subset owned by the
+    authenticated user") shows only entities the user owns AND its presence is
+    consistent with the platform's documented access model.
+  derivation: |-
+    Doc-claim seed — the live page describes My Objects as the personal-
+    namespace owned subset. Cross-pillar (P-09 read-collaborative) seed.
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The My Objects RESULT LIST is genuinely owner-scoped: toggling it sets
+      myObjects=true (H-002) which triggers the SearchServiceImpl
+      `state.isMyObjects()` owner predicate (SearchServiceImpl.java:104-108) —
+      the only owner-scoping path in the whole search backbone. The doc's claim
+      ("subset owned by the authenticated user") is accurate FOR THE RESULT
+      LIST. Consistency with the access model: this is the visible UI counterpart
+      of the read-collaborative posture (system-mission.md line 267 / F-017) —
+      My Objects is OPT-IN (default tab is All = full catalog), confirming the
+      platform's "every authenticated user can enumerate the catalog; My Objects
+      is an extra scope, not a boundary" stance (F-017 implicit_adr).
+    evidence:
+      - sidecar: feature-flows/detail/F-017.yaml
+        section: "batch ZL notes (5) My Objects is opt-in tab not opt-out"
+        cite: "SearchServiceImpl.java:104-108 + system-mission.md line 267"
+        note: "My Objects result list owner-scoped; opt-in; read-collaborative default"
+      - sidecar: "(WebFetch)"
+        section: "live doc data-discovery/search"
+        cite: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+        note: "doc describes My Objects as the authenticated user's owned subset (accurate for result list)"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      CONFIRMED-but-UNTESTED. The owner-scoping of the My Objects result list
+      has no Playwright test (the My Objects tab is never clicked in any spec).
+      Pairs with H-002's demand; this is the user-facing (result-list) half,
+      H-002 is the wire (myObjects-boolean) half. One functional test can cover
+      both: click My Objects → assert only owned entities listed AND PUT payload
+      carries myObjects:true.
+
+- id: H-012
+  hypothesis: |-
+    Selecting a class tab unlocks the Type sidebar facet (which is hidden until
+    a specific class is chosen), as the live doc states.
+  derivation: |-
+    Doc-claim seed — verbatim live-doc claim: "Selecting a tab ... unlocks the
+    Type sidebar facet, which is hidden until a specific class is chosen."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Corroborated by the existing integration test: filters.spec.ts:75-87
+      (test-case 70 "Should display the expected item with Type filter") FIRST
+      clicks the Transformers class tab (`pages.catalog.clickTab(transformersTab)`)
+      and only THEN opens the Type filter (`openFilterWithInput(typeFilter)`).
+      The test sequence encodes exactly the doc's coupling — Type is reached
+      after a class tab is selected. The Results.tsx grid/showDEGBtn logic keys
+      off the current searchClass (Results.tsx:79, :102-114), and the Type
+      facet's availability is gated on a specific class being chosen. The
+      doc-claim matches the code+test behaviour.
+    evidence:
+      - sidecar: "(source read)"
+        section: filters.spec.ts
+        cite: "filters.spec.ts:78-86"
+        note: "test clicks Transformers tab THEN applies Type filter — encodes the class→Type coupling"
+      - sidecar: "(WebFetch)"
+        section: "live doc data-discovery/search"
+        cite: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+        note: "doc: selecting a tab unlocks the Type sidebar facet hidden until a class is chosen"
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "filters.spec.ts :: Check filters > Should display the expected item with Type filter (test-case 70)"
+    test_demand: none
+    note: |-
+      Verified by the EXISTING test that exercises the class-tab→Type-facet
+      sequence. The doc claim and the code agree. Confidence MEDIUM because the
+      test asserts the end result (filtered item visible) rather than directly
+      asserting the Type facet was hidden before the tab click.
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: |-
+    9-tab strip is a server-side facet mutation rendered as a tab bar; browser
+    Back does not restore the previous tab and the tab selection is not
+    URL-addressable, mis-signalling navigation on the most-used Catalog control.
+  dedup_status: net_new
+  distinct_from: F-017 searchid_url_param_promises_saved_search_id (different surface — that finding is about the session UUID's saved-search semantics; this is specifically the tab-as-navigation mental-model break on the class-tab strip)
+  recommended_log_as: REFACTOR-NNN (URL-push per class tab, or relabel away from tab-as-navigation)
+  proposed_fix_anchor: "Results.tsx:83-100 (add a navigate/searchParams push on tab change) OR SearchResultsTabs.tsx (relabel the strip as a non-navigation filter control)"
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    Class-tab clicks inherit the F-017 debouncer-recreated bug — rapid tab
+    switching fires N PUTs instead of a coalesced 1; tab strip is a distinct
+    invocation site of the same root cause.
+  dedup_status: already_tracked
+  tracked_as: "F-017 drift facet debouncer_recreated_on_every_facet_change_leading_true_each_new_instance_fires_immediately_1500ms_debounce_defeated (batch ZL; probe P-187)"
+  proposed_fix_anchor: "Search.tsx:50-65 (stabilise useDebouncedCallback deps) — shared with the sidebar; fixing F-017 fixes the tab strip"
+- hypothesis_id: H-007
+  severity: LOW
+  one_line: |-
+    Six of nine class-tab labels hardcoded English; SearchResultsTabs.tsx does
+    not import useTranslation — the most-used Catalog control never localises.
+  dedup_status: already_tracked
+  tracked_as: "F-148 flow drift facet t_function_not_used_on_tab_names_... + scanner_review F-148c (SR-20260527T2330Z, ontology-confirmed)"
+  proposed_fix_anchor: "SearchResultsTabs.tsx:1-63 (import useTranslation, wrap all 9 names in t())"
+- hypothesis_id: H-010
+  severity: LOW
+  one_line: |-
+    On session restore, SearchResultsTabs selectedTab findIndex can return -1
+    (saved class's tab value undefined, or tabs not yet built) → no tab
+    highlighted while the result list is class-scoped.
+  dedup_status: net_new
+  recommended_log_as: REFACTOR-NNN (guard selectedTab against -1; memoize tabs)
+  proposed_fix_anchor: "SearchResultsTabs.tsx:68-70 (fallback selectedTab to 0 when findIndex returns -1; useMemo the tabs array)"
+
+### caveat_candidates
+- hypothesis_id: H-004
+  one_line: |-
+    Per-class tab COUNT badges are catalog-wide even when My Objects is active —
+    only the My Objects badge is owner-scoped; class badges do not re-scope to
+    the user's owned subset.
+  dedup_status: already_tracked
+  tracked_as: "F-017 drift facet catalog_wide_count_design_my_objects_not_a_boundary (the tab-count manifestation; F-017 documents the sidebar-count manifestation)"
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/search (add: tab counts are catalog-wide; My Objects scopes the result list, not the per-class badges)
+- hypothesis_id: H-008
+  one_line: |-
+    Relationships tab is present-and-inert (not absent) when the backend omits
+    the RELATIONSHIP count — renders with a 0 badge and behaves like All when
+    clicked while appearing selected as Relationships.
+  dedup_status: net_new
+  recommended_log_as: caveat in the search doc page (Relationships tab requires a backend that returns the RELATIONSHIP class count) OR DOC-GAP-NNN
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional
+# TEST-GAP candidate. The CONFIRMED-but-untested promises (H-002, H-003, H-011)
+# are the highest-value: hand-proven behaviours with no guard.
+- use_case_id: F-148-UC-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Clicking My Objects sets myObjects:true (not a string in entityClasses) and scopes the result list to the user's owned entities."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-002)"
+  proposed_test: |-
+    Integration (Playwright, reuse tests/features/search): open Catalog →
+    pages.catalog.clickTab('My Objects') → intercept PUT /api/search/{id}/facets
+    and assert request body carries myObjects:true AND entityClasses does NOT
+    contain the string 'my' → assert the result list contains only entities the
+    seeded authenticated user owns. (This is the single most behaviourally-subtle
+    branch of F-148 and has zero coverage today.)
+- use_case_id: F-148-UC-003
+  hypothesis_id: H-003
+  kind: edit-reconcile
+  promise: "Clicking Datasets then All clears the Datasets class constraint and restores the full cross-class catalog."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-003)"
+  proposed_test: |-
+    Integration: clickTab('Datasets') → assert list is dataset-scoped →
+    clickTab('All') → assert list returns to unscoped catalog (count rises
+    back to the all-class total). Pins the facetSingle unselect-previous
+    behaviour (slice.ts:151-170).
+- use_case_id: F-148-UC-011
+  hypothesis_id: H-011
+  kind: happy-path
+  promise: "The My Objects tab result list shows only entities owned by the authenticated user (read-collaborative opt-in scope)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-011)"
+  proposed_test: |-
+    Can be folded into F-148-UC-002's test (the result-list assertion). Kept as
+    a distinct use_case because it is the user-facing (screen) half vs the wire
+    (payload) half.
+- use_case_id: F-148-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Clicking Datasets narrows the list to dataset-class entities."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "filters.spec.ts test-case 70 (Transformers — sibling numeric-class-tab path)"
+  recommended_log_as: "none (verified-by-equivalence) — OPTIONAL TEST-GAP to add a Datasets-specific assertion"
+  proposed_test: "Optional: add a Datasets clickTab assertion mirroring test-case 70's Transformers case for direct (not by-equivalence) coverage."
+- use_case_id: F-148-UC-004
+  hypothesis_id: H-004
+  kind: render
+  promise: "Per-class tab count badges reflect what the user will see."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-004)"
+  proposed_test: |-
+    Characterization pin: assert the Datasets badge count is IDENTICAL with My
+    Objects active vs inactive (pins the current catalog-wide-count behaviour;
+    RED if a future change re-scopes class counts to My Objects).
+- use_case_id: F-148-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Browser Back after a tab click restores the previous tab."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-006)"
+  proposed_test: |-
+    Regression guard for the H-006 fix: clickTab('Datasets') → clickTab('Transformers')
+    → browser Back → assert (current behaviour) URL/tab state. Pins the
+    navigation-vs-facet mismatch so a future URL-push fix flips it RED.
+- use_case_id: F-148-UC-007
+  hypothesis_id: H-007
+  kind: grammar
+  promise: "Class-tab labels localise with the platform language."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-007)"
+  proposed_test: |-
+    Unit/snapshot: render SearchResultsTabs under a non-English i18n context →
+    assert tab names are translated (currently RED — guards the i18n fix).
+- use_case_id: F-148-UC-008
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: "Relationships tab behaves correctly when the backend omits the RELATIONSHIP count."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-008)"
+  proposed_test: |-
+    Unit: render SearchResultsTabs with totals lacking RELATIONSHIP → assert the
+    tab is present with hint 0 (pins present-and-inert behaviour).
+- use_case_id: F-148-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: "The correct tab is highlighted on session restore."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-148-UC-010)"
+  proposed_test: |-
+    Unit: render with searchClass set to a class whose tab value is undefined →
+    assert selectedTab is NOT -1 (currently RED — guards the findIndex -1 fix).
+- use_case_id: F-148-UC-012
+  hypothesis_id: H-012
+  kind: happy-path
+  promise: "Selecting a class tab unlocks the Type sidebar facet."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "filters.spec.ts test-case 70 (clicks Transformers tab then applies Type filter)"
+  recommended_log_as: "none (verified by the existing class-tab→Type-facet test)"
+  proposed_test: "Optional: strengthen test-case 70 to assert the Type facet was hidden BEFORE the tab click."
+
+### probes_emitted
+- probe_id: PENDING-F-148-1
+  hypothesis_id: H-005
+  hypothesis: |-
+    When a user clicks a class tab, exactly one PUT /api/search/{id}/facets
+    request is sent. Probe: stand up docker-compose ODD platform + Postgres +
+    Playwright headless on /search with a seeded catalog; (a) click a single
+    class tab and assert the network panel shows exactly 1 PUT
+    /api/search/{id}/facets; (b) click All→Datasets→Transformers within 1.5s
+    and assert the PUT count (expected per F-017 debouncer bug: 3, not 1).
+    local_execution_blocked: false
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+- probe_id: PENDING-F-148-2
+  hypothesis_id: H-009
+  hypothesis: |-
+    A backend DataEntityClassNameEnum class id of 0 collides with the All-tab
+    falsy semantics (SearchResultsTabs.tsx:69, Results.tsx:84). Probe: inspect
+    the running DataEntityClassNameEnum id allocation (GET the class metadata or
+    read the enum/migration) and assert whether any class id is 0. If ids start
+    at 1, H-009 is unreachable dead-defensive-code; if a 0 exists, that class's
+    tab is unselectable. local_execution_blocked: false
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+
+### validation_gaps
+- sidecar: "odd-platform ts react-component:SearchResultsTabs (chain hop 1)"
+  field_insufficient: "ENTIRE sidecar — the node is `unresolved` in the F-148 flow; no enriched sidecar file exists. Per Rule 9, this is the FIRST output: F-148's three UI contributing nodes (SearchResultsTabs, Results onSearchClassChange, dataEntitySearch.slice) all carry chain `unresolved`/`ui-incomplete`, so this reflection rests on DIRECT primary-source reads (Rule 8 exception, recorded in source_reads_for_validation) + the F-017 backbone sidecar + the batch-11 scanner_review — NOT on enriched per-node sidecars. The reflection is NOT API-only (the UI source WAS read), but the normal enrichment substrate is absent."
+  proposed_refresh: "file-analyser should enrich SearchResultsTabs.tsx as a first-class sidecar capturing: the 9-tab construction, the string-sentinel-vs-numeric value typing, the selectedTab findIndex/-1 + index-0 fallback, the missing useTranslation, and the no-memoization tabs rebuild."
+- sidecar: "odd-platform ts redux-slice:dataEntitySearch.slice (changeDataEntitySearchFacet reducer — chain hop 3)"
+  field_insufficient: "ENTIRE reducer body — chain hop 3 is `unresolved` in the F-148 flow. The load-bearing normalisation (slice.ts:173-174 myObjects flip + :187-188 typeof-number facetState guard + :151-170 facetSingle unselect-previous) was read directly this run and is the basis for H-002/H-003. The F-148 flow + sidecars should be amended to mark facets 1+2 as ui_unverified=false with this evidence (the batch-11 scanner_review already recommended this; the sidecar amendment has not yet been applied)."
+  proposed_refresh: "Enrich the dataEntitySearch.slice changeDataEntitySearchFacet reducer as a sidecar; mark F-148 flow facet 1 (mixed-payload) HIGH→LOW (architectural-clarification only) and facet 2 (double-toggle) resolved, per slice.ts:173-174,187-188."
+
+### doc_drift_findings
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+  doc_says: "The tab counts update with the active query and facet selection. (My Objects = the subset owned by the authenticated user.)"
+  code_does: "Tab COUNT badges are catalog-wide (no owner predicate on the class-facet aggregators); only the My Objects badge is owner-scoped. The result LIST scopes on My Objects; the per-class COUNTS do not."
+  recommended_log_as: doc-gap-NNN (add a "tab counts are catalog-wide; My Objects scopes the result list, not the per-class badges" note to the search doc page)
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+  doc_says: "(The live page NOW fully documents the 9-tab class strip — table of nine tabs + tab-narrows-results + Type-facet-unlock.)"
+  code_does: "Matches — the live doc is accurate on the tab semantics."
+  recommended_log_as: |-
+    STALE-DOC-GAP — the F-148 feature-flow's related_doc_gaps entry "DOC-GAP-NNN
+    (live doc silent on the 9 class tabs)" is NO LONGER TRUE at 2026-06-03; the
+    doc describes the tabs in full. The ontology's doc-gap candidate should be
+    closed/marked resolved (not a doc fix — an ontology refresh).
+
+## maintainer_notes
+
+(none — this block is preserved verbatim across refreshes for maintainer hand-edits)

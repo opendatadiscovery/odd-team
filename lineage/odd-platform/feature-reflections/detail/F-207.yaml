@@ -1,0 +1,827 @@
+---
+feature_id: F-207
+pillar_anchored_id: P-09:F-008
+pillar: "P-09 — Security & Access Control"
+feature_name: |-
+  RBAC frontend affordance pattern — WithPermissions + WithPermissionsProvider
+  HOCs that HIDE-not-disable forbidden controls. The pair is CONTEXT (the UX
+  shape of permission propagation), NOT GATE (backend authorization is enforced
+  server-side at the controller perimeter). A confident permission_side_door
+  reading against the UI alone is the LSN-023 false-positive class.
+reflected_at: "2026-06-03T00:00:00Z"
+reflected_at_commit: f328e68
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - "feature-flows/detail/F-207.yaml (the chain itself — the UI HOP sidecars are unresolved; behaviour is read from the chain notes + observed_vs_expected facets)"
+  - odd-platform__java__PermissionController__controller-class__PermissionController.md
+  - odd-platform__java__PermissionController__controller-method__getResourcePermissions.md
+  - "feature-reflections/detail/F-105.yaml (sibling reflection — enriched route__management + PolicyList sidecars corroborate WithPermissions.tsx:28 null-return and WithPermissionsProvider.tsx:12-48 unconditional render)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Not WebFetched fresh THIS invocation (parallel-safe mode). Status carried
+      from the F-105 reflection's 2026-06-03 WebFetch (status 200) and DOC-176's
+      post-merge verification: the live Authorization README now carries a "How
+      the UI surfaces missing permissions" H2 documenting the hide-not-disable
+      convention verbatim. Treated as a cross-reference, never the source of intent.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 0
+  probe_needed: 3
+  highest_severity_contradiction:
+    hypothesis_id: H-005
+    severity: MEDIUM
+    one_line: |-
+      A user denied a control sees it VANISH (no greyed button, no tooltip, no
+      admin-contact CTA) — they cannot self-diagnose "am I missing a permission?"
+      and may conclude the platform simply has no such control. (Three further
+      MEDIUM contradictions: H-006 provider-is-not-a-gate, H-007 DISABLED UI-vs-API
+      divergence, H-008 LOGIN_FORM admin-all.)
+related_feature_flows: [F-105, F-006, F-001, F-034, F-018, F-004, F-031]
+related_concepts:
+  - rbac-frontend-hoc
+  - hide-not-disable-affordance
+  - read-collaborative-posture
+  - permission-context
+  - lsn-023-permission-side-door-class
+related_drift_classes:
+  - ui_hoc_is_context_not_gate_misreading_as_security_boundary_is_lsn023_class
+  - ui_hide_not_disable_forbidden_affordances_no_help_text
+  - ui_permissions_provider_doesnt_gate_routes_only_announces_context
+  - ui_predicate_resolution_via_hook_not_traced_to_redux_state
+new_drift_classes_proposed:
+  - ui_affordance_visibility_diverges_from_backend_grant_under_disabled_and_loginform_modes
+---
+
+# RBAC Frontend Affordance (WithPermissions / WithPermissionsProvider) — product-owner reflection
+
+## product_owner_narrative
+
+This is not a feature a customer asks for by name — it is the cross-cutting UX
+primitive that decides, on every screen of the platform, whether you SEE a button
+at all. ODD Platform's RBAC model (Policies x Permissions x Roles x Owners x
+User-owner association) gates mutations across the catalog (per system-mission.md
+P-09 "an RBAC model ... gating mutations across the catalog"). The frontend
+expression of that model is a pair of React higher-order components: every
+create / edit / delete affordance in the SPA is wrapped in `<WithPermissions
+permissionTo={...}>`, and each Management page (Policies, Roles, Owners,
+Associations) plus each entity-detail action cluster wraps its subtree in a
+`<WithPermissionsProvider>` that names the permissions relevant to that scope
+(per F-207 chain hop 1-2 + the `discovered_from_entry_point` note). To the
+operator this is invisible plumbing; to a Principal reviewing the product it is
+the single most-mounted UI component on the platform.
+
+The way a user experiences it is the load-bearing fact, and it is a deliberate
+UX choice with a sharp edge: `WithPermissions` HIDES the control rather than
+disabling it. Its default branch returns `hasAccessTo(permissionTo) ? children
+: null` (per F-207 chain hop 2 — `WithPermissions.tsx:11-34`; corroborated at
+`WithPermissions.tsx:28` by the sibling F-105 reflection and verified verbatim
+in DOC-176's review). A user who lacks a permission does not see a greyed-out
+button with a tooltip explaining why — the affordance is removed from the DOM
+entirely. The predicate `hasAccessTo` is supplied by a `usePermissions()` hook
+reading the surrounding `PermissionProvider` context; the context, in turn, is
+seeded from the server's answer to "what can I do on this resource right now?"
+— the `GET /api/resource/{type}/{id}/permissions` endpoint
+(`PermissionController.getResourcePermissions`, per its class + method sidecars).
+
+The working parts a product owner perceives as "permission gating" are three
+layers, and only one of them is actually a gate. (1) `WithPermissions` hides
+individual buttons — this is the dominant, working pattern. (2)
+`WithPermissionsProvider` ANNOUNCES a permission context to descendants but does
+NOT block rendering — every branch (render-prop / Component / children) returns
+its child unconditionally (per F-207 facet
+`provider_unconditionally_renders_children_no_top_level_route_gate`, confirmed at
+`WithPermissionsProvider.tsx:12-48` by the F-105 reflection). (3) Route-level
+gating is a SEPARATE concern owned by F-105 (Management Section Route Gating) —
+only `/management/associations/*` actually redirects an unpermitted user; the
+other eight Management sub-areas render their full catalog. The crucial truth,
+and the reason this feature exists as a methodology anchor, is that NONE of these
+three is the authorization boundary. The boundary is server-side: the
+`AuthorizationCustomizer` enforces `SecurityConstants.SECURITY_RULES` on mutation
+endpoints (per PermissionController sidecar `implicit_adrs[0]` — the same
+`PermissionService` bean is wired into both the read-side controller and the
+mutation enforcer). A forged or stale UI permission set cannot bypass mutation
+gating — IT-010 pins exactly this: a non-admin LDAP user calling
+`DELETE /api/owners/{id}` directly is denied 403, not silently allowed.
+
+This feature composes with the entire platform rather than with one pillar. It is
+the UI affordance layer for F-006 (RBAC policy lifecycle — PolicyList / RolesList
+buttons), F-018 (Manual Object Tagging — the DATA_ENTITY_TAGS_UPDATE button),
+F-004 (Entity description — the Edit affordance on DATA_ENTITY_DESCRIPTION_UPDATE),
+F-031 (Data Source Lifecycle), and every per-entity action. It shares its predicate
+source with F-105's route gating and with the server-side enforcement of P-09. Its
+sibling HOC `WithFeature` (F-034) applies the identical hide-not-disable shape to
+feature flags rather than permissions.
+
+The edge a product owner would flag in a demo, and the negative-space hypotheses
+below pursue it, is the gap between what the user SEES and what the platform
+actually ENFORCES. Under `auth.type=DISABLED` the read-side permission endpoint
+returns an EMPTY set (no SecurityContext → empty cascade, per PermissionController
+method sidecar `bugs_limitations_corner_cases[0]`), so the UI hides every mutation
+button — yet the mutation endpoints are simultaneously `permitAll()`, so a direct
+API caller can do anything. The UI says "you can do nothing"; the API says "anyone
+can do anything." Under `auth.type=LOGIN_FORM` the inverse holds: every credential
+is granted ADMIN and the endpoint returns the FULL permission set regardless of any
+policy revocation (per the same sidecar `bugs_limitations_corner_cases[1]`), so the
+UI shows every button. In both modes the UI affordance visibility diverges from the
+real enforcement posture — a divergence that is silent, undocumented at the UI
+surface, and exactly the class of "the UI lied to me about what I could do" that
+erodes operator trust.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a signed-in user lacks the permission named in a control's
+    WithPermissions wrapper, that control is REMOVED from the page (not present
+    in the DOM), rather than shown disabled.
+  derivation: |-
+    The feature_name + the dominant facet describe a HIDE-NOT-DISABLE contract;
+    WithPermissions.tsx:28 default branch returns null. This is the core
+    user-observable promise of the primitive.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The default branch of WithPermissions returns
+      `hasAccessTo(permissionTo) ? <>{children}</> : null` (per F-207 chain hop 2,
+      WithPermissions.tsx:11-34). When hasAccessTo is false the component renders
+      `null` — React mounts nothing, so the control is absent from the DOM, not
+      disabled. The final fallback branch also returns null. Corroborated by the
+      F-105 reflection (PolicyList Create CTA at PolicyList.tsx:91-98 is the
+      canonical instance) and verified verbatim in DOC-176's review at
+      WithPermissions.tsx:28/32.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "chain hop 2 + observed_vs_expected.hide_not_disable_creates_admin_contact_silence"
+        cite: "WithPermissions.tsx:11-34 (default branch line 28 returns null)"
+        note: "the HIDE-NOT-DISABLE contract — control removed from DOM when predicate false."
+      - sidecar: "feature-reflections/detail/F-105.yaml"
+        section: "product_owner_narrative + H-001 evidence"
+        cite: "WithPermissions.tsx:28 + PolicyList.tsx:91-98"
+        note: "independent corroboration: Create-policy CTA renders null for users without POLICY_CREATE."
+    severity: LOW
+    confidence: HIGH
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a signed-in user HAS the permission named in a control's WithPermissions
+    wrapper, the wrapped control renders normally and is interactive.
+  derivation: |-
+    The positive arm of the hide-not-disable contract — the children branch
+    returns <>{children}</> when hasAccessTo is true (WithPermissions.tsx:28).
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The same default branch returns `<>{children}</>` when hasAccessTo is true
+      (WithPermissions.tsx:11-34). The HOC is a stateless pass-through in the
+      permitted case — no wrapping element, no styling change, the children render
+      as authored. The render-prop branch additionally passes `{ isAllowedTo }` so
+      explicit-fallback callers can render an alternative; the extraCheck branch
+      combines two predicates before deciding. All three honour the positive arm.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "chain hop 2"
+        cite: "WithPermissions.tsx:11-34"
+        note: "children rendered unwrapped when hasAccessTo(permissionTo) is true; three branches all honour the permit case."
+    severity: LOW
+    confidence: HIGH
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a control is hidden by WithPermissions in the UI, a user who bypasses the
+    UI and calls the underlying mutation endpoint directly is still DENIED by the
+    server (the UI is not the security boundary).
+  derivation: |-
+    The LSN-023 trap anchor + the feature_name's central claim (CONTEXT not GATE);
+    the PermissionController sidecar's implicit_adrs[0] states the same
+    PermissionService bean enforces mutations server-side. This is THE
+    cross-verification the methodology must run, not assume.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Server-side authorization is enforced independently of the UI. The
+      AuthorizationCustomizer applies SecurityConstants.SECURITY_RULES to mutation
+      endpoints (PermissionController class sidecar implicit_adrs[0] +
+      OAuthSecurityConfiguration.java:87-98 wires the SAME PermissionService bean
+      into the mutation enforcer that the read-side controller uses). IT-010
+      empirically pins this under LDAP: a non-admin USER calling
+      `DELETE /api/owners/{id}` directly receives 403, NOT 404 — the 403-vs-404
+      distinction is the enforcement signal (404 would mean authz was bypassed).
+      ReactiveNonContextPermissionAuthorizationManager resolves permissions from
+      policies with NO ADMIN bypass. The UI hiding the Delete button is courtesy,
+      not protection; protection is the server rule, and it holds.
+    evidence:
+      - sidecar: odd-platform__java__PermissionController__controller-class__PermissionController.md
+        section: implicit_adrs
+        cite: "OAuthSecurityConfiguration.java:87-98 + AuthorizationCustomizer.java:16"
+        note: "read-side controller and mutation enforcer share one PermissionService evaluation graph."
+      - sidecar: odd-platform__java__PermissionController__controller-method__getResourcePermissions.md
+        section: understanding
+        cite: "PermissionController.java:20-25 (authoritative, not a UI hint)"
+        note: "a forged response returning more permissions than the user has does NOT bypass mutation gating."
+      - sidecar: "integration-tests/protocols/IT-010-ldap-rbac-enforcement.md"
+        section: "assertions"
+        cite: "SecurityConstants.java:143-147 (OWNER_DELETE) + IT-010 spec ldap-rbac-enforcement.spec.ts"
+        note: "GREEN: non-admin LDAP USER DELETE /api/owners/{id} returns 403, not 404 — backend gate enforces."
+    severity: LOW
+    confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/ldap-rbac-enforcement.spec.ts (IT-010)"
+    test_demand: none
+
+- id: H-004
+  hypothesis: |-
+    A methodology pass (scan / audit) that reads WithPermissions or
+    WithPermissionsProvider and concludes the UI is the authorization boundary
+    (a `permission_side_door` finding) is WRONG — the verdict requires reading the
+    backend gate too.
+  derivation: |-
+    This feature exists as the LSN-023 anchor; facet
+    hoc_is_context_not_gate_lsn023_trap_anchor states the consequence is
+    methodological. The hypothesis tests the methodology's own correctness against
+    the assembled chain.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The HOC's job is UX shape (hide the button); it performs no authorization.
+      hasAccessTo is a pure boolean read of a client-side context populated by the
+      read-side endpoint — which is itself NOT a gate (it returns the caller's own
+      resolved permissions and is intentionally left out of SECURITY_RULES, per
+      PermissionController method sidecar implicit_adrs[3], read-collaborative
+      posture). The actual gate is AuthorizationCustomizer + SECURITY_RULES
+      (H-003). Therefore any finding of the shape "permission enforced/bypassed at
+      the UI" derived from the HOC ALONE is a false positive of the LSN-023 class.
+      The original false-positive was F-031's namespace_name reading (LSN-023:39-44).
+      This reflection's own discipline — validating H-003 by reading the backend
+      AND citing IT-010 rather than reasoning from the HOC — is the correct posture.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "observed_vs_expected.hoc_is_context_not_gate_lsn023_trap_anchor"
+        cite: "WithPermissions.tsx:11-34 + SecurityConstants + @PreAuthorize on @Endpoint methods"
+        note: "the UI is not the enforcement boundary; the backend has its own gate that may or may not mirror the UI's choice."
+      - sidecar: odd-platform__java__PermissionController__controller-method__getResourcePermissions.md
+        section: implicit_adrs
+        cite: "SecurityConstants.java:98-355 + AuthorizationCustomizer.java:29-30"
+        note: "read-side endpoint deliberately not in SECURITY_RULES — the read reveals only what the policy graph already grants the caller."
+    severity: LOW
+    confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When a user is on a page where controls are hidden because they lack the
+    permission, the page tells them WHY (a tooltip, a disabled-state, an
+    admin-contact hint) so they can self-diagnose the missing permission.
+  derivation: |-
+    Senior-PO UX seed (Rule 9 — "does the user understand how to use this from
+    what is on screen?"): a user encountering a permission-gated page should be
+    able to tell whether a control is absent because it does not exist or because
+    they are not allowed. Facet hide_not_disable_creates_admin_contact_silence.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No such signal exists. WithPermissions unconditionally renders `null` for a
+      forbidden control (WithPermissions.tsx:28) — there is no `disabledWithTooltip`
+      mode, no admin-contact CTA, no first-time hint, no platform-wide "this view is
+      filtered by your permissions" banner (per F-207 facet
+      hide_not_disable_creates_admin_contact_silence). A non-ADMIN viewing
+      PolicyList or RolesList sees a read-only list with no buttons and no
+      explanation. This is the platform-wide default; there is no opt-in disable
+      mode on the HOC API.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "observed_vs_expected.hide_not_disable_creates_admin_contact_silence"
+        cite: "WithPermissions.tsx:11-34 (no disabledWithTooltip / no whenForbidden prop)"
+        note: "unconditional hide; no tooltip, no admin-contact CTA, no first-time hint."
+      - sidecar: "feature-reflections/detail/F-105.yaml"
+        section: "H-001 operator_visible_failure"
+        cite: "PolicyList.tsx:109-122"
+        note: "list renders, only the Create CTA hides — the surface LOOKS read-only, masking that affordances were removed."
+    operator_visible_failure: |-
+      A new operator encountering a permission-gated page (PolicyList, RolesList,
+      an entity-detail page) sees a seemingly read-only UI with NO signal that
+      affordances are hidden. They cannot answer "am I missing a permission, or
+      does this platform simply not have this action?" without contacting an admin.
+      The subtle compounding failure: because the LIST still renders (only the
+      buttons hide), the surface looks complete and intentional — the operator may
+      reasonably conclude "no controls exist here" and never file a request for the
+      missing permission. The hide-not-disable convention is platform-wide and was
+      undocumented at the operator surface until DOC-176 documented it on the
+      Authorization page. The code behaviour itself is a UX-product decision, not a
+      defect to fix in code without a design choice.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    Wrapping a subtree in WithPermissionsProvider PREVENTS an unpermitted user
+    from reaching/rendering that subtree (the name implies a gate).
+  derivation: |-
+    Naming-drift seed (Rule 4): "Provider" + a permissions list reads like a route
+    or render gate; facet provider_unconditionally_renders_children_no_top_level
+    _route_gate. A maintainer assuming the provider gates the route mis-models the
+    architecture.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      WithPermissionsProvider does NOT gate anything. All three of its branches
+      (render-prop `render`, `Component`, or `children`) return the child
+      unconditionally regardless of permission state (per F-207 facet
+      provider_unconditionally_renders_children..., confirmed at
+      WithPermissionsProvider.tsx:12-48/51 by the F-105 reflection). Its sole job
+      is to mount a PermissionProvider that ANNOUNCES the allowed/resource
+      permission lists to descendant usePermissions() calls. Route-level gating is
+      a separate concern: only `/management/associations/*` uses a RestrictedRoute
+      that redirects (F-105 H-002, ManagementRoutes.tsx:101-110). The name carries
+      a gate connotation the implementation does not honour.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "observed_vs_expected.provider_unconditionally_renders_children_no_top_level_route_gate"
+        cite: "WithPermissionsProvider.tsx:12-51"
+        note: "provider announces context; renders children/Component/render unconditionally; does not gate."
+      - sidecar: "feature-reflections/detail/F-105.yaml"
+        section: "H-001 actual_behavior"
+        cite: "WithPermissionsProvider.tsx:12-48 + ManagementRoutes.tsx:101-110"
+        note: "8 of 9 Management sub-routes wrap in this non-blocking provider; only associations/* is route-gated via RestrictedRoute."
+    operator_visible_failure: |-
+      The operator-visible consequence is indirect but real and is the F-105 case:
+      because the provider does not gate, deep-linking a no-permission user to
+      /management/policies renders the full Policy LIST (names, owners, and on
+      click-through the full policy JSON), so an operator who provisioned a
+      "read-only" user believing the Management surface would be hidden has in fact
+      granted a complete read of the RBAC topology. For THIS feature the failure is
+      a maintainer-comprehension trap: a developer adding a new gated route by
+      wrapping it in WithPermissionsProvider (expecting a redirect) ships an
+      ungated route. The naming-vs-implementation gap is the defect surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    Under auth.type=DISABLED, the UI hides every mutation control (because the
+    user has no resolved permissions) AND the underlying mutation is correspondingly
+    blocked — the UI's "you can do nothing" matches reality.
+  derivation: |-
+    View-mode seed (auth.type branch) crossed with the read endpoint behaviour:
+    PermissionController sidecar bugs_limitations_corner_cases[0] traces the
+    DISABLED empty-permission cascade. A product owner expects the visible state
+    to match the enforced state.
+  seed_source: view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Under DISABLED the two layers diverge. The read-side endpoint returns an
+      empty Flux<Permission> (DisabledAuthSecurityConfiguration permitAll → empty
+      SecurityContext → AuthIdentityProvider returns empty → policy cascade yields
+      []; PermissionController method sidecar bugs_limitations_corner_cases[0]),
+      so usePermissions resolves hasAccessTo=false everywhere and WithPermissions
+      hides EVERY mutation button. But the mutation endpoints are simultaneously
+      `.permitAll()` under DISABLED — a direct API caller (or the same browser via
+      devtools) can perform every mutation. The UI renders "you can do nothing"
+      while the API enforces "anyone can do anything." The contradiction is silent:
+      no error, no log, no admonition. (IT-009 pins that DISABLED leaves
+      non-whitelisted endpoints anonymously reachable.)
+    evidence:
+      - sidecar: odd-platform__java__PermissionController__controller-method__getResourcePermissions.md
+        section: "bugs_limitations_corner_cases[0] + security.known_security_gaps[0]"
+        cite: "DisabledAuthSecurityConfiguration.java:13-17 + empty-context cascade"
+        note: "DISABLED returns empty permission set → UI hides all buttons, while mutation endpoints are permitAll()."
+      - sidecar: "integration-tests/protocols/IT-009-auth-mode-boundary.md"
+        section: "assertions"
+        cite: "DisabledAuthSecurityConfiguration.java:16"
+        note: "GREEN: DISABLED leaves a non-whitelisted endpoint anonymously reachable (open)."
+    operator_visible_failure: |-
+      An operator running DISABLED (the development/demo default) sees a UI with no
+      edit/delete buttons and may conclude the deployment is locked down or
+      read-only. It is the opposite: the write API is wide open to any network
+      caller. An operator who exposes a DISABLED deployment believing the empty-
+      button UI means "safe" has shipped an unauthenticated write surface. This is
+      the highest-trust-cost divergence of the feature — the UI's permission
+      affordance actively misleads about the security posture. (Documented at the
+      backend tier; the UI-affordance-vs-posture divergence is the net-new framing.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    Under auth.type=LOGIN_FORM, the UI shows controls matching the operator's
+    configured policies — if an operator revokes a permission in the UI, the
+    corresponding button disappears for that user.
+  derivation: |-
+    View-mode seed (LOGIN_FORM branch): PermissionController sidecar
+    bugs_limitations_corner_cases[1] documents the static-admin authority. A
+    product owner configuring LOGIN_FORM for staging expects per-resource gating to
+    be honoured.
+  seed_source: view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Under LOGIN_FORM every authenticated credential is granted the static ADMIN
+      authority (LoginFormSecurityConfiguration.java:74-82 +
+      GrantedAuthorityExtractor.java:12-14), and the seeded Administrator role
+      carries 'ALL' on DATA_ENTITY/TERM/QUERY_EXAMPLE/MANAGEMENT
+      (V0_0_56 migration). The read-side endpoint therefore returns the FULL
+      permission set for every caller regardless of any policy the operator
+      revoked in the UI — the in-memory admin authority bypasses the database
+      user_owner→roles→policies join (PermissionController method sidecar
+      bugs_limitations_corner_cases[1]). So WithPermissions shows EVERY button to
+      EVERY user. Revoking a policy in the UI has no effect on what renders.
+    evidence:
+      - sidecar: odd-platform__java__PermissionController__controller-method__getResourcePermissions.md
+        section: "bugs_limitations_corner_cases[1] + security.known_security_gaps[1]"
+        cite: "LoginFormSecurityConfiguration.java:74-82 + GrantedAuthorityExtractor.java:12-14 + V0_0_56__add_predefined_roles_and_policies.sql:1-31"
+        note: "LOGIN_FORM grants static ADMIN → endpoint returns ALL permissions → UI shows every button regardless of policy revocation."
+    operator_visible_failure: |-
+      An operator using LOGIN_FORM for a staging/multi-user environment configures
+      per-resource policies, revokes a permission for a teammate, and observes the
+      teammate STILL sees every button — because every LOGIN_FORM credential is
+      admin. The operator may believe RBAC is honoured in staging when it is a
+      no-op (LOGIN_FORM is single-tenant by design; only LDAP/OAUTH2 wire real
+      per-user policy evaluation locally, per IT-010's scope note). The UI's
+      permission affordance shows full access that the operator did not intend to
+      grant. Documented at the backend tier (bugs_limitations_corner_cases[1]); the
+      UI-affordance consequence is the product-owner framing.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an operator revokes a permission for a user (under OAUTH2/LDAP), the
+    UI controls for that user update without requiring a full logout/login.
+  derivation: |-
+    Senior-PO seed (Rule 9 customisation/reactivity) + facet
+    permission_resolution_relies_on_unread_hook_ui_unverified: the usePermissions
+    hook's reactivity to permission changes (re-fetch cadence, cache, login/logout)
+    is unread at primary source.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Cannot be determined from the chain. The backend endpoint has NO caching —
+      a role change committed to DB is observable on the very next call
+      (PermissionController method sidecar resource_boundaries / implicit_adrs[4]).
+      But what governs WHEN the UI re-calls the endpoint after a permission change
+      — the usePermissions hook's react-query staleTime / refetch triggers, whether
+      it refetches on window-focus, whether the context is recomputed on navigation
+      or only on login — is NOT in the chain: the usePermissions hook and
+      PermissionProvider are `unresolved: true` (F-207 chain hop, predicate-source
+      node not enriched). The window between a server-side revocation and the UI
+      reflecting it is unknown and requires running the system.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "observed_vs_expected.permission_resolution_relies_on_unread_hook_ui_unverified"
+        cite: "WithPermissions.tsx:17 (usePermissions() — hook not read at primary source)"
+        note: "hook reactivity to login/logout and permission changes is ui_unverified; PermissionProvider source not traced to redux/react-query."
+      - sidecar: odd-platform__java__PermissionController__controller-method__getResourcePermissions.md
+        section: "implicit_adrs[4]"
+        cite: "AbstractContextualPermissionExtractor.java:25-35 + PolicyServiceImpl.java:103-107"
+        note: "backend is uncached; staleness is purely a function of when the UI re-calls."
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-207-1
+    routes_to_finding: validation-gap
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: "PENDING-F-207-1 (probe)"
+
+- id: H-010
+  hypothesis: |-
+    When the PermissionProvider context is ABSENT above a WithPermissions
+    consumer (a developer forgets the provider), the control fails safe (hidden /
+    deny-by-default) rather than rendering as permitted.
+  derivation: |-
+    Negative-space + naming-drift: a missing provider is a realistic developer
+    error; the safe behaviour is deny-by-default. Facet
+    permission_resolution_relies_on_unread_hook_ui_unverified flags the
+    missing-provider case explicitly as unverified.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Cannot be determined from the chain. The behaviour depends entirely on the
+      usePermissions hook's default when no PermissionProvider is mounted above it
+      — whether it throws, returns hasAccessTo that always denies, or returns a
+      permissive default. The F-105 reflection's H-006 trace shows a RELATED
+      failure mode (a child whose nearest provider seeds the WRONG permission list
+      — Integrations falling through to the OUTER OWNER_ASSOCIATION_MANAGE context
+      — deny-by-defaults, ManagementRoutes.tsx:150 + PermissionProvider.tsx:27-32),
+      which suggests hasAccessTo resolves via `allowedPermissions.includes(...)` and
+      a missing/empty list denies. But the strictly-absent-provider case (no
+      PermissionProvider at all) is not traced — the hook is unresolved. The
+      fail-safe direction is plausible from the F-105 fall-through behaviour but
+      must be confirmed by running the system, not asserted.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "observed_vs_expected.permission_resolution_relies_on_unread_hook_ui_unverified"
+        cite: "WithPermissions.tsx:17 + usePermissions (lib/hooks — unresolved)"
+        note: "the case where PermissionProvider is absent above the consumer is explicitly unverified."
+      - sidecar: "feature-reflections/detail/F-105.yaml"
+        section: "H-006 actual_behavior"
+        cite: "PermissionProvider.tsx:27-32"
+        note: "hasAccessTo resolves via allowedPermissions.includes(...) — an empty/wrong list deny-by-defaults; suggests but does not prove the absent-provider direction."
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-207-2
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "PENDING-F-207-2 (probe)"
+
+- id: H-011
+  hypothesis: |-
+    The extraCheck branch of WithPermissions combines the permission predicate
+    with the caller-supplied extra predicate using AND (both must be true for the
+    control to render) — so a caller can tighten, never loosen, the gate.
+  derivation: |-
+    Endpoint/component-shape seed: the chain note describes an extraCheck branch
+    that "combines two predicates." The combinator (AND vs OR) is the load-bearing
+    semantic — OR would let extraCheck render a control the user lacks permission
+    for.
+  seed_source: response-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Cannot be determined from the chain. The F-207 chain note (hop 2) records the
+      existence of branch (b) `children + extraCheck !== undefined` that "combines
+      two predicates" but does NOT cite the combinator operator. Whether the HOC
+      computes `hasAccessTo(permissionTo) && extraCheck` (tighten-only, fail-safe)
+      or `hasAccessTo(permissionTo) || extraCheck` (which would render a control to
+      a user lacking the permission — a real affordance leak) is not in the
+      sidecar, because the WithPermissions component is unresolved at primary
+      source (no enriched sidecar; only the feature-flow note). The AND reading is
+      the conventional and safe one, but Rule 8 forbids reading the source beyond a
+      single confirming line, and the combinator was not captured — so the verdict
+      is probe/validation-gap pending enrichment of WithPermissions.tsx.
+    evidence:
+      - sidecar: "feature-flows/detail/F-207.yaml"
+        section: "chain hop 2 + contributing_nodes[0].note"
+        cite: "WithPermissions.tsx:11-34 (branch b — extraCheck combinator not cited)"
+        note: "the note records 'combines two predicates' but not the operator; component sidecar unresolved."
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-207-3
+    routes_to_finding: validation-gap
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: "PENDING-F-207-3 (probe)"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: |-
+    WithPermissionsProvider name implies a gate but renders children
+    unconditionally — a developer adding a gated route by wrapping it ships an
+    ungated route (the naming-vs-implementation trap).
+  dedup_status: already_tracked
+  tracked_as: DOC-254
+  distinct_from: ""
+  note: |-
+    The WithPermissionsProvider is-context-not-gate concern is tracked as the
+    internal feature-flow gap "DOC-GAP-254" (the WithPermissionsProvider
+    context-not-gate facet), cross-linked from DOC-176 as its sibling and carried
+    operationally by DOC-174 (Management read-collaborative META) + the F-105
+    reflection (H-001/H-006). The route-topology consequence (Integrations
+    bare-route deny-by-default) is filed under the DOC-254-family integrations
+    caveat. This reflection CORROBORATES via an independent (UI-primitive) path;
+    not re-filed.
+  recommended_log_as: ""
+  proposed_fix_anchor: "WithPermissionsProvider.tsx:12-51 — either rename to WithPermissionsContext, or add a sibling WithPermissionsRouteGuard that composes the provider with a RestrictedRoute (per F-207 facet expected (b))."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: |-
+    Hide-not-disable: forbidden controls vanish with no tooltip / admin-contact
+    CTA; users cannot self-diagnose a missing permission.
+  dedup_status: already_tracked
+  tracked_as: DOC-176
+  note: |-
+    DOC-176 was seeded directly from this feature as finding F-207a, cites
+    WithPermissions.tsx:11-34, and is DONE: the live Authorization README now
+    carries a "How the UI surfaces missing permissions" H2 documenting the
+    hide-not-disable convention verbatim (verified post-merge via WebFetch, commit
+    f9968d6). H-005's verdict is contradicted-but-now-documented; this reflection
+    confirms DOC-176 closed the operator-surface silence. Not re-filed.
+  recommended_log_as: ""
+- hypothesis_id: H-007
+  one_line: |-
+    Under DISABLED the UI hides all mutation buttons while the write API is
+    permitAll() — the empty-button UI misleads operators into believing the
+    deployment is locked down.
+  dedup_status: already_tracked
+  tracked_as: PLT-031
+  note: |-
+    The DISABLED-mode open-write posture and the UI-vs-API contradiction are the
+    backend security gap documented in PermissionController method sidecar
+    security.known_security_gaps[0] and pinned by IT-009. The read-collaborative /
+    DISABLED-anonymity posture has extensive doc coverage (DOC-174, DOC-207,
+    DOC-261, DOC-269). The specific UI-affordance-visibility-vs-enforcement framing
+    is a net-new lens but the underlying behaviour and its operator caveat are
+    tracked; corroboration recorded, not re-filed. (PLT-031 is the closest
+    UI-permission-posture tracker per the backlog grep; if the maintainer judges
+    the UI-affordance framing distinct, it folds into the DOC-174 META.)
+  recommended_log_as: ""
+- hypothesis_id: H-008
+  one_line: |-
+    Under LOGIN_FORM every credential is admin, so the UI shows every button and
+    policy revocation has no effect — RBAC is a no-op for staging operators.
+  dedup_status: already_tracked
+  tracked_as: PLT-031
+  note: |-
+    LOGIN_FORM static-admin behaviour is documented in PermissionController method
+    sidecar security.known_security_gaps[1] and is an explicit scope note on IT-009
+    / IT-010 (LOGIN_FORM grants every credential ADMIN; only LDAP/OAUTH2 exercise
+    per-user RBAC locally). Documented posture; corroboration recorded, not re-filed.
+  recommended_log_as: ""
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP
+# candidate. H-003 is the ONLY verified promise (IT-010); every other confirmed/
+# contradicted/probe-needed promise lacks a test guarding it.
+- use_case_id: F-207-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "A control wrapped in WithPermissions is REMOVED from the DOM when the user lacks the permission (hide-not-disable)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-207-UC-001)"
+  proposed_test: "RTL: render <WithPermissions permissionTo={P}> with a PermissionProvider seeding [] then assert children are NOT in the document; seed [P] then assert children present. (Jest + @testing-library/react; the platform UI has no test for this primitive today.)"
+- use_case_id: F-207-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "A control wrapped in WithPermissions renders normally when the user HAS the permission (all three branches honour the permit arm)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-207-UC-002)"
+  proposed_test: "RTL: children branch, renderContent branch (assert isAllowedTo=true passed), and extraCheck branch each render children when hasAccessTo is true."
+- use_case_id: F-207-UC-004
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "Reading the UI HOC alone never establishes the authorization boundary — the backend gate is the boundary (the LSN-023 regression-pin)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-207-UC-004)"
+  proposed_test: "Extend IT-010 to assert the PAIR: WithPermissions hides the Delete button for a non-admin AND the direct DELETE /api/owners/{id} returns 403 — pinning that UI-hide and backend-deny are independent layers (the explicit LSN-023 cross-verification as a single test)."
+- use_case_id: F-207-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "A user on a permission-gated page can tell WHY a control is absent (currently they cannot — contradicted)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-207-UC-005)"
+  proposed_test: "Characterization (pins current behaviour per LSN-029): assert WithPermissions renders NO tooltip / NO disabled element / NO admin-contact text when hasAccessTo is false — RED the day a whenForbidden:'disable' mode is added (the flip-on-fix signal)."
+- use_case_id: F-207-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "WithPermissionsProvider does NOT gate rendering — wrapping a subtree announces context only (contradicts the gate-implying name)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-207-UC-006)"
+  proposed_test: "RTL: render <WithPermissionsProvider allowedPermissions={[]}> with children then assert children ARE rendered (provider is non-blocking) for all three branches (render / Component / children). Characterization pin."
+- use_case_id: F-207-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "Under DISABLED the UI's hidden-button state matches the enforcement state (contradicted — write API is open while buttons hide)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-207-UC-007)"
+  proposed_test: "Extend IT-009: under DISABLED, assert a mutation endpoint (e.g. POST /api/tags) succeeds for an anonymous caller WHILE the corresponding UI button is hidden — pins the UI-vs-API divergence as an operator-trust caveat."
+- use_case_id: F-207-UC-009
+  hypothesis_id: H-009
+  kind: edit-reconcile
+  promise: "A server-side permission revocation reflects in the UI controls within a bounded window (probe-needed — staleness unknown)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-207-1 (probe) then TEST-GAP-NNN once the refetch cadence is known"
+  proposed_test: "Once usePermissions is enriched: assert the context refetches GET /api/resource/.../permissions on a defined trigger (navigation / window-focus) so a revoked permission hides the control without a re-login."
+
+### probes_emitted
+- probe_id: PENDING-F-207-1
+  hypothesis_id: H-009
+  hypothesis: |-
+    When an operator revokes a permission for a user (under OAUTH2/LDAP), the UI
+    controls for that user update without requiring a full logout/login.
+  local_execution_blocked: false
+  proposed_stack: |-
+    odd-ldap (the IT-010 stack) — log in as alice (USER), grant a permission via a
+    policy edit, observe whether the corresponding control appears in the live SPA
+    without a re-login, and measure the latency to reflect. Playwright headless
+    browser against the local docker-compose stack.
+  note: "Parallel-safe mode — no P-NNN file created; recorded here for the orchestrator to mint."
+- probe_id: PENDING-F-207-2
+  hypothesis_id: H-010
+  hypothesis: |-
+    When the PermissionProvider context is ABSENT above a WithPermissions
+    consumer, the control fails safe (hidden / deny-by-default) rather than
+    rendering as permitted.
+  local_execution_blocked: false
+  proposed_stack: |-
+    Jest + @testing-library/react (local, no docker): render <WithPermissions
+    permissionTo={P}> with NO PermissionProvider ancestor and assert the children
+    are absent (deny-by-default) or that the hook throws — whichever the
+    usePermissions default is.
+  note: "Parallel-safe mode — no P-NNN file created. Resolves once usePermissions is enriched at primary source."
+- probe_id: PENDING-F-207-3
+  hypothesis_id: H-011
+  hypothesis: |-
+    The extraCheck branch of WithPermissions combines the permission predicate
+    with the caller-supplied extra predicate using AND (tighten-only), not OR.
+  local_execution_blocked: false
+  proposed_stack: |-
+    Jest + @testing-library/react (local): render the extraCheck branch with
+    hasAccessTo=false + extraCheck=true then assert children ABSENT (proves AND,
+    fail-safe); a present child would prove OR (an affordance leak). Resolvable by
+    enriching WithPermissions.tsx (Rule 8) — one-line combinator read.
+  note: "Parallel-safe mode — no P-NNN file created. The combinator was not captured in the chain note; flag for the next file-analyser enrichment of WithPermissions.tsx."
+
+### validation_gaps
+- sidecar: "feature-flows/detail/F-207.yaml (UI HOP nodes)"
+  field_insufficient: |-
+    Rule 9 (senior product owner, from the screen): this is a USER-FACING UI
+    feature whose own UI components are NOT enriched at primary source. Both chain
+    hops carry `sidecar: unresolved`, and the predicate-source node
+    (usePermissions hook + PermissionProvider) is `unresolved: true`. This
+    reflection therefore reasons about WithPermissions/WithPermissionsProvider
+    BEHAVIOUR from the feature-flow's inline notes + observed_vs_expected facets +
+    the sibling F-105 reflection (which enriched route__management + PolicyList),
+    NOT from enriched sidecars of the HOCs themselves. The hide-not-disable
+    contract (H-001/H-002) and the provider-is-context (H-006) claims are well-
+    corroborated this way; but reactivity (H-009), the absent-provider fail-safe
+    (H-010), and the extraCheck combinator (H-011) genuinely require enrichment +
+    a running system. This reflection is UI-behaviour-derived but NOT UI-sidecar-
+    grounded — the F-031/LSN-023 failure mode (confident verdicts from a backend-
+    only chain) is avoided here precisely BY routing the unverifiable UI questions
+    to probe-needed instead of asserting them.
+  proposed_refresh: |-
+    Enrich three TS nodes at primary source on the next file-analyser pass:
+    components/shared/contexts/Permission/WithPermissions.tsx (capture the
+    extraCheck combinator + the renderContent/extraCheck/children branch shapes),
+    WithPermissionsProvider.tsx (confirm all branches render unconditionally),
+    and lib/hooks/usePermissions (trace hasAccessTo to the PermissionProvider
+    context to its source: redux slice / react-query of GET /api/resource/.../
+    permissions; capture refetch cadence + the absent-provider default).
+- sidecar: "(odd-platform UI source not present in local checkout)"
+  field_insufficient: |-
+    The WithPermissions.tsx / WithPermissionsProvider.tsx / usePermissions source
+    files were not locatable in the local odd-platform checkout this pass (Glob
+    over odd-platform-ui/src/components/shared/contexts/Permission and lib/hooks
+    returned no files). The Rule-8 single-line confirmation read (e.g. for the
+    extraCheck combinator) was therefore not available; the line citations in this
+    reflection are carried from the F-207 feature-flow and the F-105 reflection
+    (which DID verify WithPermissions.tsx:28 and WithPermissionsProvider.tsx:12-48).
+  proposed_refresh: |-
+    Confirm the odd-platform-ui module is present/checked-out before the next UI
+    enrichment pass so the HOC sources can be read directly; the line numbers cited
+    by F-207 and DOC-176 (WithPermissions.tsx:11-34, :28, :32) should be re-confirmed
+    against HEAD at that time.
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+  doc_says: |-
+    "Affordances the signed-in user does not have permission to use are removed
+    from the DOM entirely, with no greyed-out button, no tooltip, no admin-contact
+    CTA" (the "How the UI surfaces missing permissions" H2, added by DOC-176).
+  code_does: |-
+    WithPermissions.tsx:28 returns null for forbidden controls — MATCHES the doc.
+    The doc was previously silent; DOC-176 closed the gap. No residual drift on the
+    hide-not-disable convention itself.
+  recommended_log_as: "none — DOC-176 closed; recorded as doc-matches-code confirmation."
+
+## maintainer_notes

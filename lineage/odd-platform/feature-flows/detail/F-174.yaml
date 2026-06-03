@@ -104,6 +104,15 @@ observed_vs_expected:
       ui_unverified_reason: |-
         Backend audit emission semantics for UserOwnerMapping controller
         not Read in slice H. Defer to backend pass.
+      reflection_2026_06_03: |-
+        OVERTURNED by feature-reflector/0.3.0 (feature-reflections/detail/F-174.yaml H-001).
+        Primary-source read of OwnerAssociationRequestServiceImpl.java:109-148,205-221 shows
+        the F-172 admin direct-bind (createUserOwnerMapping → createManualAssociationRequest)
+        DOES create an owner_association_request row (status=APPROVED) AND emits a
+        REQUEST_MANUALLY_APPROVED activity entry surfaced by the History RESOLVED filter
+        (STATUS.ne(PENDING)). The F-173 unbind likewise emits REQUEST_MANUALLY_DECLINED, but
+        only when a matching APPROVED request row exists (ReactiveOwnerAssociationRequestRepositoryImpl.java:164-170)
+        — the orphan-mapping-unbind edge is the residual audit-silence (reflection H-002, partial).
     - drift_class: request_status_component_silent_fallback_to_pending_for_unknown_status_values
       description: |-
         RequestStatus.tsx:10-15 — if status is neither APPROVED nor
@@ -171,6 +180,117 @@ terminal_side_effect:
     NO downstream mutations. Cardinality of returned rows scales with
     org's request-flow history; the page size is 30 (OwnerAssociations.tsx:23).
   evidence: "OwnerAssociationsResolved.tsx:30-105 + OwnerAssociations.tsx:23"
+use_cases:
+  # LSN-030 (feature-reflector Rule 11) — the PROMISE layer for F-174. uc_id = reflection hypothesis id.
+  # Full hypothesis + validation lives at feature-reflections/detail/F-174.yaml; this is the compact
+  # projection the test-coverage-mapper Step 2b reads. coverage=verified ONLY where a real test exists.
+  # Authored by feature-reflector/0.3.0, reflected_at 2026-06-03. This reflection is API-and-audit-backend
+  # only (Rule 9 — all UI hops are sidecar:unresolved); the on-screen UX verdict is deferred (H-000-UI-GAP).
+  - uc_id: H-000-UI-GAP
+    kind: render
+    promise: "The operator can understand and conveniently drive the History audit investigation from what is on screen — scan, locate a specific actor/owner, narrow to a time window, read who-did-what."
+    actor: "platform-operator (auditor)"
+    trace: "All UI hops 1-4 sidecar:unresolved — no enriched UI component sidecar; on-screen UX not in the chain."
+    coverage: unverified
+    test_demand: "probe PENDING-F-174-1 (ui-review + IT-NNN)"
+  - uc_id: H-001
+    kind: cross-actor
+    promise: "Admin direct-bind (POST /api/owners/mapping, Branch C) appears in History as a REQUEST_MANUALLY_APPROVED (Approved) row attributed to the admin — the seeded primary-drift suspicion is OVERTURNED."
+    actor: "platform-operator (admin direct-bind)"
+    trace: "OwnerAssociationRequestServiceImpl.java:109-148,205-221 (createManualAssociationRequest → REQUEST_MANUALLY_APPROVED) + ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:137 (RESOLVED=STATUS.ne(PENDING))"
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-1)"
+  - uc_id: H-002
+    kind: teardown
+    promise: "Unbind (Branch D) appears in History as a Declined row WHEN a matching APPROVED request row exists; the orphan-mapping unbind (no APPROVED row) soft-deletes the binding with NO History entry."
+    actor: "platform-operator (admin unbind)"
+    trace: "OwnerAssociationRequestServiceImpl.java:118-122,157-172 (cancelAssociationByOwnerId → REQUEST_MANUALLY_DECLINED) + ReactiveOwnerAssociationRequestRepositoryImpl.java:164-170 (UPDATE ... WHERE STATUS=APPROVED)"
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-2) — characterize the orphan-mapping silent edge"
+  - uc_id: H-003
+    kind: cross-actor
+    promise: "DIRECT_OWNER_SYNC auto-approve (Branch B) appears in History as a REQUEST_APPROVED (Approved) row with no PENDING phase."
+    actor: "platform-operator-with-direct-owner-sync"
+    trace: "OwnerAssociationRequestServiceImpl.java:60-67,205-221 (auto-approve → createActivity REQUEST_APPROVED) + activity repo :137 (RESOLVED surfaces APPROVED)"
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-3)"
+  - uc_id: H-004
+    kind: render
+    promise: "status=RESOLVED returns APPROVED and DECLINED entries (every non-pending event), newest-first by resolved-at."
+    actor: "platform-operator (auditor)"
+    trace: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:128-138 (RESOLVED → STATUS.ne(PENDING)) + ReactiveOwnerAssociationRequestRepositoryImpl.java:104,131 (STATUS_UPDATED_AT DESC)"
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-4)"
+  - uc_id: H-005
+    kind: render
+    promise: "The free-text query matches requester-username OR owner-name (case-insensitive); it does NOT match resolvedBy / role / provider."
+    actor: "platform-operator (auditor)"
+    trace: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:124-127 (USERNAME.containsIgnoreCase OR OWNER.NAME.containsIgnoreCase)"
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-5)"
+  - uc_id: H-006
+    kind: empty/no-match
+    promise: "An operator can narrow the audit log to a date window and/or an acting user — the unmet capability (no date-range, no per-actor filter; only query + status + page + size)."
+    actor: "platform-operator (auditor)"
+    trace: "ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:121-141 (getConditions handles ONLY query + status). CONTRADICTED."
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-6) — contract pin of the current param set"
+  - uc_id: H-007
+    kind: cross-actor
+    promise: "Only an OWNER_ASSOCIATION_MANAGE holder can read the full owner-association audit log — a zero-permission user cannot enumerate who-bound-whom. CONTRADICTED: the activity GET is ungated while the pending-list GET is gated."
+    actor: "any authenticated user vs MANAGEMENT-permission holder"
+    trace: "SecurityConstants.java:148-162 (no entry for /api/owner_association_request/activity; pending-list IS gated at :148-150) + OwnerAssociationRequestController.java:47-53"
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-7) — characterization pin (current 200) + flip-on-fix; HIGH bug"
+  - uc_id: H-008
+    kind: render
+    promise: "Resolved-by identifies the durable actor; an Owner rename must not silently rewrite who-resolved in history (owner.name is shown in preference to the durable identity.username)."
+    actor: "platform-operator (auditor)"
+    trace: "ResolvedAssociationRequest.tsx:50-58 (owner.name || identity.username) + ReactiveOwnerAssociationRequestActivityRepositoryImpl.java:107-108 (owner_id join). PARTIAL."
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-8)"
+  - uc_id: H-009
+    kind: grammar
+    promise: "The status badge renders a diagnostic value for unknown statuses, not a silent lowercase 'pending'. CONTRADICTED — tracked as PLT-041."
+    actor: "platform-operator (auditor)"
+    trace: "RequestStatus.tsx:9-15 (3-way if-chain → lowercase 'pending' fallback for any non-APPROVED/non-DECLINED)."
+    coverage: unverified
+    test_ref: null
+    test_demand: "missing-functional (F-174-UC-9) — UI unit test, pairs with PLT-041"
+  - uc_id: H-010
+    kind: resolve-later
+    promise: "Two activity entries sharing the same resolved-at timestamp paginate without skip/duplicate at a page boundary (offset pagination over STATUS_UPDATED_AT DESC with no id tiebreaker)."
+    actor: "platform-operator (auditor)"
+    trace: "ReactiveOwnerAssociationRequestRepositoryImpl.java:104,131 (single-column order key) + service :192-203 (same-instant cascade-decline ties). PROBE-NEEDED."
+    coverage: unverified
+    test_ref: null
+    test_demand: "probe PENDING-F-174-2"
+use_case_coverage:
+  verified: 0
+  total: 11
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises), distinct from the test_matrix
+    cells below and from line/method coverage. 0 of 11 user-facing promises are guarded by a real
+    test — the whole feature is at zero promise-coverage despite being the only operator-visible
+    audit surface in the Associations subtree. Cross-ref: contributing sidecar
+    OwnerAssociationRequestController tests_coverage_semantic.uncovered_behaviours lists the
+    "audit-trail-read filtering" and "controller @WebFluxTest" gaps; a Grep of the odd-platform
+    test tree found NO test (unit, repository, or IT) exercising GET /api/owner_association_request/activity
+    or the History tab. The four CONFIRMED promises (H-001 direct-bind-IS-audited, H-003 auto-approve-IS-audited,
+    H-004 RESOLVED filter, H-005 free-text search) are the highest-value functional tests to write — each
+    hand-proves subtle behaviour real with no guard. The two HIGH/contradicted promises (H-007 ungated audit
+    log) and the partial ones (H-002 orphan-mapping unbind silence, H-008 resolvedBy rename-drift) carry both
+    a bug/caveat route AND a regression-guard test demand. Full hypotheses + validations:
+    feature-reflections/detail/F-174.yaml; functional test demands:
+    feature-reflections/detail/F-174.yaml cross_references.functional_test_demands.
 test_matrix:
   unit: GAP
   integration: GAP
@@ -201,6 +321,14 @@ notes: |-
   The RequestStatus fallback-to-pending finding (drift facet 2) is a
   minor robustness gap but observable in the .tsx without any backend
   read.
+
+  feature-reflector/0.3.0 update (2026-06-03): the load-bearing drift above was
+  OVERTURNED by primary-source backend read (see feature-reflections/detail/F-174.yaml
+  H-001 + the reflection_2026_06_03 annotation on the facet). Direct-bind (F-172) and
+  DIRECT_OWNER_SYNC auto-approve (F-075-B) DO write owner_association_request_activity
+  entries the History tab surfaces. The residual audit-completeness gap is the
+  orphan-mapping unbind (H-002, partial). The highest-severity finding is H-007 (the
+  activity GET is ungated, HIGH). use_cases / use_case_coverage blocks added above.
 scanner_reviews:
   - scanner_id: docs/coverage/undocumented-features
     scan_run_id: SR-20260527T1900Z
@@ -234,6 +362,12 @@ scanner_reviews:
           + Repo[odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java:155-162]
         dedup_action: NEW probe candidate (P-NNN-B) + STRENGTHENS-EXTENDS DOC-GAP-083 META + DOC-GAP-192
         finding_artefact: findings/docs-coverage-undocumented-features/2026-05-27-batch-9.md#finding-f-174b
+        reflection_2026_06_03_resolution: |-
+          RESOLVED by feature-reflector/0.3.0 (PROBE-NEEDED → answered via primary-source read).
+          The suspicion is OVERTURNED: F-172 direct-bind + F-075-B auto-approve DO emit to
+          owner_association_request_activity (REQUEST_MANUALLY_APPROVED / REQUEST_APPROVED) and the
+          History RESOLVED filter (STATUS.ne(PENDING)) surfaces them. See feature-reflections/detail/F-174.yaml
+          H-001 + H-003 (both confirmed). The residual narrow gap is the orphan-mapping unbind (H-002 partial).
       - finding_id: F-174c
         category: bug-candidate
         severity: LOW
@@ -246,3 +380,7 @@ scanner_reviews:
           → Repo[odd-platform-ui/src/components/Management/OwnerAssociations/OwnerAssociationsList/OwnerAssociationsResolved/ResolvedAssociationRequest/RequestStatus/RequestStatus.tsx:9-15]
         dedup_action: NEW PLT issue draft candidate (PLT-026)
         finding_artefact: findings/docs-coverage-undocumented-features/2026-05-27-batch-9.md#finding-f-174c
+        reflection_2026_06_03_dedup: |-
+          Filed as PLT-041 (verified this session — the RequestStatus.tsx lowercase-'pending' fallback item).
+          Reflection H-009 corroborates (already_tracked: PLT-041). The "PLT-026" in dedup_action above was
+          a candidate id; the actual filed item is PLT-041.

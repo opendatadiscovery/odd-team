@@ -1,0 +1,835 @@
+---
+feature_id: F-057
+pillar_anchored_id: P-04:F-004
+pillar: P-04 Data Quality
+feature_name: |-
+  DQ test severity change (Minor / Major / Critical) — gated by permission but
+  emits NO activity event, NO last_modified_by, NO version increment; severity
+  drives SLA colour visible cross-tenant; compliance cannot answer "who set
+  this to Critical"
+reflected_at: '2026-06-03T00:00:00Z'
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read: []
+contributing_sidecars_absent:
+  # The feature-flow's three contributing_nodes are ALL unresolved:true and reference a
+  # "DataQualityController sidecar" that does not exist under understanding/. No sidecar
+  # was readable; validation traced through source under the Rule-8 single-line exception
+  # (recorded source_read_for_validation:true on every verdict). See validation_gaps.
+  - 'DataQualityController sidecar (referenced by every chain hop; absent from understanding/)'
+  - 'DataQualityServiceImpl sidecar (absent)'
+  - 'ReactiveDataQualityRepositoryImpl sidecar (absent)'
+docs_cross_referenced:
+  - url: 'https://docs.opendatadiscovery.org/features/data-quality/sla-statuses'
+    last_verified_at: '2026-06-03T00:00:00Z'
+    last_verified_status: 200
+    note: |-
+      MATERIAL CHANGE since SHB-044 / SR-20260527T2000Z: the live doc NOW documents the
+      audit-silence verbatim — "Severity changes are not logged in the Activity Feed
+      today", "does not stamp last_modified_by on the row", "does not version the prior
+      severity". The primary facet is therefore a DOCUMENTED CAVEAT in the live doc, not a
+      doc-gap. The doc also documents severity-drives-colour ("changing a single test's
+      severity from Major to Critical can flip the dataset from Yellow to Red without any
+      test pass / fail status changing") and the RED/YELLOW/GREEN rules verbatim. The
+      F-057a missing-caveat finding (HIGH) and DOC-GAP-083/149 appear RESOLVED in live doc
+      (same pattern as F-022 png_vs_json_doc_drift_RESOLVED_IN_LIVE_DOC_2026_06_01) — see
+      doc_drift_findings.
+hypothesis_summary:
+  total: 12
+  confirmed: 5
+  contradicted: 4
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: |-
+      A compliance reviewer cannot answer "who set this DQ test to Critical, and when"
+      from the platform — the gated mutation emits no ActivityEvent, stamps no
+      last_modified_by, keeps no version, and shows no actor/timestamp on the screen.
+related_feature_flows: [F-022, F-021, F-019, F-006, F-032, F-044, F-010]
+related_concepts:
+  - data-quality-test-severity
+  - audit-log-presence-asymmetry
+  - sla-calculator
+related_drift_classes:
+  - audit_silence_on_gated_mutation_blast_radius_via_sla_color
+  - gated_mutation_invisible_change_flows_to_bi_tools_cross_origin
+  - upsert_idempotent_in_outcome_loses_change_history
+new_drift_classes_proposed:
+  - severity_select_fires_write_on_change_no_save_no_confirm_one_click_flips_sla_red
+  - unspecified_severity_silently_counts_as_major_in_sla_no_unset_path_back
+  - severity_settable_on_soft_deleted_dataset_or_test_existsIncludingSoftDeleted
+  - aborted_broken_skipped_runs_excluded_from_sla_severity_change_inert_until_next_run
+---
+
+# DQ test severity change — product-owner reflection
+
+## product_owner_narrative
+
+The Data Quality pillar (P-04) ships "as an aggregator" (`system-mission.md` P-04 one-line
+capability) — the platform does not run quality checks, it surfaces results pushed by Great
+Expectations / dbt / the profiler / custom adapters. Within that pillar this feature is the
+one **write-and-classify** affordance an operator has over quality signal: on the Test
+reports tab of any dataset, an operator opens a single test and assigns it a *severity* —
+Minor, Major, or Critical (`TestReportDetailsOverview.tsx:71-95` — a "Severity" labelled
+dropdown; `DataQualityTestSeverity.java:26-30` — the three-value enum). F-022 owns the
+READ surface of DQ on the same dataset (the Test reports tab + the BI-embeddable SLA badge);
+this feature owns the classification lifecycle that drives what that badge shows.
+
+A user reaches it from the dataset detail page → Test reports tab → a specific test's
+Overview panel. The only input is the severity value; the only persisted output is one row
+in `DATA_QUALITY_TEST_SEVERITY` keyed on `(DATA_QUALITY_TEST_ID, DATASET_ID)`
+(`ReactiveDataQualityRepositoryImpl.java:86-102`). There is no other field — no note, no
+reason, no effective-date. The control is gated by the `DATASET_TEST_RUN_SET_SEVERITY`
+permission both in the UI (`WithPermissions … disabled={!isAllowedTo}`,
+`TestReportDetailsOverview.tsx:78-94`) and at the route
+(`SecurityConstants.java:243-246`, `DATA_ENTITY`-scoped on
+`PUT /api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity`).
+
+The working part that makes this feature matter is not the write — it is the *blast radius*
+of the write. Severity is the weight a test carries in the dataset's SLA colour. The
+`SLACalculator` buckets every test whose latest run is SUCCESS or FAILED into minors /
+majors / criticals and applies threshold rules: any failing Critical → RED; all Majors
+failing → RED; some Majors failing → YELLOW (`SLACalculator.java:80-100`). So moving one
+failing test from Major to Critical can flip the dataset from YELLOW to RED with no test
+result changing at all — the live doc states this verbatim
+(WebFetch sla-statuses, 2026-06-03). That colour is read at `/api/datasets/{id}/sla`
+as a PNG embeddable in Confluence / Notion / Looker tiles (F-022 / SHB-043) — i.e. the
+consequence of a single in-app click is visible to people who never open the platform.
+
+The integration story is three-way. Upstream, the severity buckets are filled by
+ingestion-pushed test runs (P-10 → P-04). Sideways, the colour feeds the BI read surface
+(F-022) and SHOULD — but does not — feed the Activity Feed (F-021) the way every other
+entity-side mutation does (the audit-log-presence-asymmetry pattern shared by F-006 RBAC,
+F-019 owner-lifecycle). Downstream, were the event to exist, F-009's WAL notification
+fan-out could carry it to Slack / webhook subscribers. The cross-pillar promise P-04 → P-07
+("severity changes SHOULD feed Activity Feed") is the load-bearing gap of this feature.
+
+The edge cases a product owner would flag in a demo: the severity dropdown writes on every
+change with no Save button and no confirmation (`TestReportDetailsOverview.tsx:81-92`), so the
+RED-flipping action is a single mis-click; a test with no severity row is silently counted as
+MAJOR (`ReactiveDataQualityRepositoryImpl.java:144-146` + the UI default
+`TestReportDetailsOverview.tsx:84`), and there is no "unset" path back to unspecified once
+you have picked a value; and the severity write succeeds against soft-deleted datasets and
+soft-deleted tests because the only guard is `existsIncludingSoftDeleted`
+(`DataQualityServiceImpl.java:67-68`). The compliance question this whole feature fails to
+answer — "who set this test to Critical, and when" — has no surface anywhere: not in an
+event, not on the row, not on the screen.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user with DATASET_TEST_RUN_SET_SEVERITY changes a test's severity to Critical, a
+    compliance reviewer can later answer "who set this test to Critical, and when" from the
+    platform (an Activity Feed event, or a last_modified_by / changed_at on the record, or
+    an actor/timestamp shown on the screen).
+  derivation: |-
+    Pillar P-04 + the audit-log-presence-asymmetry concept: a permission-gated state mutation
+    on an owned entity is the textbook shape that the Activity Feed records for every other
+    surface; a compliance audience expects attribution on a classification that drives SLA.
+  seed_source: negative-space + pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No attribution exists at any layer. The service method has @ReactiveTransactional and
+      NO @ActivityLog / ActivityEvent.builder() (grep on DataQualityServiceImpl returns zero
+      Activity references; the method body 62-81 calls only the existence guard + the upsert
+      + getDimensions + mapper). The repository upsert sets only SEVERITY — no last_modified_by,
+      no updated_at, no version column (87-102). The UI shows the severity dropdown but no
+      "set by / set at" line (TestReportDetailsOverview.tsx — the LabeledInfoItem block carries
+      Severity, Last execution date/duration/status, Parameters, Links; nothing about who
+      changed severity). The live doc now states this verbatim: "does not emit an Activity
+      Feed event, does not stamp last_modified_by on the row, and does not version the prior
+      severity."
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: service
+        cite: 'DataQualityServiceImpl.java:62-81'
+        note: '@ReactiveTransactional; no ActivityEvent emission; grep ActivityLog|ActivityEvent => 0 hits'
+        source_read_for_validation: true
+      - sidecar: '(absent — source read for validation)'
+        section: repository
+        cite: 'ReactiveDataQualityRepositoryImpl.java:86-102'
+        note: 'onDuplicateKeyUpdate sets SEVERITY only; no last_modified_by / updated_at / version'
+        source_read_for_validation: true
+      - sidecar: '(absent — UI read for validation)'
+        section: ui
+        cite: 'TestReportDetailsOverview.tsx:71-130'
+        note: 'no actor/timestamp surfaced for severity; only run date/status shown'
+        source_read_for_validation: true
+      - sidecar: '(doc cross-ref)'
+        section: docs
+        cite: 'WebFetch sla-statuses 2026-06-03'
+        note: 'doc documents the no-event / no-last_modified_by / no-version behaviour verbatim'
+    operator_visible_failure: |-
+      Obvious failure: a compliance / governance reviewer auditing "who escalated this test to
+      Critical on May 14, and why the dataset went RED" cannot answer it from the platform UI or
+      API — there is no event, no stamped actor, no history; the only recourse is raw DB
+      inspection (and even that yields only the current value, not who wrote it). Subtle failure:
+      an operator triaging a dashboard that flipped RED cannot distinguish (a) a test result
+      changed from (b) someone reclassified a test's severity — the two are indistinguishable
+      from every readable surface, so incident triage starts from a false premise. Compounding:
+      because the row is overwritten on each change (H-009), even the prior severity is gone,
+      so "it used to be Major" cannot be reconstructed.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When an operator raises a single failing test from Major to Critical, the dataset's SLA
+    colour at /api/datasets/{id}/sla changes accordingly (e.g. YELLOW → RED) even though no
+    test pass/fail status changed.
+  derivation: 'endpoint-shape + the feature mission "severity drives SLA colour"; SLACalculator buckets by severity.'
+  seed_source: pillar + cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      getSLA reads the dataset's tests (status + severity) and calls SLACalculator.calculateSLA,
+      which buckets each SUCCESS/FAILED test by severity into minors/majors/criticals and applies
+      threshold rules: anyCriticalFailed (criticalCount != criticalSuccess) → RED
+      (SLACalculator.java:84-85,102-104). Moving one failing test from the majors bucket to the
+      criticals bucket means criticalSuccess < criticalCount, so the colour becomes RED. With the
+      test still only in the majors bucket and not all majors failing, the colour would be YELLOW
+      (93-95). So the severity write alone flips YELLOW → RED. The doc states this verbatim.
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: sla-calc
+        cite: 'SLACalculator.java:72-104'
+        note: 'calculateSLA buckets by severity; anyCriticalFailed => RED; hasFailedMajors => YELLOW'
+        source_read_for_validation: true
+      - sidecar: '(absent — source read for validation)'
+        section: service
+        cite: 'DataQualityServiceImpl.java:84-87,95-101'
+        note: 'getSLA -> getDatasetSLA -> calculateSLA; severity read from the same severity row written by setDataQualityTestSeverity'
+        source_read_for_validation: true
+      - sidecar: '(doc cross-ref)'
+        section: docs
+        cite: 'WebFetch sla-statuses 2026-06-03'
+        note: '"changing a single test severity from Major to Critical can flip the dataset from Yellow to Red"'
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    Changing a test's severity from Major to Critical flips the SLA colour the moment the change
+    is saved, regardless of the test's latest run status.
+  derivation: 'response-shape — the SLA endpoint reads severity live; a user assumes the reclassification takes effect immediately for any test.'
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The flip happens only for tests whose LATEST run status is SUCCESS or FAILED — calculateSLA
+      and getSLAReport both filter the stream to t.status()==SUCCESS || t.status()==FAILED before
+      counting (SLACalculator.java:24-26,74-76). A test whose latest run is ABORTED / BROKEN /
+      SKIPPED / UNKNOWN is dropped from the counter entirely, so its severity (Major or Critical)
+      contributes ZERO to the colour. Reclassifying such a test from Major to Critical has no
+      effect on the SLA at all — until its next SUCCESS/FAILED run lands. For SUCCESS/FAILED tests
+      the hypothesis holds and the flip is immediate (live read, no cache in the chain).
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: sla-calc
+        cite: 'SLACalculator.java:24-26,74-76'
+        note: 'stream filtered to SUCCESS||FAILED before counting; other statuses excluded from buckets'
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      An operator who reclassifies a currently-broken or aborted test to Critical expecting the
+      dashboard to go RED sees no change and may assume the severity write failed (no feedback
+      either way — see H-010). The behaviour is invisible and unexplained: the severity dropdown
+      shows Critical, the colour stays whatever it was, and there is nothing on screen or in the
+      doc connecting "latest run not SUCCESS/FAILED" to "your severity change is currently inert".
+      The change silently activates later when the next pass/fail run arrives, potentially
+      surprising a different operator weeks later.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    A test that has never had its severity set explicitly is treated as the lowest / most-benign
+    weight in the SLA (i.e. an unset test does not silently inflate the dataset's risk colour).
+  derivation: 'response-shape — a user setting severities one-by-one assumes the ones they have not touched are neutral, not pre-weighted as Major.'
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      An unset severity defaults to MAJOR, the MIDDLE weight, not the most-benign. The SLA query
+      LEFT JOINs DATA_QUALITY_TEST_SEVERITY and mapLastRunDto coalesces a NULL severity to
+      DataQualityTestSeverity.MAJOR (ReactiveDataQualityRepositoryImpl.java:119-122,144-146). The
+      UI dropdown likewise shows MAJOR as the default for an unset test
+      (TestReportDetailsOverview.tsx:84 defaultValue=... || DataQualityTestSeverity.MAJOR). So a
+      failing test nobody has classified counts as a failing Major and can drive the colour to
+      YELLOW (hasFailedMajors) or, combined with a failing Critical, contribute to RED.
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: repository
+        cite: 'ReactiveDataQualityRepositoryImpl.java:119-122,141-146'
+        note: 'leftJoin severity; NULL severity coalesced to MAJOR in mapLastRunDto'
+        source_read_for_validation: true
+      - sidecar: '(absent — UI read for validation)'
+        section: ui
+        cite: 'TestReportDetailsOverview.tsx:84'
+        note: 'dropdown defaultValue falls back to MAJOR for an unset test'
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      Every quality test that ingestion creates is, from day one and with no operator action,
+      weighted as Major in the SLA. An operator who has classified three tests as Minor and
+      assumes "everything else is uncounted" is wrong — every other failing test is silently a
+      failing Major dragging the colour toward YELLOW/RED. There is also NO path back to
+      "unspecified": the upsert only ever writes one of the three enum values (no DELETE, no NULL
+      set — ReactiveDataQualityRepositoryImpl.java:90-97), and the enum has no UNSPECIFIED member
+      (DataQualityTestSeverity.java:26-30), so once a value is shown the operator cannot return a
+      test to a neutral state — they can only pick a different non-neutral weight.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    Setting a test's severity is permission-gated — a user without DATASET_TEST_RUN_SET_SEVERITY
+    cannot change it (the gate is enforced server-side, not just hidden in the UI).
+  derivation: 'endpoint-shape — SecurityConstants declares the rule; the UI disables the control; a security reviewer expects the backend to enforce it independently.'
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The PUT /api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity route has an
+      explicit SecurityRule binding DATASET_TEST_RUN_SET_SEVERITY, DATA_ENTITY-scoped
+      (SecurityConstants.java:243-246) — so the gate is in the central server-side rule table, not
+      only in the UI's WithPermissions wrapper (TestReportDetailsOverview.tsx:78-79). Unlike the
+      F-014 / F-029 class of bugs where a route had NO SECURITY_RULES entry, this route IS
+      registered with the correct permission. (Caveat: under auth.type=DISABLED there is no
+      principal and the gate is inert — the platform-wide DISABLED posture, not a feature bug.)
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: security
+        cite: 'SecurityConstants.java:243-246'
+        note: 'SecurityRule on the severity PUT path with DATASET_TEST_RUN_SET_SEVERITY, DATA_ENTITY-scoped'
+        source_read_for_validation: true
+      - sidecar: '(absent — UI read for validation)'
+        section: ui
+        cite: 'TestReportDetailsOverview.tsx:78-94'
+        note: 'WithPermissions gate disables the select for users lacking the permission'
+        source_read_for_validation: true
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    Setting a severity twice (Major, then Critical) is recorded as two distinct changes the
+    platform can replay — i.e. the history of severity transitions is retained.
+  derivation: 'pillar audit expectation — an audit/compliance audience expects a sequence of changes, not just a current value.'
+  seed_source: negative-space + pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The persistence is a single upsert row keyed on (DATA_QUALITY_TEST_ID, DATASET_ID) with
+      onDuplicateKeyUpdate overwriting SEVERITY (ReactiveDataQualityRepositoryImpl.java:90-97).
+      The second write overwrites the first in place; there is no history table, no version
+      column, no append. The prior severity is not even READ before being overwritten (the set
+      is unconditional), so it is unrecoverable from platform storage the instant the second
+      write commits. Same shape as F-013 silent UPDATE-not-UPSERT but on a compliance-impactful
+      surface.
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: repository
+        cite: 'ReactiveDataQualityRepositoryImpl.java:86-102'
+        note: 'onDuplicateKeyUpdate; single row; no version/history; prior value not read'
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      "This test was Minor last quarter, who escalated it and when" is unanswerable — only the
+      current value survives. For a regulated-data operator (financial / healthcare / government,
+      the audience the SHB-044 seed names) this means the severity classification — which directly
+      drives the externally-visible SLA colour — has zero auditable change trail. Combined with
+      H-001 (no event, no actor), severity is the least-accountable mutation in a pillar whose
+      whole point is trustworthy data-health signal.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    Changing a DQ test's severity does NOT raise an Activity Feed event, so an operator watching
+    the global Activity Feed for changes to a dataset will not see severity reclassifications.
+  derivation: 'cross-pillar P-04 -> P-07 ("severity changes SHOULD feed Activity Feed but do not"); the inverse phrasing of H-001 as the user watching the feed.'
+  seed_source: cross-pillar + doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Confirmed both by code (no ActivityEvent emission in the service — H-001 evidence) and by
+      the live doc, which states "Severity changes are not logged in the Activity Feed today."
+      This is the user-facing restatement of the audit gap: the Activity Feed — the platform's
+      one operator-readable change trail (F-021) — does not carry severity changes, so the
+      change-driven-discovery surface (P-07 -> P-01) is blind to them. ActivityEventTypeDto has
+      no DATA_QUALITY_TEST_SEVERITY_CHANGED value (consistent with the F-006 finding that the
+      Activity enum has no lifecycle values for whole classes of mutation).
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: service
+        cite: 'DataQualityServiceImpl.java:62-81'
+        note: 'no ActivityEvent; grep ActivityLog|ActivityEvent => 0'
+        source_read_for_validation: true
+      - sidecar: '(doc cross-ref)'
+        section: docs
+        cite: 'WebFetch sla-statuses 2026-06-03'
+        note: '"Severity changes are not logged in the Activity Feed today" — documented'
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    A user cannot set a severity on a test belonging to a soft-deleted (logically removed)
+    dataset, or on a soft-deleted test — the mutation is rejected for entities the catalog
+    considers deleted.
+  derivation: 'negative-space — DataEntityStatusDto.DELETED is the soft-delete tombstone; a user expects mutations on a deleted entity to be refused.'
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The only existence guard in setDataQualityTestSeverity is existsIncludingSoftDeleted on
+      both the dataset and the test (DataQualityServiceImpl.java:67-68) — which by name returns
+      true for soft-deleted entities. So the write succeeds against a soft-deleted dataset and a
+      soft-deleted test. (Note: the SLA/test-report READ queries DO exclude
+      STATUS=DELETED tests via dataQualityTest.STATUS.ne(DELETED) —
+      ReactiveDataQualityRepositoryImpl.java:56,78,122 — so a severity written to a deleted test
+      lands in the table but is then filtered out of every read.)
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: service
+        cite: 'DataQualityServiceImpl.java:67-78'
+        note: 'guard is existsIncludingSoftDeleted on both ids; soft-deleted entities pass'
+        source_read_for_validation: true
+      - sidecar: '(absent — source read for validation)'
+        section: repository
+        cite: 'ReactiveDataQualityRepositoryImpl.java:56,78,122'
+        note: 'READ queries exclude STATUS=DELETED tests, so a severity on a deleted test is write-accepted but read-invisible'
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      A severity write to a soft-deleted dataset/test is accepted (HTTP 200) and persisted, but
+      then silently dropped from every read (SLA, test report) because the read side filters
+      DELETED — so the operator gets a success response for a change that has no observable
+      effect (a write that lies). The inconsistency between the write guard
+      (existsIncludingSoftDeleted) and the read guard (STATUS.ne(DELETED)) is the underlying
+      drift; in practice the UI route to the test panel would usually be unreachable for a
+      deleted dataset (cf. F-022's RestrictedRoute isStatusDeleted redirect), so the day-to-day
+      blast radius is low — but a direct API caller hits it cleanly. LOW operator impact, real
+      write/read asymmetry.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    Setting the severity to the value it already holds (Major -> Major) is a harmless no-op from
+    the user's perspective.
+  derivation: 'endpoint-shape — idempotency expectation; a user re-selecting the current value expects nothing to change.'
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The upsert is idempotent in OUTCOME: onDuplicateKeyUpdate sets SEVERITY to the same value,
+      the row converges, the response DTO is identical (ReactiveDataQualityRepositoryImpl.java:90-97).
+      No event is emitted on any path (H-001), so re-selecting the current value produces no audit
+      noise either. The only cost is a redundant DB write + a redundant getDimensions read. Net
+      user-observable effect: none — the hypothesis holds.
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: repository
+        cite: 'ReactiveDataQualityRepositoryImpl.java:86-102'
+        note: 'onDuplicateKeyUpdate converges to same value; idempotent outcome'
+        source_read_for_validation: true
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When an operator picks a severity from the dropdown, the platform asks for confirmation
+    before applying a change that can flip a cross-tenant SLA dashboard to RED, and confirms to
+    the operator that the change was saved.
+  derivation: 'UI-label / UX seed (senior-PO mandatory) — a destructive-by-blast-radius action on a control consistent with platform conventions should confirm and give feedback; cf. F-019 destructive-action-needs-confirmation finding.'
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The severity control is a plain MUI AppSelect whose onChange dispatches setDataQATestSeverity
+      IMMEDIATELY on every selection (TestReportDetailsOverview.tsx:42-52,81-92). There is no Save
+      button, no confirmation modal, no "are you sure", and the dispatch result is not awaited or
+      surfaced — no success toast, no error toast, no inline state. A single click (or even a
+      keyboard arrow + enter on the open select) commits the write that can flip the dataset RED.
+      Compare F-019, where the methodology already flagged that the MORE-destructive owner
+      operation lacked a confirmation while the reversible one had one — same inverted risk model
+      here: this is among the highest-blast-radius writes in P-04 (visible cross-origin in BI
+      tools) yet has the lightest-weight, zero-friction, zero-feedback control on the screen.
+    evidence:
+      - sidecar: '(absent — UI read for validation)'
+        section: ui
+        cite: 'TestReportDetailsOverview.tsx:42-52,81-92'
+        note: 'AppSelect onChange dispatches write immediately; no save/confirm; dispatch result unhandled (no toast)'
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      Obvious: a mis-click or accidental arrow-key on the open dropdown silently reclassifies a
+      test and can turn a green/yellow BI dashboard RED with no undo prompt and no record of who
+      did it (H-001/H-006 compound this — there is not even a trail to discover the accidental
+      change). Subtle: because the dispatch result is swallowed, if the write FAILS (e.g. lost
+      permission, transient 5xx) the dropdown still optimistically shows the new value while the
+      backend never changed it — the operator believes a severity is set that is not, and the SLA
+      they expect to see never materialises, with no error surfaced. The control's weight on the
+      screen does not match the weight of its consequence.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    The severity dropdown shows the test's current severity when the panel loads, so an operator
+    can see the current classification before changing it.
+  derivation: 'response-shape / UI-label — a select control should reflect server state on load.'
+  seed_source: ui-label + response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The dropdown uses defaultValue={qualityTest?.severity || DataQualityTestSeverity.MAJOR}
+      (TestReportDetailsOverview.tsx:84) — an UNCONTROLLED MUI select seeded once from the
+      fetched test. For an unset test it shows MAJOR, which is consistent with the backend
+      default (H-004) so the displayed value matches what the SLA actually uses — good. BUT
+      because it is defaultValue (uncontrolled), the displayed value does not re-sync if the
+      underlying qualityTest.severity changes after mount (e.g. a concurrent change by another
+      operator, or a re-fetch) — the select keeps its mounted/last-picked value. So the control
+      reflects current state ON INITIAL LOAD but can drift from server state during the panel's
+      lifetime.
+    evidence:
+      - sidecar: '(absent — UI read for validation)'
+        section: ui
+        cite: 'TestReportDetailsOverview.tsx:81-92'
+        note: 'uncontrolled AppSelect (defaultValue, not value) — does not re-sync to prop changes after mount'
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      In a single-operator session the initial display is correct. In a two-operator scenario (or
+      after any background refresh of the test), the dropdown can show a stale severity while the
+      server holds a different one; the next change the operator makes is computed from what they
+      see, not from current truth, and — with no confirmation or echo (H-010) — they can overwrite
+      a colleague's just-made classification without ever seeing it. Low-frequency, but the
+      uncontrolled-select pattern is the mechanism behind several lost-update UX findings elsewhere
+      in the platform.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: |-
+    Two operators changing the same test's severity at nearly the same moment converge on a
+    well-defined final value (last write wins deterministically; no partial/torn state).
+  derivation: 'resource-boundary — @ReactiveTransactional + upsert; a user expects concurrent edits to settle predictably.'
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Static reading: each call is @ReactiveTransactional (DataQualityServiceImpl.java:63) and the
+      write is a single-row INSERT ... ON DUPLICATE KEY UPDATE on the unique
+      (DATA_QUALITY_TEST_ID, DATASET_ID) key (ReactiveDataQualityRepositoryImpl.java:90-97), which
+      under Postgres serialises on the row's unique constraint, so last-committed-write should win
+      with no torn state. BUT whether two concurrent transactions can deadlock or one can observe a
+      serialization failure / retry under the platform's default isolation, and what the observable
+      outcome + HTTP response is for the loser, requires running it — and there is no test for the
+      severity write at all. Cannot be asserted from static reading alone per Rule 3.
+    evidence:
+      - sidecar: '(absent — source read for validation)'
+        section: service+repository
+        cite: 'DataQualityServiceImpl.java:63; ReactiveDataQualityRepositoryImpl.java:90-97'
+        note: 'transactional single-row upsert on unique key; concurrent-outcome not determinable statically'
+        source_read_for_validation: true
+    operator_visible_failure: |-
+      If concurrent writes can produce a serialization error surfaced as a raw 5xx, the loser
+      operator gets an unexplained failure on a control that already gives no feedback (H-010). If
+      last-write-wins cleanly, the only loss is the silent overwrite already covered by H-011. The
+      probe distinguishes "predictable last-write-wins" (acceptable, document it) from "5xx / retry
+      storm under contention" (a bug).
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-057-1
+    routes_to_finding: validation-gap
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: 'probe PENDING-F-057-1'
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-010
+  severity: HIGH
+  one_line: |-
+    The severity dropdown writes on every change with no Save/confirmation and swallows the
+    dispatch result — a single mis-click flips a cross-tenant SLA RED with no undo and no audit
+    trail, and a failed write leaves the UI optimistically showing a severity the backend never
+    stored.
+  dedup_status: net_new
+  distinct_from: F-019
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: |-
+    TestReportDetailsOverview.tsx:81-92 — either (a) add an explicit Save action + confirmation for
+    the change, or (b) await the dispatch and surface success/error + revert the optimistic value on
+    failure; pairs with the H-001 audit-event fix so an accidental change is at least discoverable.
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: |-
+    Severity changes emit no Activity event, stamp no last_modified_by, keep no version, and show
+    no actor/timestamp on screen — "who set this to Critical, and when" is unanswerable from the
+    platform.
+  dedup_status: already_tracked
+  tracked_as: F-057a
+  note: |-
+    Convergent validation of the SR-20260527T2000Z scanner finding F-057a (missing-caveat, HIGH,
+    ontology-confirmed) AND DOC-GAP-083 / DOC-GAP-149. The reflection re-derives the same locus
+    (DataQualityServiceImpl.java:62-81 no ActivityEvent) independently from the user-facing
+    "compliance cannot answer who" question. NOTE the caveat is now DOCUMENTED in the live doc
+    (2026-06-03) — so the doc-side action is verify-resolved, not author-new (see doc_drift_findings).
+- hypothesis_id: H-003
+  one_line: |-
+    Reclassifying a test whose latest run is ABORTED/BROKEN/SKIPPED/UNKNOWN has no effect on the SLA
+    colour — only SUCCESS/FAILED tests are counted — and nothing on screen explains the inert change.
+  dedup_status: net_new
+  recommended_log_as: 'caveat in https://docs.opendatadiscovery.org/features/data-quality/sla-statuses'
+- hypothesis_id: H-004
+  one_line: |-
+    A test never classified counts as MAJOR (not neutral) in the SLA, and there is no path back to
+    "unspecified" — the upsert only writes one of the three enum values and the enum has no UNSPECIFIED.
+  dedup_status: net_new
+  recommended_log_as: 'caveat in https://docs.opendatadiscovery.org/features/data-quality/sla-statuses'
+- hypothesis_id: H-006
+  one_line: 'Severity history is unrecoverable — each change overwrites the single row in place with no version/history.'
+  dedup_status: already_tracked
+  tracked_as: F-057a
+  note: |-
+    Same finding cluster as H-001 (the upsert_idempotent_in_outcome_loses_change_history facet of
+    F-057); documented in the live doc as "does not version the prior severity". Corroboration, not
+    a new item.
+- hypothesis_id: H-008
+  one_line: |-
+    A severity write to a soft-deleted dataset/test is accepted (200) and persisted but then filtered
+    out of every read — write guard (existsIncludingSoftDeleted) and read guard (STATUS.ne(DELETED))
+    disagree.
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN
+- hypothesis_id: H-011
+  one_line: |-
+    The severity select is uncontrolled (defaultValue) so it can drift from server state after mount;
+    combined with no confirmation, a concurrent change can be silently overwritten.
+  dedup_status: net_new
+  recommended_log_as: 'caveat / minor UI follow-up on TestReportDetailsOverview.tsx'
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (confirmed/partial/contradicted/probe-needed) becomes
+# a missing-functional TEST-GAP candidate. The feature sits at 0/12 verified promises today.
+- use_case_id: F-057-UC-001
+  hypothesis_id: H-001
+  kind: cross-actor
+  promise: 'A severity change is attributable — who set it and when is answerable from the platform.'
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-001)'
+  proposed_test: |-
+    Integration (WebTestClient): PUT severity twice as a known principal; assert GET /api/activity
+    returns events for the change (RED today — the regression-guard for the audit-emission fix); AND
+    a meta-test that the severity write path emits an ActivityEvent or is on the documented audit-exempt
+    allow-list.
+- use_case_id: F-057-UC-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: 'Raising a failing test Major->Critical flips the dataset SLA YELLOW->RED with no run change.'
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-002)'
+  proposed_test: |-
+    Unit (SLACalculator): one failing Major + passing context => YELLOW; flip that test to Critical =>
+    RED. AND integration: PUT severity then GET /api/datasets/{id}/sla asserts the colour byte. This is
+    the single highest-leverage test — it pins severity-drives-colour, the feature's core promise.
+- use_case_id: F-057-UC-003
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: 'Reclassifying a non-SUCCESS/FAILED test is inert on the SLA until its next pass/fail run.'
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-003)'
+  proposed_test: 'Unit (SLACalculator): a Critical test whose status is BROKEN/ABORTED contributes 0 to the colour.'
+- use_case_id: F-057-UC-004
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: 'An unset severity is weighted as MAJOR in the SLA (documented default, no unset path back).'
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-004)'
+  proposed_test: 'Unit/repo: a test with no DATA_QUALITY_TEST_SEVERITY row resolves to MAJOR in getSLA (mapLastRunDto NULL coalesce).'
+- use_case_id: F-057-UC-005
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: 'The severity PUT is server-side permission-gated (DATASET_TEST_RUN_SET_SEVERITY), not UI-only.'
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-005)'
+  proposed_test: 'Security/@WebFluxTest: PUT severity without the permission => 403; with it => 200.'
+- use_case_id: F-057-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: 'Severity transitions are auditable history (currently overwritten in place).'
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-006)'
+  proposed_test: 'Characterization (pins-known-bug): PUT Major then Critical; assert the table holds ONE row with only the latest value (RED the instant a history table is added).'
+- use_case_id: F-057-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: 'Severity changes do not appear in the Activity Feed (documented gap).'
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-007)'
+  proposed_test: 'Integration: PUT severity; assert GET /api/activity returns NO event for it (characterization of the documented behaviour; flips when the event is added).'
+- use_case_id: F-057-UC-008
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: 'Severity writes to soft-deleted entities are refused (or at least not silently read-dropped).'
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-008)'
+  proposed_test: 'Integration: PUT severity on a soft-deleted test => assert behaviour is intentional (write+read-drop documented, or 404).'
+- use_case_id: F-057-UC-009
+  hypothesis_id: H-009
+  kind: happy-path
+  promise: 'Setting severity to its current value is a clean no-op.'
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-009)'
+  proposed_test: 'Unit (StepVerifier): PUT same severity => DTO unchanged, no error.'
+- use_case_id: F-057-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: 'A severity change confirms before applying and surfaces success/failure to the operator.'
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-010)'
+  proposed_test: |-
+    Integration (Playwright, odd-team IT harness): open Test report Overview, change the severity
+    select; assert a confirmation/feedback affordance exists and that a backend-rejected write reverts
+    the displayed value (RED today — the e2e guard for the H-010 fix).
+- use_case_id: F-057-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: 'The severity select reflects current server state for the panel lifetime.'
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: 'TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-057-UC-011)'
+  proposed_test: 'Component test: re-render with a changed qualityTest.severity prop; assert the select reflects it (RED today — uncontrolled defaultValue).'
+- use_case_id: F-057-UC-012
+  hypothesis_id: H-012
+  kind: cross-actor
+  promise: 'Concurrent severity writes converge deterministically (last-write-wins, no torn state / 5xx storm).'
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: 'probe PENDING-F-057-1 (then TEST-GAP-NNN once the outcome is known)'
+  proposed_test: 'Resolved by probe PENDING-F-057-1; promote to an integration test asserting the determined outcome.'
+
+### probes_emitted
+- probe_id: PENDING-F-057-1
+  hypothesis_id: H-012
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  expected_outcome: |-
+    Two operators changing the same test's severity at nearly the same moment converge on a
+    well-defined final value (last-committed-write wins deterministically; no torn state, no
+    unexplained 5xx surfaced to the loser).
+  probe_sketch: |-
+    Testcontainers + local Postgres at the platform's default isolation. Seed a dataset + one DQ
+    test + a severity row. Fire two concurrent PUT /api/datasets/{id}/dataqatests/{tid}/severity
+    (Major and Critical) via WebTestClient on parallel schedulers; assert: (a) the final row holds
+    exactly one of the two values, (b) both responses are 200 OR the loser gets a defined,
+    non-raw-5xx outcome, (c) no deadlock/serialization error escapes as an unhandled 500. Local-only
+    (docker-compose / Testcontainers) per Rule 6.
+
+### validation_gaps
+- sidecar: 'DataQualityController / DataQualityServiceImpl / ReactiveDataQualityRepositoryImpl (all three chain nodes)'
+  field_insufficient: |-
+    ENTIRE SIDECAR ABSENT. The feature-flow F-057's three contributing_nodes are all unresolved:true
+    and reference a "DataQualityController sidecar" that does not exist under
+    lineage/odd-platform/understanding/. No sidecar was readable. Every verdict above was traced
+    directly from source under the Rule-8 single-line-validation exception (recorded
+    source_read_for_validation:true). This reflection effectively re-extracted the chain.
+  proposed_refresh: |-
+    Run file-analyser on DataQualityController, DataQualityServiceImpl, ReactiveDataQualityRepositoryImpl,
+    and SLACalculator to produce the missing sidecars with stress_findings (esp. Category F on the
+    severity form + the MAJOR-default coalesce) and tests_coverage_semantic, so the next reflection
+    composes from sidecars rather than from source.
+- sidecar: 'TestReportDetailsOverview (UI severity-setting component) — UI hop absent from the chain'
+  field_insufficient: |-
+    RULE 9 — the feature is USER-FACING (operator sets severity from a dropdown on the Test report
+    Overview panel, TestReportDetailsOverview.tsx) but the feature-flow chain has NO UI hop and no
+    enriched UI sidecar (despite ui_unverified:false on the flow). The UX verdicts H-010/H-011 were
+    grounded by a Rule-8 single-line read of the component, NOT by an enriched sidecar. This reflection
+    is therefore API-grounded with a spot-read UI overlay — it is NOT a full from-the-screen reflection
+    of the operator experience (e.g. the surrounding Test reports tab navigation, the SLA badge it
+    drives, cross-device behaviour of the select were not analysed).
+  proposed_refresh: |-
+    Enrich TestReportDetailsOverview.tsx (and the Test reports tab parent) as a substrate UI node +
+    sidecar, then thread it as the entry-point UI hop of F-057 so the next reflection judges the
+    feature from the screen the operator uses, per APPROACH.md s0.2/s0.3 + Rule 9.
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: 'https://docs.opendatadiscovery.org/features/data-quality/sla-statuses'
+  doc_says: |-
+    "Severity changes are not logged in the Activity Feed today … does not emit an Activity Feed
+    event, does not stamp last_modified_by on the row, and does not version the prior severity."
+  code_does: |-
+    Matches exactly — the service emits no ActivityEvent, the upsert stamps no last_modified_by and
+    keeps no version (DataQualityServiceImpl.java:62-81, ReactiveDataQualityRepositoryImpl.java:86-102).
+  recommended_log_as: |-
+    NO doc-gap — the live doc is CORRECT and now documents the caveat verbatim. This RESOLVES the
+    SR-20260527T2000Z finding F-057a (missing-caveat) and DOC-GAP-083 / DOC-GAP-149 against the live
+    doc (same resolution pattern as F-022 png_vs_json_doc_drift_RESOLVED_IN_LIVE_DOC_2026_06_01).
+    Recommend the maintainer flip F-057a / DOC-GAP-083 / DOC-GAP-149 to resolved after a /review
+    Gate-8 live-render confirmation. The remaining doc opportunities are the NET-NEW caveats H-003
+    (inert-on-non-SUCCESS/FAILED), H-004 (MAJOR default + no unset path), and H-008 (write/read soft-delete
+    asymmetry), which the live doc does not yet cover.
+
+## maintainer_notes
+
+<preserved across refreshes — only block the maintainer hand-edits>

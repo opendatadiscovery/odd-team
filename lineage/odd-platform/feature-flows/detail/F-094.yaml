@@ -150,6 +150,136 @@ observed_vs_expected:
       drift_class: ui_auth_chain_whitelists_entire_ingestion_namespace
       provenance: STATIC — SHB-123 evidence.
 
+# --- LSN-030 promise layer (feature-reflector/0.3.0, 2026-06-03) ---
+# Projection of the F-094 reflection hypotheses to user-facing promises. Full
+# hypotheses + validations live at feature-reflections/detail/F-094.yaml. The
+# "user" of this operator-config / S2S feature is the operator auditing the YAML,
+# the collector/push-adapter HTTP client, and the security reviewer auditing the
+# deployment posture — this feature has NO end-user UI surface (see the reflection's
+# first validation_gap). Each use_case carries coverage (verified ONLY if a real
+# test exists) + a test_demand. NO confirmed-but-untested promise routes to none.
+use_cases:
+  - uc_id: F-094-UC-1
+    hypothesis_id: H-001
+    kind: grammar
+    promise: "When an operator reads `auth.ingestion.filter.enabled: true` in application.yml and files the audit as 'ingestion is locked down', the property name is honoured — the whole /ingestion/** namespace requires authentication."
+    actor: platform-operator
+    trace: "config-yaml:application.yml#auth.ingestion.filter.enabled:46-48 + auth-filter:IngestionDataEntitiesFilter:28 (exact-literal /ingestion/entities matcher) + controller:IngestionController:31-103 (5 handlers)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "TEST-GAP-958 (already minted — 80-cell IngestionControllerAuthMatrixTest, pending implementation)"
+  - uc_id: F-094-UC-2
+    hypothesis_id: H-002
+    kind: happy-path
+    promise: "When an operator enables `auth.ingestion.filter.enabled=true` and a collector POSTs to /ingestion/entities with a valid per-datasource bearer token, the request is accepted (2xx); a missing/wrong token is rejected 401."
+    actor: odd-collector-runtime
+    trace: "auth-filter:IngestionDataEntitiesFilter:20,28,41,56 + AbstractIngestionFilter:45-51,66-72"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "TEST-GAP-117 + TEST-GAP-118 (already minted — opt-in 401 + bearer happy path, pending implementation)"
+  - uc_id: F-094-UC-3
+    kind: happy-path
+    hypothesis_id: H-003
+    promise: "When an operator runs the bundled defaults (auth.type=DISABLED + auth.ingestion.filter.enabled=false) and a caller POSTs to /ingestion/entities with no credential, the request is accepted — the filter bean is not registered."
+    actor: platform-operator
+    trace: "config-yaml:application.yml:32-34,46-48 + auth-filter:IngestionDataEntitiesFilter:20 (no matchIfMissing)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "TEST-GAP-116 (already minted — IngestionFilterDefaultOffTest, CRITICAL, pending implementation)"
+  - uc_id: F-094-UC-4
+    kind: grammar
+    hypothesis_id: H-004
+    promise: "When an operator enables `auth.ingestion.filter.enabled=true`, the sibling unauthenticated mutating endpoints (POST /ingestion/entities/datasets/stats, POST /ingestion/metrics) become authenticated too."
+    actor: security-reviewer
+    trace: "auth-filter:IngestionDataEntitiesFilter:28 (exact-literal, no wildcard) + controller:IngestionController:81-95 (postDataSetStatsList, ingestMetrics — no filter coverage)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "TEST-GAP-958 (matrix) + PLT-051 regression guard (already tracked)"
+  - uc_id: F-094-UC-5
+    kind: grammar
+    hypothesis_id: H-005
+    promise: "When an operator enables `auth.ingestion.filter.enabled=true`, the Prometheus AlertManager webhook (POST /ingestion/alert/alertmanager) becomes authenticated too."
+    actor: security-reviewer
+    trace: "auth-filter:IngestionDataEntitiesFilter:28 + AlertManagerController:21 (no filter, no @PreAuthorize) + security-constants:SecurityConstants:95-96 (/ingestion/** whitelist)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "TEST-GAP-958 (matrix umbrella, covers /ingestion/alert/alertmanager cell)"
+  - uc_id: F-094-UC-6
+    kind: grammar
+    hypothesis_id: H-006
+    promise: "When an operator switches auth.type from DISABLED to LOGIN_FORM/OAUTH2/LDAP ('turning on auth'), the /ingestion/** endpoints start requiring authentication."
+    actor: platform-operator
+    trace: "security-constants:SecurityConstants:95-96 (/ingestion/** in WHITELIST_PATHS) + AuthorizationCustomizer:22-23 (permitAll) + LoginFormSecurityConfiguration:50"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "TEST-GAP-958 (matrix — the auth.type dimension)"
+  - uc_id: F-094-UC-7
+    kind: happy-path
+    hypothesis_id: H-007
+    promise: "When an operator enables S2S (auth.s2s.enabled=true) as defence-in-depth alongside the ingestion filter (per the live S2S doc recommendation), the X-API-Key gate protects the /ingestion/** endpoints."
+    actor: platform-operator
+    trace: "security-constants:SecurityConstants:95-96 (/ingestion/** whitelist short-circuits BEFORE S2S) + S2sAuthenticationFilter (mounts via addFilterAt after permitAll)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "TEST-GAP-958 (matrix — the s2s toggle dimension)"
+  - uc_id: F-094-UC-8
+    kind: empty/no-match
+    hypothesis_id: H-008
+    promise: "When a collector hits /ingestion/entities (filter ON) with a payload whose data_source_oddrn is unregistered, the platform returns a 4xx (the datasource/credential could not be resolved), not a 5xx server error."
+    actor: odd-collector-runtime
+    trace: "auth-filter:IngestionDataEntitiesFilter:43-51 (NotFoundException) + AbstractIngestionFilter:40 (only catches AccessDeniedException → 5xx leak)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "TEST-GAP-119 (already minted — collector-fallback + NotFoundException 5xx pin, pending)"
+  - uc_id: F-094-UC-9
+    kind: cross-actor
+    hypothesis_id: H-009
+    promise: "When the ingestion filter is ON, a collector holding datasource A's token cannot ingest entities into datasource B (cross-tenant write is blocked)."
+    actor: odd-collector-runtime
+    trace: "auth-filter:IngestionDataEntitiesFilter:43-58 (token resolved by payload data_source_oddrn, compared to THAT datasource's token)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "TEST-GAP-NNN (pending mint — cross-tenant isolation pin; postDataEntityList sidecar uncovered[6])"
+  - uc_id: F-094-UC-10
+    kind: render
+    hypothesis_id: H-010
+    promise: "When a security reviewer needs to answer 'which of my 5 ingestion endpoints are auth-required under my exact config?', an authoritative per-cell coverage matrix exists (in-repo or in-docs)."
+    actor: security-reviewer
+    trace: "F-094:observed_vs_expected.facet=ingestion_filter_path_coverage_incomplete_endpoint_dimension + controller:IngestionController:31-103"
+    verdict: partial
+    coverage: unverified
+    test_demand: "DOC-228 (done — 80-cell matrix shipped on enable-security/README.md) + TEST-GAP-958 (executable matrix pending)"
+  - uc_id: F-094-UC-11
+    kind: grammar
+    hypothesis_id: H-011
+    promise: "When a future maintainer adds POST /ingestion/entities/batch (or /v2), it inherits the ingestion-filter protection automatically."
+    actor: integration-author
+    trace: "auth-filter:IngestionDataEntitiesFilter:28 (hard-coded exact literal, no wildcard, no property injection)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "TEST-GAP-958 (matrix pins the exact-literal scope; a widened matcher goes RED)"
+
+use_case_coverage:
+  verified: 0
+  total: 11
+  note: >-
+    SECOND COVERAGE FRONTIER (verified promises / total promises) = 0/11. ZERO
+    promises are verified by a real test. The auth-coverage matrix test
+    (TEST-GAP-958, the 80-cell IngestionControllerAuthMatrixTest) is minted but
+    not implemented; the per-filter pins (TEST-GAP-116/117/118/119) are minted
+    but not implemented; the existing BaseIngestionTest profile fixes
+    auth.type=DISABLED + filter=false so it exercises ONLY the most-open cell and
+    asserts no auth posture. IT-009 (auth-mode-boundary) proves DISABLED-open vs
+    LOGIN_FORM-authenticated on a NON-whitelisted endpoint — it deliberately does
+    NOT touch /ingestion/** (which is whitelisted, the opposite case), so it is a
+    sibling/contrast, not coverage for this feature.
+    SecurityRulesAuthzGapsKnownBugsTest pins OTHER whitelist gaps (PLT-054 slack,
+    PLT-020 genai, PLT-012 term path), not the ingestion filter. 8 of 11 promises
+    are contradicted/partial (the property-name-misdirection + 5xN coverage gaps),
+    each routing to an already-tracked bug/caveat; the 3 confirmed promises
+    (filter happy-path, default-off, cross-tenant isolation) are confirmed-but-
+    untested and route to functional test demands per LSN-030.
+
 test_matrix:
   unit:
     state: GAP

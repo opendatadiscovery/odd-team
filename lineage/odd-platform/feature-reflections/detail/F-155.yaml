@@ -1,0 +1,660 @@
+---
+feature_id: F-155
+pillar_anchored_id: P-06:F-008
+pillar: Data Glossary
+feature_name: |-
+  Term Query-Example Tab — list of Query Examples linked to the Term;
+  permission-gated "Link query" affordance via QueryExamplesAutocomplete;
+  cross-pillar surface combining P-06 Data Glossary + P-02 Data Modelling
+  Query Examples
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+  - odd-platform__java__TermController__controller-class__TermController.md
+ui_sidecars_unresolved:
+  # Rule 9 / Rule 8 — these two UI hops are in the F-155 chain but have NO enriched sidecar
+  # (feature-flow marks both sidecar: unresolved). The feature-flow detail carries inline UI evidence
+  # citations; per the Rule-8 exception I read the two .tsx files directly to capture the load-bearing
+  # citations (source_read_for_validation flagged per verdict). See validation_gaps below.
+  - "odd-platform ts react-component:TermQueryExamples (TermQueryExamples.tsx)"
+  - "odd-platform ts react-component:AssignTermQueryExampleForm (AssignTermQueryExampleForm.tsx)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Verified live 200 via the QueryExampleController sidecar docs_link_semantic block (batch-V
+      WebFetch 2026-05-20). No fresh WebFetch this session. The page documents the 7-permission grid
+      including QUERY_EXAMPLE_TERM_CREATE ("Attach a snippet to a glossary term") and
+      QUERY_EXAMPLE_TERM_DELETE ("Detach a snippet from a glossary term"), and the three "core fields"
+      Name / Description / Query body. It is SILENT on the Term-side Query-Examples TAB itself (the
+      /terms/{id}/query-examples surface, the "Link query" combo-box, what the tab lists). The doc's
+      "Name" field is fiction (code has only definition + query — sidecar doc_drift_findings.[0]).
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Verified live 200 via batch-K (inherited through TermController/TermServiceImpl). The Data Glossary
+      pillar landing frames terms-as-entities + the 7 TERM_* permissions but says nothing about query
+      examples being attachable to terms, nor about the per-term Query-Examples tab. The cross-pillar
+      P-06xP-02 surface (this feature) has no doc home on either pillar page.
+hypothesis_summary:
+  total: 11
+  confirmed: 3
+  contradicted: 5
+  partial: 2
+  probe_needed: 1
+  note: |-
+    Verdict buckets sum to 11. confirmed=H-001,H-002,H-011; contradicted=H-003,H-004,H-006,H-007,H-008;
+    partial=H-005,H-009; probe-needed=H-010. NOTE H-005 (partial) ALSO emits probe PENDING-F-155-1, so
+    two probes are emitted (PENDING-F-155-1 from the partial H-005, PENDING-F-155-2 from probe-needed
+    H-010) even though only one hypothesis carries the probe-needed VERDICT — see probes_emitted.
+  highest_severity_contradiction:
+    hypothesis_id: H-007
+    severity: HIGH
+    one_line: |-
+      A query example's SQL body (the `query` field) is rendered on the term's Query-Examples tab via
+      MDEditor.Markdown with no rehype-sanitize — the F-004 stored-XSS class reaches the Glossary
+      surface: any QUERY_EXAMPLE_CREATE holder can plant JS that executes for every term viewer.
+related_feature_flows: [F-002, F-004, F-151]
+related_concepts:
+  - query-example-term-linkage
+  - cross-pillar-shared-components
+  - dom-inspection-permission-leak
+related_drift_classes:
+  - ui_react_key_on_free_text_field_not_id
+  - ui_mutation_lacks_catch_silent_failure
+  - ui_permission_gated_cta_visibility_leaks_permission_state
+  - cross_pillar_component_sharing_unverified_pattern_drift
+new_drift_classes_proposed:
+  - ui_label_inconsistency_cta_vs_dialog_title
+  - api_no_pagination_hasnext_hardcoded_false_on_per_parent_list
+  - audit_log_presence_asymmetry_2_tier_audit_story
+---
+
+# Term Query-Example Tab — product-owner reflection
+
+## product_owner_narrative
+
+**What the feature is.** The Term Query-Example tab is the cross-pillar bridge between the Data Glossary (P-06) and Data Modelling (P-02): on any glossary Term's detail page there is a "Query examples" tab (`/terms/:termId/query-examples`) that lists the operator-curated SQL / KQL / Spark snippets that have been attached to that term, and — for users with the right permission — lets them attach an existing Query Example to the term via a "Link query" affordance (per feature-flow F-155 chain hops 1-2; per `system-mission.md:185` "reverse-look-up every entity tied to a Term" + `system-mission.md:109` "link a snippet to multiple datasets and terms"). The audience is the data-steward-owner curating the glossary (`system-mission.md:196`) and the data-engineer-analyst who authored the snippets (`system-mission.md:121`); the value is that a business term like `Customer` carries, on its own page, the canonical queries that operate on the data that term names.
+
+**How a user interacts with it.** The user navigates to a term, clicks the "Query examples" tab, and sees a list of linked query examples — each row shows the example's `definition` (human description) and `query` (the executable snippet), rendered verbatim (per `QueryExampleController` sidecar `concepts.QueryExampleList` + the IT-034 ground-truth: "the definition + SQL render"). This tab is the ONLY sub-route of the Term detail page wrapped in an explicit route-layer permissions gate (`WithPermissionsProvider` with `[QUERY_EXAMPLE_TERM_CREATE, QUERY_EXAMPLE_TERM_DELETE]`, per F-155 chain hop 1 / `TermDetailsRoutes.tsx:33-44`). To attach an example the user clicks "Link query" (a button, rendered only for `QUERY_EXAMPLE_TERM_CREATE` holders, per `TermQueryExamples.tsx:33,40` — read this session), which opens a dialog containing a `QueryExamplesAutocomplete` combo-box (a shared P-02 component); selecting one and submitting fires `useAssignTermQueryExample(termId)` → `POST /api/terms/{term_id}/queryexample` → `TermController.createQueryExampleToTermRelationship` → `QueryExampleService.linkTermWithQueryExample` (per `TermController` sidecar `operations.createQueryExampleToTermRelationship`, gated by `QUERY_EXAMPLE_TERM_CREATE` on `term_id` at `SecurityConstants.java:187-189`).
+
+**The working parts.** The READ path (`useGetQueryExamplesByTermId` → `GET /api/queryexample/term/{term_id}` → `QueryExampleController.getQueryExampleByTermId`, line 59 of the controller) is a single 5-jsonArrayAgg JOIN returning ALL examples linked to the term in one response, with NO RBAC gate (read-collaborative posture per `QueryExampleController` sidecar `operations.getQueryExampleByTermId` + `system-mission.md:267`) and with `hasNext` hard-coded to `false` (`QueryExampleMapper.mapListToQueryExampleList` lines 72-74) — there is no pagination on this endpoint regardless of how many examples are attached. The WRITE path is permission-gated at the controller perimeter only (the service tier has zero programmatic checks per `QueryExampleController` sidecar `invariants`). Both `definition` and `query` are stored verbatim as PostgreSQL `text` and rendered client-side through `@uiw/react-md-editor`'s `MDEditor.Markdown` (`QueryExamplesListItem.tsx:45,52`), which makes this list the **4th surface of the F-004 stored-XSS family** (per `QueryExampleController` sidecar `security.known_security_gaps.[0]`).
+
+**The integration story.** This feature is a textbook cross-pillar surface (`system-mission.md` P-02 `feeds_from: [P-06]`, P-06 `feeds: [P-02]`): the Query Example entity, the `QueryExamplesAutocomplete`, and the `QueryExamplesListItem` all belong to P-02 Data Modelling; the term, the tab, and the `query_example_to_term` link table belong to P-06 Data Glossary; the write endpoint lives on `TermController` (P-06) but delegates to `QueryExampleService` (P-02). A consequence the product owner must flag: query-example↔term linkage emits NO Activity Feed entry (`QueryExampleServiceImpl` carries no `@ActivityLog`, per `QueryExampleController` sidecar `downstream_side_effects` — the canonical `audit-log-presence-asymmetry` from `system-mission.md:386-395`), so an auditor reviewing "what changed on this term" sees term edits but NOT query-example attach/detach.
+
+**Edge cases a demo would highlight.** Empty state: a term with no linked examples shows an empty-content placeholder (`TermQueryExamples.tsx:57`, verified by IT-034 negative case). Duplicate-definition collision: the list renders React rows keyed on `qe.definition` (free-text SQL) rather than `qe.id` (`TermQueryExamples.tsx:51`, read this session) — two examples with identical SQL text silently collapse to one rendered row (F-155 facet `react_key_on_qe_definition_text_potential_collision`). Silent failure: the assign dialog auto-closes only on success (`handleCloseSubmittedForm={isSuccess}`, `AssignTermQueryExampleForm.tsx:81`) and the submit promise has a `.then` but NO `.catch` (line 38) — a backend reject leaves the dialog open with no error message. Label inconsistency: the affordance is "Link query" (the button) but the dialog title and submit button both say "Add query example" (`TermQueryExamples.tsx:40` vs `AssignTermQueryExampleForm.tsx:45,65`) — a paper-cut for a first-time user.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens a term's Query-Examples tab, the response lists the query examples linked to THAT term — and a term with no linked examples lists none."
+  derivation: "Endpoint-shape — useGetQueryExamplesByTermId({termId}) → GET /api/queryexample/term/{term_id}; the tab is the term-side reverse-lookup of the query_example_to_term link table."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      TermQueryExamples mounts useGetQueryExamplesByTermId({termId}) (TermQueryExamples.tsx:21) →
+      GET /api/queryexample/term/{term_id} → QueryExampleController.getQueryExampleByTermId (line 59) →
+      QueryExampleService.getQueryExampleByTermId → termQueryExampleRelationRepository
+      .getQueryExampleDatasetRelationsByTerm — a single JOIN returning all query examples linked to the
+      term. The UI maps data.items to QueryExamplesListItem rows (lines 23,48-55); when items is empty and
+      not loading, EmptyContentPlaceholder renders (lines 25-28,57). IT-034 verifies both arms live
+      (2026-06-03 PASS): a seeded query_example_to_term link renders its SQL; a term with no link lists none.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: concepts/operations
+        cite: "QueryExampleController.java:59-63 (getQueryExampleByTermId reverse-lookup)"
+        note: "the term-side read endpoint behind useGetQueryExamplesByTermId"
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "TermQueryExamples.tsx:21,23,48-55,57 (hook → items map → empty placeholder)"
+        note: "list render + empty state; UI hop has no enriched sidecar"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "e2e/specs/term-query-examples.spec.ts (IT-034, both arms PASS 2026-06-03)"
+    test_demand: none
+    source_read_for_validation: true
+
+- id: H-002
+  hypothesis: "When a user with QUERY_EXAMPLE_TERM_CREATE selects a query example in the 'Link query' dialog and submits, that example becomes linked to the term and appears on the tab."
+  derivation: "Endpoint-shape + UI-label — the 'Link query' button opens a form whose submit fires useAssignTermQueryExample(termId).mutateAsync({queryExampleTermFormData:{queryExampleId}, termId})."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      AssignTermQueryExampleForm onSubmit (AssignTermQueryExampleForm.tsx:32-41) calls
+      useAssignTermQueryExample(termId).mutateAsync with {queryExampleTermFormData:{queryExampleId:
+      exampleId}, termId} → POST /api/terms/{term_id}/queryexample → TermController
+      .createQueryExampleToTermRelationship (TermController.java:218-226) → QueryExampleService
+      .linkTermWithQueryExample, which INSERTs a query_example_to_term row. On success the dialog closes
+      (handleCloseSubmittedForm={isSuccess}, line 81) and the form resets (line 39). The mutation
+      invalidates the by-term query so the new row appears on the tab. The mechanism is correct end to end.
+    evidence:
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: operations
+        cite: "TermController.java:218-226 (createQueryExampleToTermRelationship → linkTermWithQueryExample), SecurityConstants.java:187-189 (QUERY_EXAMPLE_TERM_CREATE on term_id)"
+        note: "the write-side endpoint lives on TermController, NOT QueryExampleController"
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "AssignTermQueryExampleForm.tsx:24,32-41,81 (mutateAsync payload + close-on-success)"
+        note: "select-then-submit through QueryExamplesAutocomplete combo-box"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-003
+  hypothesis: "When a backend reject (4xx/5xx) occurs on submitting the 'Link query' dialog, the user is shown an error and can correct it."
+  derivation: "Negative-space + senior-PO UX seed (convenient/intuitive) — every form submit must signal failure; F-154 established this pattern across Terms forms."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The submit handler is mutateAsync({...}).then(_ => { reset(); }) with NO .catch
+      (AssignTermQueryExampleForm.tsx:32-41). The dialog only auto-closes on isSuccess
+      (handleCloseSubmittedForm={isSuccess}, line 81), so on a rejected promise the dialog stays open but
+      neither resets nor shows any error — the rejection is swallowed (the .then callback never runs; there
+      is no rejection branch). The user sees the dialog still open with their selection intact and no
+      feedback. This is the F-155 facet no_error_handler_on_assign_query_example_mutation_silent_failure
+      and the same class as F-154b.
+    evidence:
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "AssignTermQueryExampleForm.tsx:32-41 (.then with no .catch) + :81 (close only on isSuccess)"
+        note: "rejected mutation → dialog stays open, no error rendered, no reset"
+    operator_visible_failure: |
+      An operator who links a query example that the backend rejects — e.g. a duplicate link (the link
+      may already exist; TermController delegates to a service whose duplicate path raises a
+      BadUserRequestException per the QueryExample duplicate-relation pattern), a 403 from a stale
+      permission, or a transient 5xx — sees the dialog simply sit there. There is no toast, no inline
+      error, no spinner-stop signal. The likely user reaction is to click submit again (compounding the
+      duplicate) or to assume it worked and navigate away. The failure is fully silent: the operator
+      cannot tell a successful link from a rejected one without manually refreshing the tab.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-004
+  hypothesis: "When a term has two query examples with identical SQL text, both render as distinct rows on the Query-Examples tab."
+  derivation: "Negative-space — the list keys React rows on qe.definition (free-text), not qe.id; duplicate free text is a legitimate case (commonly-pasted snippets)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      queryExamples.map renders QueryExamplesListItem with key={qe.definition}
+      (TermQueryExamples.tsx:48-55, line 51), not key={qe.id}. React requires keys to be unique among
+      siblings; when two query examples share the same definition string, React treats them as the same
+      element and renders only the first, silently dropping the second from the DOM (and emitting a
+      duplicate-key console warning visible only to developers). Every query example has a stable backend
+      id (the sibling EntityClassItem uses key={entityClass.id}), so qe.id is the correct key. This is the
+      F-155 facet react_key_on_qe_definition_text_potential_collision and scan finding F-155a.
+    evidence:
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "TermQueryExamples.tsx:48-55 (key={qe.definition})"
+        note: "free-text React key; duplicate definitions collide → silent row drop"
+    operator_visible_failure: |
+      Two query examples whose `definition` text is identical (e.g. two snippets both described "monthly
+      revenue rollup", or two examples pasted from the same template) linked to one term: the tab shows
+      only ONE of them. An operator counting "we documented 5 queries for the Customer term" sees 4. The
+      drop is silent — no error, no placeholder — and is data-dependent, so it surfaces only for the
+      specific terms that happen to accumulate duplicate-definition examples. Note the `definition` is the
+      human description, NOT the SQL: two genuinely different queries with the same description collide
+      even when their SQL differs, which makes the collision more likely than keying on the SQL would.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    source_read_for_validation: true
+
+- id: H-005
+  hypothesis: "When a caller without QUERY_EXAMPLE_TERM_CREATE reaches /terms/{id}/query-examples (direct URL or DOM manipulation), they cannot link a query example to the term."
+  derivation: "Pillar mission anchor (P-09 gates every mutation) + endpoint-shape — the tab is route-gated and the 'Link query' button is permission-gated; the question is whether the BACKEND enforces, not just the UI hide."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Two independent gates exist, and the UI-side ones are UI-only hides. (a) The ROUTE is wrapped in
+      WithPermissionsProvider [QUERY_EXAMPLE_TERM_CREATE, QUERY_EXAMPLE_TERM_DELETE] (F-155 chain hop 1 /
+      TermDetailsRoutes.tsx:33-44); (b) the "Link query" button is wrapped in WithPermissions
+      permissionTo={QUERY_EXAMPLE_TERM_CREATE} (TermQueryExamples.tsx:33). Both are client-side conditional
+      renders — an operator inspecting the DOM or hitting the API directly bypasses them (F-155 facet
+      query_examples_link_query_button_visible_in_dom_inspection). The AUTHORITATIVE gate is the backend:
+      TermController.createQueryExampleToTermRelationship carries a SecurityRule
+      QUERY_EXAMPLE_TERM_CREATE on resource term_id (TermController sidecar
+      security.authorization_assertions, SecurityConstants.java:187-189). So the WRITE is backend-enforced
+      — partial only because (1) the enforcement is not test-pinned, and (2) sibling term-linkage gates in
+      this controller cluster have a documented path-mismatch class (REFACTOR-217 per the F-151 reflection
+      H-009), so the specific QUERY_EXAMPLE_TERM_CREATE path-to-rule binding warrants a probe rather than a
+      confirmed verdict.
+    evidence:
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: security
+        cite: "SecurityConstants.java:187-189 (QUERY_EXAMPLE_TERM_CREATE on /api/terms/{term_id}/queryexample POST)"
+        note: "backend SecurityRule is the authoritative gate"
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "TermQueryExamples.tsx:33 (WithPermissions UI-only hide) + TermDetailsRoutes.tsx:33-44 (route gate)"
+        note: "client-side hides only; DOM/API bypass possible"
+    operator_visible_failure: |
+      The UI-only hide leaks permission state: an operator without QUERY_EXAMPLE_TERM_CREATE can infer the
+      permission's existence (and that others hold it) by inspecting the DOM — aligned with the
+      platform-wide UI-only-hide stance (cross-link F-024), so this half is a documented caveat, not a
+      bug. The load-bearing question is whether the backend actually rejects an unprivileged POST; if the
+      path-to-rule binding drifted (the REFACTOR-217 class), the surface would be a real authz hole. Until
+      a probe confirms a 403, treat the WRITE gate as backend-enforced-but-unverified.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: probe-needed
+    use_case_kind: cross-actor
+    coverage: unverified
+    probe_id: PENDING-F-155-1
+    test_demand: "probe PENDING-F-155-1"
+    source_read_for_validation: true
+
+- id: H-006
+  hypothesis: "When a query example is attached to or detached from a term, the change is recorded so an auditor can later see who linked which query example to the term and when."
+  derivation: "Pillar mission anchor (P-07 Activity Feed 'audit metadata changes') + cross-pillar — term mutations like term-tag and term-entity linkage emit Activity events; a user expects query-example linkage to be auditable too."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      QueryExampleServiceImpl carries no @ActivityLog annotations anywhere (QueryExampleController sidecar
+      downstream_side_effects + bugs_limitations_corner_cases.[3], verified across the full service).
+      linkTermWithQueryExample / removeTermFromQueryExample therefore emit NO Activity Feed event. By
+      contrast TermServiceImpl DOES emit (e.g. TERM_ASSIGNMENT_UPDATED on term-entity linkage). So
+      attaching/detaching a query example to a term is INVISIBLE on both the global Activity Feed and any
+      per-entity Activity tab. This is the canonical audit-log-presence-asymmetry-2-tier-audit-story
+      (system-mission.md:386-395).
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: downstream_side_effects
+        cite: "QueryExampleServiceImpl.java:1-169 (no @ActivityLog) vs TermServiceImpl @ActivityLog on term linkage"
+        note: "query-example linkage produces no audit event"
+    operator_visible_failure: |
+      An operator or compliance reviewer asking "who attached this query example to the Customer term, and
+      when?" gets no answer from the platform — the Activity Feed shows term description edits, owner
+      changes, and term-entity links, but the query-example linkage performed through THIS feature leaves
+      no trace. For a glossary used as an authoritative business-vocabulary surface this is an
+      accountability gap: a query example carrying a sensitive or wrong SQL snippet can be attached to a
+      high-visibility term with no record of who did it. Not a security hole per se (the write is
+      permission-gated) but a real audit-completeness gap that the cross-pillar nature makes easy to miss.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a user views a query example on the term's Query-Examples tab, the definition and SQL display as inert text (the SQL is shown, not executed; embedded HTML/JS does not run)."
+  derivation: "Response-shape — the tab renders qe.definition and qe.query; a user expects a code/text display. The F-004 family establishes that the platform renders these through a Markdown parser."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      QueryExamplesListItem renders BOTH definition and query through <Markdown value={...} disableCopy />
+      (QueryExampleController sidecar bugs_limitations_corner_cases.[6] + security.data_exposure;
+      QueryExamplesListItem.tsx:45,52), i.e. @uiw/react-md-editor's MDEditor.Markdown with the default
+      config and NO rehype-sanitize allowlist applied in Markdown.tsx (lines 1-127). The query body is
+      stored verbatim (text NOT NULL, no sanitisation at the controller or service layer). So a query
+      example whose definition or query contains Markdown/HTML payload (a javascript: link, an
+      <img onerror=...>, raw <script> where rehype-raw passes it) is RENDERED, not displayed verbatim. This
+      term's Query-Examples tab is one of the two render sites of the F-004 4th surface (the other being
+      the catalog list + details page).
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: security
+        cite: "QueryExamplesListItem.tsx:45,52 (Markdown render of definition + query) + Markdown.tsx:1-127 (no sanitiser) + V0_0_84__create_query_example.sql:5 (verbatim storage)"
+        note: "F-004 stored-XSS family 4th surface, reached via the term tab"
+    operator_visible_failure: |
+      A user holding QUERY_EXAMPLE_CREATE (granted broadly via the Administrator role per
+      V0_0_88__add_query_example_policy.sql) can author a query example with a payload in its definition
+      or query, then — via QUERY_EXAMPLE_TERM_CREATE — attach it to a widely-viewed business term. Every
+      authenticated user opening that term's Query-Examples tab (read-collaborative: no RBAC gate on the
+      read) executes the payload in their browser session. Because the Glossary is a high-traffic,
+      cross-team surface, this is a high-reach stored-XSS vector. The live data-modelling doc page is
+      silent on Markdown rendering of the query body, so operators do not know to sanitise snippets before
+      pasting. Mitigation is shared with the rest of the F-004 family (apply rehype-sanitize in
+      Markdown.tsx); until then this surface is open.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a term accumulates many query examples, the Query-Examples tab pages through them (the user can reach examples beyond the first page)."
+  derivation: "Endpoint-shape + performance — the by-term read returns a QueryExampleList (a paginated shape with hasNext); a user with many linked examples expects pagination."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      getQueryExampleByTermId returns a QueryExampleList, but QueryExampleMapper.mapListToQueryExampleList
+      (lines 72-74) hard-codes hasNext=false and total=items.size() — the by-dataset and by-term endpoints
+      have NO real pagination (QueryExampleController sidecar concepts.QueryExampleList +
+      performance.scaling_characteristics + known_performance_gaps.[0]). The endpoint returns ALL examples
+      linked to the term in a single response; the UI (TermQueryExamples.tsx:21,23) reads data.items with
+      no page/size controls and no "load more". So the user always sees every linked example at once — but
+      the response is O(N) over the example count with no upper bound.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: performance
+        cite: "QueryExampleMapper.java:72-74 (hasNext hard-coded false) + QueryExampleController.java:59-63"
+        note: "no pagination on the by-term read; whole list returned per call"
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "TermQueryExamples.tsx:21,23 (data.items, no page/size, no load-more)"
+        note: "UI has no pagination control either"
+    operator_visible_failure: |
+      For ordinary terms (a handful of examples) the user sees everything and the lack of pagination is
+      invisible — which is why this is contradicted-but-low-severity rather than a happy-path failure. The
+      operator-visible failure appears only at scale: a heavily-curated term that accumulates dozens or
+      hundreds of query examples loads them ALL in one response and renders ALL rows, degrading tab
+      latency O(N) with no cap (QueryExampleController known_performance_gaps.[0], severity MEDIUM there).
+      The hasNext=false also means a future client that DID try to paginate would believe there is never a
+      next page. Worth a documented caveat that the by-term list is unbounded.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a first-time user opens the 'Link query' dialog, the labels make it obvious they are linking an EXISTING query example to the term (not authoring a new one)."
+  derivation: "Senior-PO UX seed (does the user understand how to use this from what is on screen; consistent labelling) — the CTA, the dialog title, and the submit button should agree."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The labels are inconsistent across the affordance. The list-page button reads "Link query"
+      (TermQueryExamples.tsx:40), but the dialog TITLE and the submit BUTTON both read "Add query example"
+      (AssignTermQueryExampleForm.tsx:45,65), and the dialog body instruction reads "Select a query
+      example from the list" (line 52). So three different verbs describe one action: "Link", "Add",
+      "Select". The QueryExamplesAutocomplete is a select-from-existing combo-box (it does not author a
+      new example), so "Select" / "Link" are accurate and "Add" is the misleading one — "Add query
+      example" reads as if it would create a new snippet. The mechanism is correct (it links an existing
+      example via the combo-box); only the labelling is inconsistent.
+    evidence:
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "TermQueryExamples.tsx:40 ('Link query') vs AssignTermQueryExampleForm.tsx:45,65 ('Add query example'), :52 ('Select a query example from the list')"
+        note: "three verbs for one action; 'Add' implies authoring a new example"
+    operator_visible_failure: |
+      A first-time steward clicks "Link query" expecting to attach an existing snippet, then sees a dialog
+      titled "Add query example" with an "Add query example" submit button — a momentary "wait, am I
+      creating a new one?" hesitation. The combo-box clarifies it (it lists existing examples), so no data
+      is lost and the action completes correctly; this is a discoverability/consistency paper-cut, not a
+      functional bug. Aligning the dialog to "Link query example" / "Link" would make the affordance read
+      consistently. Severity LOW.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When the QueryExamplesListItem is rendered in the term context (isTerm=true), it behaves correctly for a term (e.g. its detach/unlink affordance targets the term link, not a data-entity link)."
+  derivation: "Cross-pillar — QueryExamplesListItem is a shared P-02 component toggled by an isTerm flag + entityId={termId}; the dual-mode contract is unverified (F-155 facet cross_pillar_p_02_p_06_shared_component)."
+  seed_source: cross-pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      TermQueryExamples renders QueryExamplesListItem with isTerm + entityId={termId}
+      (TermQueryExamples.tsx:48-55). The component is the P-02 Data Modelling shared list-item; the isTerm
+      flag is expected to switch its context between data-entity and term (so that, e.g., an unlink action
+      hits DELETE /api/terms/{term_id}/queryexample/{example_id} rather than the data-entity detach
+      endpoint). QueryExamplesListItem is NOT enriched in this slice (cross-pillar P-02 territory; F-155
+      facet ui_unverified: true). Whether the isTerm branch correctly routes the detach (and whether it
+      respects QUERY_EXAMPLE_TERM_DELETE rather than QUERY_EXAMPLE_DATASET_DELETE) cannot be verified from
+      the F-155 chain alone — it requires reading the P-02 component or running the platform.
+    evidence:
+      - sidecar: "(source_read_for_validation — UI hop unresolved)"
+        section: ui
+        cite: "TermQueryExamples.tsx:48-55 (isTerm + entityId={termId} props)"
+        note: "shared-component dual-mode contract; P-02 component not enriched"
+    operator_visible_failure: |
+      If the isTerm branch is mis-wired (the shared-component-with-context-flag pattern is fragile to P-02
+      renames per the F-155 facet), the operator-visible failures would be: a detach button on the term
+      tab that silently no-ops or that detaches from the wrong scope, or a detach gated by the wrong
+      permission (QUERY_EXAMPLE_DATASET_DELETE vs QUERY_EXAMPLE_TERM_DELETE). This is exactly the class
+      LSN-025 warns about (a P-02 component reused on a P-06 surface with no substrate node enriched for
+      it). Probe: render the term tab with a linked example as a QUERY_EXAMPLE_TERM_DELETE holder and a
+      non-holder, attempt detach, observe the request path + status. local_execution_blocked: false.
+    severity: MEDIUM
+    confidence: LOW
+    routes_to_finding: probe-needed
+    use_case_kind: teardown
+    coverage: unverified
+    probe_id: PENDING-F-155-2
+    test_demand: "probe PENDING-F-155-2"
+    source_read_for_validation: true
+
+- id: H-011
+  hypothesis: "When the same operator detaches a query example from a term then re-attaches it, the re-attach succeeds (the link lifecycle is idempotent/repeatable)."
+  derivation: "Negative-space + endpoint-shape — DELETE then POST on /api/terms/{term_id}/queryexample; the link table's duplicate-handling determines whether re-attach after detach works cleanly."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Detach is DELETE /api/terms/{term_id}/queryexample/{example_id} →
+      TermController.deleteQueryExampleToTermRelationship → QueryExampleService.removeTermFromQueryExample,
+      which HARD-deletes the query_example_to_term row (QueryExampleController sidecar
+      implicit_adrs.hard-delete-of-links: link rows are hard-deleted, not soft-deleted). Because the link
+      row is physically removed, a subsequent POST (re-attach) inserts a fresh row with no
+      unique-constraint collision against a tombstone. So detach-then-reattach is clean and repeatable.
+      (The duplicate-relation guard only fires when the link STILL exists.)
+    evidence:
+      - sidecar: odd-platform__java__TermController__controller-class__TermController.md
+        section: operations
+        cite: "TermController.java:229-234 (deleteQueryExampleToTermRelationship → removeTermFromQueryExample, returns 204)"
+        note: "detach hard-deletes the link row"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+        section: implicit_adrs
+        cite: "QueryExampleServiceImpl.java:84-92 (link rows hard-deleted) — same hard-delete-of-links ADR"
+        note: "no tombstone on link rows → re-attach is clean"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: |-
+    Query example query/definition rendered via MDEditor.Markdown (no rehype-sanitize) on the term's
+    Query-Examples tab — F-004 stored-XSS 4th surface reaches the high-traffic Glossary; any
+    QUERY_EXAMPLE_CREATE holder can plant JS that runs for every term viewer.
+  dedup_status: already_tracked
+  tracked_as: F-155b-adjacent / F-004 family (QueryExampleController security.known_security_gaps.[0])
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "Markdown.tsx:1-127 — apply rehype-sanitize allowlist (shared fix for the whole F-004 family; closes Term/DataEntity/DatasetField/QueryExample render sites together)"
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: |-
+    AssignTermQueryExampleForm mutateAsync has a .then but no .catch — backend reject leaves the dialog
+    open with no error, no reset, no toast (silent failure).
+  dedup_status: already_tracked
+  tracked_as: F-155b
+  recommended_log_as: "(corroborates F-155b finding-artefact 2026-05-27-batch-5#finding-f-155b)"
+  proposed_fix_anchor: "AssignTermQueryExampleForm.tsx:32-41 — add .catch((err)=>setError(...)) + render error in DialogWrapper"
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    TermQueryExamples keys React rows on qe.definition (free text), not qe.id — two examples with
+    identical definition collide and one is silently dropped from the tab.
+  dedup_status: already_tracked
+  tracked_as: F-155a
+  recommended_log_as: "(corroborates F-155a finding-artefact 2026-05-27-batch-5#finding-f-155a)"
+  proposed_fix_anchor: "TermQueryExamples.tsx:51 — key={qe.id} (one-line fix; matches sibling EntityClassItem pattern)"
+
+### caveat_candidates
+- hypothesis_id: H-006
+  one_line: |-
+    Query-example attach/detach to a term emits NO Activity Feed event (QueryExampleServiceImpl has no
+    @ActivityLog) — the term's audit trail is silent on query-example linkage.
+  dedup_status: already_tracked
+  tracked_as: "audit-log-presence-asymmetry-2-tier-audit-story (system-mission.md:386-395 canonicalisation candidate); QueryExampleController bugs_limitations_corner_cases.[3]"
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-modelling/query-examples (note linkage is not audited)"
+- hypothesis_id: H-008
+  one_line: |-
+    The by-term Query-Examples list has no pagination (hasNext hard-coded false; whole list returned per
+    call) — fine for ordinary terms, O(N) latency for heavily-curated ones.
+  dedup_status: already_tracked
+  tracked_as: "QueryExampleController performance.known_performance_gaps.[0]"
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-modelling/query-examples (by-term/by-dataset list is unbounded)"
+- hypothesis_id: H-009
+  one_line: |-
+    Label inconsistency: the CTA is 'Link query', the dialog title + submit are 'Add query example', the
+    body says 'Select…' — 'Add' misreads as authoring a new snippet.
+  dedup_status: net_new
+  recommended_log_as: "doc-gap-NNN OR a trivial UI-copy fix item (align dialog to 'Link query example')"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (confirmed / contradicted / partial / probe-needed) becomes
+# a missing-functional TEST-GAP candidate. The two confirmed-but-untested promises (H-002 assign happy-path,
+# H-011 detach/re-attach) are the highest-value guards to mint — they are hand-proven real and have NO test.
+- use_case_id: F-155-UC-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Selecting a query example in the 'Link query' dialog and submitting links it to the term and it appears on the tab."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-155-UC-002)"
+  proposed_test: "e2e: as a QUERY_EXAMPLE_TERM_CREATE holder, open /terms/{id}/query-examples, click 'Link query', select a seeded example, submit; assert POST /api/terms/{id}/queryexample 2xx + the example's SQL renders on the tab + dialog closes."
+- use_case_id: F-155-UC-011
+  hypothesis_id: H-011
+  kind: resolve-later
+  promise: "Detaching a query example from a term then re-attaching it succeeds (link lifecycle is repeatable)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-155-UC-011)"
+  proposed_test: "integration/e2e: link an example, DELETE /api/terms/{id}/queryexample/{exampleId} (204), re-POST the same example; assert the re-attach succeeds (no duplicate-constraint 4xx) and the row reappears."
+- use_case_id: F-155-UC-003
+  hypothesis_id: H-003
+  kind: edit-reconcile
+  promise: "A backend reject on the 'Link query' dialog shows the user an error (not a silent open dialog)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-155-UC-003)"
+  proposed_test: "unit/RTL: render AssignTermQueryExampleForm with a mutateAsync that rejects; submit; assert an error is rendered and the dialog stays open WITH feedback (pins the fix; RED until .catch added)."
+- use_case_id: F-155-UC-004
+  hypothesis_id: H-004
+  kind: render
+  promise: "Two query examples with identical definition both render as distinct rows on the tab."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-155-UC-004)"
+  proposed_test: "unit/RTL: render TermQueryExamples with two examples sharing a definition; assert BOTH rows render (RED today: key collision drops one; GREEN after key={qe.id})."
+- use_case_id: F-155-UC-005
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "A caller without QUERY_EXAMPLE_TERM_CREATE cannot link a query example (backend rejects, not just UI hide)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-155-UC-005) — pairs with probe PENDING-F-155-1"
+  proposed_test: "@WebFluxTest/security: POST /api/terms/{id}/queryexample as a user lacking QUERY_EXAMPLE_TERM_CREATE; assert 403 (pins the gate; guards against the REFACTOR-217 path-mismatch class)."
+- use_case_id: F-155-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Attaching/detaching a query example to a term is recorded for audit (who/when)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-155-UC-006)"
+  proposed_test: "integration: link a query example to a term; assert an Activity row is emitted (RED today — no @ActivityLog; pins the audit-completeness decision either way)."
+- use_case_id: F-155-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "Query example definition/SQL on the term tab displays as inert text (XSS payload does not execute)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-155-UC-007) — regression guard for the F-004 sanitiser fix"
+  proposed_test: "e2e/RTL: link a query example whose query is <img src=x onerror=alert(1)>; render the term tab; assert no script execution / payload escaped (RED until rehype-sanitize added in Markdown.tsx)."
+- use_case_id: F-155-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A query example linked to a term renders on the Query-Examples tab; a term with none lists none."
+  verdict: confirmed
+  coverage: verified
+  recommended_log_as: "(already covered by IT-034 — no demand)"
+  proposed_test: "(none — e2e/specs/term-query-examples.spec.ts both arms PASS)"
+
+### probes_emitted
+- probe_id: PENDING-F-155-1
+  hypothesis_id: H-005
+  hypothesis: "When a caller without QUERY_EXAMPLE_TERM_CREATE POSTs /api/terms/{term_id}/queryexample (direct API or DOM-bypass of the UI hide), the backend rejects with 403 — the WRITE is backend-enforced, not merely UI-hidden."
+  local_execution_blocked: false
+  probe_sketch: "odd-minimal stack with LDAP/policy granting a user a role WITHOUT QUERY_EXAMPLE_TERM_CREATE; POST a queryExampleTermFormData to /api/terms/{seededTermId}/queryexample; assert HTTP 403. Repeat as a holder; assert 2xx. Pins SecurityConstants.java:187-189 binding against the REFACTOR-217 path-mismatch class."
+- probe_id: PENDING-F-155-2
+  hypothesis_id: H-010
+  hypothesis: "When QueryExamplesListItem renders with isTerm=true + entityId={termId}, its detach affordance targets DELETE /api/terms/{term_id}/queryexample/{example_id} (term scope) and respects QUERY_EXAMPLE_TERM_DELETE — not the data-entity detach endpoint / QUERY_EXAMPLE_DATASET_DELETE."
+  local_execution_blocked: false
+  probe_sketch: "Render /terms/{id}/query-examples with a linked example as a QUERY_EXAMPLE_TERM_DELETE holder; click detach; observe the request path + method + status. Then as a non-holder; assert the detach is gated. Resolves the cross-pillar shared-component dual-mode contract (F-155 facet cross_pillar_p_02_p_06_shared_component; LSN-025 class)."
+
+### validation_gaps
+# Rule 9 — FIRST output: the feature's UI surface is in the chain but NOT enriched.
+- sidecar: "odd-platform ts react-component:TermQueryExamples (UNRESOLVED — no sidecar)"
+  field_insufficient: "entire sidecar absent (feature-flow chain hop 1 marks sidecar: unresolved)"
+  proposed_refresh: |
+    F-155 is a user-facing UI feature whose two UI hops (TermQueryExamples, AssignTermQueryExampleForm)
+    have NO enriched sidecar — the feature-flow carries inline UI evidence but no per-node mental model.
+    This reflection traced the UI via the Rule-8 single-line exception (read TermQueryExamples.tsx +
+    AssignTermQueryExampleForm.tsx directly; source_read_for_validation flagged on H-001/002/003/004/005/
+    008/009/010). The next file-analyser pass MUST enrich TermQueryExamples as a substrate node (the
+    LSN-025 530-component gap): capture the by-term read hook, the empty/loading/list render branches, the
+    React-key choice, the permission-gated CTA, and the cross-pillar QueryExamplesListItem prop contract.
+- sidecar: "odd-platform ts react-component:AssignTermQueryExampleForm (UNRESOLVED — no sidecar)"
+  field_insufficient: "entire sidecar absent (feature-flow chain hop 2 marks sidecar: unresolved)"
+  proposed_refresh: |
+    Enrich AssignTermQueryExampleForm: the mutateAsync payload shape ({queryExampleTermFormData:
+    {queryExampleId}, termId}), the missing .catch (silent-failure facet), the close-on-isSuccess
+    contract, the label set (Link query / Add query example / Select…), and the QueryExamplesAutocomplete
+    dependency. Until enriched, every WRITE-side hypothesis here rests on a direct source read, not a
+    traceable sidecar.
+- sidecar: "odd-platform ts react-component:QueryExamplesListItem (P-02, UNRESOLVED — out of scope this slice)"
+  field_insufficient: "shared P-02 list-item component not enriched; isTerm dual-mode contract unverifiable"
+  proposed_refresh: |
+    QueryExamplesListItem is a P-02 Data Modelling shared component reused on this P-06 surface with an
+    isTerm flag (F-155 facet cross_pillar_p_02_p_06_shared_component). Its detach affordance + permission
+    binding under isTerm=true could not be verified from the F-155 chain (drives probe PENDING-F-155-2).
+    A P-02 enrichment pass should document the dual-mode (term vs data-entity) contract as a union
+    discriminator rather than a boolean flag.
+
+### doc_drift_findings
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+  doc_says: "The query body is 'the executable code' (shown code-block-style); the page is silent on Markdown rendering."
+  code_does: "Both definition and query are rendered through MDEditor.Markdown (a full Markdown parser, no sanitiser) — pasted Markdown/HTML is rendered, not displayed verbatim."
+  recommended_log_as: "doc-gap-NNN (inherits QueryExampleController doc_drift_findings.[1], severity HIGH — the term Query-Examples tab is a second render site)"
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary"
+  doc_says: "The Data Glossary pillar page does not mention that query examples can be attached to terms, nor the per-term Query-Examples tab."
+  code_does: "Terms carry a permission-gated Query-Examples tab (/terms/{id}/query-examples) with a 'Link query' affordance — a real cross-pillar P-06xP-02 surface with no doc home on either pillar page."
+  recommended_log_as: "doc-gap-NNN (the term-side query-example linkage feature is undocumented on the Glossary page)"
+
+## maintainer_notes
+
+(intentionally left empty — no prior EXISTING_REFLECTION was provided; this is the first reflection for F-155.)

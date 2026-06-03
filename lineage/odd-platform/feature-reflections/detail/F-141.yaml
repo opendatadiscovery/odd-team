@@ -1,0 +1,632 @@
+---
+feature_id: F-141
+pillar_anchored_id: P-01:F-012
+pillar: P-01 Data Discovery
+feature_name: |-
+  Catalog Overview Home Page — Overview.tsx SPA home shell that composes
+  the catalog-wide landing surfaces (MainSearch + TopTagsList + Domains +
+  DataEntitiesUsageInfo + Directory + OwnerAssociation) into one route.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+ui_surface_in_chain: true   # Rule 9 — the feature has enriched UI sidecars (Overview / Directory / PopularStrip); this is a real product-owner reflection, NOT API-only.
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__Overview.md
+  - odd-platform__ts__react-component__component__Directory.md
+  - odd-platform__ts__react-component__component__PopularStrip.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+    last_verified_at: "2026-05-20T00:00:00Z"   # cross-referenced via Overview.md docs_link_semantic (WebFetch 2026-05-20 status 200); not re-fetched this session
+    last_verified_status: 200
+    note: "Live-doc claims taken from Overview.md fetched_excerpts (status 200). No WebFetch permission this session; doc claims are sidecar-cited, not re-verified."
+hypothesis_summary:
+  total: 11
+  confirmed: 2
+  contradicted: 6
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "An operator who typos auth.type (e.g. OUATH2) sees an apparently-functional OwnerAssociation card on a deployment that booted with NO SecurityWebFilterChain — the home page masks a fully-unauthenticated deployment."
+related_feature_flows: [F-001, F-003, F-017, F-018, F-023, F-046, F-064, F-142]
+related_concepts:
+  - catalog-overview-home-page
+  - cumulative-layout-shift
+  - search-launcher-composition
+  - read-collaborative-catalog-posture
+related_drift_classes:
+  # from F-141 observed_vs_expected.facets that this reflection confirmed
+  - home_page_composition_no_skeleton_alignment_between_six_independent_data_widgets
+  - skeleton_shape_does_not_match_rendered_shape_search_bar_main_search_missing_from_skeleton
+  - owner_association_gate_string_equality_disabled_no_normalisation
+  - domains_directory_widgets_silently_hide_when_empty_no_empty_state_signal
+  - no_route_level_permission_no_authentication_redirect_at_component_layer
+new_drift_classes_proposed:
+  - home_page_recommended_panel_doc_claims_visible_under_disabled_but_code_hides_entire_wrapper
+  - top_tags_strip_promises_popularity_but_backend_paginates_oldest_by_id_before_aggregating
+---
+
+# Catalog Overview Home Page — product-owner reflection
+
+## product_owner_narrative
+
+The Catalog Overview is **the platform's front door** — the SPA home page mounted at the `/` route, the first surface every operator sees after they sign in (and, on `auth.type=DISABLED` deployments, the first surface any anonymous network caller reaches) (per Overview.md understanding + upstream_callers). Its job is to orient a newly-arrived user: "here is what's in this catalog, and here are the ways in." It belongs to the Data Discovery pillar (P-01), whose one-line capability is "find existing data entities in the catalog — by typing a term (Search), walking a structure (Directory), or landing on the home page (Catalog Overview)" (per system-mission.md P-01). The Catalog Overview is the third of those three entry paths, and it threads the other two inline.
+
+A user interacts with it as a **constellation of launchers**. The page composes six surfaces in a fixed vertical sequence (per Overview.md concepts.operations.fixed-sequence, Overview.tsx:44-60): a `MainSearch` box at the top (type a term, jump into Search / F-017); a `TopTagsList` strip of the 30 most-used tags (click a tag, launch a tag-filtered search / F-018); a `Domains` card (catalog-domain inventory, launches a domain-filtered search); a `DataEntitiesUsageInfo` per-class dashboard (click a class cell, launch a class-filtered search — each cell prefills `entityClasses` and, per-type, `types` facets per F-141 chain hop 3b); a mini `Directory` strip (datasource-type cards, cross-link into the full Directory / F-023); and, conditionally, an `OwnerAssociation` panel that — for a signed-in user linked to an Owner — renders the four-column "Recommended" surface (My Objects / Upstream / Downstream / Popular) (per PopularStrip.md understanding). The user provides no inputs to the home page itself beyond arriving; the page reads `appInfo.authType` and the popular-tags list, and every other widget self-loads its own data.
+
+The working parts the operator experiences: a **loading skeleton** that is supposed to represent the page's shape while it loads; six **independent data fetches** that fan out on mount (appInfo, popularTags, domains, entities-usage, datasource-types, and — when the Recommended panel mounts — four My-entities thunks, totalling 9-10 HTTP calls on a cold authenticated mount per Overview.md downstream_side_effects); an **auth-mode gate** that decides whether the OwnerAssociation/Recommended panel appears at all (`isShowOwnerAssociation = Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED')`, Overview.tsx:25-27); and **silent self-hiding** of the Domains and Directory cards when their data is empty (each renders `null` on an empty array, per Overview.md implicit_adrs[1] + Directory.md). There is no route-level permission check and no error boundary at this layer (Overview.md bugs[6]).
+
+The integration story is dense: the Catalog Overview is where **most of the platform's other pillars surface their entry affordance**. TopTagsList renders the Manual Object Tagging taxonomy (F-018); the per-class dashboard and Domains and MainSearch all feed Search Filter Facets (F-017); the mini Directory cross-links the Directory feature (F-023); the Recommended panel's Popular column is the UI closure of the Popular Entities Ranking inflation loop (F-001/F-003) and the OwnerAssociation gate is the entry point of the user-owner-association lifecycle (F-142). The home page is therefore not a leaf feature — it is the **composition root** through which a half-dozen features are first discovered.
+
+In a demo, a product owner would highlight the edge cases candidly: on a **fresh deployment** with no Domains seeded and no datasources registered, the Domains and Directory cards simply vanish — there is no "add your first datasource" call-to-action, so a brand-new admin cannot learn from the home page that those features exist (F-141 facet `domains_directory_widgets_silently_hide_when_empty`). On a **slow network**, the skeleton lifts as soon as the two fast calls (identity + tags) resolve, then the other four widgets pop in asynchronously, shifting the layout (F-141 facet `no_skeleton_alignment`). On an **auth-disabled deployment**, the whole page is anonymously reachable and leaks the tag taxonomy, domain names, per-class counts, and datasource-type inventory to any caller (Overview.md security.known_security_gaps). And the live documentation makes at least two user-facing claims the code does not honour (the Recommended panel's DISABLED-mode visibility, and the Popular-tile click destination — both per Overview.md doc_drift_findings).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user lands on `/`, the platform renders one unified home page that signals 'this is the catalog overview' — search bar + top tags + domains + per-class usage + directory + (when applicable) a Recommended panel — in a coherent, single-purpose layout."
+  derivation: "Pillar P-01 names 'landing on the home page (Catalog Overview)' as one of three primary discovery entry paths; the feature_name promises a composed landing surface."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The six surfaces DO render in a fixed vertical sequence (Overview.tsx:44-60), so the page is functionally
+      a composed home. But there is no unified information architecture: each of the first five widgets carries its
+      own H-level header and section spacing, and on a populated deployment the page is a five-to-six-band vertical
+      scroll (search box, tag chips, domain tiles, a four-column class-usage card, ODDRN-prefix datasource cards,
+      and a four-column Recommended panel). The operator gets six discrete visual surfaces stacked rather than one
+      "this is your catalog overview" signal — the Recommended panel (the operator's "my work today" anchor) competes
+      with five launcher widgets above it (F-141 facet domains_widget_renders_under_full_owner_association_subtree...).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: concepts.operations / understanding
+        cite: "Overview.tsx:44-60"
+        note: "fixed-sequence composition of six self-headed surfaces; no unifying IA wrapper"
+      - sidecar: F-141 (feature-flow)
+        section: "observed_vs_expected.facets[domains_widget_renders_under_full_owner_association_subtree_visually_competes_with_recommended_panel]"
+        cite: "Overview.tsx:46-59"
+        note: "5-band vertical scroll; Recommended panel diluted by launchers above it"
+    operator_visible_failure: |
+      The page works as a launcher constellation but reads as a stack of unrelated cards rather than a designed
+      overview. A first-time operator does not get a single orienting signal; an experienced operator must scroll
+      past five launcher bands to reach the Recommended panel they use daily. This is a discoverability/IA gap,
+      not a functional break — the page does compose, it just does not cohere.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator configures a real auth mode (LOGIN_FORM / OAUTH2 / LDAP), the OwnerAssociation / Recommended panel appears; when they disable auth (auth.type=DISABLED), it is hidden — and any value that is NOT one of the four documented modes is treated safely (not rendered as if auth were on)."
+  derivation: "The gate predicate `appInfo.authType !== 'DISABLED'` (Overview.tsx:25-27) is the visibility control for the Recommended panel; the documented enum is DISABLED|LOGIN_FORM|OAUTH2|LDAP."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The gate is a raw, case-sensitive, un-normalised string-inequality against the single literal 'DISABLED'
+      (Overview.tsx:25-27), with no validation against the documented enum and no upstream default
+      (AppInfoController.java:18 reads `@Value("${auth.type}")` with no @Pattern / no default). Consequently:
+      a typo like `OUATH2` (transposed) → Boolean('OUATH2' && 'OUATH2' !== 'DISABLED') === TRUE → the OwnerAssociation
+      card RENDERS, but NO `@ConditionalOnProperty(havingValue='OUATH2')` matches, so the backend booted with NO
+      SecurityWebFilterChain at all — an apparently-functional Recommended panel on a fully-unauthenticated deployment.
+      `disabled` (lowercase) or `' DISABLED'` (whitespace) → also TRUE → card shows even though the operator's clear
+      intent was to disable auth. Empty string → FALSE → card hidden, masking the broken-auth deployment.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: bugs_limitations_corner_cases[0] / invariants
+        cite: "Overview.tsx:25-27"
+        note: "four operator-misconfiguration scenarios; no console.warn, no fallback, no diagnostic"
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: security.known_security_gaps[0]
+        cite: "AppInfoController.java:18 (no @Value default, no enum validation per upstream sidecar)"
+        note: "two layers (no backend default + no UI validation) compound; neither catches the other"
+    operator_visible_failure: |
+      (1) The headline failure: an operator who typos auth.type ships a deployment with every endpoint
+      unauthenticated AND a home page that shows the OwnerAssociation card as if auth were correctly enabled —
+      the UI actively reassures them that security is on while it is off. This is the LSN-002 / LSN-001 class
+      (operator follows our surface off a cliff). (2) The inverse: lowercase/whitespace `disabled` shows the panel
+      when the operator meant to turn auth off. (3) Empty string hides the panel, masking a broken-auth boot.
+      No diagnostic is emitted in any case.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user passes through the home page on a slow connection, the loading skeleton represents the shape of the page that is about to render, so the page does not visibly shift its layout once the data arrives."
+  derivation: "OverviewSkeleton is the loading placeholder (Overview.tsx:34-42); a skeleton's contract is to pre-occupy the rendered shape."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The skeleton lifts as soon as `isIdentityFetching || isTagsFetching` resolves (Overview.tsx:29-32) — it waits
+      on only TWO of the six surfaces. The other four (appInfo, Domains, DataEntitiesUsageInfo, Directory) are still
+      loading when the skeleton vanishes, so they pop in asynchronously, shifting the layout. Worse, the skeleton's
+      top placeholder is a generic grey rectangle (OverviewSkeleton.tsx:35), NOT a search-bar shape — so when
+      MainSearch renders with its input affordance and different height/padding, the hero area itself shifts.
+      And because appInfo is not in the skeleton's wait set, the OwnerAssociation gate can flip false→true seconds
+      after first paint, injecting the entire Recommended panel mid-page (Overview.md bugs[3]).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: implicit_adrs[1] / bugs[3]
+        cite: "Overview.tsx:29-32"
+        note: "isLoading ORs only identity+tags; the other four self-load and pop in"
+      - sidecar: F-141 (feature-flow)
+        section: "observed_vs_expected.facets[skeleton_shape_does_not_match_rendered_shape...]"
+        cite: "OverviewSkeleton.tsx:35 vs Overview.tsx:46-48"
+        note: "generic rectangle placeholder vs actual MainSearch input box"
+    operator_visible_failure: |
+      The user watches the page reflow after it appears 'loaded': the search box changes shape, the domain/usage/
+      directory cards pop in, and on authenticated deployments a four-column Recommended panel can drop in mid-page
+      800ms late. Cumulative Layout Shift (a Core Web Vital) is unbounded; first-contentful-paint is decoupled from
+      the page's actual ready state. The skeleton's promise — "this is the shape that's coming" — is broken for
+      four of six surfaces.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a user types a term in the home-page search box, they are taken into the catalog Search experience for that term."
+  derivation: "MainSearch is the first composed surface (Overview.tsx:46-48) and the pillar names Search as the primary discovery action; the home page is described as a search-launcher constellation."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The home page renders `<MainSearch mainSearch />` (Overview.tsx:46-48), the catalog-wide full-text-search
+      input shared element (Overview.md couples-to). It is the documented top section ("Main search") of the
+      Catalog Overview per the live doc excerpt. The search-launcher behaviour is the cross-pillar feed into
+      F-017 (Search Filter Facets), consistent with the per-class dashboard and Domains widgets that also launch
+      prefilled searches.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: understanding / dependencies_semantic.requires-feature[5]
+        cite: "Overview.tsx:46-48"
+        note: "MainSearch composed as section 1; feeds F-017 Search"
+      - sidecar: F-141 (feature-flow)
+        section: "discovered_from_entry_point"
+        cite: "Overview.tsx:46-48"
+        note: "MainSearch links into F-017"
+    operator_visible_failure: ""
+    severity:
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a user clicks a tag in the home-page Top Tags strip, the strip shows the catalog's MOST-USED tags (so the most popular tag is present and prominent)."
+  derivation: "The widget is labelled 'Top Tags' and is fetched via useGetPopularTags({page:1, size:30}) (Overview.tsx:20-23); 'Top'/'Popular' promises a popularity ranking."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The TopTagsList re-sorts client-side by usedCount, but it can only render tags the backend returned, and the
+      backend `ReactiveTagRepositoryImpl.listMostPopular` paginates by `TAG.ID ASC` BEFORE aggregating usage
+      (the LSN-019 / PLT-026 defect): page 1 (size 30) is the 30 OLDEST tags by id, re-ranked by usage only WITHIN
+      that window. The youngest tags can never reach page 1 even when they are the most-used. The 'Top Tags' label
+      and the `getPopularTagList` op both promise popularity ordering the implementation cannot honour past page 1.
+      This is verified RED by the IT-005 e2e (top-tags-ordering.spec.ts), which seeds the 5 most-used tags as the
+      5 youngest and asserts they appear on the home-page strip.
+    evidence:
+      - sidecar: F-018 (cross-feature, via IT-005)
+        section: "integration-tests/e2e/specs/top-tags-ordering.spec.ts"
+        cite: "ReactiveTagRepositoryImpl.java:147-148"
+        note: "paginate-before-aggregate; most-popular-young tags dropped off page 1 — IT-005 RED today"
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: downstream_side_effects
+        cite: "Overview.tsx:20-23 (useGetPopularTags page:1 size:30)"
+        note: "home page is the surface that renders the mis-ordered strip"
+    operator_visible_failure: |
+      A newly-created, heavily-used tag never appears in the home page's 'Top Tags' even though it is genuinely the
+      most-used — the strip silently shows older, less-used tags labelled as the platform's top tags. An operator
+      relying on Top Tags to find the catalog's active vocabulary is misled. This is the same defect class as
+      listMostPopular (LSN-019); the home page is its most visible surface. Already tracked as PLT-026 / pinned by
+      IT-005 against F-018 — this reflection corroborates it from the F-141 composition seat.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/top-tags-ordering.spec.ts (IT-005) — RED, pins PLT-026"
+
+- id: H-006
+  hypothesis: "When a brand-new operator opens the home page on a fresh deployment (no domains seeded, no datasources registered), the page tells them the catalog is empty and how to start populating it."
+  derivation: "Onboarding to data is one of the three stated platform pain points (system-mission.md README excerpt); the home page is the operator's first surface."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      On empty data, the Domains card renders `null` (Overview.md implicit_adrs[1]; Domains.tsx:12) and the mini
+      Directory card renders `null` (Directory.tsx:12-27 — `data?.length > 0 ? ... : null`). There is no
+      empty-state placeholder, no "add your first Domain / register a datasource" call-to-action, no link into
+      Management. The widgets silently disappear, indistinguishable from "this build doesn't ship Domains/Directory"
+      from the operator's perspective. The full-page Directory route does render an EmptyContentPlaceholder
+      (Directory.md operations.empty-state), but the HOME-PAGE mini Directory does not — it just vanishes.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: implicit_adrs[1]
+        cite: "Domains.tsx:12-21 + Directory.tsx:12-26"
+        note: "both home-page cards render null on empty data, no empty-state affordance"
+      - sidecar: F-141 (feature-flow)
+        section: "observed_vs_expected.facets[domains_directory_widgets_silently_hide_when_empty_no_empty_state_signal]"
+        cite: "Overview/Domains/Domains.tsx:12-22 + Overview/Directory/Directory.tsx:12-27"
+        note: "fresh admin cannot discover Domains/Directory exist from the home page"
+    operator_visible_failure: |
+      A fresh admin lands on a home page that shows a search box, an empty tag strip, and a per-class dashboard
+      (also empty on a fresh deployment) — with the Domains and Directory sections simply absent. They have no
+      on-screen path to "register your first datasource" or "create a Domain". The onboarding pain point the platform
+      claims to solve is unaddressed at the very first surface. The day-one operator is left to find Management on
+      their own.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a user clicks a class cell in the per-class usage dashboard, they are taken to a catalog Search prefiltered to that entity class."
+  derivation: "DataEntitiesUsageInfo exposes per-class click-launchers; handleEntityClassClick navigates to Search prefilled with entityClasses (F-141 chain hop 3b, DataEntitiesUsageInfo.tsx:23-32)."
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Each class cell prefills the `entityClasses` filter and navigates to Search; the per-type cell prefills BOTH
+      `entityClasses` AND `types` filters (F-141 chain hop 3b evidence, DataEntitiesUsageInfo.tsx:23-54). This is the
+      documented "Entities" per-class usage report behaviour and the cross-pillar feed into F-017. The widget self-
+      handles its missing/error data by rendering null (DataEntitiesUsageInfo.tsx:56), which is also the behaviour
+      pinned by the one existing unit test on this sub-widget.
+    evidence:
+      - sidecar: F-141 (feature-flow)
+        section: "chain.hop3b"
+        cite: "DataEntitiesUsageInfo.tsx:23-54"
+        note: "class click → entityClasses facet; type cell → entityClasses + types facets"
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: implicit_adrs[1]
+        cite: "DataEntitiesUsageInfo.tsx:56"
+        note: "self-handles error/missing data via null return"
+    operator_visible_failure: ""
+    severity:
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "odd-platform-ui/src/components/Overview/DataEntitiesUsageInfo/__tests__/DataEntitiesUsageInfo.test.tsx (covers null-on-undefined + null-on-error + render-on-data; does NOT cover the click-to-Search navigation)"
+
+- id: H-008
+  hypothesis: "When an authenticated user with an associated Owner views the home page, the Recommended panel's four columns (My Objects / Upstream / Downstream / Popular) are all scoped to that user — they see their work, not the whole catalog."
+  derivation: "The panel is headed 'Recommended' and three columns are explicitly per-user (My/Upstream/Downstream); an operator reading one heading reasonably expects a uniform scoping rule across all four columns."
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Three of the four columns ARE per-user owner-scoped (My Objects / Upstream / Downstream fire the four
+      My-entities thunks, OwnerEntitiesList.tsx:58-64). But the FOURTH column — Popular — is catalog-wide: the
+      backend `listPopular` CTE has no owner predicate and the service tier is a 1-line pass-through (PopularStrip.md
+      + Overview.md security.owner_scoping + F-003 facet). Every signed-in user with an Owner sees the SAME global
+      Popular list ranked by view_count DESC — including entities in other Owner namespaces. The single 'Recommended'
+      heading mixes two scoping rules (per-user for three columns, catalog-wide for the fourth).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: understanding / invariants
+        cite: "OwnerEntitiesList.tsx:99-105 + OwnerEntitiesList.tsx:58-64"
+        note: "Popular is the 4th column, identical render for all users; My/Upstream/Downstream are owner-scoped"
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: security.owner_scoping / bugs[1]
+        cite: "Overview.tsx:53-59 + F-003 facet (service tier 1-line pass-through)"
+        note: "Popular has never been per-user; only the other three columns are owner-scoped"
+    operator_visible_failure: |
+      A user in Owner A sees, under a 'Recommended' heading that implies 'recommended FOR YOU', the most-viewed
+      entities across the entire catalog — including Owner B's entities (externalName + internalName + entityClasses
+      + oddrn + hasAlerts in the 9-field projection). This is cross-owner enumeration via the home page, and it
+      surprises the operator's mental model of 'Recommended = mine'. Tracked as the REFACTOR-024 read-collaborative
+      family / PLT-104 (view_count) — this reflection corroborates the home-page-surface facet.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a user clicks a tile in the home-page Popular column, they land on that entity's page exactly as the documentation says — and a single open registers a single view."
+  derivation: "The live doc claims 'Clicking a tile opens that entity's Structure page'; the Popular column is the home page's most-clicked surface; view_count is the ranking signal it feeds."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Two disagreements. (a) Destination: the live doc says the tile opens the entity's Structure page; the code
+      navigates to `/dataentities/{id}/overview` — the Overview tab, not Structure (DataEntityList.tsx:38 +
+      dataEntitiesRoutes.ts:66-73 default 'overview', per Overview.md doc_drift_findings[2]). (b) Count integrity:
+      opening that destination fires the detail fetch TWICE (LSN-017 useEffect dep-array bug at
+      DataEntityDetails.tsx:56-64), so a single page-open registers +2 view_count — and view_count is the SOLE
+      Popular ranking signal with no rate-limit/idempotency/auth gate. IT-002 (view-count-overview.spec.ts) pins the
+      +2 (RED today, regresses PLT-104).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: doc_drift_findings[2]
+        cite: "DataEntityList.tsx:38 + dataEntitiesRoutes.ts:66-73"
+        note: "doc says Structure; code goes to Overview tab"
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: downstream_side_effects
+        cite: "DataEntityDetails.tsx:56-64 (LSN-017) — pinned by IT-002"
+        note: "single Popular-tile open → +2 view_count; the click feeds the very signal that ranks it"
+    operator_visible_failure: |
+      (1) The user clicking a Popular tile expecting the Structure page (per docs) lands on the Overview tab —
+      a documentation-vs-code mismatch that erodes trust in the manual. (2) Every open double-counts, so the Popular
+      ranking is inflated by exactly the act of browsing it, and is trivially forgeable by a scripted read loop
+      (anonymous under DISABLED). Both are already tracked (doc-drift → DOC-gap family; +2 → PLT-104, pinned by IT-002).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/view-count-overview.spec.ts (IT-002) — RED, regresses PLT-104; doc-destination drift is untested"
+
+- id: H-010
+  hypothesis: "When a render-time error occurs in any one home-page widget (e.g. a malformed/version-skewed API payload), the rest of the home page stays usable — only the broken widget degrades."
+  derivation: "Six independent widgets each render their own fetched data; a robust composition root isolates a single widget's failure (negative-space; standard product expectation for a composed dashboard)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Overview.tsx has no error boundary and no per-section ErrorBoundary (Overview.md bugs[6]); odd-platform-ui
+      has NO React error boundary anywhere (grep for ErrorBoundary|componentDidCatch → 0 hits, per IT-006 /
+      TEST-GAP-1013 / F-042). A render-time throw in any child propagates to the React root and unmounts the ENTIRE
+      tree — the nav chrome included — white-screening the whole app, not just the one broken widget. IT-006
+      (error-boundary-containment.spec.ts) opens `/` as its baseline and then induces a render throw, asserting the
+      app shell survives (RED today).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: bugs_limitations_corner_cases[6]
+        cite: "Overview.tsx:1-64 (no ErrorBoundary import, no try/catch)"
+        note: "a child throw blanks the whole home page"
+      - sidecar: F-042 (cross-feature, via IT-006)
+        section: "integration-tests/e2e/specs/error-boundary-containment.spec.ts"
+        cite: "TEST-GAP-1013"
+        note: "platform-wide: no error boundary anywhere; whole-tree unmount on any render throw"
+    operator_visible_failure: |
+      A single malformed widget payload (a version-skewed deploy, an out-of-enum value, a null where an object was
+      expected) blanks the entire home page including navigation — the operator's first surface becomes a white
+      screen with no path forward, rather than five working widgets plus one contained error. Tracked platform-wide
+      as TEST-GAP-1013 / PLT-138 family, pinned by IT-006; this reflection corroborates the home-page facet.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/error-boundary-containment.spec.ts (IT-006) — RED, regresses TEST-GAP-1013 (uses / as baseline)"
+
+- id: H-011
+  hypothesis: "When the platform runs with auth.type=DISABLED, an anonymous network caller reaching `/` sees an appropriately-limited home page — not the full catalog-shape inventory (tag taxonomy, domain names, per-class counts, datasource-type inventory)."
+  derivation: "Under DISABLED the home page is anonymously reachable (Overview.md security.auth_mode_relevance); a product owner asks what an unauthenticated visitor can fingerprint about the deployment."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static reading says: under DISABLED, the `/` route is anonymously reachable (no RequireAuth at the component;
+      DisabledAuthSecurityConfiguration `.anyExchange().permitAll()`), and the gate correctly HIDES the
+      OwnerAssociation/Recommended panel (authType==='DISABLED' → false). But the other four widgets render anonymously
+      and each leaks a catalog-shape signal: TopTagsList (the tag taxonomy), Domains (Domain DEG names + child counts),
+      DataEntitiesUsageInfo (total + per-class counts — a sizing fingerprint), and the mini Directory
+      (datasource-type inventory with per-bucket entity counts, confirmed unconditional in Directory.md). IT-009
+      proves the API-tier authentication boundary at `/api/dataentities/classes` but does NOT walk the `/` home page
+      render under DISABLED, so the exact anonymous home-page payload-exposure inventory is unverified at the UI tier.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: security.known_security_gaps[2]
+        cite: "Overview.tsx:1-64 + DisabledAuthSecurityConfiguration.java:13-18"
+        note: "four widgets leak operational fingerprinting data anonymously under DISABLED"
+      - sidecar: odd-platform__ts__react-component__component__Directory.md
+        section: bugs[2] / security.known_security_gaps[1]
+        cite: "Directory.tsx:14-55 + DirectoryRoutes.tsx:11"
+        note: "mini Directory has NO authType gate (unlike OwnerAssociation) — renders entitiesCount anonymously"
+    operator_visible_failure: |
+      Under the DISABLED default, an anonymous visitor can enumerate the platform's tag vocabulary, domain names,
+      per-class entity counts, and datasource-type inventory directly from the home page — a passive fingerprinting
+      surface the documentation does not warn about. Severity depends on whether DISABLED is a documented-and-accepted
+      posture (the maintainer's read-collaborative ADR-CANDIDATE-003) or an under-warned exposure; the precise payload
+      inventory needs a local DISABLED-stack browser walk to enumerate exactly what renders.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-141-1
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-141-1"
+    local_execution_blocked: false
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "auth.type gate is a raw case-sensitive string-inequality (Overview.tsx:25-27) with no enum validation and no backend default — typo'd values show the OwnerAssociation card on a NO-SecurityWebFilterChain (fully unauthenticated) deployment."
+  dedup_status: already_tracked
+  tracked_as: PLT-077
+  proposed_fix_anchor: "Overview.tsx:25-27 whitelist `['LOGIN_FORM','OAUTH2','LDAP'].includes(appInfo?.authType)` (PLT-077 Option B UI defence) + @Pattern on AppInfoController.java:18 (PLT-077 Option A backend)"
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "OverviewSkeleton waits on only identity+tags (Overview.tsx:29-32) and uses a generic rectangle for the search hero (OverviewSkeleton.tsx:35) — four of six widgets pop in late and the hero reflows; unbounded CLS on the platform's first surface."
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN
+  proposed_fix_anchor: "Overview.tsx:29-32 — include the data-bound widgets' loading states OR wrap each section in its own skeleton boundary; OverviewSkeleton.tsx:35 — render a search-bar-shaped placeholder matching MainSearch"
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Home-page Domains and mini-Directory cards render null on empty data (Domains.tsx:12 + Overview/Directory/Directory.tsx:12-27) — a fresh-deployment admin gets no empty-state, no 'register your first datasource' CTA, no onboarding path from the platform's first surface."
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN
+  proposed_fix_anchor: "Overview/Domains/Domains.tsx:12 + Overview/Directory/Directory.tsx:12 — render an EmptyContentPlaceholder with a Management CTA instead of null when isSuccess && empty"
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Home-page 'Top Tags' strip promises popularity but the backend paginates oldest-by-id before aggregating usage (LSN-019) — the most-used young tags never reach the strip."
+  dedup_status: already_tracked
+  tracked_as: PLT-026
+  recommended_log_as: corroboration only (pinned by IT-005 against F-018)
+- hypothesis_id: H-008
+  one_line: "The 'Recommended' panel's Popular column is catalog-wide (no owner scoping) while the other three columns are per-user — one heading, two scoping rules; cross-owner entity names surface to every user."
+  dedup_status: already_tracked
+  tracked_as: PLT-104
+  recommended_log_as: corroboration only (REFACTOR-024 read-collaborative family; consider a doc caveat on 'Recommended' scoping)
+- hypothesis_id: H-009
+  one_line: "Popular-tile click goes to the Overview tab (doc says Structure) AND double-counts view_count (LSN-017); the home page's most-clicked surface inflates the very signal that ranks it."
+  dedup_status: already_tracked
+  tracked_as: PLT-104
+  recommended_log_as: corroboration only (+2 pinned by IT-002; doc-destination drift is a DOC-gap candidate — see doc_drift_findings)
+- hypothesis_id: H-010
+  one_line: "A render throw in any one home-page widget white-screens the entire app (no error boundary anywhere in odd-platform-ui)."
+  dedup_status: already_tracked
+  tracked_as: TEST-GAP-1013
+  recommended_log_as: corroboration only (PLT-138 family; pinned by IT-006)
+- hypothesis_id: H-011
+  one_line: "Under auth.type=DISABLED the home page anonymously leaks the tag taxonomy, domain names, per-class counts, and datasource-type inventory — a passive fingerprinting surface the docs do not warn about."
+  dedup_status: net_new
+  distinct_from: PLT-090
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview + DOC-gap (DISABLED-mode home-page exposure inventory; distinct from PLT-090 which is the search-facet enumeration vector, and from IT-009 which proves only the API-tier authentication boundary)
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# Confirmed-but-untested promises (H-004, H-007) belong HERE, not dropped to none.
+- use_case_id: F-141-UC-01
+  hypothesis_id: H-001
+  kind: render
+  promise: "The `/` route renders a coherent six-surface catalog-overview composition (search + top tags + domains + per-class usage + directory + Recommended)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-141-UC-01)"
+  proposed_test: "Playwright IT: open `/`, assert all expected sections render in order for an authenticated owner-associated user on a populated stack (composition smoke test — none exists today)."
+- use_case_id: F-141-UC-02
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "A non-enum auth.type value never renders the OwnerAssociation card as if auth were enabled."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-141-UC-02) — regression guard for PLT-077"
+  proposed_test: "Unit (Overview.test.tsx): mock appInfo.authType across {DISABLED, LOGIN_FORM, OAUTH2, LDAP, '', 'OUATH2', 'disabled', ' DISABLED'}; assert the gate renders OwnerAssociation only for the three real enabled modes."
+- use_case_id: F-141-UC-03
+  hypothesis_id: H-003
+  kind: render
+  promise: "The skeleton represents the page's actual shape; no major layout shift when data arrives."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-141-UC-03)"
+  proposed_test: "Playwright IT with throttled/delayed mocks for all six endpoints: assert the skeleton waits for (or per-section-contains) all data-bound widgets; assert MainSearch hero does not reflow; measure CLS bounded."
+- use_case_id: F-141-UC-04
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "Typing a term in the home-page MainSearch box takes the user into the catalog Search for that term."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-141-UC-04)"
+  proposed_test: "Playwright IT: open `/`, type into MainSearch, submit, assert navigation into the Search experience with the term applied."
+- use_case_id: F-141-UC-05
+  hypothesis_id: H-005
+  kind: happy-path
+  promise: "The home-page Top Tags strip shows the catalog's most-used tags, including the most popular."
+  verdict: contradicted
+  coverage: verified
+  recommended_log_as: "covered by IT-005 (top-tags-ordering.spec.ts) — RED, pins PLT-026; no new demand"
+  proposed_test: "(exists) integration-tests/e2e/specs/top-tags-ordering.spec.ts"
+- use_case_id: F-141-UC-06
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "A fresh deployment's home page tells a new admin the catalog is empty and how to start."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-141-UC-06)"
+  proposed_test: "Playwright IT on a fresh/empty stack: open `/`, assert an empty-state affordance (or onboarding CTA) is present for Domains and the mini Directory rather than the sections being absent."
+- use_case_id: F-141-UC-07
+  hypothesis_id: H-007
+  kind: happy-path
+  promise: "Clicking a class cell in the per-class usage dashboard opens a Search prefiltered to that entity class."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-141-UC-07) — the existing unit test covers null/error/render states but NOT the click-to-Search navigation"
+  proposed_test: "Unit/Playwright: click a DataEntitiesUsageInfo class cell; assert navigation to Search with the entityClasses facet prefilled (and types facet for the per-type cell)."
+- use_case_id: F-141-UC-08
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "All four Recommended columns are scoped to the viewing user."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-141-UC-08) — guards the unmet part (Popular is catalog-wide); the cross-owner exposure routes to PLT-104"
+  proposed_test: "Integration with two owners: assert My/Upstream/Downstream are owner-scoped and document (pin) that Popular is intentionally catalog-wide so a future per-user-scoping change is a deliberate decision."
+- use_case_id: F-141-UC-09
+  hypothesis_id: H-009
+  kind: happy-path
+  promise: "A Popular-tile click goes where the docs say and registers exactly one view."
+  verdict: contradicted
+  coverage: verified
+  recommended_log_as: "+2 covered by IT-002 (view-count-overview.spec.ts) — RED, regresses PLT-104; doc-destination drift is a DOC-gap, not a test demand"
+  proposed_test: "(exists for the count) integration-tests/e2e/specs/view-count-overview.spec.ts"
+- use_case_id: F-141-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "A single widget's render error does not take down the whole home page."
+  verdict: contradicted
+  coverage: verified
+  recommended_log_as: "covered by IT-006 (error-boundary-containment.spec.ts) — RED, regresses TEST-GAP-1013; no new demand"
+  proposed_test: "(exists) integration-tests/e2e/specs/error-boundary-containment.spec.ts"
+- use_case_id: F-141-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "Under DISABLED, the anonymous home page does not over-expose the catalog shape."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-141-1 (DISABLED-mode anonymous home-page payload-exposure inventory)"
+  proposed_test: "Playwright IT against the DISABLED stack (reuse IT-009's DISABLED_BASE_URL): open `/` anonymously, enumerate exactly which widgets render and what catalog-shape data each exposes."
+
+### probes_emitted
+- probe_id: PENDING-F-141-1
+  hypothesis_id: H-011
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  hypothesis: "When the platform runs with auth.type=DISABLED, an anonymous network caller reaching `/` sees an appropriately-limited home page — not the full catalog-shape inventory (tag taxonomy, domain names, per-class counts, datasource-type inventory)."
+  expected_outcome: |
+    Open `/` anonymously against a local DISABLED stack (reuse integration-tests helpers/loginform-stack
+    DISABLED_BASE_URL :18080) in a headless browser; enumerate which of the six widgets render and the exact
+    catalog-shape data each exposes (tag names, domain names + child counts, per-class entity counts,
+    datasource-type buckets + entitiesCount). Confirm the OwnerAssociation/Recommended panel is hidden
+    (authType==='DISABLED'). Output the payload-exposure inventory so the maintainer can decide whether this
+    is an accepted read-collaborative posture (ADR-CANDIDATE-003) or an under-warned exposure needing a doc caveat.
+  note: "PARALLEL-SAFE MODE — recorded here only; no P-NNN file created. probe-runner picks up pending-reflection-verification on its next sweep."
+
+### validation_gaps
+- sidecar: F-141 (feature-flow chain)
+  field_insufficient: "chain[*].sidecar == 'unresolved' on ALL nine hops, while enriched sidecars DO exist (Overview.md, Directory.md, PopularStrip.md, plus the DataEntitiesUsageInfo unit test)."
+  proposed_refresh: "The next feature-flow-builder refresh of F-141 must wire chain.hop1 → understanding/...component__Overview.md, hop3c → ...component__Directory.md, and hop3d's Popular surface → ...component__PopularStrip.md. The chain currently understates the ontology's actual UI coverage of this feature — a downstream consumer reading only the chain would believe F-141 has no enriched UI hop, which is false. (This reflection used the sidecars directly via Glob, per Rule 8.)"
+- sidecar: (substrate axis ui_components)
+  field_insufficient: "OverviewSkeleton, Domains (Overview-side), MainSearch, TopTagsList, and the OwnerAssociation state-machine have NO standalone sidecar — their behaviour is only described inside Overview.md / PopularStrip.md as couples-to references."
+  proposed_refresh: "Enrich OverviewSkeleton.tsx and Overview/Domains/Domains.tsx as their own nodes so the skeleton-shape-drift (H-003) and empty-state (H-006) verdicts can cite a dedicated sidecar rather than the composing parent's prose."
+
+### doc_drift_findings
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+  doc_says: "Clicking a Popular tile opens that entity's Structure page."
+  code_does: "Navigates to /dataentities/{id}/overview — the Overview tab, not Structure (DataEntityList.tsx:38 + dataEntitiesRoutes.ts:66-73 default 'overview')."
+  recommended_log_as: doc-gap-NNN (same drift as F-001/F-003 Popular click-target findings; corroboration)
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+  doc_says: "On auth-disabled deployments the Recommended panel is visible but the per-user filtering does not apply."
+  code_does: "Under DISABLED the gate (Overview.tsx:25-27) is false → the ENTIRE OwnerAssociation wrapper (Recommended panel + all four columns including Popular) does NOT render. The doc and the code disagree on a user-observable fact."
+  recommended_log_as: doc-gap-NNN (Overview.md is the ROOT anchor for this drift class; same as F-001 'PopularStrip DISABLED-mode rendering CONTRADICTS docs' + F-003 facet — corroboration)
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+  doc_says: "(silent) — the page does not warn that under DISABLED the home page is an anonymous catalog-shape fingerprinting surface."
+  code_does: "Under DISABLED the four non-gated widgets render anonymously, exposing tag taxonomy / domain names / per-class counts / datasource-type inventory."
+  recommended_log_as: doc-gap-NNN (DISABLED-mode home-page exposure caveat)
+
+## maintainer_notes
+
+(Preserved across refreshes — only the maintainer hand-edits this block.)
+
+This is the first reflection on F-141. Notable for the maintainer: F-141 is a COMPOSITION feature, so most of its bug/caveat facets are owned by the per-widget features it composes. Of the 11 hypotheses, 5 re-derive already-tracked findings (convergent validation): H-002→PLT-077 (auth gate), H-005→PLT-026 (Top Tags ordering), H-008→PLT-104 + H-009→PLT-104 (view_count / Popular scoping), H-010→TEST-GAP-1013 (error boundary). 3 are net-new home-page-composition-specific items: H-003 (skeleton-vs-rendered CLS), H-006 (no fresh-deployment onboarding affordance), and H-011 (DISABLED-mode home-page fingerprinting inventory — needs probe PENDING-F-141-1). The use_case_coverage frontier sits at 4/11 verified — and all four verified promises are RED e2e tests pinning known bugs (IT-002, IT-005, IT-006), so even the "verified" promises are verified-as-currently-broken, not verified-as-working. There is NO green test guarding any happy-path promise of the platform's first surface; the highest-leverage net-new test is F-141-UC-02 (the auth-gate enum guard).

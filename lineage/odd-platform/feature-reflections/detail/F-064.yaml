@@ -1,0 +1,595 @@
+---
+feature_id: F-064
+pillar_anchored_id: P-07:F-064
+pillar: P-07 Active Platform Features
+feature_name: |-
+  "My objects" silent-empty across Activity / Alerts / Owned views — users
+  without a user_owner_mapping see the feature as broken, indistinguishable
+  from "no activity / no alerts in window"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__service__ActivityServiceImpl.md
+  - odd-platform__java__service__service__AlertServiceImpl.md
+  - odd-platform__java__service__service__AuthIdentityProviderImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
+  - odd-platform__java__ActivityController__controller-method__getActivity.md
+  - odd-platform__ts__react-component__component__Activity.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 3
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-003
+    severity: MEDIUM
+    one_line: "The feature-flow's load-bearing doc-gap facets are STALE — the live activity-feed AND alerting doc pages now document the user-owner-association prerequisite, the silent-empty failure mode, and the Management -> Associations remedy verbatim (re-verified 2026-06-03)."
+api_only_reflection: false
+ui_hop_status: ui-incomplete-but-component-sidecar-present
+related_feature_flows: [F-021, F-014, F-011, F-007, F-171, F-172, F-173, F-174]
+related_concepts:
+  - principal-to-owner-resolution
+  - user-owner-mapping
+  - my-objects-view-mode
+  - silent-empty-pattern
+related_drift_classes:
+  - silent_empty_for_unmapped_users_no_ui_affordance_no_diagnostic_signal
+  - count_badge_returns_zero_reinforces_appears_broken
+  - cross_feature_uniform_silent_empty_pattern_activity_alerts_my_objects_views
+new_drift_classes_proposed:
+  - doc_prerequisite_facets_closed_by_doc_wave_but_code_ui_affordance_gap_persists
+---
+
+# "My objects" silent-empty across Activity / Alerts / Owned views — product-owner reflection
+
+## product_owner_narrative
+
+ODD Platform's "My" surfaces — the Activity feed's **My Objects** tab (`GET /api/activity?type=MY_OBJECTS`), the Alerting page's **My Objects** tab (`AlertService.listByOwner`), and the Catalog Overview's **Recommended / My Objects** strip — are the platform's answer to the operator question *"what changed on the things I own?"*. A signed-in data steward opens any of these and expects to see activity, alerts, or entities scoped to themselves rather than the whole cross-owner catalog (per system-mission P-07 "primary user actions: audit metadata changes ... on the global Activity feed or per-entity tab"). The promise is a personalised slice of the catalog (per `AuthIdentityProviderImpl` understanding — `fetchAssociatedOwner()` is "the POSITIVE side of the defence-in-depth anchor-set pattern" feeding every owner-scoped read).
+
+The way a user reaches a "My" view is to authenticate (LOGIN_FORM / OAUTH2 / LDAP), navigate to Activity or Alerts, and click the **My Objects** tab. The personalisation hinges on one piece of catalog-side state the user often does not know exists: a `user_owner_mapping` row binding their authenticated principal `(username, provider)` to an `Owner` entity. That binding is created out-of-band in **Management -> Associations** (per system-mission P-08 "process owner-association requests"; `ReactiveUserOwnerMappingRepositoryImpl` understanding — "no auth-mode flow auto-creates this row on first login"). The single chokepoint is `AuthIdentityProviderImpl.fetchAssociatedOwner()` (per `AuthIdentityProviderImpl.java:50-53`), shared across all 15 owner-scoped callsites.
+
+The working part F-064 exists to surface is the **failure path** when that binding is absent. `fetchAssociatedOwner()` returns `Mono.empty()` (not an error) for an unmapped user (per `AuthIdentityProviderImpl` invariant — "emits empty (not error) if no SecurityContext ... downstream .flatMap therefore short-circuits to empty"). Three consumers then degrade silently: `ActivityServiceImpl.fetchMyActivities` does `.switchIfEmpty(Flux.empty())` (per `ActivityServiceImpl.java:194-198`); the sibling `getMyObjectActivitiesCount` does `.defaultIfEmpty(0L)` (per `ActivityServiceImpl.java:239-243`); `AlertServiceImpl.listByOwner` resolves the principal then queries an owner-scoped repo that returns nothing (per `AlertServiceImpl.java:82-87`). The user sees an empty list and a "0 My objects" badge — visually identical to a fresh deployment where they genuinely have no activity. The UI renders the generic `EmptyContentPlaceholder` (per `ActivityResults.tsx:81-85`, confirmed via Grep) with no diagnostic copy distinguishing "no mapping" from "no data."
+
+The integration story is that this is **not a single-endpoint bug but a cross-feature class**: every "My" view in the platform routes through the same `fetchAssociatedOwner()` chokepoint (per `AuthIdentityProviderImpl` audiences — Search `my_objects=true`, Alert `listByOwner`, DataEntity `getMyObjects`, Activity `MY_OBJECTS`). F-064 is the user-observable consequence; F-011 (Principal-to-Owner Resolution) is the underlying mechanism; F-021 (Activity Feed) and F-014 (Per-Entity Alert View) are sibling read surfaces where it manifests. The product-owner edge case the demo would highlight is the **admin-onboarding trap** (per system-mission P-08 + SHB-060 narrative): the operator who sets up RBAC for their teammates but never associates *themselves* with an Owner experiences every "My" view as broken before they finish onboarding.
+
+The decisive cross-reference for this reflection is that the **documentation has materially changed since the feature flow was composed**. The flow's drift facets were anchored on doc WebFetches from 2026-05-20/05-26/05-27 that showed the prerequisite undocumented. Re-verified live on 2026-06-03, both the activity-feed page ("the three personalised tabs silently render an empty feed ... This is an entity-ownership axis, not an actor axis") and the alerting page ("the platform finds no user-owner mapping, returns an empty result, and the UI shows no diagnostic distinguishing 'no alerts in window' from 'you are not bound to an owner'") now document the prerequisite, the silent-empty failure mode, and the **Management -> Associations** remedy verbatim. The doc-side of F-064 is substantially closed; the **code/UI affordance gap persists** and is the remaining load-bearing finding.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a signed-in user WITH an active user_owner_mapping row opens Activity -> My Objects (type=MY_OBJECTS), the response contains activity rows scoped to the entities owned by the Owner they are bound to."
+  derivation: "View-mode dispatch on ActivityType.MY_OBJECTS threads fetchAssociatedOwner().getId() into the owner-scoped repository fetch; pillar P-07 primary action 'what changed on the things I own'."
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      getActivityList dispatches MY_OBJECTS to fetchMyActivities, which calls
+      authIdentityProvider.fetchAssociatedOwner().flatMapMany(owner -> findMyActivities(... owner.getId() ...))
+      (ActivityServiceImpl.java:194-198). When the owner resolves, the repository fetch is owner-scoped.
+      ActivityServiceImplTest.getActivityList_myObjects_dispatchesToFetchMyActivities mocks fetchAssociatedOwner
+      to return OwnerPojo(id=7L) and asserts findMyActivities is called and findAllActivities is NOT — the
+      dispatch arm with a present owner is pinned.
+    evidence:
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: operations / invariants[3]
+        cite: "ActivityServiceImpl.java:194-198"
+        note: "fetchMyActivities threads the resolved owner id into the owner-scoped repo fetch."
+      - sidecar: source_read_for_validation
+        section: tests
+        cite: "ActivityServiceImplTest.java:86-101"
+        note: "getActivityList_myObjects_dispatchesToFetchMyActivities pins the present-owner dispatch arm (Mockito + StepVerifier)."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "ActivityServiceImplTest.getActivityList_myObjects_dispatchesToFetchMyActivities"
+    source_read_for_validation: true
+
+- id: H-002
+  hypothesis: "When a signed-in user WITHOUT a user_owner_mapping row opens Activity -> My Objects, the system returns 200 OK with an empty list (it does NOT error, 401, or 403) — the empty result is indistinguishable from a user who genuinely has no recent activity."
+  derivation: "The shared chokepoint fetchAssociatedOwner() emits Mono.empty() for unmapped users; the consumer .switchIfEmpty(Flux.empty()) degrades silently; this is the feature's primary_drift_class."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      fetchAssociatedOwner() returns Mono.empty() when no user_owner_mapping row exists for the
+      (username, provider) tuple (AuthIdentityProviderImpl.java:50-53; the inner getAssociatedOwner SELECT
+      returns no row -> empty Mono). fetchMyActivities then hits .switchIfEmpty(Flux.empty())
+      (ActivityServiceImpl.java:198) and emits zero rows with HTTP 200. There is no .switchIfEmpty(Mono.error(...)),
+      no structured hint payload, no diagnostic header. The controller has no @PreAuthorize, so the request is
+      not rejected. This is the load-bearing silent-empty contract — but NO automated test pins it: the existing
+      MY_OBJECTS unit test mocks fetchAssociatedOwner to RETURN an owner, so the empty-owner arm is unverified.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: invariants[2] / bugs_limitations_corner_cases[2]
+        cite: "AuthIdentityProviderImpl.java:50-53"
+        note: "Empty-Mono propagation for unmapped users; no fallback, no error."
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings S-D-2
+        cite: "ActivityServiceImpl.java:194-198"
+        note: "switchIfEmpty(Flux.empty()) silently empty-returns; STATIC-INFERRED HIGH."
+      - sidecar: source_read_for_validation
+        section: tests
+        cite: "ActivityServiceImplTest.java:88"
+        note: "The only MY_OBJECTS test mocks fetchAssociatedOwner -> OwnerPojo(7L); the empty-owner branch is NOT exercised."
+    severity: MEDIUM
+    confidence: HIGH
+    operator_visible_failure: |
+      An admin who set up RBAC for teammates but never associated their own account, a new joiner whose
+      onboarding skipped the Associations step, or a first-time evaluator sees an empty My Objects feed +
+      "0 My objects" badge and concludes the platform is broken or that nothing happened recently. The two
+      states ("no owner association" vs "no activity in window") are byte-identical in the response. Because
+      no test pins the empty-owner branch, a future refactor that removed the .switchIfEmpty (turning empty
+      into an error 500, or worse, into an unscoped ALL fetch — a cross-owner permission bypass) would
+      compile and pass every existing test with zero CI signal.
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "An operator reading the live Activity Feed and Alerting documentation can learn that the 'My Objects' views require a user-owner association and will be empty without one — i.e. the doc names the prerequisite the UI does not surface."
+  derivation: "The feature-flow facet doc_does_not_flag_user_owner_association_prerequisite_for_my_views (severity MEDIUM, anchored on doc WebFetches dated 2026-05-20/05-27); a doc that names the prerequisite would close the discoverability gap a doc-reader has."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The feature-flow's facet asserts the docs do NOT flag the prerequisite. Re-verified live on 2026-06-03,
+      this is no longer true — the docs were materially upgraded since the flow was composed. The activity-feed
+      page now states: "The My Objects, Upstream Dependents, and Downstream Dependents tabs ... narrow the feed
+      to entities the signed-in user is bound to as an Owner ... without a row in that table ... the three
+      personalised tabs silently render an empty feed", carries a dedicated "My Objects setup (user-owner
+      association prerequisite)" section pointing to Management -> Associations + a "Pre-flight checklist for
+      platform admins", and clarifies the User filter is "an entity-ownership axis, not an actor axis ... query
+      the API directly against the created_by column" (closing the LSN-020 doc-side for activity). The alerting
+      page now states the My/Dependents tabs "are hidden unless the signed-in user is linked to an Owner" and
+      that a direct-URL visitor "lands on a page that renders empty ... the UI shows no diagnostic distinguishing
+      'no alerts in window' from 'you are not bound to an owner'." doc-gaps.md corroborates (DOC-GAP-025 CLOSED,
+      DOC-GAP-102 CLOSED, DOC-GAP-141 line 469 records the activity page as "thorough" on My-Objects-silent-empty).
+      The feature flow's doc-prerequisite facets are therefore STALE.
+    evidence:
+      - sidecar: WebFetch
+        section: live-doc-cross-reference
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (2026-06-03 status 200)"
+        note: "Documents prerequisite + silent-empty + Management->Associations remedy + actor-vs-owner axis verbatim."
+      - sidecar: WebFetch
+        section: live-doc-cross-reference
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting (2026-06-03 status 200)"
+        note: "Documents My/Dependents hidden-without-association + the empty-render-no-diagnostic caveat verbatim."
+      - sidecar: source_read_for_validation
+        section: doc-gaps.md
+        cite: "lineage/odd-platform/doc-gaps.md:49,74,469"
+        note: "DOC-GAP-025 + DOC-GAP-102 CLOSED; DOC-GAP-141 records activity page now thorough on My-Objects-silent-empty."
+    severity: MEDIUM
+    confidence: HIGH
+    operator_visible_failure: |
+      This is a contradiction in the OPPOSITE direction from a bug — the feature flow over-states a live gap that
+      the doc wave already fixed. The operator-visible consequence is on the ONTOLOGY's accuracy, not the user's
+      screen: F-064's four doc_* drift facets (and the related_doc_gaps DOC-GAP-NNN list) describe a 2026-05-20
+      world. A maintainer triaging F-064 today would be routed to author doc fixes that already shipped — wasted
+      capacity (the convergence/finishing failure the workspace exists to avoid). The facets must be marked
+      superseded; the surviving doc gap is narrower (see H-009 — no SINGLE cross-cutting prerequisite home; the
+      two feature pages each document it independently).
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When an unmapped user opens Alerts -> My Objects tab (or hits /api/alerts/my equivalent), the system returns an empty alert list with 200 OK and no diagnostic — symmetric to the Activity My Objects silent-empty."
+  derivation: "AlertServiceImpl.listByOwner resolves the principal via the same chokepoint; the feature-flow facet asserts cross_feature_uniform_silent_empty_pattern."
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      AlertServiceImpl.listByOwner (lines 82-87) calls authIdentityProvider.fetchAssociatedOwner() (line 84)
+      then queries the owner-scoped repo method. For an unmapped user fetchAssociatedOwner emits Mono.empty(),
+      the downstream flatMap short-circuits, and the Flux completes empty -> 200 OK with no rows. The
+      AuthIdentityProviderImpl sidecar enumerates AlertService.listByOwner among the consumers that "degrade to
+      empty results with HTTP 200, not 401/403/404" (bugs_limitations_corner_cases[2]). No automated test pins
+      this: AlertServiceImplTest only covers handleExternalAlerts empty-batch (line 66) — there is no
+      listByOwner-with-empty-owner test.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: operations (listByOwner) / downstream_side_effects table
+        cite: "AlertServiceImpl.java:82-87"
+        note: "listByOwner resolves principal at line 84 then owner-scoped repo query."
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "AuthIdentityProviderImpl.java:50-53"
+        note: "AlertService.listByOwner named among silent-empty-degrading consumers."
+      - sidecar: source_read_for_validation
+        section: tests
+        cite: "AlertServiceImplTest.java:66-68"
+        note: "Only handleExternalAlerts empty-batch is tested; listByOwner silent-empty is uncovered."
+    severity: MEDIUM
+    confidence: HIGH
+    operator_visible_failure: |
+      Same class as H-002 on the alerting surface: an unmapped operator's My alerts tab is empty and
+      indistinguishable from "no open alerts on entities you own." This is the second arm of the cross-feature
+      uniform silent-empty pattern; combined with H-002 it confirms the feature is a class, not an instance.
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an unmapped user loads the Activity feed, the My Objects count badge shows 0 (not null / not a 'missing-association' sentinel) — reinforcing the 'empty for you' appearance."
+  derivation: "getMyObjectActivitiesCount carries .defaultIfEmpty(0L); the feature-flow facet count_badge_returns_zero_reinforces_appears_broken."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      getMyObjectActivitiesCount (ActivityServiceImpl.java:239-243) returns Mono.just(0L) / .defaultIfEmpty(0L)
+      for unmapped users; the Mono.zip in getActivityCounts (lines 158-165) combines it with totalCount,
+      downstreamCount, upstreamCount; the counts endpoint returns myObjectsCount=0. The ActivityController
+      sidecar confirms "myObjectsCount is owner-scoped to the caller" (data_exposure). There is no sentinel
+      distinguishing a legitimate 0 from a 0-because-no-association. No test pins the count-zero-for-unmapped
+      behaviour.
+    evidence:
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: operations (getActivityCounts / getMyObjectActivitiesCount)
+        cite: "ActivityServiceImpl.java:239-243"
+        note: ".defaultIfEmpty(0L) returns a 0 indistinguishable from a real 0."
+      - sidecar: odd-platform__java__ActivityController__controller-method__getActivity.md
+        section: data_exposure
+        cite: "ActivityController.java:43-56 + ActivityServiceImpl.java:139-166,219-258"
+        note: "myObjectsCount is owner-scoped; returns 0 for the unmapped caller."
+    severity: MEDIUM
+    confidence: HIGH
+    operator_visible_failure: |
+      The badge "0 My objects" is visible at every visit to the Activity feed and reinforces the conclusion
+      the feature is empty for this user. A null / -1 / 'association_missing' sentinel would let the UI render
+      a distinct affordance. This is the count-side of the same silent-empty class as H-002.
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "The Activity My Objects empty-state and the Alerts My empty-state render a diagnostic affordance (banner / copy / click-through to Management -> Associations) that distinguishes 'no owner association' from 'no data', so the user is told how to fix it."
+  derivation: "Senior-PO UX seed (Rule 9 — 'does the user understand how to use this from what is on screen?'); the feature's expected facet (a) proposes a hint payload + inline banner."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Activity results pane renders the generic <EmptyContentPlaceholder> (ActivityResults.tsx:81-85,
+      confirmed via Grep — isContentEmpty={!activitiesLength}), the SAME component used for a genuinely-empty
+      feed. There is no conditional branch on an association-missing signal, no banner, no click-through to
+      Management -> Associations. The backend emits no hint payload and no diagnostic header (H-002), so the UI
+      has nothing to branch on even if it wanted to. The Activity.tsx sidecar confirms the page "declares no
+      state, no effects, no thunk dispatches, no permission gates" and renders items:[] as "the standard
+      empty-state component (no inline banner, no diagnostic affordance, no click-through to associations)."
+      The same generic-placeholder shape applies to the Alerts My tab. This is the surviving F-064 gap.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Activity.md
+        section: understanding / chain hop 4 (feature-flow)
+        cite: "ActivityResults.tsx:81-85"
+        note: "Generic EmptyContentPlaceholder; no association-missing branch (confirmed via Grep)."
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings S-D-2
+        cite: "ActivityServiceImpl.java:194-198"
+        note: "Backend emits no hint payload/header, so UI has no signal to distinguish the two empty states."
+    severity: MEDIUM
+    confidence: HIGH
+    operator_visible_failure: |
+      The user is left with no on-screen path out of the silent-empty state: no copy telling them they lack an
+      owner association, no link to Management -> Associations, no distinction from a legitimately empty feed.
+      The remedy is documented (H-003) but the user must already suspect the cause and go read the doc — the
+      screen itself gives zero diagnostic. This is the load-bearing UX gap; same class as REFACTOR-224 (the
+      DataEntity /my silent-empty trap), distinct loci (Activity/Alerts empty-state + the proposed shared
+      affordance). Severity MEDIUM not HIGH: it is a UX/discoverability gap, not a correctness or security gap.
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "An admin performing first-deployment setup (creating Owners + Roles for their team) ends up associated with an Owner themselves, so their own 'My' views work without a separate manual step."
+  derivation: "Pillar P-08 daily-ops onboarding workflow; the feature-flow facet onboarding_workflow_gap_admin_sets_up_rbac_for_others_but_not_themselves."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No auth-mode flow auto-creates a user_owner_mapping row on first login (AuthIdentityProviderImpl
+      requires-feature[3]: "NO auth-mode flow auto-creates this row on first login — the request-and-approval
+      round-trip is mandatory"; ReactiveUserOwnerMappingRepositoryImpl confirms the only insertion paths are
+      OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest + the admin direct-bind). An admin who
+      creates Owner entities for teammates does NOT thereby bind their OWN principal to any Owner — the admin's
+      identity is "the operator who set up the platform", not "a catalog owner of an entity". So every "My" view
+      is silent-empty for the admin during setup. NOTE: this facet (severity LOW, ui_unverified) is now
+      MITIGATED at the doc layer — the live activity-feed page carries a "Pre-flight checklist for platform
+      admins: Adding yourself as an owner ... Management -> Associations -> Create association -- fixes the
+      silent-empty failure mode" (H-003). The CODE behaviour (no auto-bind, no setup-wizard prompt) is unchanged.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: dependencies_semantic.requires-feature[3] / bugs_limitations_corner_cases[2]
+        cite: "AuthIdentityProviderImpl.java:50-53 + OwnerAssociationRequestServiceImpl.java:54-76"
+        note: "No first-login auto-create; request-and-approval round-trip mandatory."
+      - sidecar: WebFetch
+        section: live-doc-cross-reference
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (2026-06-03)"
+        note: "Pre-flight checklist for platform admins now documents the self-association step (doc-mitigated)."
+    severity: LOW
+    confidence: MEDIUM
+    operator_visible_failure: |
+      During initial deployment the admin's own My Objects / My alerts are empty until they explicitly create a
+      self-association in Management -> Associations. There is no setup-wizard step prompting this and no global
+      widget surfacing it. With the doc now carrying a pre-flight checklist, the residual gap is product-side
+      (no in-product onboarding affordance), not documentation-side. SME consultation would confirm whether a
+      data-catalog admin expects self-association to be automatic on first login.
+    sme_consultation_recommended: true
+    sme_consultation_question: "Do operators of data catalogs (DataHub / Amundsen / OpenMetadata) expect the bootstrapping admin's principal to be auto-bound to an owner/team on first login, or is an explicit self-association step the industry norm?"
+    sme_consultation_archetype: workflow
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a user passes owner_ids on Activity My Objects (type=MY_OBJECTS&owner_ids=[5]), the feed is filtered to owner 5's activity — i.e. the owner_ids query parameter takes effect in the My Objects tab."
+  derivation: "Endpoint shape — /api/activity exposes owner_ids regardless of type; a user supplying it expects it to apply (the Stress Protocol S-B-2 inverse: does the param the API advertises take effect?)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      owner_ids is silently DROPPED for type=MY_OBJECTS / UPSTREAM / DOWNSTREAM — only ALL/null route owner_ids
+      to fetchAllActivities (ActivityServiceImpl.java:107-116; fetchMyActivities at line 108 accepts no
+      ownerIds). So owner_ids applies for the default ALL tab (partial-true) but is silently ignored on the
+      My Objects tab the hypothesis names. The /api/activity HTTP contract advertises owner_ids unconditionally;
+      the asymmetry is undocumented (per S-B-2 + DOC-GAP-141 line 467). This intersects F-064 because the user
+      who lands on an empty My Objects feed and tries to "filter to my team's owner" gets the whole owned-set
+      back, not an owner-5 slice — compounding the silent-empty confusion.
+    evidence:
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings S-B-2 / operations (getActivityList)
+        cite: "ActivityServiceImpl.java:107-116"
+        note: "owner_ids threaded only to fetchAllActivities; dropped for MY_OBJECTS/UPSTREAM/DOWNSTREAM."
+      - sidecar: source_read_for_validation
+        section: doc-gaps.md
+        cite: "lineage/odd-platform/doc-gaps.md:467"
+        note: "DOC-GAP-141 records owner_ids silently ignored in tab modes; doc does not flag it."
+    severity: LOW
+    confidence: HIGH
+    operator_visible_failure: |
+      A user setting type=MY_OBJECTS&owner_ids=[X] (via a hand-crafted URL or a future filter UI) gets their
+      own owned-set activity unfiltered by X — the owner_ids filter silently disappears. Operator-visible drift:
+      the filter the URL advertises has no effect in this tab. Already tracked as DOC-GAP-141 (LOW). The
+      My Objects arm (the part the hypothesis named) is the failing half.
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "There is a single cross-cutting affordance (a global navigation/profile widget OR a shared empty-state component) that surfaces 'your account is not associated with an Owner' once, platform-wide, rather than each 'My' view degrading independently."
+  derivation: "The feature-flow expected facet (b)/(c) — a single shared affordance; senior-PO consistency seed (Rule 9 — 'consistent with how the same task is done elsewhere')."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No cross-cutting affordance exists. Each consumer degrades independently to the generic empty-state
+      (Activity via EmptyContentPlaceholder per ActivityResults.tsx:81-85; Alerts symmetric; DataEntity /my per
+      REFACTOR-224). There is no global toolbar/profile widget signalling "missing association" once, and no
+      shared <EmptyStateAffordance kind="no_owner_association"> component reused across the "My" views. The doc
+      wave (H-003) closed the discoverability gap at the documentation layer but the PRODUCT still has no single
+      home: the activity-feed page and the alerting page each document the prerequisite independently, mirroring
+      the code's independent degradation. The cross_feature_uniform_silent_empty_pattern facet is confirmed as a
+      real architectural gap; the surviving improvement is the shared affordance (highest leverage, most refactor
+      scope per the feature-flow control_summary).
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: audiences / understanding
+        cite: "AuthIdentityProviderImpl.java:50-53"
+        note: "Single chokepoint shared by 15 callsites, but each consumer handles empty independently — no shared affordance."
+      - sidecar: odd-platform__ts__react-component__component__Activity.md
+        section: chain hop 4
+        cite: "ActivityResults.tsx:81-85"
+        note: "Activity uses the generic placeholder; no shared no-owner-association component."
+    severity: MEDIUM
+    confidence: HIGH
+    operator_visible_failure: |
+      An operator with no owner association hits the silent-empty wall on Activity, then on Alerts, then on the
+      Catalog Overview Recommended strip — each surface separately, with no single platform-wide signal telling
+      them once "you are not bound to an Owner; fix it here." This is the cross-feature scope of the gap;
+      the remedy is the highest-leverage (global widget / shared affordance) and the most refactor scope.
+      Same class as REFACTOR-224, distinct in being the CROSS-CUTTING (not per-endpoint) framing.
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "An unmapped user repeatedly hitting My Objects does not incur a disproportionate per-request cost — i.e. the fetchAssociatedOwner lookup is cached or cheap enough that the silent-empty path is not also a performance trap."
+  derivation: "Performance seed — AuthIdentityProviderImpl has no caching; every owner-scoped read issues a fresh user_owner_mapping JOIN owner query; the feature-flow performance test cell is a GAP."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      AuthIdentityProviderImpl is stateless with no caching (implicit_adrs[3]: "every invocation goes through
+      ReactiveSecurityContextHolder.getContext() AND the DB lookup ... no @Cacheable, no per-session
+      memoization"). For an unmapped user the JOIN returns no row but the query still executes per request, and
+      the Activity page issues FIVE backend queries per filter change (4-way Mono.zip counts + 1 list) plus the
+      owner lookup inside the My Objects/count paths (Activity.tsx performance.hot_paths). Whether this
+      constitutes a measurable cliff for an unmapped user repeatedly twiddling the filter requires running the
+      system (latency + query-count measurement); it cannot be settled by static reading alone.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: performance.known_performance_gaps
+        cite: "AuthIdentityProviderImpl.java:50-53"
+        note: "No per-request/per-session memoization; per-call DB round-trip on the principal lookup."
+      - sidecar: odd-platform__ts__react-component__component__Activity.md
+        section: performance.hot_paths
+        cite: "ActivityResults.tsx:47-50"
+        note: "5 backend queries per filter change, no debounce, no cache."
+    severity: LOW
+    confidence: MEDIUM
+    operator_visible_failure: |
+      If the per-request owner lookup compounds with the 5-query filter burst, an unmapped user repeatedly
+      interacting with a feed that returns nothing could generate disproportionate DB load — a silent-empty
+      result that is ALSO a hot path. Needs measurement to confirm/deny.
+    probe_id: PENDING-F-064-1
+    routes_to_finding: none
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "PENDING-F-064-1"
+    local_execution_blocked: false
+
+- id: H-011
+  hypothesis: "When an unmapped user calls GET /api/activity/counts without begin_date/end_date, the response is bounded (not an unbounded count over the entire retained activity history)."
+  derivation: "Stress Protocol S-B-3 — getActivityCounts has no null-date validation while getActivityList rejects null dates; an unbounded count is a performance cliff. Intersects F-064 because the counts endpoint is the badge an unmapped user still triggers."
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      getActivityCounts (ActivityServiceImpl.java:138-166) has NO beginDate/endDate null-check, unlike
+      getActivityList which throws BadUserRequestException (lines 98-100). STATIC reading of the repository's
+      getCommonConditions suggests a null date builds no created_at predicate -> a count over the ENTIRE
+      retained activity history (all partitions, which grow monotonically per F-010 housekeeping). Whether this
+      is genuinely unbounded (and how slow at scale) requires running /api/activity/counts without dates against
+      a populated instance — already flagged as P-023 by the ActivityServiceImpl sidecar; re-asserted here from
+      the F-064 angle (the unmapped user's badge still calls this endpoint).
+    evidence:
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings S-B-3 / invariants[8]
+        cite: "ActivityServiceImpl.java:138-166"
+        note: "No null-date validation on getActivityCounts; asymmetric to getActivityList; PROBE-NEEDED (P-023)."
+    severity: MEDIUM
+    confidence: MEDIUM
+    operator_visible_failure: |
+      A UI bug or operator calling /api/activity/counts without dates could trigger an unbounded aggregation
+      over the full activity table -> a latency/DB-load cliff at scale. Needs measurement.
+    probe_id: PENDING-F-064-2
+    routes_to_finding: none
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: "PENDING-F-064-2"
+    local_execution_blocked: false
+
+## cross_references
+
+### bug_candidates
+[]
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "Activity My Objects returns silent 200+empty for unmapped users with no diagnostic; the empty-owner branch is unverified by any test (existing MY_OBJECTS test mocks an owner present)."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-224
+  recommended_log_as: "caveat already documented on activity-feed page (H-003); the surviving need is the regression test (see functional_test_demands)"
+- hypothesis_id: H-004
+  one_line: "Alerts My Objects tab silent 200+empty for unmapped users — symmetric to Activity; AlertServiceImplTest does not cover listByOwner silent-empty."
+  dedup_status: net_new
+  distinct_from: REFACTOR-224
+  recommended_log_as: "caveat already documented on alerting page (H-003); REFACTOR-224 covers the DataEntity /my locus, NOT AlertServiceImpl.listByOwner — the alerts locus is distinct"
+- hypothesis_id: H-005
+  one_line: "My Objects count badge returns 0 (no sentinel) for unmapped users, reinforcing 'empty for you'."
+  dedup_status: net_new
+  distinct_from: REFACTOR-224
+  recommended_log_as: "caveat (count-side of the silent-empty class; REFACTOR-224 is the list-side at a different endpoint)"
+- hypothesis_id: H-006
+  one_line: "Activity/Alerts empty-state renders the generic EmptyContentPlaceholder with no association-missing affordance; backend emits no hint payload to branch on."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-224
+  recommended_log_as: "the UX-affordance remedy is REFACTOR-224's Option 1/2 (sentinel error OR X-Owner-Link-Status header); extend its scope to the Activity/Alerts loci"
+- hypothesis_id: H-007
+  one_line: "No first-login auto-bind / setup-wizard self-association prompt; admin onboarding trap (doc-mitigated via the pre-flight checklist, product-side gap persists)."
+  dedup_status: net_new
+  distinct_from: REFACTOR-224
+  recommended_log_as: "caveat / UX-NNN — in-product onboarding affordance for self-association (doc side closed by activity-feed pre-flight checklist)"
+- hypothesis_id: H-009
+  one_line: "No single cross-cutting affordance (global widget / shared empty-state component) — each My view degrades independently; highest-leverage remedy."
+  dedup_status: net_new
+  distinct_from: REFACTOR-224
+  recommended_log_as: "REFACTOR-NNN (shared <EmptyStateAffordance kind=no_owner_association> OR global toolbar widget — the cross-cutting framing REFACTOR-224 does not cover)"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# The headline F-064 promise (H-002 / H-004) is a CONFIRMED real behaviour with NO test pinning it —
+# exactly the confirmed-but-untested hole v0.3.0 exists to close.
+- use_case_id: F-064-UC-2
+  hypothesis_id: H-002
+  kind: empty/no-match
+  promise: "Activity My Objects returns 200 + empty list (not error, not unscoped ALL) for a user with no user_owner_mapping."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-064-UC-2)"
+  proposed_test: "ActivityServiceImplTest.getActivityList_myObjects_noAssociatedOwner_emptyWithoutTouchingFindAll — mock fetchAssociatedOwner()->Mono.empty(); StepVerifier.verifyComplete() with zero rows; verify(repo, never()).findMyActivities AND never().findAllActivities (pins it does NOT fall back to an unscoped fetch — the permission-bypass regression guard)."
+- use_case_id: F-064-UC-4
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "Alerts My Objects (listByOwner) returns 200 + empty alert list for a user with no user_owner_mapping."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-064-UC-4)"
+  proposed_test: "AlertServiceImplTest.listByOwner_noAssociatedOwner_emptyList — mock fetchAssociatedOwner()->Mono.empty(); StepVerifier expects empty AlertList; verify the owner-scoped repo fetch is never called with a wrong/absent owner."
+- use_case_id: F-064-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "getActivityCounts returns myObjectsCount=0 for a user with no user_owner_mapping (the count-side silent-zero)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-064-UC-5)"
+  proposed_test: "ActivityServiceImplTest.getActivityCounts_noAssociatedOwner_myObjectsCountZero — mock fetchAssociatedOwner()->Mono.empty(); assert ActivityCountInfo.myObjectsCount==0."
+- use_case_id: F-064-UC-6
+  hypothesis_id: H-006
+  kind: render
+  promise: "The Activity/Alerts My Objects empty-state distinguishes 'no owner association' from 'no data' with a diagnostic affordance + click-through."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-064-UC-6) — the e2e regression guard for the REFACTOR-224 affordance fix"
+  proposed_test: "integration-tests/e2e/specs/my-objects-no-owner-association.spec.ts (IT-NNN) — log in as a user with no user_owner_mapping, open Activity -> My Objects, assert the empty-state shows the association-missing affordance + link to Management -> Associations (RED until the affordance ships; pins H-006 contradiction)."
+- use_case_id: F-064-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Activity My Objects with a present owner returns rows scoped to that owner."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "ActivityServiceImplTest.getActivityList_myObjects_dispatchesToFetchMyActivities"
+  recommended_log_as: "none — already verified"
+  proposed_test: "(existing) ActivityServiceImplTest.getActivityList_myObjects_dispatchesToFetchMyActivities"
+
+### probes_emitted
+- probe_id: PENDING-F-064-1
+  hypothesis_id: H-010
+  full_hypothesis: "When an unmapped user repeatedly hits Activity My Objects, the per-request fetchAssociatedOwner lookup (uncached) does NOT compound with the 5-query filter burst into a measurable DB-load/latency cliff. Local probe: docker-compose ODD + Postgres + LOGIN_FORM, user 'bob' with NO user_owner_mapping, drive repeated MY_OBJECTS + filter twiddles, measure query count + p95 latency vs a mapped user."
+  status: pending-reflection-verification
+  local_execution_blocked: false
+- probe_id: PENDING-F-064-2
+  hypothesis_id: H-011
+  full_hypothesis: "GET /api/activity/counts without begin_date/end_date is unbounded (counts the entire retained activity history) — distinct from getActivityList which rejects null dates. Local probe (== sidecar P-023): call /api/activity/counts without dates against a populated demo instance; measure HTTP status, body, and latency vs a date-bounded call. Re-asserted from the F-064 angle (the unmapped user's badge still calls this endpoint)."
+  status: pending-reflection-verification
+  local_execution_blocked: false
+
+### validation_gaps
+- sidecar: odd-platform__ts__react-component__component__Activity.md
+  field_insufficient: "chain hop 4 (Activity.tsx) is the page SHELL; the empty-state branch logic lives in the un-enriched children ActivityResults / ActivityResultsList and the Alerts.tsx tree. The feature is flagged ui-incomplete (status: ui-incomplete) because no dedicated empty-state-affordance sidecar exists. Per Rule 9: this reflection's UI verdicts (H-006, H-009) are anchored on the page-shell sidecar + a direct Grep of ActivityResults.tsx (EmptyContentPlaceholder confirmed), NOT on a fully-enriched empty-state component — the user-experience judgment is sound on the 'generic placeholder, no affordance' point but the precise copy/interaction the placeholder renders for each tab is not in the chain."
+  proposed_refresh: "Enrich a dedicated empty-state-affordance sidecar for ActivityResults / ActivityResultsList AND the Alerts My-tab empty-state, confirming (a) the exact EmptyContentPlaceholder copy per tab, (b) whether any conditional branch on response shape exists, (c) whether the Alerts tab is HIDDEN (per the live alerting doc 'the My/Dependents tabs are hidden unless ... linked to an Owner') vs RENDERED-EMPTY — the doc claims hidden, the F-064 backend evidence implies rendered-empty; this doc-vs-code distinction needs a UI walkthrough to settle."
+
+### doc_drift_findings
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed + .../alerting"
+  doc_says: "Both pages now document the user-owner-association prerequisite, the silent-empty failure mode, the Management -> Associations remedy, the admin pre-flight checklist, and (activity) the User filter as an ownership-not-actor axis — verbatim, re-verified 2026-06-03 status 200."
+  code_does: "The code STILL emits no diagnostic (H-002/H-006); the doc closed the discoverability gap but the product UX gap persists. The feature-flow's four doc_* drift facets + the related_doc_gaps DOC-GAP-NNN list are STALE (composed against 2026-05-20 doc state)."
+  recommended_log_as: "Mark F-064 doc_* facets superseded in the feature-flow detail (point to DOC-GAP-025 CLOSED + DOC-GAP-102 CLOSED + DOC-GAP-141 line 469). Surviving doc gap is narrow: NO single cross-cutting prerequisite home — the activity + alerting pages each document it independently, mirroring the code's independent degradation (ties to H-009). Low priority."
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/activity"
+  doc_says: "No API-reference page exists (404, per DOC-GAP-141 line 470 / DOC-GAP-029 still open); owner_ids+type asymmetry undocumented."
+  code_does: "owner_ids is silently dropped for type=MY_OBJECTS/UPSTREAM/DOWNSTREAM (ActivityServiceImpl.java:107-116)."
+  recommended_log_as: "DOC-GAP-141 (already tracked, LOW) — no re-file needed; corroboration only."
+
+## maintainer_notes
+
+(Preserved across refreshes — only the block the maintainer hand-edits.)
+
+This reflection's load-bearing finding is a DIRECTION REVERSAL on the feature flow's headline: F-064 was seeded (2026-05-26) as a silent-empty bug with a heavy DOCUMENTATION-gap component. As of 2026-06-03 the documentation component is substantially CLOSED (both feature pages now document the prerequisite, the silent-empty failure mode, the remedy, and the admin pre-flight checklist verbatim; DOC-GAP-025 + DOC-GAP-102 CLOSED). What SURVIVES is purely the CODE/UI affordance gap (H-002, H-004, H-005, H-006, H-009) — the same class as REFACTOR-224 but at the Activity/Alerts loci, plus the cross-cutting shared-affordance proposal. And the v0.3.0 headline: the confirmed silent-empty contract (H-002/H-004/H-005) is pinned by NO test — the existing ActivityServiceImplTest mocks fetchAssociatedOwner to RETURN an owner, so the empty-owner branch (the entire point of F-064) is unverified; a refactor turning the silent-empty into an unscoped ALL fetch would be a permission bypass with zero CI signal. The 5 functional_test_demands are the highest-value output of this reflection.

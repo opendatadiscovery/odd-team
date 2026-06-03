@@ -1,0 +1,721 @@
+---
+feature_id: F-085
+pillar_anchored_id: P-09:F-005
+pillar: P-09 — Security & Access Control
+feature_name: |-
+  Identity Probe & DISABLED-Mode Synthetic Admin Fallback — the
+  /api/identity/whoami endpoint is an anonymous auth-mode fingerprint AND
+  (under auth.type=DISABLED) returns a synthetic `admin` identity with
+  every Permission, unlocking every UI control for any caller
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+parallel_safe_mode: true   # index + probe files + test-gap files NOT written this run (reported in exit line)
+
+# Rule 8 note: the feature-flow chain marks ALL FOUR hops `sidecar: unresolved`,
+# and the understanding/ directory contains NO sidecar for any contributing node
+# (IdentityController / DisabledAuthSecurityConfiguration / SecurityConstants /
+# AuthorizationCustomizer / PermissionProvider / profile.selectors). There is no
+# sidecar substrate to consume. Per Rule 8's single-line exception, this reflection
+# traces every verdict directly from source — each evidence block carries
+# `source_read_for_validation: true` + the file:line. The next file-analyser pass
+# on these nodes should fill the sidecar gap (see validation_gaps).
+contributing_sidecars_read: []   # none exist — see Rule 8 note above
+source_files_read_for_validation:
+  - "odd-platform-api/.../controller/IdentityController.java:1-34"
+  - "odd-platform-api/.../config/DisabledAuthSecurityConfiguration.java:1-19"
+  - "odd-platform-api/.../auth/util/SecurityConstants.java:95-355"
+  - "odd-platform-api/.../auth/authorization/AuthorizationCustomizer.java:19-31"
+  - "odd-platform-api/.../service/IdentityServiceImpl.java:29-52"
+  - "odd-platform-api/.../service/permission/extractor/ManagementPermissionExtractor.java:32-41"
+  - "odd-platform-api/.../service/permission/PermissionServiceImpl.java:33-40"
+  - "odd-platform-ui/src/components/App.tsx:43-51"
+  - "odd-platform-ui/src/redux/thunks/profile.thunks.ts:6-10"
+  - "odd-platform-ui/src/redux/selectors/profile.selectors.ts:10-20"
+  - "odd-platform-ui/src/components/shared/contexts/Permission/PermissionProvider.tsx:12-44"
+  - "odd-platform-ui/src/components/shared/contexts/Permission/WithPermissionsProvider.tsx:12-49"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Live page ALREADY documents whoami by name, the synthetic-admin /
+      Permission.values() dynamic blast radius, "every UI control gated by a
+      permission unlocks", the four-way fingerprint matrix, and the
+      admin/ADMIN reserved-username collision. This page is the DOC-239
+      companion to PLT-072 and has SHIPPED. The feature-flow's scanner_reviews
+      note ("live disabled-auth page only says 'DO NOT use in production'") is
+      now STALE — the doc-gap it described has been closed.
+hypothesis_summary:
+  total: 11
+  confirmed: 6
+  contradicted: 2
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      Under auth.type=DISABLED an anonymous, unauthenticated network caller
+      receives 200 OK + a synthetic `admin` identity carrying EVERY Permission
+      value, unlocking every state-changing endpoint and UI control — already
+      tracked as PLT-072 (convergent validation).
+related_feature_flows: [F-011, F-034]
+related_concepts:
+  - default_insecure_cluster_disabled_mode
+  - anonymous_auth_mode_fingerprint
+  - "Deployment Introspection (/api/appInfo)"
+related_drift_classes:
+  - disabled_mode_admin_with_all_permissions_dynamic_blast_radius
+  - anonymous_auth_mode_fingerprint_via_response_code_differentiation
+  - ui_unlocks_all_controls_under_disabled_because_spa_trusts_whoami
+  - dummy_owner_lowercase_admin_vs_s2s_uppercase_ADMIN_collision_footgun
+  - zero_audit_trail_on_anonymous_probe
+new_drift_classes_proposed:
+  - whoami_response_is_associatedowner_wrapper_not_bare_identity_doc_flattens_shape
+  - disabled_dummy_globalpermissions_includes_resource_contextual_perms_authenticated_path_never_does
+---
+
+# Identity Probe & DISABLED-Mode Synthetic Admin Fallback — product-owner reflection
+
+## product_owner_narrative
+
+`GET /api/identity/whoami` is the single endpoint the React SPA calls on every page
+load to answer one question: *who is the current user, and what may they do?* The SPA
+dispatches it from `App.tsx` on mount alongside the feature-flag and class/type probes
+(`fetchIdentity()`, App.tsx:48), stores the answer in the Redux `profile` slice, and the
+entire UI's permission gating reads off that one stored answer for the rest of the
+session (`getGlobalPermissions`, profile.selectors.ts:17-19). It is the platform's
+identity heartbeat — every "can this user see the Delete button" decision traces back to
+this one call (per profile.selectors.ts:17-20, PermissionProvider.tsx:19-25,
+source_read_for_validation).
+
+For a *logged-in* user the answer is computed honestly: `IdentityServiceImpl.whoami()`
+resolves the authenticated principal to its catalog Owner, looks up any pending
+owner-association request, and computes the user's MANAGEMENT-scoped permissions from
+their RBAC policies (IdentityServiceImpl.java:30-51 → ManagementPermissionExtractor.java:32-41,
+source_read_for_validation). The response is an `AssociatedOwner` — a wrapper carrying
+`{ identity: { username, permissions }, owner, associationRequest }` — not a bare
+`Identity` (IdentityController.java:24-33, source_read_for_validation). This wrapper shape
+is load-bearing for the trace and is the one place the live doc simplifies the JSON
+(see H-009).
+
+The feature's second, security-defining face appears under `auth.type=DISABLED` (the
+application.yml default for local/demo deployments). In that mode no
+`ServerSecurityContextRepository` is wired (DisabledAuthSecurityConfiguration.java:11-19),
+so the authenticated principal `Mono` is empty, the controller's
+`.switchIfEmpty(...)` fires, and `whoami` returns a hardcoded synthetic identity:
+`username "admin"` with `permissions = Arrays.asList(Permission.values())` — literally
+every Permission enum value the platform defines (IdentityController.java:30-33,
+source_read_for_validation). Because the SPA trusts this answer verbatim, every
+permission-gated control in the UI unlocks for any caller. And because the grant is
+`Permission.values()` rather than an explicit list, every Permission added in a future
+release enters this anonymous grant automatically, with no code change in the controller —
+the dynamic blast radius. The live `disabled-authentication.md` doc page now documents all
+of this by name (verified 200 OK, 2026-06-04), having shipped as the DOC-239 companion to
+the PLT-072 hardening issue.
+
+The endpoint also doubles, unintentionally, as a reconnaissance surface. `whoami` is NOT
+in `WHITELIST_PATHS` and NOT in `SECURITY_RULES` (SecurityConstants.java:95-96 — the rule
+list is mutating-method-only), so under LOGIN_FORM/OAUTH2/LDAP it falls through to
+`AuthorizationCustomizer`'s catch-all `pathMatchers("/**").authenticated()` rule
+(AuthorizationCustomizer.java:29-30). The four resulting response shapes — `200`+admin
+(DISABLED), `302`→`/login` (LOGIN_FORM), `401` (OAUTH2/LDAP) — let an anonymous caller
+fingerprint the deployment's auth mode in a single unauthenticated GET. The endpoint emits
+no log line and no audit row, so the probe is silent.
+
+This feature sits inside Pillar P-09 (Security & Access Control) and is the
+controller-tier sibling of F-034 (the `/api/appInfo` auth-mode reporter — together the
+two endpoints the SPA hits for runtime-config discovery) and F-011 (Principal-to-Owner
+Resolution — which fires only AFTER an authenticated principal exists; the DISABLED branch
+here short-circuits before that). A product owner demoing this would highlight: under
+DISABLED you ARE admin and see everything (by design, for local use); the moment you flip
+to a real auth mode the synthetic admin vanishes, previously-ignored RBAC policies take
+effect for the first time, and any operator-named `admin`/`ADMIN` Owner collides with the
+synthetic literals (per disabled-authentication.md "Reserved usernames" + "Migrating away"
+sections, verified live; cross-link F-011).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When the SPA loads any page, it issues GET /api/identity/whoami exactly once and
+    drives the entire UI's permission gating from that single response — so what a user
+    can and cannot click is decided by whoami's `permissions` list, not by any per-control
+    server check at click time.
+  derivation: |-
+    App.tsx dispatches fetchIdentity() on mount; profile.selectors.getGlobalPermissions
+    reads the stored permissions; PermissionProvider.isAllowedTo tests membership in that
+    list. Endpoint-shape + UI-data-flow seed.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      App.tsx:46-51 dispatches fetchIdentity() inside a mount useEffect (empty dep array).
+      The thunk (profile.thunks.ts:6-9) calls identityApi.whoami() and stores the
+      AssociatedOwner in the profile slice. getGlobalPermissions (profile.selectors.ts:17-19)
+      returns profile.owner?.identity.permissions. PermissionProvider.isAllowedTo
+      (PermissionProvider.tsx:19-25) returns true iff every required permission is in
+      [...globalPermissions, ...resourcePermissions]. The UI gate is purely client-side
+      off this one stored list; the SERVER still independently enforces SECURITY_RULES at
+      mutation time (AuthorizationCustomizer.java:24-30), so the UI list is a convenience
+      gate, not the authorization boundary.
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-ui/src/components/App.tsx:46-51"
+        note: "fetchIdentity() dispatched once on mount; errors swallowed with .catch(()=>{})"
+      - source_read_for_validation: true
+        cite: "odd-platform-ui/src/redux/selectors/profile.selectors.ts:17-19"
+        note: "getGlobalPermissions reads profile.owner?.identity.permissions || emptyArr"
+      - source_read_for_validation: true
+        cite: "odd-platform-ui/src/components/shared/contexts/Permission/PermissionProvider.tsx:19-25"
+        note: "isAllowedTo = membership test against the stored permission list"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional   # confirmed-but-untested promise — LSN-030
+
+- id: H-002
+  hypothesis: |-
+    When an anonymous, unauthenticated caller hits GET /api/identity/whoami on a
+    deployment running auth.type=DISABLED, they receive 200 OK and a synthetic `admin`
+    identity carrying EVERY Permission the platform defines — granting full read AND
+    mutation reach to any caller on the network.
+  derivation: |-
+    DisabledAuthSecurityConfiguration wires permitAll + no security context; the
+    controller's switchIfEmpty returns dummyOwner() with Permission.values(). Endpoint-shape
+    + negative-space (default-insecure) seed. Pillar P-09 "pick a UI auth mode" action.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      This is the documented, intended behaviour of DISABLED mode — but it CONTRADICTS the
+      reasonable user/operator expectation that an "identity" endpoint requires an identity.
+      DisabledAuthSecurityConfiguration.java:11-19 builds a SecurityWebFilterChain whose only
+      rule is `.anyExchange().permitAll()`, so no principal is ever established; the
+      controller's `.switchIfEmpty(Mono.just(new ResponseEntity<>(dummyOwner(), OK)))`
+      (IdentityController.java:27) fires, and dummyOwner() (lines 30-33) returns
+      `new Identity().username("admin").permissions(Arrays.asList(Permission.values()))`.
+      Permission.values() is the FULL enum (~70+ values per components.yaml), so the grant
+      is maximal and DYNAMIC — any Permission added later is auto-granted with no controller
+      change. Already tracked: PLT-072 Defect 1 (F-085a).
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../config/DisabledAuthSecurityConfiguration.java:13-17"
+        note: ".anyExchange().permitAll(); no ServerSecurityContextRepository wired"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../controller/IdentityController.java:27-33"
+        note: "switchIfEmpty → dummyOwner() with Permission.values()"
+    operator_visible_failure: |-
+      (1) Any caller on the network reaching a DISABLED deployment is admin — every
+      state-changing endpoint (Owner/Policy/Role mutation, Lookup-table data writes,
+      attachment uploads, term writes) accepts their requests with no auth; data integrity
+      depends entirely on operator-side network isolation. (2) Dynamic blast radius: a
+      future release that adds a new sensitive Permission silently widens the anonymous
+      grant — the maintainer adding the Permission gets no signal that it just entered the
+      default-insecure surface. (3) A deployment that accidentally inherits DISABLED from a
+      template (the application.yml default) has ZERO defence and no fail-fast warning.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional   # PLT-072 fix has no regression guard yet
+
+- id: H-003
+  hypothesis: |-
+    When a logged-in user (LOGIN_FORM/OAUTH2/LDAP) calls whoami, the `permissions` list
+    they receive reflects ONLY the permissions their RBAC policies actually grant them —
+    not a blanket grant.
+  derivation: |-
+    IdentityServiceImpl computes permissions via getNonContextualPermissionsForCurrentUser(MANAGEMENT)
+    which reads the user's policy statements. Response-shape seed; pillar RBAC promise.
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      IdentityServiceImpl.getAssociatedOwner (IdentityServiceImpl.java:42) calls
+      permissionService.getNonContextualPermissionsForCurrentUser(PermissionResourceType.MANAGEMENT),
+      which resolves to ManagementPermissionExtractor.getNonContextualPermissions
+      (ManagementPermissionExtractor.java:32-41): it reads the current user's policies, maps
+      statements to management permissions, and returns only those. A user with no policy
+      gets an empty permission list. The authenticated path is honest RBAC; only the DISABLED
+      dummy path bypasses it.
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../service/IdentityServiceImpl.java:42-50"
+        note: "permissions from getNonContextualPermissionsForCurrentUser(MANAGEMENT)"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../service/permission/extractor/ManagementPermissionExtractor.java:32-41"
+        note: "permissions derived from the user's policy statements only"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When an anonymous caller probes whoami, they can determine the deployment's active
+    auth.type from the response code alone: 200+admin → DISABLED, 302 → LOGIN_FORM,
+    401 → OAUTH2/LDAP.
+  derivation: |-
+    whoami is absent from WHITELIST_PATHS + SECURITY_RULES, so it falls through to the
+    mode-specific catch-all; each mode's filter chain produces a distinct anonymous
+    response. Negative-space + doc-claim (fingerprint matrix) seed.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Statically: SecurityConstants.java:95-96 shows whoami is NOT whitelisted and NOT in
+      SECURITY_RULES; AuthorizationCustomizer.java:29-30 sends every other path to
+      `.authenticated()`. Under DISABLED the permitAll chain returns 200+admin (confirmed at
+      IdentityController). The PRECISE anonymous status codes for LOGIN_FORM (302 vs 401) and
+      OAUTH2/LDAP depend on each mode's SecurityWebFilterChain redirect/entry-point config,
+      which is NOT in this feature's chain (those *SecurityConfiguration beans are separate
+      nodes, not read this run). The doc's fingerprint matrix asserts 302/401 but the code
+      path for the redirect/entry-point is unverified here. A one-command local probe per
+      mode settles it deterministically.
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../auth/util/SecurityConstants.java:95-96"
+        note: "WHITELIST_PATHS — whoami absent; SECURITY_RULES is mutating-only"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../auth/authorization/AuthorizationCustomizer.java:29-30"
+        note: "catch-all pathMatchers('/**').authenticated() for non-whitelisted paths"
+    probe_id: PENDING-F-085-1
+    local_execution_blocked: false
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate   # the fingerprint itself is the tracked concern (PLT-072 Defect 2)
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: "probe PENDING-F-085-1"
+
+- id: H-005
+  hypothesis: |-
+    When an operator names a real user `admin` (LOGIN_FORM/LDAP) or `ADMIN` (any mode),
+    that user's identity does NOT collide with the DISABLED synthetic `admin` or the S2S
+    `ADMIN` literal — the platform keeps operator-named identities distinct from its
+    built-in synthetic ones.
+  derivation: |-
+    dummyOwner uses lowercase literal "admin"; S2sAuthenticationFilter uses uppercase
+    "ADMIN"; user-owner mapping compares names case-sensitively. Negative-space + doc-claim
+    (Reserved usernames) seed.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The controller hardcodes lowercase `"admin"` (IdentityController.java:32). The S2S
+      filter hardcodes uppercase `"ADMIN"` (S2sAuthenticationFilter.java:31-34 per the
+      feature-flow + PLT-072 Defect 3 — not re-read this run; cited from the tracked item).
+      The user-to-owner mapping compares OIDC_USERNAME case-sensitively (F-011 / PLT-065).
+      An operator-provisioned user literally named `admin` or `ADMIN` therefore shares the
+      synthetic literal and can inherit whatever Owner the synthetic principal resolves to.
+      The platform does NOT reserve or guard these names. Already tracked: PLT-072 Defect 3
+      (F-085c) + the live doc's "Reserved usernames" section (which warns operators rather
+      than the platform enforcing).
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../controller/IdentityController.java:32"
+        note: 'lowercase literal "admin" in dummyOwner()'
+      - sidecar: feature-flow F-085 drift facet
+        cite: "S2sAuthenticationFilter.java:31-34 (uppercase 'ADMIN') — via PLT-072 Defect 3"
+        note: "second hardcoded identity literal; not re-read this run"
+    operator_visible_failure: |-
+      An operator who provisions a user `admin` in LOGIN_FORM/LDAP, or any user `ADMIN`,
+      sees that user silently inherit a synthetic principal's Owner mapping after an
+      auth-mode flip — wrong attribution and potential privilege bleed, with no error and no
+      log. The collision is undocumented in-product (only the security doc page warns).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When the auth mode is flipped from DISABLED to a real mode, anonymous callers
+    immediately stop receiving the synthetic-admin response from whoami.
+  derivation: |-
+    DisabledAuthSecurityConfiguration is @ConditionalOnProperty(auth.type=DISABLED); a
+    different mode wires a different chain and a real security context, so the switchIfEmpty
+    dummy path is no longer reached for an authenticated request. Doc-claim ("Migrating
+    away") seed.
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The DISABLED chain bean only exists when auth.type=DISABLED
+      (DisabledAuthSecurityConfiguration.java:9-11). Under another mode the SPA's anonymous
+      whoami is blocked by the catch-all `.authenticated()` rule before reaching the
+      controller (AuthorizationCustomizer.java:29-30), so an anonymous caller no longer gets
+      200+admin. (An AUTHENTICATED user under a real mode still gets a real identity via the
+      IdentityServiceImpl path, not the dummy.) Matches the doc's "the synthetic-admin
+      response vanishes" claim (disabled-authentication.md "Migrating away", verified live).
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../config/DisabledAuthSecurityConfiguration.java:9-11"
+        note: "@ConditionalOnProperty(auth.type=DISABLED) — bean absent in other modes"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../auth/authorization/AuthorizationCustomizer.java:29-30"
+        note: "anonymous non-whitelisted requests rejected by .authenticated() in real modes"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When an attacker repeatedly probes whoami (the silent reconnaissance pivot), the
+    platform records SOME trace (an application log line or audit row) an operator could
+    later find.
+  derivation: |-
+    IdentityController carries @Slf4j; the audit-trail-scope doc enumerates what is/ isn't
+    recorded. Negative-space + doc-claim seed.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Confirmed in the sense that the hypothesis is FALSE-by-design and the design is now
+      DOCUMENTED: IdentityController declares @Slf4j (IdentityController.java:19) but the
+      whoami body emits NO log call, and the audit-trail-scope doc states identity/RBAC-class
+      surfaces "leave no recoverable trace" (audit-trail-scope.md:22-31, verified in the
+      local doc). So a whoami probe is silent. This is the documented bifurcated-audit
+      posture, not a hidden gap — the operator expectation of a trace is correctly set to
+      "none" by the doc. Routed as caveat (operator-facing behaviour to keep documented),
+      not a bug.
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../controller/IdentityController.java:19,24-28"
+        note: "@Slf4j present; whoami body emits no log call"
+      - doc: "documentation/.../enable-security/audit-trail-scope.md:22-31"
+        note: "bifurcated audit posture — non-entity surfaces leave no trace (documented)"
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    Under DISABLED, the synthetic admin's `permissions` list includes the resource-scoped
+    permissions (DATA_ENTITY_*, TERM_*, etc.) — so resource-gated UI controls (per-entity
+    delete/edit) unlock globally, exactly as the management-tier ones do.
+  derivation: |-
+    dummyOwner uses Permission.values() (the entire enum), whereas the authenticated path
+    only populates globalPermissions from the MANAGEMENT (non-contextual) extractor.
+    Cross-layer naming/behavior seed.
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The DISABLED dummy puts the ENTIRE Permission enum into the identity.permissions list,
+      including resource-contextual permissions (IdentityController.java:32, Permission.values()).
+      The authenticated path, by contrast, populates globalPermissions ONLY from the
+      MANAGEMENT non-contextual extractor (IdentityServiceImpl.java:42 →
+      ManagementPermissionExtractor) — resource-contextual permissions are resolved
+      per-entity through resource extractors and arrive via getResourcePermissions, NOT via
+      globalPermissions. So the DISABLED dummy's globalPermissions is structurally BROADER
+      than any authenticated user's globalPermissions could ever be: it grants
+      resource-contextual permissions globally via the global list. PARTIAL because the UI
+      effect (every control unlocks) holds, but the MECHANISM differs from the authenticated
+      path in a way the user/maintainer would not expect from the symmetric-looking response
+      shape.
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../controller/IdentityController.java:32"
+        note: "Permission.values() = full enum incl. resource-contextual perms"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../service/IdentityServiceImpl.java:42"
+        note: "authenticated globalPermissions from MANAGEMENT extractor only"
+      - source_read_for_validation: true
+        cite: "odd-platform-ui/src/redux/selectors/profile.selectors.ts:22-28"
+        note: "getResourcePermissions is a SEPARATE path from getGlobalPermissions"
+    operator_visible_failure: |-
+      A maintainer reasoning about the permission model from the authenticated path would
+      assume globalPermissions never contains resource-contextual permissions — and might
+      write a UI gate or a test on that assumption. Under DISABLED that assumption breaks
+      (globalPermissions contains everything), so a control that relies on the
+      global-vs-resource split behaves differently under DISABLED than under a real mode in
+      a way not captured by "every control unlocks".
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When a developer reads the live disabled-authentication doc and codes a client against
+    the documented whoami body `{ "username": "admin", "permissions": [...] }`, that shape
+    matches what the endpoint actually returns.
+  derivation: |-
+    The controller returns AssociatedOwner (a wrapper), not a bare Identity; the doc shows
+    the flattened identity object. Doc-claim seed; cross-layer response-field drift.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The actual response body is an `AssociatedOwner`:
+      `{ "identity": { "username": "admin", "permissions": [...] }, "owner": null,
+      "associationRequest": null }` (IdentityController.java:31-33 wraps the Identity inside
+      AssociatedOwner; profile.selectors.ts:12 reads profile.owner?.identity confirming the
+      nesting). The live disabled-authentication.md doc shows the FLATTENED form
+      `{ "username": "admin", "permissions": [...] }` (disabled-authentication.md:34,45,
+      verified live 200 OK) — i.e. it shows the inner `identity` object, not the top-level
+      wrapper. A developer coding `response.username` against the doc would read `undefined`;
+      the correct path is `response.identity.username`.
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../controller/IdentityController.java:30-33"
+        note: "new AssociatedOwner().identity(new Identity()...) — Identity is nested"
+      - source_read_for_validation: true
+        cite: "odd-platform-ui/src/redux/selectors/profile.selectors.ts:12,19"
+        note: "SPA reads profile.owner?.identity.permissions — confirms wrapper nesting"
+      - doc: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+        note: "doc shows flattened {username,permissions} (lines 34,45) — verified 200 OK"
+    operator_visible_failure: |-
+      A developer or security reviewer scripting against the documented JSON gets a
+      structurally-wrong shape: top-level `username`/`permissions` are absent; they live
+      under `identity`. The recon/demo value of the doc is unaffected (the fields ARE
+      present, one level down), so severity is LOW — but the doc's literal JSON is
+      inaccurate and should either show the AssociatedOwner wrapper or note the simplification.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When a developer reads the platform API reference, GET /api/identity/whoami is
+    enumerated there with its operation id and response model, so the endpoint is
+    discoverable from the canonical API docs.
+  derivation: |-
+    Pillar P-11 promises the API reference enumerates every endpoint; the feature-flow
+    scanner note says the API reference does NOT enumerate whoami. Doc-claim + cross-pillar
+    seed.
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The endpoint exists in the generated OpenAPI surface (IdentityApi interface,
+      `whoami` operation, AssociatedOwner response model — IdentityController implements
+      IdentityApi, IdentityController.java:6,20,24). The feature-flow's batch-4 scanner note
+      records that the human-facing API-reference doc subtree does NOT enumerate
+      /api/identity/whoami. So the endpoint IS in the machine spec / Swagger UI but is NOT
+      surfaced in the curated per-feature API-reference pages — PARTIAL. (The
+      disabled-authentication security page now names it, but as a security caveat, not as
+      an API-reference entry.)
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-api/.../controller/IdentityController.java:6,20,24"
+        note: "implements IdentityApi; whoami is part of the generated OpenAPI surface"
+      - sidecar: feature-flow F-085 scanner_reviews
+        cite: "findings/docs-coverage-undocumented-features/2026-05-27-batch-4.md"
+        note: "API reference does not enumerate /api/identity/whoami (batch-4 finding)"
+    operator_visible_failure: |-
+      A developer browsing the curated API-reference pages will not find whoami documented
+      as an endpoint (only via raw Swagger). For a security-load-bearing endpoint this is a
+      discoverability gap, though the security doc now covers the behaviour. Low severity
+      given Swagger availability.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When the SPA's whoami call fails (302/401 under a real mode before login, or a network
+    error), the UI degrades gracefully — it does not crash and does not leave permission
+    state in a way that silently grants access.
+  derivation: |-
+    App.tsx wraps fetchIdentity() in .catch(()=>{}); getGlobalPermissions falls back to
+    emptyArr when there is no identity. Negative-space (error path) seed.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      fetchIdentity() is dispatched with a trailing `.catch(() => {})` (App.tsx:48), so a
+      rejected whoami (401/302/network) does not throw into React render. When the profile
+      slice has no owner/identity, getGlobalPermissions returns `emptyArr`
+      (profile.selectors.ts:19) and PermissionProvider.isAllowedTo returns false for every
+      permission (PermissionProvider.tsx:21-23, empty list → `.every` over a non-empty
+      required set is false). So the failure mode is FAIL-CLOSED in the UI (controls hidden),
+      not fail-open. Note the swallowed error means NO user-facing message on failure — a UX
+      gap (silent), but not a security one.
+    evidence:
+      - source_read_for_validation: true
+        cite: "odd-platform-ui/src/components/App.tsx:48"
+        note: "dispatch(fetchIdentity()).catch(() => {}) — error swallowed, no crash"
+      - source_read_for_validation: true
+        cite: "odd-platform-ui/src/redux/selectors/profile.selectors.ts:19"
+        note: "|| emptyArr fallback when no identity → isAllowedTo false (fail-closed)"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    DISABLED-mode whoami returns synthetic `admin` with Permission.values() (full + dynamic)
+    to any anonymous caller — full mutation reach, no fail-fast.
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  proposed_fix_anchor: "IdentityController.java:30-33 + DisabledAuthSecurityConfiguration (PLT-072 Defect 1 — ODD_DISABLED_AUTH_ACK + explicit permission list)"
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    Anonymous auth-mode fingerprint via whoami response-code differentiation (200/302/401);
+    whoami absent from WHITELIST_PATHS + SECURITY_RULES.
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  proposed_fix_anchor: "SecurityConstants.java:95-96 + AuthorizationCustomizer.java:29-30 (PLT-072 Defect 2 — uniform 401 across non-DISABLED whoami)"
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    Hardcoded `admin` (controller) / `ADMIN` (S2S) literals collide with operator-named
+    users; platform does not reserve the names.
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  distinct_from: PLT-065
+  proposed_fix_anchor: "IdentityController.java:32 + S2sAuthenticationFilter.java:31-34 (PLT-072 Defect 3 — shared SystemUsers constants + reserved-username guard). DISTINCT from PLT-065/PLT-120 which track the F-011 JOIN-site OIDC_USERNAME cross-mode bleed, a different failure locus."
+
+### caveat_candidates
+- hypothesis_id: H-007
+  one_line: |-
+    A whoami probe is silent (no log, no audit row) — documented bifurcated-audit posture;
+    keep it documented as the operator expectation.
+  dedup_status: already_tracked
+  tracked_as: DOC-239
+- hypothesis_id: H-008
+  one_line: |-
+    DISABLED dummy globalPermissions includes resource-contextual permissions that the
+    authenticated path NEVER puts in globalPermissions — asymmetric mechanism behind the
+    symmetric "everything unlocks" effect.
+  dedup_status: net_new
+  recommended_log_as: "caveat in disabled-authentication.md (note the global-vs-resource permission asymmetry under DISABLED)"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the feature is test_matrix: all GAP. PLT-072 proposes a CODE fix but
+# has NO regression test, and the confirmed happy/teardown/render promises have no guard.
+# These are the highest-value tests to write: the four-way fingerprint + the synthetic-admin
+# grant are the natural integration targets named in the feature-flow test_matrix_notes.
+- use_case_id: F-085-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "Anonymous whoami under DISABLED returns 200 + synthetic admin with the full Permission set."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-085-UC-002 — @WebFluxTest IdentityController under DISABLED asserts 200 + username 'admin' + permissions == Permission.values(); doubles as the PLT-072 fix regression guard"
+  proposed_test: "IdentityControllerDisabledModeTest — GET /api/identity/whoami anonymous → 200, body.identity.username='admin', body.identity.permissions size == Permission.values().length"
+- use_case_id: F-085-UC-004
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "whoami response code fingerprints auth mode: 200 (DISABLED) / 302 (LOGIN_FORM) / 401 (OAUTH2/LDAP)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-085-UC-004 — integration test per auth.type asserting the anonymous whoami status code (the four-way fingerprint matrix; the feature-flow's named natural integration target)"
+  proposed_test: "IdentityProbeFingerprintIT — parametrised over auth.type ∈ {DISABLED,LOGIN_FORM,OAUTH2,LDAP}, anonymous GET /api/identity/whoami, assert status ∈ {200,302,401,401}"
+- use_case_id: F-085-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "The SPA drives all permission gating from the single whoami response stored in Redux."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-085-UC-001 — PermissionProvider unit test"
+  proposed_test: "PermissionProvider.test.tsx — given globalPermissions=[X], isAllowedTo([X])=true and isAllowedTo([Y])=false"
+- use_case_id: F-085-UC-003
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "A logged-in user's whoami permissions reflect only their RBAC-policy grants."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-085-UC-003 — IdentityServiceImpl Mockito+StepVerifier test"
+  proposed_test: "IdentityServiceImplTest — user with one MANAGEMENT policy → whoami permissions == that policy's management permissions; user with none → empty"
+- use_case_id: F-085-UC-006
+  hypothesis_id: H-006
+  kind: teardown-constraint
+  promise: "Flipping away from DISABLED makes the anonymous synthetic-admin response vanish."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-085-UC-006 — integration test asserting anonymous whoami is NOT 200+admin under a non-DISABLED mode"
+  proposed_test: "covered by the IdentityProbeFingerprintIT non-DISABLED arms (UC-004) — assert no admin body when status != 200"
+- use_case_id: F-085-UC-011
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "A failed whoami fails CLOSED in the UI (no crash, no silent grant)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-085-UC-011 — PermissionProvider empty-permissions test"
+  proposed_test: "PermissionProvider.test.tsx — globalPermissions=[] → isAllowedTo(any)=false (fail-closed)"
+
+### probes_emitted
+- probe_id: PENDING-F-085-1
+  hypothesis_id: H-004
+  probe_path: "NOT WRITTEN (parallel-safe mode) — local docker-compose per auth.type ∈ {DISABLED, LOGIN_FORM, OAUTH2-mock, LDAP-mock}; anonymous curl GET /api/identity/whoami; assert the four-way status fingerprint. emitted_by: feature-reflector; status: pending-reflection-verification; local_execution_blocked: false."
+
+### validation_gaps
+- area: ui-render-visual
+  field_insufficient: |-
+    Rule 9 — the UI consumption chain (App.tsx → fetchIdentity thunk → profile slice →
+    getGlobalPermissions → PermissionProvider.isAllowedTo) is fully traced from source, so
+    the DATA FLOW is confirmed. But the feature-flow facet
+    `ui_unlocks_all_controls_under_disabled_because_spa_trusts_whoami` carries
+    ui_unverified:true: no live probe confirms VISUALLY that every permission-gated control
+    actually renders unlocked under DISABLED. This reflection confirms the mechanism, not the
+    pixels. A Playwright probe against a local DISABLED deployment (open Lookup Tables / a
+    DataEntity detail page; assert Delete/Edit/Upload controls are present and enabled) would
+    close it.
+  proposed_refresh: |-
+    file-analyser should enrich the four contributing nodes (no sidecar exists for ANY of
+    them today — IdentityController, DisabledAuthSecurityConfiguration, SecurityConstants,
+    AuthorizationCustomizer, PermissionProvider, profile.selectors). The whole chain is
+    sidecar-less; this reflection ran entirely on the Rule-8 source-read exception.
+- area: non-disabled-fingerprint-codes
+  field_insufficient: |-
+    The exact anonymous status codes for LOGIN_FORM (302) and OAUTH2/LDAP (401) live in the
+    *SecurityConfiguration beans NOT in this feature's chain. H-004 is probe-needed for that
+    reason. The fingerprint's DISABLED arm (200+admin) is source-confirmed; the other arms
+    are doc-asserted + statically-plausible but not code-traced this run.
+  proposed_refresh: |-
+    Either run PENDING-F-085-1 locally, or read LoginFormSecurityConfiguration /
+    OAuth2SecurityConfiguration / LdapSecurityConfiguration to source-confirm the
+    redirect/entry-point status codes.
+
+### doc_drift_findings
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+  doc_says: 'whoami body is `{ "username": "admin", "permissions": [...] }` (flattened)'
+  code_does: 'body is AssociatedOwner `{ identity: { username, permissions }, owner: null, associationRequest: null }` — fields are nested under `identity`'
+  recommended_log_as: "doc-gap-NNN (pending mint) — show the AssociatedOwner wrapper or note the simplification on disabled-authentication.md:34,45"
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference"
+  doc_says: "(absence) — the curated per-feature API-reference subtree does not enumerate /api/identity/whoami"
+  code_does: "whoami is a real IdentityApi operation in the OpenAPI surface / Swagger UI"
+  recommended_log_as: "doc-gap-NNN (pending mint) — add whoami to the API-reference (or note it is security-doc-homed)"
+- finding: stale-scanner-note
+  feature_flow_field: "scanner_reviews[0].notes + observed_vs_expected facets"
+  detail: |-
+    The feature-flow records "live disabled-auth page only says 'DO NOT use in production'"
+    and treats the whoami/synthetic-admin/fingerprint/collision facets as doc-absent. The
+    live disabled-authentication.md page (verified 200 OK, 2026-06-04) now documents ALL of
+    them by name (DOC-239 shipped). The doc-gap class of these facets is CLOSED; only the
+    CODE-side hardening (PLT-072, still draft) and the JSON-shape drift (H-009) remain open.
+  recommended_log_as: "annotate F-085 feature-flow — doc-gap facets superseded by shipped DOC-239; reframe as code-side-only open items"
+
+## maintainer_notes
+
+(reserved for maintainer hand-edits — preserved across refreshes)

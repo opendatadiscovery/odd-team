@@ -1,0 +1,656 @@
+---
+feature_id: F-124
+pillar_anchored_id: P-09:F-009
+pillar: "P-09 — Security & Access Control"
+feature_name: "Cross-Provider ADMIN Promotion Semantics — six distinct admin-detection mechanisms diverge per auth provider"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: f328e688738ce115cb1ddb20b353def7f899a176
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - "odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md"
+  - "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDLDAPProperties.md"
+  - "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+  - "odd-platform__java__auth__handler__GithubUserHandler.md"
+  - "odd-platform__java__auth__handler__GoogleUserHandler.md"
+source_reads_for_validation:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/OperationUtils.java:7-10 (the containsIgnoreCase definition — read to resolve a load-bearing sidecar-vs-sidecar contradiction per Rule 8 exception)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LDAPSecurityConfiguration.java:89-99 (the authoritiesMapper admin-decision block — read to confirm argument order at the call site)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: "WebFetched by the GithubUserHandler + ODDOAuth2Properties sidecars on 2026-05-19; not re-fetched this session (no WebFetch fired). Verbatim excerpts inherited from those sidecars."
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/ldap"
+    last_verified_at: "2026-05-12T00:00:00Z"
+    last_verified_status: 200
+    note: "WebFetched by the LDAPSecurityConfiguration + ODDLDAPProperties sidecars on 2026-05-12; inherited."
+hypothesis_summary:
+  total: 11
+  confirmed: 2
+  contradicted: 5
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "The feature-flow's stated HIGHEST-severity bug — LDAP `admin-groups` substring overpromotion — does NOT exist: `OperationUtils.containsIgnoreCase` is full-string `equalsIgnoreCase`, not substring; the facet, PLT-081, DOC-235, and DOC-238 are all factually wrong on this axis."
+related_feature_flows: [F-011, F-006, F-005]
+related_concepts:
+  - "cross-provider-admin-promotion-mechanism-divergence-with-six-distinct-shapes"
+  - "substring-match-admin-escalation-ldap-containsignorecase (RETRACTION CANDIDATE — factually wrong)"
+related_drift_classes:
+  - github_admin_requires_read_org_scope_silent_failure
+  - azure_logout_uri_unvalidated_npe_on_first_logout
+  - okta_keycloak_documented_but_no_handler_implementation
+  - ldap_groups_unset_silent_user_only_no_admin_path
+  - oauth2_provider_field_free_string_no_enum_typo_silent_routing
+  - login_form_admin_via_seeded_administrator_role_not_via_config
+  - six_admin_paths_no_unified_doc_page
+new_drift_classes_proposed:
+  - ldap_github_admin_groups_full_string_equality_NOT_substring_correction
+  - github_login_rename_orphans_admin_promotion_on_reauth
+---
+
+# Cross-Provider ADMIN Promotion Semantics — product-owner reflection
+
+## product_owner_narrative
+
+**What the feature is.** "ADMIN Promotion Across Auth Providers" (P-09:F-009) is the operator-facing surface for the single most consequential decision in an ODD deployment: *which authenticated humans get platform-administrator privilege.* An ODD ADMIN can reach every `*_MANAGE` endpoint in `SecurityConstants.SECURITY_RULES` — RBAC policy authoring, role binding, owner administration, the lot (per `LDAPSecurityConfiguration@L51`:security.authorization_assertions[2]). The feature has no single screen and no single config key; it is a *family* of six structurally different admin-detection mechanisms — one per supported identity source — plus a seventh, distinct shape under `LOGIN_FORM` where admin is granted by binding the seeded `Administrator` Role to a user's Owner through the Management UI rather than by any config (per F-124 facet `login_form_admin_via_seeded_administrator_role_not_via_config`). The audience is the `platform-operator` (per system-mission P-09 audiences), not the end user.
+
+**How an operator interacts with it.** There is no "make this person an admin" button anywhere in the chain. The operator edits `application.yml` (or env vars / Helm values) under `auth.ldap.groups.admin-groups` (LDAP) or `auth.oauth2.client.{id}.admin-groups` / `.admin-principals` / `.admin-attribute` (OAuth2), and the admin decision is then computed *per login* by the auth-mode-specific code path: `LDAPSecurityConfiguration.authoritiesMapper` for LDAP (per `LDAPSecurityConfiguration@L51`:understanding), or the matched `*UserHandler.enrichUserWithProviderInformation` for each OAuth2 provider (per `GithubUserHandler`:understanding, `GoogleUserHandler`:understanding). The inputs are operator config + the claims/groups the external IdP returns; the output is a `USER` or `ADMIN` `SimpleGrantedAuthority` materialised into the request's `SecurityContext`. Because this is config + external-IdP-claim driven, the **operator's mental model** — not an on-screen affordance — is the product. A senior product owner reflecting on this feature asks the operator's questions: *"If I list a group in admin-groups, exactly which directory groups does that match? If I pick Okta, do my admin knobs work? If I omit a field, will the platform tell me, or silently give me a broken deployment?"* Those questions are this reflection's hypothesis seeds.
+
+**The working parts.** Six mechanisms, each with its own matching rule (per F-124 chain hop 2 + the per-handler sidecars): (a) **LDAP** — the directory-returned authorities are matched against `admin-groups` via `OperationUtils.containsIgnoreCase` (`LDAPSecurityConfiguration.java:96`); (b) **Cognito** — `cognito:groups` claim exact-matched against `admin-groups`; (c) **GitHub** — a two-pass GitHub REST API flow (`/user/orgs` then `/user/teams`) gating ADMIN by team-name within `organization-name`, plus an `admin-principals` fast-path that bypasses the org gate entirely (per `GithubUserHandler`:invariants); (d) **Google** — `allowed-domain` (the `hd` ID-token claim) plus `admin-principals` matched against the `email` claim; `admin-groups` is silently ignored (per `GoogleUserHandler`:invariants[6]); (e) **Azure** — a `roles` (or `groups`) claim exact-match; (f) **ODD_IAM** — a boolean `admin-user-info-flag` claim. The `provider` field that selects the mechanism is a free `String`, not an enum, so a typo routes silently to generic OIDC (per `ODDOAuth2Properties`:invariants[2]).
+
+**The integration story.** F-124 PRODUCES the authority that F-006 (RBAC Policy Lifecycle) consumes as the gate-pass and that F-011 (Principal-to-Owner Resolution) consumes when it resolves the `(username, provider)` tuple to an Owner (per F-124 cross_pillar_relationships + `GithubUserHandler`:coupling). The three are complementary: F-124 mints the ADMIN authority, F-011 maps the identity to a catalog Owner, F-006 enforces what the authority can do. The same `OperationUtils.containsIgnoreCase` helper is shared across LDAP and GitHub admin matching (per `GithubUserHandler`:coupling) — which makes the helper's *actual* semantics load-bearing for two providers at once.
+
+**Edge cases an operator demo would hit.** The platform fails *silently* in five distinct ways an operator cannot diagnose from logs or boot output: GitHub missing the `read:org` scope (no admin, no clue), Azure omitting `logout-uri` (NPE 500 on first logout), Okta/Keycloak users never reaching ADMIN (the handlers don't exist), a `provider:` typo routing to generic OIDC, and an LDAP deployment with `admin-groups` unset where *no one* can become admin (per F-124 facets + the sidecars). Crucially, this reflection also finds that the feature-flow's stated HIGHEST-severity *over*-promotion bug (LDAP substring matching) **does not exist in the code** — the helper is full-string equality. The feature's promise layer is therefore mostly about *under*-promotion and *silent* failure, not over-promotion.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator sets `auth.ldap.groups.admin-groups: ['ops']` and the directory has groups `devops`, `noops`, `appops`, every member of those groups is promoted to ADMIN (substring containment), so a short admin-group token silently over-promotes."
+  derivation: "The feature-flow's HIGHEST-severity facet `ldap_admin_groups_substring_match_overpromotion` + the LDAPSecurityConfiguration + ODDLDAPProperties sidecars + the concept-catalog candidate + PLT-081 all assert a case-insensitive SUBSTRING match at `LDAPSecurityConfiguration.java:96` via `OperationUtils.containsIgnoreCase`."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `OperationUtils.containsIgnoreCase` is FULL-STRING case-insensitive equality, NOT substring
+      containment. The definition (read directly this session) is
+      `return collection.stream().anyMatch(element::equalsIgnoreCase);` — `String::equalsIgnoreCase`,
+      not `String::contains`. At the call site `LDAPSecurityConfiguration.java:96` the call is
+      `containsIgnoreCase(properties.getGroups().getAdminGroups(), a.getAuthority())` →
+      `collection = adminGroups`, `element = a.getAuthority()` (the directory-returned authority).
+      The stream evaluates `authority.equalsIgnoreCase(adminGroup)` for each configured admin group.
+      So an LDAP authority `devops` tested against `admin-groups: ['ops']` is
+      `"devops".equalsIgnoreCase("ops")` = FALSE. There is NO substring collision. The
+      over-promotion the facet describes cannot occur. The same helper is the one used by GitHub
+      (`GithubUserHandler.java:119`) — so the GitHub "substring overpromotion" claim (PLT-081 / F-124b /
+      DOC-235 CRITICAL) is wrong on the identical axis.
+    evidence:
+      - sidecar: "(source-read, Rule 8 exception)"
+        section: "OperationUtils.java"
+        cite: "odd-platform-api/.../utils/OperationUtils.java:9"
+        note: "`collection.stream().anyMatch(element::equalsIgnoreCase)` — full-string equality, the dispositive line the four asserting artefacts never quoted."
+      - sidecar: "(source-read, Rule 8 exception)"
+        section: "LDAPSecurityConfiguration.authoritiesMapper"
+        cite: "LDAPSecurityConfiguration.java:96"
+        note: "`containsIgnoreCase(adminGroups, a.getAuthority())` — confirms argument order: each directory authority is equalsIgnoreCase-tested against each admin-group."
+      - sidecar: "odd-platform__java__auth__handler__GithubUserHandler.md"
+        section: "dependencies_semantic.coupling + coherence (CONTRADICTS)"
+        cite: "GithubUserHandler.md coherence block"
+        note: "The later (2026-05-19) sidecar already read OperationUtils.java and flagged the substring candidate as 'FACTUALLY WRONG ... MUST be surfaced to reducer'. The reducer/feature-flow-builder did not propagate the correction; F-124 (2026-05-26) still carries the wrong facet."
+    operator_visible_failure: |
+      This is a contradiction in the OPPOSITE direction from a bug — the feature's documented
+      HIGHEST-severity defect does not exist. The operator-visible consequences are about the
+      ARTEFACTS, not the running platform: (1) the feature-flow F-124 mis-states its own highest-severity
+      facet; (2) PLT-081 (a HIGH-severity bug draft) instructs a maintainer to change
+      `containsIgnoreCase` → `equalsIgnoreCase` at two sites — but the helper ALREADY is equalsIgnoreCase,
+      so the "fix" is a no-op that would waste a maintainer's time and could even regress (someone might
+      "fix" the call site to literal `.contains()` believing the issue report); (3) DOC-235 and DOC-238
+      would publish a CRITICAL substring-overpromotion admonition to operators that is FALSE, eroding
+      trust when an operator tests it and finds short tokens do NOT over-promote. The real (subtle)
+      LDAP matching caveat that DOES exist is different and milder — see H-002.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator sets LDAP `admin-groups: ['ODD_ADMINS']`, a user is promoted to ADMIN if and only if one of the directory authorities the populator returns for them equals `ODD_ADMINS` (case-insensitive full string), so the operator must know the exact authority string the populator emits (CN vs DN vs prefixed)."
+  derivation: "Corrected from H-001 ground truth: the match is full-string equality between each `a.getAuthority()` and each configured admin-group. The matched value is whatever `DefaultLdapAuthoritiesPopulator` returns with `setRolePrefix(\"\")` (LDAPSecurityConfiguration.java:108)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The match is exact (case-insensitive) full-string equality, which is correct and what the docs'
+      framing ("a list granting admin permissions") implies. The SUBTLE caveat: the value being matched
+      is `a.getAuthority()` — the authority string `DefaultLdapAuthoritiesPopulator` produces. The
+      populator is configured with `setRolePrefix("")` (LDAPSecurityConfiguration.java:108) and
+      `setSearchSubtree(true)` (line 112); by Spring Security default it maps the group's `cn` to the
+      authority. So an operator must configure `admin-groups` with the group's CN exactly (e.g. `ODD_ADMINS`),
+      NOT its full DN (`cn=ODD_ADMINS,ou=Groups,...`). The sidecars do not pin which attribute the
+      populator returns under every directory configuration, so the exact string an operator must supply
+      is config-dependent and not fully traced. This is the legitimate, milder caveat that the (wrong)
+      substring narrative was standing in front of.
+    evidence:
+      - sidecar: "(source-read, Rule 8 exception)"
+        section: "LDAPSecurityConfiguration.authoritiesPopulator"
+        cite: "LDAPSecurityConfiguration.java:106-113"
+        note: "`new DefaultLdapAuthoritiesPopulator(contextSource, groupsSearchBase)` + `setRolePrefix(\"\")` — the authority string is the populator's group-name output, unprefixed."
+      - sidecar: "odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md"
+        section: "concepts.invariants + tests_coverage_semantic.uncovered_behaviours"
+        cite: "LDAPSecurityConfiguration.java:91-98"
+        note: "Sidecar enumerates the admin-vs-user decision behaviours as uncovered; does not pin the exact authority-string format per directory."
+    operator_visible_failure: |
+      An operator who configures `admin-groups` with the full DN (a natural mistake, since LDAP config
+      elsewhere uses DNs) gets NO admins — the DN string will never equalsIgnoreCase the CN the populator
+      returns. Silent under-promotion. There is no boot warning, no log line at sign-in. This is the
+      real, documentable LDAP admin-groups caveat (exact CN match, case-insensitive, no DN, no substring).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an operator configures GitHub OAuth with `admin-groups: [admins]` but forgets the `read:org` scope, a user who IS in the `admins` team is still promoted to ADMIN."
+  derivation: "Feature-flow facet `github_admin_requires_read_org_scope_silent_failure` + GithubUserHandler sidecar — the org/team gate calls the GitHub REST API which requires `read:org`."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      GitHub admin detection requires two outbound GitHub REST calls — `GET /user/orgs` and
+      `GET /user/teams` — to determine org membership and team-based admin (per GithubUserHandler
+      sidecar invariants + downstream_side_effects). Both calls require the OAuth2 access token to carry
+      the `read:org` scope. Without it, GitHub returns 403 on `/user/orgs`; the handler has no
+      `.onErrorResume` / `.retryWhen` (GithubUserHandler:invariants[no-retry]), so the WebClientResponseException
+      propagates and the LOGIN FAILS outright — the user does not even authenticate, let alone reach ADMIN.
+      So the user is NOT promoted to ADMIN; worse, they cannot log in at all. The hypothesis (silently
+      USER-but-logged-in) understates it — the actual outcome is total login failure with no actionable
+      message. Note: this is a CONFIGURATION failure mode, not a code bug; the handler behaves correctly
+      given a scope-deficient token.
+    evidence:
+      - sidecar: "odd-platform__java__auth__handler__GithubUserHandler.md"
+        section: "dependencies_semantic.requires-config + downstream_side_effects"
+        cite: "GithubUserHandler.java:76-91, 104-113"
+        note: "Two REST calls with Bearer token; `read:org` required per live docs; no retry/onErrorResume so a 403 fails the login Mono."
+      - sidecar: "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+        section: "bugs_limitations_corner_cases[6]"
+        cite: "ODDOAuth2Properties.java:37 + GithubUserHandler.java:78-86"
+        note: "`scope` is unvalidated at boot; a GitHub client with adminGroups set but missing read:org boots fine and fails at first admin login."
+    operator_visible_failure: |
+      Two distinct operator-visible modes. (1) If `organization-name` is set, the `/user/orgs` 403 fails
+      the WHOLE login — every GitHub user is locked out with a generic OAuth2 error, no log clue pointing at
+      the missing scope. (2) If `organization-name` is empty (no org gate) but `admin-groups` is set, the
+      `/user/teams` call is reached only inside the org-gated branch, so admin-groups silently has no effect
+      and users land as USER. Either way the operator sees "GitHub admin promotion / login isn't working"
+      with nothing in the platform telling them `read:org` is the cause. Boot-time scope validation (reject a
+      GitHub client with adminGroups/organizationName set but read:org absent from scope) is the fix.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When an Azure operator follows the docs but omits `auth.oauth2.client.azure.logout-uri`, the platform boots and works until the user logs out, at which point logout fails."
+  derivation: "Feature-flow facet `azure_logout_uri_unvalidated_npe_on_first_logout` + ODDOAuth2Properties sidecar — the @PostConstruct validator checks only clientId + provider; Azure logout calls URI.create(provider.getLogoutUri()) with no null guard."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `ODDOAuth2Properties.@PostConstruct validate()` enforces only non-empty `clientId` and `provider`
+      (per ODDOAuth2Properties:invariants[1] + implicit_adrs[1]); `logoutUri` is NOT validated.
+      `AzureLogoutSuccessHandler.java:39` calls `URI.create(provider.getLogoutUri())` with no null guard,
+      whereas `CognitoLogoutSuccessHandler.java:33-35` has the `if (StringUtils.isEmpty(...)) return Mono.empty()`
+      guard. `URI.create(null)` throws NullPointerException per the JDK contract, surfacing as a 500 on the
+      logout flow. The live docs explicitly state Azure `logout-uri` is mandatory ("An unset `logout-uri`
+      raises a NullPointerException and the logout flow returns a 500 response") — so this is a doc-claim the
+      code confirms: the requirement is real and unenforced at boot.
+    evidence:
+      - sidecar: "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+        section: "bugs_limitations_corner_cases[0] + docs_link_semantic.doc_drift_findings[1]"
+        cite: "ODDOAuth2Properties.java:16-28 + AzureLogoutSuccessHandler.java:39 + CognitoLogoutSuccessHandler.java:33-35"
+        note: "Validator checks only clientId+provider; Azure logout has no null guard, Cognito does; live docs name the NPE."
+    operator_visible_failure: |
+      The deployment passes boot and serves authenticated sessions normally — the operator believes the
+      config is complete. The first time any Azure user clicks logout, they get a 500 and a broken logout
+      (session may not be cleared client-side). Because it is deferred to first-logout, it escapes smoke tests
+      that only check login. The asymmetry with Cognito (which guards the null) makes it a clear, fixable
+      defect: extend the @PostConstruct validator with provider-conditional required-field checks (Azure ⇒
+      logoutUri), and/or add the isEmpty guard to AzureLogoutSuccessHandler mirroring Cognito.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an operator picks Okta or Keycloak (both listed as supported on the live docs page) and configures `admin-groups`, an Okta/Keycloak user in that group is promoted to ADMIN like a Cognito or GitHub user would be."
+  derivation: "Feature-flow facet `okta_keycloak_documented_but_no_handler_implementation` + the live docs claim 7 providers while Provider.java has 5 (ODDOAuth2Properties sidecar invariants[2] + doc_drift_findings[2])."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The `Provider` enum has FIVE values (COGNITO, GITHUB, GOOGLE, ODD_IAM, AZURE) (per ODDOAuth2Properties
+      sidecar). Okta and Keycloak have no dedicated `*UserHandler` and no entry in the enum; their `provider`
+      string fails every `shouldHandle(...equalsIgnoreCase(Provider.X.name()))` check and the handler chain
+      falls through to `CustomOIDCUserHandler` (shouldHandle = NOT in Provider enum), which performs NO
+      provider-specific admin detection (no admin-groups, no admin-principals beyond the generic OIDC path).
+      So every Okta/Keycloak user is granted USER at login; `admin-groups` binds on the POJO but is never read
+      for these providers. ADMIN requires manual Owner-Role binding via the Management UI (LOGIN_FORM-style),
+      which is not what the per-provider config promises. The live docs list Okta + Keycloak as supported
+      because OIDC discovery works — but admin-detection parity does not exist.
+    evidence:
+      - sidecar: "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+        section: "concepts.invariants[2] + docs_link_semantic.doc_drift_findings[2]"
+        cite: "Provider.java:3-5 (5 values) + CustomOIDCUserHandler.java:28-34 + live docs (7 providers)"
+        note: "Free-String provider + 5-value enum + Custom OIDC catch-all = Okta/Keycloak get no admin detection; docs claim 7."
+    operator_visible_failure: |
+      An operator who chooses Okta/Keycloak from the documented provider list and configures admin-groups
+      following the Cognito/GitHub pattern gets a working LOGIN (OIDC discovery succeeds) but ZERO admins —
+      no group ever maps to ADMIN, no warning, no log. Their only path to a working admin is to discover,
+      undocumented, that they must hand-bind the Administrator role via the Management UI. This is the
+      doc-says-supported / code-does-not divergence the feature exists to surface; the fix is either add
+      OktaUserHandler + KeycloakUserHandler (PLT-071) or fix the docs to state the admin-detection asymmetry
+      (DOC-235).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When an operator makes a typo in the provider key (e.g. `provider: provder`), the platform refuses to boot (fail-fast) so the operator immediately learns the provider value is invalid."
+  derivation: "Feature-flow facet `oauth2_provider_field_free_string_no_enum_typo_silent_routing` + ODDOAuth2Properties sidecar — `provider` is a free String, not the Provider enum; the validator only checks non-empty."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `OAuth2Provider.provider` is a free `String` (ODDOAuth2Properties.java:32), NOT the `Provider` enum.
+      The @PostConstruct validator only checks non-empty (per ODDOAuth2Properties:invariants[1]). A typo like
+      `provder: google` (or `provider: gogle`) binds cleanly — non-empty passes — and at runtime fails every
+      `equalsIgnoreCase(Provider.X.name())` dispatch in the handler chain, falling through to CustomOIDCUserHandler
+      (generic OIDC). The deployment BOOTS and a generic OIDC login may even WORK against a compliant IdP, but
+      all provider-specific behaviour (admin-groups, admin-principals, provider logout) is silently lost. There
+      is no fail-fast, no enum constraint, no allowlist check.
+    evidence:
+      - sidecar: "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+        section: "bugs_limitations_corner_cases[2] + implicit_adrs[2] + concepts.invariants[2]"
+        cite: "ODDOAuth2Properties.java:32 + ODDOAuth2Properties.java:16-28 + OAuthSecurityConfiguration.java:168"
+        note: "Free String, validator non-empty-only, consumer-side equalsIgnoreCase dispatch — typo routes silently to generic OIDC."
+    operator_visible_failure: |
+      The most operator-frustrating failure shape: "the platform appears to work, but my admin-detection
+      doesn't." Login succeeds (OIDC discovery covers the typo'd provider), so the operator has no signal that
+      anything is wrong; only when an expected admin remains USER do they investigate, and the provider typo is
+      far from the visible symptom. Fix: make `provider` enum-typed OR add a @PostConstruct allowlist check that
+      fails boot on a non-enum, non-CUSTOM_OIDC provider value (PLT-082).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When an operator enables LDAP and configures URL + dn-pattern but forgets `groups.admin-groups`, at least one path exists for some user to become ADMIN."
+  derivation: "Feature-flow facet `ldap_groups_unset_silent_user_only_no_admin_path` + LDAPSecurityConfiguration sidecar — when groups is null OR adminGroups empty, every authenticated LDAP user gets USER only."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `LDAPSecurityConfiguration.authoritiesMapper` returns a USER-only authority for EVERY authenticated
+      LDAP user when `properties.getGroups() != null && CollectionUtils.isEmpty(adminGroups)` (the early
+      return at lines 91-92, read this session) — and equally when `getGroups()` is null (the mapper's
+      admin branch dereferences `getGroups().getAdminGroups()`, reached only when the early-return guard does
+      not fire; with groups null the guard at line 91 is false, so the lambda at 94-98 runs and would NPE —
+      but the bundled application.yml ships the entire ldap block commented out, so the common path is the
+      empty-adminGroups USER-only return). The ONLY path to ADMIN in such a deployment is the S2S API key
+      (S2sAuthenticationFilter hard-codes ADMIN), which is disabled by default. So an operator who uncomments
+      LDAP but omits admin-groups has NO LDAP path to ADMIN — confirmed.
+    evidence:
+      - sidecar: "(source-read, Rule 8 exception)"
+        section: "LDAPSecurityConfiguration.authoritiesMapper"
+        cite: "LDAPSecurityConfiguration.java:91-93"
+        note: "`if (groups != null && isEmpty(adminGroups)) return USER-only` — every authenticated user is non-admin."
+      - sidecar: "odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md"
+        section: "bugs_limitations_corner_cases[0] + security.known_security_gaps[empty admin-groups]"
+        cite: "application.yml:50-65 (commented-out ldap block) + S2sAuthenticationFilter.java:31-39"
+        note: "Default ldap block commented out; only S2S (default off) grants ADMIN otherwise → deployment with no admins."
+    operator_visible_failure: |
+      An operator brings up LDAP, can log in, and finds every ADMIN-gated endpoint (RBAC management, role
+      binding) returns 403 — for everyone, including themselves. No error tells them admin-groups is the missing
+      knob. This is an operability defect, not an exploit (it fails closed), but it bricks the admin surface
+      silently. The documentable caveat: "LDAP without `groups.admin-groups` produces a deployment with no LDAP
+      path to ADMIN; the only admin path is an S2S API key." Fix is doc-side (caveat) plus optionally a boot
+      warning when auth.type=LDAP and adminGroups is empty and s2s is disabled.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When an operator lists a user in GitHub `admin-principals: [external-consultant]`, that user becomes ADMIN only if they are also a member of the configured `organization-name`."
+  derivation: "Endpoint shape — `organization-name` reads as the outermost membership gate; an operator would model admin-principals as 'admins WITHIN my org'. GithubUserHandler sidecar invariants describe the actual ordering."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The `admin-principals` fast-path (GithubUserHandler.java:54-67) fires BEFORE the org-membership gate
+      (line 68 onwards) and returns ADMIN with its own early `return Mono.just(...)` — with NO org check (per
+      GithubUserHandler:invariants[admin-principals-bypass]). So `admin-principals: [external-consultant]`
+      grants `external-consultant` ADMIN even if they are NOT a member of `organization-name`. The operator's
+      mental model ("organization-name is the outermost guard") is wrong; admin-principals overrides it by
+      design. Worse: GitHub usernames are the `login` string, freely registerable by anyone — a typo in
+      admin-principals matching a username an attacker can register on github.com is a platform-ADMIN backdoor.
+    evidence:
+      - sidecar: "odd-platform__java__auth__handler__GithubUserHandler.md"
+        section: "concepts.invariants[admin-principals-bypass-org] + implicit_adrs[1] + bugs_limitations_corner_cases[2]"
+        cite: "GithubUserHandler.java:54-67 (early return) + line 68 (org check is later)"
+        note: "admin-principals match returns ADMIN before any org membership verification — intentional but undocumented."
+    operator_visible_failure: |
+      Security-boundary mis-modelling: an operator who believes `organization-name` confines all admins to
+      their org is wrong — admin-principals escapes that gate. Two consequences: (1) an intended out-of-org
+      admin works (the design intent), but (2) a TYPO in admin-principals (or a stale entry for a departed
+      employee whose GitHub login an attacker later registers) becomes an unauthenticated-to-the-org ADMIN
+      path. Compounds with nothing now that H-001 is corrected (the substring escalation does not exist), but
+      remains a real backdoor surface. Fix: document the bypass explicitly (PLT-070) and consider gating
+      admin-principals behind org membership unless an explicit `admin-principals-bypass-org: true` is set.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a GitHub user who was an admin renames their GitHub login (e.g. `alice` → `alice2`), they remain an admin and keep their owner-linkage after the rename."
+  derivation: "Negative-space — an admin operator expects identity durability across a username change. GithubUserHandler invariants describe the (username, provider) compound key with no id-based fallback."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      ADMIN authority itself is recomputed per login from org/team membership, so a renamed user who is
+      still in the admin team is re-granted ADMIN on next login (the authority is not the durable thing).
+      BUT the username used everywhere is the GitHub `login` string (GithubUserHandler:invariants[username-is-login]),
+      which GitHub lets users rename freely. The `(username, github)` tuple is the compound key for
+      USER_OWNER_MAPPING (per GithubUserHandler:coupling + downstream_side_effects). On rename to `alice2`,
+      the prior `(alice, github)` owner-mapping row is ORPHANED — the user's owner-scoped data and any
+      Role bindings attached to the old Owner are lost; there is NO id-based fallback and NO migration tool.
+      So admin-by-membership survives, but owner identity (and any ADMIN granted via a Role bound to the old
+      Owner under LOGIN_FORM-style binding) does NOT. The promise is partly kept.
+    evidence:
+      - sidecar: "odd-platform__java__auth__handler__GithubUserHandler.md"
+        section: "concepts.invariants[username-is-login] + bugs_limitations_corner_cases[0] + downstream_side_effects[no-USER_OWNER_MAPPING-write]"
+        cite: "GithubUserHandler.java:36,56 + AuthIdentityProviderImpl.java:29-30 + ReactiveUserOwnerMappingRepositoryImpl.java:116-127"
+        note: "login-as-username + compound (username, provider) key + no id fallback = rename orphans the owner mapping."
+    operator_visible_failure: |
+      A GitHub admin who renames their account silently loses their Owner linkage on next login: My-Objects
+      views render empty, owner-scoped data appears unowned, and any ADMIN that came from a Role bound to the
+      old Owner evaporates (membership-based ADMIN survives, role-binding-based ADMIN does not). No log, no
+      warning — latent until a rename happens. Cross-links to F-011's `compound_key_silent_in_docs`. Fix is a
+      doc warning + (larger) an id-based identity anchor. This is a NEW drift facet not in F-124's facet list.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When two operators migrate the same deployment between auth modes (e.g. LOGIN_FORM → LDAP, or OAUTH2 → LDAP) keeping the same usernames, each user's existing ADMIN/owner linkage carries over."
+  derivation: "Cross-pillar — F-124 shares_data_with P-08 and feeds F-011; an operator migrating modes expects continuity. LDAPSecurityConfiguration sidecar describes provider=null for LDAP users."
+  seed_source: cross-pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The LDAP sidecar reports that `AuthIdentityProviderImpl.getCurrentUser()` returns `UserDto(username, null)`
+      for LDAP users (provider=null), because only the OAuth2 branch sets a provider; and the user-owner mapping
+      joins on `(username, provider)`. So an owner-mapping row created under OAUTH2 (`provider='google_corp'`) will
+      NOT match an LDAP login of the same username (`provider=null`), and vice versa — a mode migration silently
+      invalidates owner linkage and any Role bound to the old Owner. Whether ADMIN specifically carries over
+      depends on whether the new mode's admin-detection (LDAP admin-groups) independently re-grants it — which it
+      does if the directory groups are configured, but does NOT inherit the prior Role-bound ADMIN. The exact
+      cross-mode behaviour (does provider=null collide with LOGIN_FORM's provider value? does S2S admin username
+      'admin' collide?) is a multi-mode runtime interaction the sidecars describe statically but cannot fully
+      resolve without standing up two modes against the same DB. Routed to a probe.
+    evidence:
+      - sidecar: "odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md"
+        section: "docs_link_semantic.doc_drift_findings[provider=null for LDAP UserDto] + bugs_limitations_corner_cases[provider=null + owner mapping]"
+        cite: "AuthIdentityProviderImpl.java:24-35,49-53"
+        note: "LDAP UserDto provider=null; owner mapping joins on (username, provider); cross-mode migration orphans linkage."
+    severity: MEDIUM
+    confidence: MEDIUM
+    operator_visible_failure: |
+      An operator migrating auth modes (a documented operation — "the choice between LDAP and OAUTH2 is the
+      operator's identity-source choice; the rest of the platform behaves identically") finds, post-migration,
+      that users have lost their Owner linkage and any Role-bound ADMIN — they must re-run owner association and
+      re-bind roles. Whether this is total or partial, and whether username collisions (S2S 'admin', LDAP
+      provider=null vs LOGIN_FORM) cause cross-mode privilege bleed, needs a local two-mode probe to state with
+      certainty. Surfaced as probe-needed rather than hedged.
+    probe_id: PENDING-F-124-1
+    routes_to_finding: probe-needed
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: "probe PENDING-F-124-1"
+
+- id: H-011
+  hypothesis: "When an operator sets LDAP `admin-groups` against a directory where the relevant group has more members than the directory's server-side size limit, every member of the admin group is reliably promoted to ADMIN on each login."
+  derivation: "Negative-space + LDAPSecurityConfiguration sidecar — `LdapTemplate.setIgnoreSizeLimitExceededException(true)` silently truncates group searches; an operator expects deterministic admin promotion."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      `LdapTemplate.setIgnoreSizeLimitExceededException(true)` (LDAPSecurityConfiguration.java:131) makes
+      group-membership searches that exceed the directory's size limit TRUNCATE silently rather than error.
+      Combined with `DefaultLdapAuthoritiesPopulator` resolving the user's group memberships, a user whose
+      admin-group membership row falls beyond the truncation cutoff could be silently omitted from the returned
+      authorities and thus demoted to USER on that login — non-deterministically, depending on directory paging.
+      The sidecar flags this as a security gap but marks the exact triggering conditions as uncovered. Whether,
+      and under what directory size/paging configuration, an admin is actually demoted requires a local LDAP
+      harness with a large group to observe — routed to a probe rather than asserted.
+    evidence:
+      - sidecar: "odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md"
+        section: "bugs_limitations_corner_cases[size-limit silent truncation] + security.known_security_gaps[size-limit silent truncation]"
+        cite: "LDAPSecurityConfiguration.java:131"
+        note: "setIgnoreSizeLimitExceededException(true) — silent truncation; non-deterministic authority set on large groups."
+    severity: MEDIUM
+    confidence: MEDIUM
+    operator_visible_failure: |
+      In a large enterprise directory, an LDAP admin could be intermittently demoted to USER on some logins and
+      restored on others, with no log line and no health signal (the LDAP health check is also off by default).
+      This is an operability + correctness hazard for exactly the enterprise directories LDAP mode targets. The
+      probe stands up a local OpenLDAP with a group exceeding a configured size limit and observes whether the
+      admin authority is reliably present across repeated logins.
+    probe_id: PENDING-F-124-2
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-124-2"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "The LDAP/GitHub `admin-groups` substring overpromotion does NOT exist — `OperationUtils.containsIgnoreCase` is full-string `equalsIgnoreCase` (OperationUtils.java:9); the feature-flow facet, PLT-081, DOC-235, and DOC-238 are factually wrong and must be corrected/retracted."
+  dedup_status: already_tracked
+  tracked_as: "PLT-081"
+  correction_required: true
+  correction_note: "PLT-081 (HIGH 'admin-groups SUBSTRING overpromotion', seeded from F-124a + F-124b) asserts the OPPOSITE of ground truth and instructs a no-op fix (containsIgnoreCase→equalsIgnoreCase when the helper is ALREADY equalsIgnoreCase). RETRACT PLT-081, or RE-FRAME it as 'admin-groups is case-insensitive full-string equality (NOT substring) — the doc framing is correct; document the exact-CN caveat (H-002)'. Same correction propagates to DOC-235 (CRITICAL substring admonition), DOC-238 (LDAP substring caveat), F-124 facet `ldap_admin_groups_substring_match_overpromotion`, and concept candidate `substring-match-admin-escalation-ldap-containsignorecase`. The GithubUserHandler sidecar (2026-05-19) ALREADY flagged this 'MUST be surfaced to reducer'; the correction was not propagated into the 2026-05-26 feature-flow or the 2026-05-27 scanner run."
+  proposed_fix_anchor: "No code change at LDAPSecurityConfiguration.java:96 / GithubUserHandler.java:119 — they already use equalsIgnoreCase semantics. The fix is artefact-level: retract/re-frame PLT-081 + DOC-235 + DOC-238, correct the F-124 facet, retract the concept candidate."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "GitHub admin/login silently fails (login lockout if org-gated, or admin-groups no-op if not) when the OAuth2 token lacks `read:org` scope; no boot validation, no log clue."
+  dedup_status: already_tracked
+  tracked_as: "PLT-082"
+  distinct_from: "PLT-082 covers provider-typo silent routing; the read:org-scope-missing failure is a DIFFERENT silent-config mode on the same handler. Closest existing coverage is the boot-validation theme in PLT-082/PLT-069. If no scope-specific item exists, this is net-new under that theme."
+  proposed_fix_anchor: "Boot-time @PostConstruct cross-field validation in ODDOAuth2Properties: reject (or warn) a github client whose `scope` lacks `read:org` when `organization-name` or `admin-groups` is set."
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Azure `logout-uri` is mandatory per docs but unvalidated at boot; first logout NPEs to a 500 (Cognito guards this; Azure does not)."
+  dedup_status: net_new
+  recommended_log_as: "PLT-NNN (bug) — extend ODDOAuth2Properties @PostConstruct validator with provider-conditional required fields (Azure ⇒ logoutUri) AND/OR add the isEmpty guard to AzureLogoutSuccessHandler.java:39 mirroring CognitoLogoutSuccessHandler.java:33-35"
+  distinct_from: "PLT-082 (provider typo) and PLT-069 (Google admin-groups no-op) are different facets; no existing item covers Azure logout-uri NPE. The grep for 'logout-uri' returned no auth issue asserting this."
+  proposed_fix_anchor: "ODDOAuth2Properties.java:16-28 (validator) + AzureLogoutSuccessHandler.java:39 (null guard)."
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "Okta + Keycloak are documented as supported (7-provider list) but have no handler and no enum value — every Okta/Keycloak user is USER; admin-groups silently no-op."
+  dedup_status: already_tracked
+  tracked_as: "PLT-071"
+  proposed_fix_anchor: "Add OktaUserHandler + KeycloakUserHandler + enum values (PLT-071 Option A), coordinated with PLT-082 enum coverage; doc-side DOC-235 admonition for the interim."
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "`provider` is a free String with non-empty-only validation; a typo binds and routes silently to generic OIDC with no provider-specific admin path and no fail-fast."
+  dedup_status: already_tracked
+  tracked_as: "PLT-082"
+  proposed_fix_anchor: "Make `provider` enum-typed OR add a @PostConstruct allowlist check (PLT-082 Option A/B)."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "LDAP `admin-groups` matches each directory authority by case-insensitive FULL-STRING equality against the group's CN (populator rolePrefix=\"\"); operators must supply the exact CN, not a DN and not a substring — the real, milder caveat the wrong substring narrative obscured."
+  dedup_status: already_tracked
+  tracked_as: "DOC-238"
+  correction_note: "DOC-238 currently carries the WRONG substring caveat. Re-frame to the exact-CN, case-insensitive, full-string-equality caveat (this hypothesis) instead of substring overpromotion."
+- hypothesis_id: H-007
+  one_line: "LDAP without `groups.admin-groups` yields a deployment with NO LDAP path to ADMIN (every user is USER; only an S2S API key, off by default, grants ADMIN) — fails closed, but bricks the admin surface silently."
+  dedup_status: already_tracked
+  tracked_as: "DOC-238"
+  distinct_from: "Same doc page family as the LDAP admin caveats; if DOC-238 is LDAP-substring-specific, this no-admin-path caveat is a sibling caveat to add. F-124 facet `ldap_groups_unset_silent_user_only_no_admin_path` is the substrate anchor."
+- hypothesis_id: H-008
+  one_line: "GitHub `admin-principals` BYPASSES the `organization-name` gate (early return before the org check) — an out-of-org or typo'd/attacker-registerable username becomes a platform-ADMIN backdoor; document the bypass + the github-login-is-registerable risk."
+  dedup_status: already_tracked
+  tracked_as: "PLT-070"
+- hypothesis_id: H-009
+  one_line: "A GitHub login rename orphans the user's USER_OWNER_MAPPING row (username = mutable `login`, compound key, no id fallback) — owner linkage and Role-bound ADMIN are lost on next login; membership-based ADMIN survives. NEW drift facet not in F-124."
+  dedup_status: already_tracked
+  tracked_as: "PLT-070"
+  distinct_from: "PLT-070 covers admin-principals bypass + GHES hard-code on the same handler; the rename-orphans-owner-mapping facet is a DISTINCT issue (cross-links F-011 compound_key_silent_in_docs). If PLT-070 does not absorb it, log as a doc caveat sibling + F-011 facet extension."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — this feature has ZERO tests across all four matrix cells (unit/integration/performance/security
+# all GAP) and ZERO test files for any auth handler or LDAP config (Glob-verified: no *Ldap*/*Github*/*UserHandler*
+# test exists). EVERY promise below is unverified. The corrected promise H-001/H-002 is the single highest-value test:
+# a GREEN test pinning that admin-groups is full-string equality would have prevented PLT-081 + DOC-235 + DOC-238 from
+# ever being filed on the wrong premise.
+- use_case_id: F-124-UC-002
+  hypothesis_id: H-002
+  kind: grammar
+  promise: "LDAP `admin-groups: ['ODD_ADMINS']` promotes a user iff a directory authority equals `ODD_ADMINS` (case-insensitive full string); `admin-groups: ['ops']` does NOT promote members of `devops`/`noops`."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-002)"
+  proposed_test: "GrantedAuthoritiesMapperTest / OperationUtilsTest — assert containsIgnoreCase(['ops'], 'devops') == false AND containsIgnoreCase(['ODD_ADMINS'], 'odd_admins') == true (the regression guard that pins equality-not-substring and would have killed PLT-081 at source)."
+- use_case_id: F-124-UC-003
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "A GitHub client with `organization-name` set but a token lacking `read:org` fails login closed (not silently USER)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-003)"
+  proposed_test: "GithubUserHandlerTest — mock /user/orgs returning 403; assert the enrich Mono errors (login fails) rather than returning a USER DefaultOAuth2User."
+- use_case_id: F-124-UC-004
+  hypothesis_id: H-004
+  kind: teardown
+  promise: "Azure logout with `logout-uri` unset fails fast at boot (validator) OR returns Mono.empty() (guard), NOT a 500 NPE on first logout."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-004)"
+  proposed_test: "ODDOAuth2PropertiesTest — assert @PostConstruct throws when provider=azure and logoutUri empty; AzureLogoutSuccessHandlerTest — assert no NPE on null logoutUri (mirror Cognito guard)."
+- use_case_id: F-124-UC-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "An Okta/Keycloak `admin-groups` config either promotes group members to ADMIN (handler exists) or fails boot/warns (no silent USER no-op)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-005)"
+  proposed_test: "Boot/validation test — assert a provider=okta client with admin-groups set produces a WARN or fail-fast (regression guard for the PLT-071 fix)."
+- use_case_id: F-124-UC-006
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "A typo'd `provider` value fails boot (enum/allowlist) instead of silently routing to generic OIDC."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-006)"
+  proposed_test: "ODDOAuth2PropertiesTest — assert @PostConstruct rejects provider='provder' (regression guard for the PLT-082 fix)."
+- use_case_id: F-124-UC-007
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "LDAP with adminGroups empty grants no user ADMIN (fails closed) and ideally warns at boot."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-007)"
+  proposed_test: "GrantedAuthoritiesMapperTest — assert empty adminGroups returns USER-only authority for any input authorities (pins the fail-closed posture)."
+- use_case_id: F-124-UC-008
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "GitHub `admin-principals` grants ADMIN regardless of org membership (documented bypass) — pinned so any future re-ordering is caught."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-008)"
+  proposed_test: "GithubUserHandlerTest — admin-principals match + user NOT in organization-name ⇒ ADMIN (characterization test pinning the bypass per LSN-029; RED the instant the ordering changes)."
+- use_case_id: F-124-UC-009
+  hypothesis_id: H-009
+  kind: edit-reconcile
+  promise: "A GitHub login rename does not silently orphan the owner mapping (id-based anchor or documented behaviour pinned)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-124-UC-009)"
+  proposed_test: "GithubUserHandlerIntegrationTest — login as alice (mapping row created), rename to alice2, re-login, assert fetchAssociatedOwner((alice2, github)) is empty (characterization pin of the orphaning until fixed)."
+
+### probes_emitted
+- probe_id: PENDING-F-124-1
+  hypothesis_id: H-010
+  hypothesis_text: "When an operator migrates the same deployment between auth modes (LOGIN_FORM → LDAP, or OAUTH2 → LDAP) keeping the same usernames, each user's existing ADMIN/owner linkage carries over."
+  local_execution_blocked: false
+  probe_sketch: "Local: docker-compose ODD + Postgres. (1) Boot LOGIN_FORM, create user 'alice', bind Administrator role to alice's Owner. (2) Switch auth.type to LDAP (osixia OpenLDAP with a user 'alice'), reboot against the SAME Postgres. (3) Log in as alice via LDAP; assert whether fetchAssociatedOwner resolves the prior Owner (provider=null vs LOGIN_FORM provider) and whether the Administrator-role ADMIN carries over. (4) Repeat OAUTH2→LDAP. Record provider-string collisions and the S2S 'admin' username collision."
+- probe_id: PENDING-F-124-2
+  hypothesis_id: H-011
+  hypothesis_text: "When LDAP admin-groups is set against a directory where the admin group exceeds the server size limit, every member is reliably promoted to ADMIN on each login."
+  local_execution_blocked: false
+  probe_sketch: "Local: osixia OpenLDAP with a sizelimit set low (e.g. 5) and an admin group with > 5 members. Configure ODD auth.type=LDAP, admin-groups=[the group]. Log in as a member whose membership row is beyond the cutoff repeatedly; assert whether ADMIN is present deterministically across logins or intermittently dropped (the setIgnoreSizeLimitExceededException(true) truncation at LDAPSecurityConfiguration.java:131)."
+
+### validation_gaps
+- sidecar: "feature-flow F-124 (no enriched UI hop) + chain hop 3 sidecar: unresolved"
+  field_insufficient: "ui_surface — the feature has NO enriched UI component; chain hop 3 ('principal granted ADMIN OR not') is sidecar: unresolved, and there is no UI sidecar for 'configure admins'. Per Rule 9 this is recorded FIRST: this reflection is CONFIG/API-only. That is CORRECT for this feature — admin promotion is genuinely a config + external-IdP-claim surface (application.yml + IdP claims), not an on-screen affordance (the one on-screen path, LOGIN_FORM role-binding via the Management UI, belongs to F-006/F-019, not here). The reflection judges the operator's mental model of the config grammar, which is the right product-owner lens for an operator-facing config feature. No confident UX verdicts are claimed for an end-user screen because there is none."
+  proposed_refresh: "No UI sidecar is needed for F-124 itself; cross-link the LOGIN_FORM admin-binding UX to F-006/F-019 where the Management UI Owner/Role tabs live."
+- sidecar: "Cognito/Azure/ODD_IAM UserHandlers (no dedicated sidecars)"
+  field_insufficient: "understanding — only GithubUserHandler and GoogleUserHandler have enriched sidecars; CognitoUserHandler, AzureUserHandler, ODDIAMUserHandler, AbstractOIDCUserHandler, CustomOIDCUserHandler have NO sidecar. The Cognito/Azure/ODD_IAM admin-detection hypotheses (exact-match group claim; roles-or-groups claim; admin-user-info-flag) are derivable from the ODDOAuth2Properties sidecar's cross-references but not from a per-handler sidecar, so per-provider hypotheses for those three are thinner than for GitHub/Google."
+  proposed_refresh: "Enrich CognitoUserHandler, AzureUserHandler, ODDIAMUserHandler, AbstractOIDCUserHandler, CustomOIDCUserHandler sidecars so the per-provider admin-detection chain is fully traced for all six mechanisms (currently 2 of 6 have first-class sidecars)."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc (and the planned DOC-237 unified admin-promotion page / DOC-235 / DOC-238)"
+  doc_says: "DOC-235 (drafted) would publish a CRITICAL admonition that LDAP + GitHub `admin-groups` use SUBSTRING matching and over-promote on short tokens; DOC-238 the LDAP-specific substring caveat."
+  code_does: "Full-string case-insensitive equality (`OperationUtils.containsIgnoreCase` = `element::equalsIgnoreCase`, OperationUtils.java:9). No substring over-promotion exists."
+  recommended_log_as: "doc-gap (correction) — fix DOC-235 + DOC-238 BEFORE publishing; the substring admonition is false and would mislead operators. Publish the corrected H-002 caveat (exact-CN, case-insensitive) instead."
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc"
+  doc_says: "Lists 7 supported providers (Cognito, GitHub, Google, Azure, Okta, Keycloak, Custom OIDC)."
+  code_does: "5-value Provider enum; Okta/Keycloak fall through CustomOIDCUserHandler with no admin detection — documented-as-supported, admin-detection not supported."
+  recommended_log_as: "DOC-235 (admin-detection matrix admonition for Okta/Keycloak) — already drafted; correct alongside the H-001 retraction."
+
+## maintainer_notes
+
+(preserved across refreshes — maintainer hand-edits only below this line)
+
+The load-bearing result of this reflection: F-124's stated HIGHEST-severity facet
+(`ldap_admin_groups_substring_match_overpromotion`) is FACTUALLY WRONG, and the error has
+already propagated into a filed issue (PLT-081), two doc drafts (DOC-235 CRITICAL, DOC-238),
+and a concept candidate. Ground truth read this session: `OperationUtils.java:9` is
+`collection.stream().anyMatch(element::equalsIgnoreCase)` — full-string equality. The
+GithubUserHandler sidecar (2026-05-19) already caught this and said "MUST be surfaced to
+reducer"; the correction never reached the 2026-05-26 feature-flow graduation or the
+2026-05-27 scanner Mode-B run. Recommended: (1) re-frame the F-124 facet to the corrected
+full-string-equality semantics with the H-002 exact-CN caveat; (2) retract/re-frame PLT-081,
+DOC-235's substring claim, DOC-238, and the `substring-match-admin-escalation-ldap-containsignorecase`
+concept candidate; (3) propagate the correction-propagation gap to the methodology (a sidecar
+CONTRADICTS-with-MUST-surface that the reducer did not honour is itself a process finding).

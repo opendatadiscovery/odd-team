@@ -1,0 +1,675 @@
+---
+feature_id: F-120
+pillar_anchored_id: P-08:F-120
+pillar: "P-08 Management & Administration (operator-infrastructure config surface)"
+feature_name: "R2DBC Connection-Pool Sizing — operator-tunable concurrency ceiling silently 20-per-replica"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - "odd-platform__java__R2DBCConfiguration__config-class__R2DBCConfiguration.md"
+  # The second contributing_node `config-key-consumer:spring.r2dbc.pool.* (10 keys)`
+  # has NO standalone sidecar file; the R2DBCConfiguration sidecar's `requires-config`
+  # block (lines 90-97) + the file-analyser's `application.yml`-absence audit cover
+  # all 10 keys end-to-end. Cross-referenced concept invariant below.
+cross_referenced_concepts:
+  - "authorization-hot-path-getcurrentuserroles-per-request-no-cache (invariants/) — the P-09 chain bound by this ceiling"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      WebFetched this session. Confirms ZERO documentation of any `spring.r2dbc.pool.*`
+      key, ZERO connection-pool sizing / PG max_connections guidance, ZERO mention of
+      the second (customConnectionPool) pool, ZERO pool-metrics guidance. The doc page
+      is silent on the entire operator-tunable surface this feature names. (The sidecar's
+      2026-05-20 WebFetch found the same; re-verified 2026-06-03.)
+hypothesis_summary:
+  total: 11
+  confirmed: 7
+  contradicted: 3
+  partial: 1
+  probe_needed: 0
+  # NOTE: H-009 is BOTH a probe-needed sub-question AND a confirmed static fact about
+  # backpressure-with-no-gauge; it is counted once as confirmed (the static behaviour is
+  # provable) with an embedded probe for the exact saturation-21 mechanism. See its block.
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      The "operator-tunable concurrency ceiling" the feature name promises is, on the
+      shipped default, an UNDOCUMENTED silent ceiling of 20 DB connections per replica
+      (framework-default maxSize=10 x 2 unconditionally-instantiated pools) — an operator
+      sizing PG `max_connections` from the docs has no number to plan against and will
+      over-commit a 5-replica deployment to 100 slots at PG's own default of 100.
+related_feature_flows: [F-026, F-011, F-006]   # F-026 Lookup Tables (custom pool home); F-011/F-006 the P-09 auth hot path bound by the ceiling
+related_concepts:
+  - "authorization-hot-path-getcurrentuserroles-per-request-no-cache"
+  - "lookup-table-rename-via-alter-table-breaks-downstream-sql-consumers"
+related_drift_classes:    # from the feature-flow's observed_vs_expected that this reflection independently confirmed
+  - pool_size_silent_framework_default_undocumented
+  - custom_pool_instantiated_unconditionally_no_conditionalonproperty
+  - authorization_hot_path_bound_by_pool_ceiling
+  - no_micrometer_pool_metrics_no_actuator_visibility
+  - framework_default_inheritance_no_platform_pin
+new_drift_classes_proposed:
+  - operator_tunable_knob_name_promises_control_but_zero_keys_shipped_zero_docs_pure_framework_default
+  - pg_max_connections_overcommit_5_replicas_x_20_equals_100_at_pg_default_100_no_sizing_table
+---
+
+# R2DBC Connection-Pool Sizing — product-owner reflection
+
+## product_owner_narrative
+
+R2DBC Connection-Pool Sizing is not a screen — it is an **operator-infrastructure surface**: the set of `spring.r2dbc.pool.*` configuration keys (ten of them) that an operator deploying ODD Platform would expect to set in `application.yml`, an environment variable, or a Helm value to control how many concurrent PostgreSQL queries each platform replica can run before requests start queueing. The "user" of this feature is the **platform-operator** and, behind them, the **DBA** sizing the PostgreSQL backend — the two audiences the contributing sidecar names explicitly (per `R2DBCConfiguration` sidecar `concepts.audiences`). The capability the feature *name* promises — "operator-tunable concurrency ceiling" — sits squarely inside Pillar P-08's one-line mission: "everything an operator configures inside the running platform" (per `system-mission.md` P-08). (Naming note: the feature-flow detail carries a malformed `pillar_anchored_id: P-08:F-014` — `F-014` is already the anchor for a P-07 alert-read reflection per `feature-reflections/index.yaml`; this reflection uses the clean `P-08:F-120`.)
+
+An operator interacts with this feature the way they interact with any Spring Boot config knob: they read the deployment docs, find the key, set a value, restart the JVM, and the new ceiling takes effect at boot (the `ConnectionPool` bean is built once at context init — a runtime change requires a restart, per sidecar `requires-config`). What they observe is *indirect*: there is no in-app gauge, so an operator confirms the pool is correctly sized by watching request latency, PostgreSQL's `pg_stat_activity` connection count, or `/actuator/prometheus` — except, as this reflection establishes, `/actuator/prometheus` exposes no pool gauge at all (per sidecar `performance.known_performance_gaps[1]`). The operator's only screen for this feature is therefore the config file going in and PostgreSQL's own server-side connection count coming out.
+
+The working parts an operator would want to reason about: (1) **how many connections per replica** — governed by `spring.r2dbc.pool.max-size`, which ships UNSET, so the ceiling is Spring Boot's framework default of 10 (per sidecar invariant on lines 71); (2) **how many pools** — the platform wires TWO `io.r2dbc.pool.ConnectionPool` beans (a `@Primary` one and a `customConnectionPool` for the Lookup-Tables schema), and the second is instantiated UNCONDITIONALLY with no `@ConditionalOnProperty` gate (per sidecar `bugs_limitations_corner_cases[2]`), so EVERY deployment pays for both — 2 x 10 = 20 connection slots per replica whether or not Lookup Tables are ever used; (3) **the timeouts** — `maxAcquireTime`, `maxCreateConnectionTime` and seven other parameters, all at framework default, all wired through `PropertyMapper.alwaysApplyingWhenNonNull()` (sidecar lines 64); (4) **what happens at saturation** — request 21 to a single replica is queued by Reactor's `Mono` backpressure (a latency spike with no error and no gauge), per the feature-flow `terminal_side_effect`.
+
+This feature does not stand alone — its integration story is the load-bearing finding. The **authorization hot path** (Pillar P-09: every authenticated HTTP request resolves `getCurrentUserRoles -> getCurrentUserPolicies`, which is two uncached DB JOINs per request, per concept invariant `authorization-hot-path-getcurrentuserroles-per-request-no-cache` lines 40-47) runs on the SAME primary pool. So at high RPS the 20-per-replica ceiling is the hard ceiling on *authorization throughput* — the platform can run out of pool before it runs out of CPU, and the symptom is auth-resolution latency, not business-logic latency (per concept invariant + sidecar `performance.hot_paths[0]`). The second cross-pillar tie is to Pillar P-03 (Master Data Management / Lookup Tables): the `customConnectionPool` exists solely for that subsystem, yet its always-on instantiation taxes deployments that never touch it.
+
+A product owner demoing this feature would have to make an awkward admission in the demo: there is nothing to show. There is no settings page, no sizing wizard, no recommended-value table, no metrics panel. The feature is "tunable" only in the sense that the keys *exist in the framework* and the platform's `PropertyMapper` *would* apply them if set — but the platform ships zero of them, documents zero of them, and surfaces zero telemetry to know whether they need setting. The highest-leverage edge cases an operator hits in production: a 5-replica deployment silently sitting at 100 PostgreSQL connection slots (PostgreSQL's own default `max_connections` is 100, so the platform alone can exhaust the database before any collector or admin tool connects — per sidecar `performance.resource_allocation`); and a future Spring Boot upgrade silently moving the framework `maxSize` default and thereby moving ODD's deployed ceiling with no PR, changelog, or migration note (per sidecar `bugs_limitations_corner_cases[3]`).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator sets `spring.r2dbc.pool.max-size=50` in `application.yml` (or via the `SPRING_R2DBC_POOL_MAXSIZE` env var) and restarts, each platform replica's primary connection pool admits up to 50 concurrent PostgreSQL queries instead of the default ceiling."
+  derivation: "The feature name promises an operator-tunable ceiling; the sidecar shows `PropertyMapper.alwaysApplyingWhenNonNull()` applies all ten `R2dbcProperties.Pool` keys to the pool builder (lines 41-50)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Setting the key works. The primary pool builder applies `R2dbcProperties.Pool.maxSize`
+      via `PropertyMapper.alwaysApplyingWhenNonNull()` (R2DBCConfiguration.java:41-50). Spring
+      Boot's relaxed binding resolves `spring.r2dbc.pool.max-size` / `SPRING_R2DBC_POOL_MAXSIZE`
+      into `R2dbcProperties.Pool.maxSize` at boot, and the non-null value overrides the framework
+      default. The key IS plumbed end-to-end — the operator CAN tune it. (The caveat that they
+      have no docs telling them the key exists is H-002/H-006, not this hypothesis.)
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "concepts.operations + requires-config"
+        cite: "R2DBCConfiguration.java:41-50"
+        note: "PropertyMapper.alwaysApplyingWhenNonNull() copies non-null Pool.maxSize to ConnectionPoolConfiguration.Builder."
+      - sidecar: "R2DBCConfiguration"
+        section: "dependencies_semantic.requires-config"
+        cite: "R2DBCConfiguration.java:97 (the spring.r2dbc.pool.* requires-config entry)"
+        note: "Sidecar states the keys are operator-visible only by adding them to the resolved property source — i.e. they are honoured when present."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator deploys ODD Platform with the shipped `application.yml` and no overrides, each replica admits a documented, knowable number of concurrent DB connections that the operator can plan PostgreSQL `max_connections` against."
+  derivation: "The feature is named 'operator-tunable concurrency ceiling'; a tunable ceiling implies a known default value an operator can read and plan capacity against (P-08 mission: 'everything an operator configures')."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The shipped default ceiling is UNDOCUMENTED and is a pure framework artefact: `application.yml`
+      ships ZERO `spring.r2dbc.pool.*` keys (verified: only `io.r2dbc.postgresql` log levels at
+      application.yml:251-252), so `maxSize` is Spring Boot's framework default of 10 per pool at
+      spring-boot 3.x + r2dbc-pool 1.0.0.RELEASE (gradle/libs.versions.toml:14,73). The platform
+      instantiates TWO pools (primary + customConnectionPool), so the real per-replica ceiling is
+      20 concurrent DB connections. The live operator docs page publishes none of this — not the key,
+      not the default value, not the doubling, not the per-replica number (WebFetch 2026-06-03, status
+      200, all NOT PRESENT). The operator has no number to plan against and no way to derive one from
+      the docs.
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "concepts.invariants[3] (the byte-identical pool blocks + framework-default ceiling)"
+        cite: "R2DBCConfiguration.java:41-50,75-84 + application.yml:1-15 (no spring.r2dbc.pool.* keys)"
+        note: "Two pools x framework-default maxSize=10 = 20 per replica; zero keys shipped."
+      - sidecar: "R2DBCConfiguration"
+        section: "docs_link_semantic.doc_drift_findings[0]"
+        cite: "WebFetch /configuration-and-deployment/odd-platform 2026-05-20 (re-verified 2026-06-03)"
+        note: "Docs publish none of the ten pool settings; operators have no published ceiling."
+      - sidecar: null
+        section: "source_read_for_validation"
+        cite: "odd-platform-api/src/main/resources/application.yml:251-252 (only io.r2dbc log levels; no pool keys)"
+        note: "Rule-8 single-line validation read this session — confirms application.yml ships zero spring.r2dbc.pool.* keys."
+    operator_visible_failure: |
+      (1) An operator following the deployment docs to size PostgreSQL has NO published per-replica
+      connection number — they guess, or they discover it empirically under load. (2) Because the
+      real number is 20 (not 10) per replica, a naive operator who infers "Spring default is 10" still
+      under-counts by half. (3) The compounding consequence is H-003: a 5-replica deployment silently
+      reserves 100 slots against PostgreSQL's own default `max_connections=100`, leaving zero headroom
+      for collectors, psql sessions, BI tools, or the HikariCP/PGConnectionFactory pools that consume
+      slots OUTSIDE these two (per sidecar performance.resource_allocation). The first symptom is
+      `FATAL: sorry, too many clients already` from PostgreSQL — at deploy-scale-up time, not at
+      config time.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an operator scales ODD Platform to N replicas on a default PostgreSQL (`max_connections=100`), the platform's own connection demand stays within the database's connection budget with headroom for collectors and admin tooling."
+  derivation: "P-08 operator-config mission + the metadata-store architectural pillar ('Single PostgreSQL database … No Elasticsearch/Solr/Neo4j') implies the platform's DB sizing is a first-class operator concern with sane defaults."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      At the shipped default of 20 connections/replica (H-002), a 5-replica deployment reserves up to
+      100 PostgreSQL connection slots from the two R2DBC pools ALONE — exactly PostgreSQL's default
+      `max_connections=100`. There is zero headroom: the HikariCP `DataSource` (DataSourceConfiguration)
+      for Flyway/ShedLock/sync `@Transactional` paths and the `PGConnectionFactory` direct connections
+      (HousekeepingJobManager, leader election) consume ADDITIONAL slots beyond the two R2DBC pools (per
+      sidecar performance.resource_allocation + coupling). Collectors push over `/ingestion/*` (separate
+      HTTP, but the platform-side write still borrows from the primary pool) and any psql / BI / migration
+      session needs its own slot. The docs provide no sizing table relating replica-count to a recommended
+      PostgreSQL `max_connections`.
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "performance.resource_allocation"
+        cite: "R2DBCConfiguration.java:27,54 + DataSourceConfiguration.java:17-27 + PGConnectionFactory.java:18-42"
+        note: "2 x maxSize per replica from R2DBC + HikariCP + PGConnectionFactory all draw from the same PG max_connections budget; 5 replicas x 20 = 100 at PG default 100."
+      - sidecar: "R2DBCConfiguration"
+        section: "performance.scaling_characteristics"
+        cite: "R2DBCConfiguration.java:22 (stateless @Configuration — horizontal scaling = more pools at the DB)"
+        note: "Each replica multiplies the pool count; nothing caps the aggregate against PG's ceiling."
+    operator_visible_failure: |
+      An operator following ODD's 'run Postgres and nothing else' simplicity story scales to 5 replicas
+      for HA/throughput and the platform begins throwing `FATAL: sorry, too many clients already` — OR
+      collectors silently fail to write because the platform's own pools have exhausted PostgreSQL's slots.
+      The failure surfaces at scale-up, is intermittent (depends on concurrency), and gives no in-app signal
+      (no pool gauge — H-008). The operator's natural debugging path (the deployment docs) contains no
+      sizing guidance to relate replica count to `max_connections`, so the diagnosis requires PostgreSQL-side
+      expertise the docs do not prompt for.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When an operator runs a deployment that never uses Lookup Tables, the platform does not pay for the Lookup-Tables connection pool."
+  derivation: "The customConnectionPool exists solely for the Lookup-Tables (P-03) subsystem (sidecar understanding); a least-surprise operator expects an unused subsystem to cost nothing."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The `customConnectionPool` bean is created at R2DBCConfiguration.java:54 with NO
+      `@ConditionalOnProperty` gate — it is instantiated on EVERY deployment regardless of whether
+      `spring.custom-datasource.*` is set or any Lookup Table is ever created. When the custom keys
+      are unset (the shipped default — commented out at application.yml:8-11), the second pool opens
+      against the SAME PostgreSQL database as the primary, differing only by `?schema=lookup_tables_schema`,
+      and holds its `initialSize` connections perpetually. So a Lookup-Tables-free deployment still pays
+      the full second-pool connection cost (the other half of the 20-per-replica ceiling in H-002).
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "bugs_limitations_corner_cases[2]"
+        cite: "R2DBCConfiguration.java:54 (no @ConditionalOnProperty; contrast HousekeepingJobManager.java:18)"
+        note: "Unconditional instantiation — every deployment runs both pools."
+      - sidecar: "R2DBCConfiguration"
+        section: "concepts.invariants[1] (custom datasource opt-in fallback)"
+        cite: "R2DBCConfiguration.java:56-58,61-62,113 + application.yml:8-11 (commented out)"
+        note: "Unset custom keys → second pool against the same DB with ?schema= appended; still a live pool."
+    operator_visible_failure: |
+      The connection-budget overcommit in H-003 is doubled-into precisely because of this: the half of
+      the 20-slot ceiling that 'belongs' to Lookup Tables is consumed even by the (common) deployments
+      that never enable the feature. An operator reasoning 'I don't use Lookup Tables so my DB footprint
+      is one pool' is wrong by a factor of 2. There is no log line, no warning, and no docs note that a
+      second pool is always live.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an operator sets `spring.r2dbc.pool.max-size`, it sizes the primary (platform) pool independently of the Lookup-Tables pool."
+  derivation: "Endpoint-shape: a single `spring.r2dbc.pool.*` namespace feeding two distinct pools raises the question of whether the value applies to one pool or both."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Both pool builders bind the SAME `R2dbcProperties.Pool` instance (the byte-identical PropertyMapper
+      blocks at lines 41-50 for the primary and 75-84 for the custom — both read from the one auto-configured
+      `R2dbcProperties` bean). So `spring.r2dbc.pool.max-size=50` sets BOTH pools to 50 → 100 connections per
+      replica, not 50. There is no `spring.custom-datasource.pool.*` namespace to size the Lookup-Tables pool
+      separately. The single knob is doubled, silently, at the DB. (This is the exact mechanic the scanner's
+      F-120a finding already records: 'setting it doubles both pools'.)
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "concepts.invariants[3] (two byte-identical Pool blocks)"
+        cite: "R2DBCConfiguration.java:41-50 vs 75-84"
+        note: "Both blocks apply the same R2dbcProperties.Pool — one knob feeds both pools."
+      - sidecar: null
+        section: "feature-flow scanner_reviews F-120a"
+        cite: "feature-flows/detail/F-120.yaml:159 (F-120a: 'setting it doubles both pools')"
+        note: "The undocumented-features scanner independently recorded the doubling — convergent."
+    operator_visible_failure: |
+      An operator who tunes UP for a high-throughput primary path (e.g. max-size=50 to relieve the
+      authorization hot path in H-007) silently DOUBLES their PostgreSQL footprint to 100/replica — and
+      half of that doubling lands on the Lookup-Tables pool they may not even use (H-004). The operator's
+      mental model ('I set the pool to 50') under-counts the DB impact by exactly 2x, recreating the H-003
+      overcommit at any tuned value. There is no way to size the two pools independently.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "An operator reading the ODD Platform deployment documentation can find the connection-pool sizing keys and a recommended sizing approach."
+  derivation: "Doc-claim seed: the operator's canonical surface is docs.opendatadiscovery.org/configuration-and-deployment/odd-platform; P-08 promises documented operator config."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The live operator docs page documents `spring.datasource.*` and `spring.custom-datasource.*` but
+      publishes NONE of the ten `spring.r2dbc.pool.*` keys, no sizing approach, no per-replica connection
+      number, and no PostgreSQL `max_connections` guidance (WebFetch 2026-06-03, status 200, all NOT
+      PRESENT — independently re-confirming the sidecar's 2026-05-20 fetch). The operator cannot discover
+      the tunable surface from the documentation at all.
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "docs_link_semantic.doc_drift_findings[0]"
+        cite: "WebFetch /configuration-and-deployment/odd-platform (2026-05-20 + 2026-06-03)"
+        note: "Zero spring.r2dbc.pool.* keys documented; drift severity MEDIUM per sidecar."
+    operator_visible_failure: |
+      The operator does not know the knob exists. They cannot tune what they cannot find. This is the
+      root enabler of H-002/H-003/H-007: the silent default ceiling is only a problem BECAUSE the docs
+      give the operator no path to discover and raise it. (This is already tracked as a doc caveat —
+      see cross_references; the contradiction is recorded here for completeness of the operator's flow.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When the platform is under high authenticated request load, the connection pool is sized so that authorization resolution (the per-request RBAC JOINs) is not the first thing to saturate."
+  derivation: "Cross-pillar: concept invariant `authorization-hot-path-getcurrentuserroles-per-request-no-cache` states `spring.r2dbc.pool.max-size` is the upper bound and the auth path saturates the pool first under load (lines 44-47)."
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The hypothesis's PREMISE (that the pool would be sized to protect auth throughput) is false in the
+      shipped default, and that confirms the underlying claim: the authorization hot path runs on the
+      primary pool and IS the first thing to saturate. Every authenticated request resolves
+      getCurrentUserRoles -> getCurrentUserPolicies = 2 uncached DB JOINs (a 5-table + a 2-table JOIN) on
+      the primary pool BEFORE any business query (concept invariant lines 40-47). At the default ceiling
+      of 10 on the primary pool, ~5 concurrent fully-RBAC requests can consume the pool on auth-resolution
+      alone (2 borrows/request). The ceiling is therefore the hard authorization-throughput limit, exactly
+      as the feature flow's `authorization_hot_path_bound_by_pool_ceiling` drift_class states.
+    evidence:
+      - sidecar: null
+        section: "concept invariant authorization-hot-path-getcurrentuserroles-per-request-no-cache"
+        cite: "authorization-hot-path-...yaml:40-47"
+        note: "2 JOIN roundtrips per authorized request, uncached; pool max-size is the upper bound; saturates auth-resolution first."
+      - sidecar: "R2DBCConfiguration"
+        section: "performance.hot_paths[0]"
+        cite: "R2DBCConfiguration.java:27-52 + concept-catalog reference"
+        note: "Primary pool serves every reactive jOOQ call including the authorization hot path."
+    operator_visible_failure: |
+      Under load, request latency degrades on AUTHORIZATION RESOLUTION — not on the business work the
+      operator is watching. An operator profiling slow requests sees the controller/service spans look
+      fine and the time disappearing into DB-acquire waits, with no pool gauge (H-008) to reveal that the
+      pool is the bottleneck. Raising replica count makes H-003 worse (more pools at PG). The correct
+      lever is BOTH `spring.r2dbc.pool.max-size` (undocumented — H-006) AND a request-scoped/short-TTL
+      auth cache (tracked PLT-063) — the operator can find neither from the product.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When an operator wants to know whether their connection pool is saturated, they can read pool utilisation (acquired / allocated / pending) from `/actuator/prometheus`."
+  derivation: "Negative-space + P-08 operator-config mission: an operator-tunable resource implies an observability surface to know whether tuning is needed; `application.yml` exposes `prometheus` in the actuator include set."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `R2DBCConfiguration` registers NO Micrometer `MeterBinder` for either pool. `/actuator/prometheus`
+      exposes no `r2dbc.pool.acquired` / `r2dbc.pool.allocated` / `r2dbc.pool.pending` (or equivalent)
+      gauges. r2dbc-pool CAN emit Micrometer metrics but the platform neither enables nor verifies the
+      binder. The only pool-adjacent observability is the `io.r2dbc.postgresql.QUERY` / `PARAM` log levels
+      (application.yml:251-252) — coarse per-query traces, not pool telemetry. The operator cannot answer
+      'am I pool-bound?' from the metrics endpoint.
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "performance.known_performance_gaps[1] + bugs_limitations_corner_cases[9]"
+        cite: "R2DBCConfiguration.java (entire — no MeterBinder beans) + application.yml:226-257"
+        note: "No R2DBC Micrometer binder; prometheus include set has no pool gauges."
+      - sidecar: null
+        section: "feature-flow scanner_reviews F-120c"
+        cite: "feature-flows/detail/F-120.yaml:178-188 (F-120c)"
+        note: "The undocumented-features scanner independently recorded the no-metrics gap — convergent."
+    operator_visible_failure: |
+      The operator flies blind on the one resource this entire feature is about. They cannot set up an
+      alert on pool exhaustion, cannot capacity-plan from real utilisation, and cannot confirm that a
+      tuning change (H-001) had the intended effect. The only signal that the pool is the bottleneck is
+      a latency spike (H-009) — an inference, not a measurement. This is the observability half of the
+      'silently 20-per-replica' problem: not only is the ceiling undocumented (H-006), its utilisation is
+      unmeasurable from the product's own telemetry.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When concurrent demand exceeds the pool ceiling on a replica (e.g. request 21 at the default ceiling of 20), the request is handled gracefully — queued and served when a connection frees — rather than failing."
+  derivation: "Negative-space + the feature-flow terminal_side_effect ('requests are queued inside the Reactor scheduler — symptom is latency spike')."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Statically provable part (confirmed): the reactive stack borrows one connection per query and releases
+      on Mono completion; beyond `maxSize`, r2dbc-pool's acquire is a Mono that does not complete until a
+      connection frees OR `maxAcquireTime` elapses. So the dominant default behaviour is graceful queueing
+      with a latency penalty (no error) — the feature-flow terminal_side_effect and sidecar
+      scaling_characteristics both state this. The SECONDARY question — whether a request that waits beyond
+      `maxAcquireTime` fails with `R2dbcTimeoutException`, and what that default timeout actually is at
+      r2dbc-pool 1.0.0.RELEASE — is the framework default the platform never pins and the sidecar explicitly
+      flags as needing a runtime check (sidecar scaling_characteristics: 'Spring Boot default unbounded? not
+      asserted'). The graceful-queueing promise HOLDS up to maxAcquireTime; the behaviour AT the timeout
+      boundary is the embedded probe below.
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "performance.scaling_characteristics + throughput_characteristics"
+        cite: "R2DBCConfiguration.java:38-50 (maxAcquireTime via PropertyMapper) + feature-flow terminal_side_effect"
+        note: "Queue-on-saturation via Mono backpressure; maxAcquireTime governs the failover-to-timeout boundary; default not pinned by the platform."
+    operator_visible_failure: |
+      The graceful path is also the SILENT path: saturation manifests as creeping tail latency with no
+      error and no gauge (H-008), so the operator does not learn they are pool-bound until users complain.
+      At the (unpinned) maxAcquireTime boundary, the failure mode flips from latency to `R2dbcTimeoutException`
+      — a different operator-visible symptom (5xx vs slow) whose threshold the platform does not control or
+      document. Pinning `spring.r2dbc.pool.max-acquire-time` is itself an undocumented knob (H-006).
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-120-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: "PENDING-F-120-1 (local docker-compose: drive 21+ concurrent slow queries at a single replica with maxSize=20; observe queue-vs-timeout and the maxAcquireTime default)"
+
+- id: H-010
+  hypothesis: "When an operator points `spring.custom-datasource.url` at a SEPARATE database to isolate Lookup-Tables storage, their data lands where they expect (in the public schema of that separate database)."
+  derivation: "Endpoint-shape: the `spring.custom-datasource.*` keys promise a separate Lookup-Tables datastore; an operator setting them expects normal placement in the target DB."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The fallback + separate-DB wiring works (the custom pool connects to the operator's URL with credentials
+      falling back per-key to the primary). BUT the connection's `search_path` is silently rewritten:
+      R2DBCConfiguration.java:112-119 appends `?schema=lookup_tables_schema` via UriComponentsBuilder to EVERY
+      custom-pool connection, and the schema name is a hard-coded constant (line 25) that is NOT operator-
+      configurable. So in the operator's separate database, Lookup-Tables data lands inside a
+      `lookup_tables_schema` schema (which must exist / be migratable there), not `public`. The behaviour is
+      correct-and-deliberate but unexpected for an operator who pre-created `public` tables — and the docs do
+      not mention the query-param injection (sidecar doc_drift_findings[2], severity LOW).
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "concepts.invariants[2] (lookup_tables_schema hard-coded) + docs_link_semantic.doc_drift_findings[2]"
+        cite: "R2DBCConfiguration.java:25,112-119"
+        note: "?schema=lookup_tables_schema injected on every custom-pool URL; schema name hard-coded, not configurable."
+    operator_visible_failure: |
+      An operator deliberately separating Lookup-Tables storage who pre-creates tables in `public` finds them
+      invisible to ODD (every query lands in `lookup_tables_schema`), and must know to create/migrate that
+      exact schema in the separate DB. This is the unusual-but-real separate-DB deployment case; the common
+      same-DB default is unaffected. Routes to a caveat on the Lookup-Tables / custom-datasource docs.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When the platform upgrades its Spring Boot / r2dbc-pool dependency, the deployed connection-pool ceiling stays the value operators have been running with."
+  derivation: "Negative-space + framework_default_inheritance drift_class: the platform pins no pool value, so the ceiling is inherited from the framework version."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The platform makes NO platform-side pin: `application.yml` ships zero `spring.r2dbc.pool.*` keys and
+      the PropertyMapper applies framework defaults via `.alwaysApplyingWhenNonNull()` (only non-null source
+      values override, and the source is empty). So ODD's deployed ceiling is exactly whatever
+      `R2dbcProperties.Pool.maxSize` defaults to in the bundled Spring Boot / r2dbc-pool version. A future
+      upgrade (SB 4.x, r2dbc-pool 2.0) that changes that framework default would silently change ODD's
+      per-replica connection ceiling with no ODD-side PR, changelog entry, or migration note — and no test
+      guards the value (the only R2DBC test, DependencyPostureTest/ADR-0072, asserts R2DBC is on the
+      classpath, NOT the pool size).
+    evidence:
+      - sidecar: "R2DBCConfiguration"
+        section: "bugs_limitations_corner_cases[3] + implicit_adrs[3] (pool defaults inherited from Spring Boot)"
+        cite: "R2DBCConfiguration.java:41-50 + application.yml:1-15 (no spring.r2dbc.pool.* keys)"
+        note: "PropertyMapper.alwaysApplyingWhenNonNull() over an empty source = pure framework default; no platform pin."
+      - sidecar: null
+        section: "source_read_for_validation"
+        cite: "odd-platform-api/src/test/.../config/DependencyPostureTest.java:90-92 (ADR-0072 asserts io.r2dbc.spi.ConnectionFactory on classpath only)"
+        note: "Rule-8 read this session — the existing R2DBC test guards dependency presence, NOT the pool ceiling; so a default-shift is structurally undefended."
+    operator_visible_failure: |
+      An operator who has carefully sized PostgreSQL `max_connections` against the observed (or, worse,
+      inferred — H-002) ceiling can have that ceiling moved out from under them by a routine ODD version bump.
+      If the framework default rises, replicas silently demand more PG slots (re-triggering H-003's exhaustion);
+      if it falls, throughput silently drops (re-triggering H-007's auth saturation at lower RPS). The change
+      is invisible at upgrade time — no diff in `application.yml`, no test failure, no changelog line.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    customConnectionPool is instantiated unconditionally (no @ConditionalOnProperty at
+    R2DBCConfiguration.java:54) — every deployment pays the second pool's connection cost even
+    when Lookup Tables are never used, doubling the per-replica DB footprint.
+  dedup_status: net_new
+  distinct_from: DOC-077
+  tracked_as: null
+  recommended_log_as: "REFACTOR/PLT — gate customConnectionPool with @ConditionalOnProperty('spring.custom-datasource.url')"
+  proposed_fix_anchor: "R2DBCConfiguration.java:54 — add @ConditionalOnProperty(name='spring.custom-datasource.url') OR document the always-on second pool as an operator caveat. (DOC-077 documents the fallback semantics, NOT the unconditional-instantiation cost — distinct.)"
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    No Micrometer R2DBC binder — /actuator/prometheus exposes no pool acquired/allocated/pending
+    gauges; operators cannot observe pool saturation (matches scanner finding F-120c).
+  dedup_status: net_new
+  tracked_as: null
+  recommended_log_as: "PLT/PERF — register an R2DBC Micrometer MeterBinder so /actuator/prometheus exposes pool utilisation (F-120c has no minted backlog home yet)"
+  proposed_fix_anchor: "R2DBCConfiguration — add a MeterBinder bean wiring r2dbc-pool's PoolMetrics for both ConnectionPool beans."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: |-
+    The shipped per-replica DB-connection ceiling is an undocumented 20 (framework default maxSize=10
+    x 2 pools); operators have no published number to size PostgreSQL against.
+  dedup_status: already_tracked
+  tracked_as: DOC-249
+  recommended_log_as: "caveat already covered by DOC-249 (documents spring.r2dbc.pool.max-size sizing for the auth hot path); EXTEND DOC-249 to state the default value (10) AND the x2 doubling (20/replica). Convergent — do not file new."
+- hypothesis_id: H-003
+  one_line: |-
+    5 replicas x 20 connections = 100 slots at PostgreSQL's default max_connections=100; zero headroom
+    for collectors / HikariCP / PGConnectionFactory / admin sessions; no sizing table in the docs.
+  dedup_status: net_new
+  distinct_from: DOC-249
+  recommended_log_as: "DOC caveat (extend DOC-249 OR new DOC) — a replica-count -> recommended PG max_connections sizing table. DOC-249 covers the auth-throughput sizing rationale; it does NOT give the multi-replica overcommit-at-PG-default table — distinct facet."
+- hypothesis_id: H-005
+  one_line: |-
+    spring.r2dbc.pool.max-size sizes BOTH pools (one R2dbcProperties.Pool instance) — setting it to N
+    yields 2N connections/replica; no separate knob for the Lookup-Tables pool (matches scanner F-120a).
+  dedup_status: net_new
+  distinct_from: DOC-249
+  recommended_log_as: "caveat in DOC-249 (the same doc that will introduce the key MUST state it doubles); also corroborates scanner finding F-120a. Distinct from DOC-249's current scope (which only names the key, not the doubling)."
+- hypothesis_id: H-007
+  one_line: |-
+    The 20-per-replica ceiling is the hard authorization-throughput limit — every authenticated request
+    spends 2 uncached DB JOINs on the primary pool before business work.
+  dedup_status: already_tracked
+  tracked_as: DOC-249
+  recommended_log_as: "already covered — DOC-249 IS this caveat (auth hot path sizing); PLT-063 tracks the cache fix. Convergent validation of both; do not file new."
+- hypothesis_id: H-010
+  one_line: |-
+    Separate-DB Lookup-Tables storage silently rewrites search_path to the hard-coded lookup_tables_schema
+    (?schema= injected on every custom-pool connection); operator pre-created public tables are invisible.
+  dedup_status: net_new
+  distinct_from: DOC-077
+  recommended_log_as: "caveat on the Lookup-Tables / custom-datasource docs (sidecar doc_drift_findings[2], severity LOW). DOC-077 documents the URL/credential fallback, NOT the schema query-param injection — distinct facet."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every promise (use_case) that is unverified becomes a missing-functional
+# test demand. ALL 11 hypotheses here are coverage: unverified (no test exists — DependencyPostureTest
+# guards classpath presence only, NOT pool sizing). The confirmed-but-untested promises (H-001, H-007,
+# H-009, H-011) are the highest-value guards and are listed FIRST — this is precisely the v0.3.0 fix.
+- use_case_id: F-120-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Setting spring.r2dbc.pool.max-size raises the per-replica primary-pool concurrency ceiling."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-1)"
+  proposed_test: "@SpringBootTest with spring.r2dbc.pool.max-size override → assert the primary ConnectionPool bean's PoolMetrics.getMaxAllocatedSize() (or ConnectionPoolConfiguration) reflects the override; integration variant: drive >default concurrency and assert no queueing up to the new ceiling."
+- use_case_id: F-120-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "The pool ceiling bounds authorization-resolution throughput before business work (auth saturates first)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-7)"
+  proposed_test: "Integration: with maxSize pinned small, drive concurrent authenticated requests and assert acquire-wait / 503 onset correlates with auth-JOIN count (2 borrows/request), not business-query count — a regression guard for any future auth-cache (PLT-063) that should RELIEVE this."
+- use_case_id: F-120-UC-9
+  hypothesis_id: H-009
+  kind: empty/no-match
+  promise: "Beyond the ceiling, requests queue gracefully (latency) up to maxAcquireTime rather than erroring."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-9); paired with probe PENDING-F-120-1"
+  proposed_test: "Testcontainers Postgres + maxSize=2: hold 2 connections, fire a 3rd query, assert it completes after release (queue) within maxAcquireTime; fire enough to exceed maxAcquireTime, assert R2dbcTimeoutException — pins the queue-vs-timeout boundary the platform does not document."
+- use_case_id: F-120-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "The deployed pool ceiling is a stable, intentional value — not silently inherited from the framework version."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-11)"
+  proposed_test: "Characterization test asserting the EFFECTIVE primary-pool maxSize equals an explicit expected constant (e.g. 10) — RED the instant a Spring Boot upgrade moves the framework default, turning a silent ceiling-shift into a visible test failure. The single highest-leverage guard for the framework_default_inheritance drift_class."
+- use_case_id: F-120-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "The shipped default per-replica connection ceiling is documented and knowable."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-2) — regression guard once DOC-249 publishes the value: assert the effective default equals the documented number."
+  proposed_test: "Same characterization test as UC-11 (the documented default and the guarded constant are the same value); doc-vs-code parity assertion."
+- use_case_id: F-120-UC-4
+  hypothesis_id: H-004
+  kind: render
+  promise: "A Lookup-Tables-free deployment does not pay for the second pool."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-4) — regression guard for the proposed @ConditionalOnProperty fix (H-004 bug)."
+  proposed_test: "@SpringBootTest WITHOUT spring.custom-datasource.url → after the fix, assert the customConnectionPool bean is ABSENT (or, pre-fix as a pin, assert it is PRESENT — characterizing the current always-on cost)."
+- use_case_id: F-120-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "spring.r2dbc.pool.max-size sizes the primary pool independently of the Lookup-Tables pool."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-5)"
+  proposed_test: "@SpringBootTest with spring.r2dbc.pool.max-size=N → assert BOTH pool beans report maxSize=N (characterizes the doubling so a future independent-sizing knob is a visible change)."
+- use_case_id: F-120-UC-8
+  hypothesis_id: H-008
+  kind: render
+  promise: "Pool utilisation is observable from /actuator/prometheus."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-8) — regression guard for the proposed Micrometer-binder fix (H-008 bug)."
+  proposed_test: "@WebFluxTest/@SpringBootTest scraping /actuator/prometheus → after the fix, assert an r2dbc pool gauge (e.g. r2dbc_pool_acquired_connections) is present for both pools."
+- use_case_id: F-120-UC-10
+  hypothesis_id: H-010
+  kind: resolve-later
+  promise: "Separate-DB Lookup-Tables storage places data where the operator expects."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint; category: missing-functional, use_case_id F-120-UC-10)"
+  proposed_test: "Testcontainers: point spring.custom-datasource.url at a second Postgres; assert custom-pool connections operate inside lookup_tables_schema (not public) — pins the search_path-injection invariant the docs omit."
+
+### probes_emitted
+# PARALLEL-SAFE MODE: recorded here ONLY; no P-NNN file created.
+- probe_id: PENDING-F-120-1
+  hypothesis_id: H-009
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  hypothesis_text: |-
+    When concurrent demand exceeds the pool ceiling on a replica (request 21 at the default ceiling),
+    the request queues gracefully (latency) until maxAcquireTime, then fails with R2dbcTimeoutException.
+    What IS the effective maxAcquireTime default at spring-boot 3.x + r2dbc-pool 1.0.0.RELEASE, and does
+    saturation queue indefinitely or time out?
+  probe_skeleton: |-
+    Local-only (CLAUDE.md / Rule 6): docker-compose Postgres + a single odd-platform-api replica with
+    spring.r2dbc.pool.max-size pinned to a small N. Drive N+1 concurrent slow queries (e.g. pg_sleep via
+    a Lookup-Table read or any reactive repository call). Observe: (a) does request N+1 complete after a
+    connection frees (graceful queue)? (b) at what wait does it instead fail with R2dbcTimeoutException?
+    (c) what is the default maxAcquireTime when unset? Tooling: docker-compose + k6/wrk for concurrency,
+    /actuator (once a pool gauge exists) or pg_stat_activity for connection observation.
+
+### validation_gaps
+# Rule 9 (rev 8) FIRST OUTPUT for a feature with no enriched UI hop:
+- sidecar: "(feature-level)"
+  field_insufficient: "no UI component in the chain"
+  proposed_refresh: |-
+    This is an OPERATOR-INFRASTRUCTURE / config feature: its entry point is
+    config-properties-class:R2DBCConfiguration (boot-time bean wiring), NOT a screen. There is NO React
+    UI hop in the chain and that is CORRECT — connection-pool sizing is a Spring config surface, not a
+    user-facing screen, so this is NOT an F-031-class omission (no UI was triaged away; none exists). The
+    'user' is the platform-operator, whose surface is application.yml / env / Helm IN and PostgreSQL
+    pg_stat_activity + /actuator/prometheus OUT. This reflection is therefore CONFIG-AND-OBSERVABILITY-
+    ONLY by design. The senior-product-owner UX questions (intuitive? discoverable? customisable?
+    consistent?) STILL apply and are answered, damningly: NOT discoverable (H-006, zero docs), NOT
+    observable (H-008, zero gauges), customisable-but-with-a-trap (H-005, the knob silently doubles). The
+    operator's 'screen' fails every product-owner test even though there is no literal screen to render.
+- sidecar: "config-key-consumer:spring.r2dbc.pool.* (10 keys)"
+  field_insufficient: "no standalone sidecar"
+  proposed_refresh: |-
+    The second contributing_node has no sidecar file of its own; its semantics are fully carried by the
+    R2DBCConfiguration sidecar's requires-config block (the 10 keys) + the application.yml-absence audit.
+    Sufficient for this reflection — no refresh required. Noted for completeness.
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "(silent) — documents spring.datasource.* and spring.custom-datasource.* but no spring.r2dbc.pool.* key, no pool sizing, no per-replica connection count, no PG max_connections guidance."
+  code_does: "Wires all ten spring.r2dbc.pool.* keys via PropertyMapper (R2DBCConfiguration.java:41-50,75-84); ships none, documents none; effective default ceiling 20/replica."
+  recommended_log_as: "DOC-249 (already tracks the spring.r2dbc.pool.max-size sizing caveat for the auth hot path) — EXTEND it to publish the default value + the x2 doubling + a replica->max_connections sizing table. Convergent with scanner findings F-120a/F-120b."
+
+## maintainer_notes
+
+(reserved — preserved across refreshes; no maintainer edits yet)
+
+## reflection_method_notes
+
+- Operator-as-user framing: the contributing sidecar (R2DBCConfiguration) is HIGH-confidence, full-file-read,
+  and unusually complete (it had already done a Category-F-adjacent unset-parameter audit on all 10 pool keys
+  + 3 custom-datasource keys, the doc-drift WebFetch, and the perf/observability gaps). This reflection's
+  value-add is the TOP-DOWN composition: framing each mechanical fact as an operator promise and surfacing
+  the compounding (H-002 default -> H-003 multi-replica overcommit -> H-007 auth saturation -> H-008 blind ->
+  H-011 silent drift), which no single sidecar field states as a user-facing flow.
+- Convergent validation (dedup-at-emission): 3 of this reflection's facets independently re-derive the
+  scanner's F-120a/b/c findings (the doubling, the auth-bound ceiling, the no-metrics gap) and 2 caveats map
+  onto existing DOC-249 / PLT-103 — high-confidence corroboration recorded, not re-filed.
+- Rule-8 single-line source reads this session (recorded for the next file-analyser refresh): application.yml
+  (confirmed zero spring.r2dbc.pool.* keys, only log levels at 251-252); DependencyPostureTest.java:90-92
+  (the only R2DBC test asserts classpath presence, ADR-0072 — NOT pool size). Both already consistent with
+  the sidecar; no sidecar gap opened.

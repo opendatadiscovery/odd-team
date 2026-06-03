@@ -1,0 +1,678 @@
+---
+feature_id: F-123
+pillar_anchored_id: P-08:F-016
+pillar: "P-08 — Management & Administration"
+feature_name: "Platform-Wide Deletion Semantics Catalog — three soft-delete mechanisms coexist across the schema"
+reflected_at: '2026-06-03T00:00:00Z'
+reflected_at_commit: ede5d277
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__repository_reactive__repository__ReactiveOwnershipRepositoryImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveDataSourceRepositoryImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveDatasetFieldRepositoryImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+  - odd-platform__java__service__service__HousekeepingJobManager.md
+  - "schema:V0_0_64__remove_is_deleted_field (hop 1 — sidecar unresolved; migration evidence read via DataSource/MetadataField/Ownership sidecar citations)"
+  - "repository:ReactiveDataEntityRepositoryImpl (read via concepts.yaml DataEntity aggregate + feature-flow facet evidence; sidecar present but not deep-read this pass — see validation_gap VG-2)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: '2026-06-03T00:00:00Z'
+    last_verified_status: 200
+    note: |
+      The live Management page DOES now make deletion-semantics claims (namespace
+      soft-delete + re-create-same-name; cascade-block on Owners/Namespaces/Datasources;
+      orphaned TOKEN rows persist after Collector/Datasource soft-delete). It does NOT
+      enumerate the per-resource contract, does NOT mention collector.name FULL UNIQUE
+      blocking recreate, and does NOT mention metadata_field. Used as cross-reference +
+      doc-claim seeds, NOT as source of intent (Rule 1).
+hypothesis_summary:
+  total: 11
+  confirmed: 2
+  contradicted: 5
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "Deleting a Collector then re-creating one with the same name FAILS with UniqueConstraintException (collector.name is FULL UNIQUE, not partial), while the identical operator action on a Role/Namespace/DataSource SUCCEEDS — same UI, same error shape, divergent outcome, no doc warns."
+related_feature_flows: [F-121, F-125, F-006, F-019, F-020, F-028, F-076]
+related_concepts:
+  - "three-soft-delete-mechanisms-across-the-repository-layer"
+  - "read-collaborative-posture-every-authenticated-user-enumerates-the-catalog"
+related_drift_classes:
+  - three_distinct_soft_delete_mechanisms_no_schema_level_documentation
+  - collector_name_full_unique_blocks_recreate_after_soft_delete
+  - metadata_field_convergence_incomplete_partial_unique_missing_deleted_at
+  - data_entity_status_and_deleted_at_double_tracking_state_machine_can_stall
+  - ownership_hard_deleted_no_recovery_audit_in_activity_table_only
+  - dataset_field_token_no_soft_delete_column_at_all
+  - no_doc_page_enumerating_per_resource_deletion_contract
+new_drift_classes_proposed:
+  - owner_name_full_unique_blocks_recreate_same_shape_as_collector
+  - soft_deleted_metadata_field_renders_on_detail_page_as_ghost_field
+---
+
+# Platform-Wide Deletion Semantics Catalog — product-owner reflection
+
+## product_owner_narrative
+
+ODD Platform's **Management** section lets an operator delete the things they configure — datasources, collectors, owners, namespaces, RBAC roles and policies, the tag taxonomy, custom metadata fields (per the P-08 pillar "Primary user actions": create / edit / *delete* namespaces; issue / rotate tokens; create owners; curate tags; author roles + policies — `system-mission.md:225`). To the operator, "delete" is one verb with one mental model: the thing goes away, and if I made a mistake I can re-create it. **This feature is the catalog of how that single verb actually behaves, resource by resource — and the headline finding is that it does NOT behave as one verb.** There is no single deletion contract: there are three distinct mechanisms wearing the same "Delete" button (per the feature flow's `three_distinct_soft_delete_mechanisms_no_schema_level_documentation` facet, evidenced across the contributing repository sidecars).
+
+A user interacts with deletion entirely through the Management tabs: a "Delete" action on a row (Datasources, Collectors, Owners, Roles, Policies, Tags), and a separate "create" form on the same tab. There is no "deletion-semantics" surface, no "recover" affordance anywhere, and no warning text on any delete confirmation that says "this name will be permanently reserved" or "this is reversible." The user supplies an id (the row they clicked) and observes one of three outcomes: the row vanishes and the name frees up (the `deleted_at` soft-delete convergence — role, policy, datasource, namespace, tag, term, metadata_field, user_owner_mapping; per `ReactiveDataSourceRepositoryImpl` invariants and `V0_0_64`); the row vanishes but the name stays reserved forever (collector — FULL UNIQUE on `collector.name` per `V0_0_29:4`; the `owner` table — non-partial `name UNIQUE` per `concepts.yaml:256`; metadata_field INTERNAL — partial-unique missing `deleted_at` per `ReactiveMetadataFieldRepositoryImpl` invariants); or the row is physically gone with no history at all (ownership, token, dataset_field, every M:N join — hard-delete, per `ReactiveOwnershipRepositoryImpl.java:85-91` and `ReactiveDatasetFieldRepositoryImpl` invariant 1).
+
+The working parts an operator would describe in a demo: (1) **cascade-block** — deleting a datasource/collector/owner/namespace is rejected with `CascadeDeleteException` if dependents exist (`ReactiveDataSourceRepositoryImpl` `existsByCollector`/`existsByNamespace`; `OwnerServiceImpl.delete` via `existsByOwner`), which the operator *can* see and act on; (2) **recreate-after-delete** — works for the `deleted_at` family (the partial-unique index `WHERE deleted_at IS NULL` frees the name slot), silently fails for collector/owner/metadata-field; (3) **token lifecycle** — a soft-deleted Collector or Datasource leaves its TOKEN row orphaned forever (the `token` table has no `deleted_at` per `V0_0_28:1-9`), and token *regeneration* mutates the row in place, destroying the prior secret with no grace period (`ReactiveDataSourceRepositoryImpl` bugs_limitations_corner_cases + `ReactiveCollectorRepositoryImpl` invariant 7); (4) **DataEntity's four-state machine** — `status='DELETED'` then `deleted_at` then physical purge, driven by two `@Scheduled` jobs on separate cadences (`DataEntityStatusSwitchJob` 10min + `HousekeepingJobManager` 15min, the latter holding a 14-minute ShedLock — `HousekeepingJobManager.md`) that per F-121 share a single-thread executor and can stall.
+
+The integration story is cross-cutting: this catalog is the substrate the **RBAC lifecycle** (P-09 — role/policy soft-delete), **Discovery** (P-01 — data_entity status + deleted_at read predicates), **Collector Lifecycle** (F-020), **Token Housekeeping** (F-125), and **Owner-Association** (F-076 cascade completeness) all inherit. A reader of any one of those features cannot tell, from that feature alone, which deletion mechanism applies — which is exactly why the catalog exists as its own feature.
+
+The edge case a product owner would flag first in a demo (and the case-law this reflection is built to surface): an operator who deletes a collector named `prod-snowflake` after a typo, then tries to re-create `prod-snowflake`, gets a hard error that looks identical to the error they'd get creating a genuine duplicate — but the cause is a soft-deleted ghost row they cannot see, cannot recover, and cannot clear without raw DBA SQL. The same operator deleting and re-creating a *role* named `prod-snowflake` succeeds. Nothing on screen and nothing in the docs explains the difference.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator deletes a DataSource (or Role, Policy, Namespace, Tag, Term) and then creates a new one with the same name, the create SUCCEEDS — the deleted resource's name is freed for reuse."
+  derivation: "The `deleted_at` convergence (V0_0_64) added partial unique indexes `WHERE deleted_at IS NULL` to these tables; a soft-deleted row is excluded from the uniqueness constraint."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      For the `deleted_at`-family tables, `delete(id)` is `UPDATE … SET deleted_at = NOW()`
+      (soft-delete base class), and the partial unique index `data_source_name_unique ON
+      data_source(name) WHERE deleted_at IS NULL` (V0_0_31:27) / `role_name_unique …
+      WHERE deleted_at IS NULL` (V0_0_55:42 + V0_0_64:88-90) / `tag_name_unique …
+      WHERE deleted_at IS NULL` (V0_0_64:103-105) excludes the dead row. A new create
+      with the same name does not collide. The live Management doc independently states
+      this for namespace ("soft-deleted and re-created with the same name later").
+    evidence:
+      - sidecar: "ReactiveDataSourceRepositoryImpl.md"
+        section: "understanding + invariants[2]"
+        cite: "V0_0_31__add_deleted_at_field.sql:27 (data_source_name_unique WHERE deleted_at IS NULL)"
+        note: "Live row name unique; soft-deleted row excluded — recreation succeeds."
+      - sidecar: "feature-flow F-123 observed_vs_expected.facets[collector_name_full_unique...]"
+        section: "drift_class evidence"
+        cite: "V0_0_55:42, V0_0_64:88-90 (role.name partial unique)"
+        note: "Role contrast — partial-unique frees the slot on soft-delete."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+- id: H-002
+  hypothesis: "When an operator deletes a Collector and then creates a new Collector with the same name, the create SUCCEEDS (same expectation a user carries from deleting/re-creating a DataSource or Role)."
+  derivation: "Operator mental model: 'Delete' is one verb across Management tabs; the pillar lists collector create + delete as peer actions to datasource/role create + delete (system-mission.md:225). A user expects symmetric recreate-after-delete."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `collector.name` is FULL UNIQUE (V0_0_29:4) — NOT scoped to `WHERE deleted_at IS
+      NULL`. Collector delete is soft-delete (`ReactiveCollectorRepositoryImpl` inherits
+      `ReactiveAbstractSoftDeleteCRUDRepository`; `delete(id)` → `UPDATE … SET deleted_at
+      = NOW()`). The soft-deleted row's name STILL occupies the FULL UNIQUE index, so a
+      new Collector with the same name hits SQLSTATE 23505 → UniqueConstraintException.
+      The read side (`listDto`, auto-scoped to `deleted_at IS NULL`) shows no collector
+      with that name — so the operator sees "it's gone" but "cannot create it." There is
+      no UI affordance, no service method, and no repository method to hard-delete the
+      soft-deleted collector row; recovery requires raw `UPDATE collector SET deleted_at =
+      NULL` or `DELETE` by a DBA. The SAME operator action against a Role/DataSource
+      succeeds (H-001).
+    evidence:
+      - sidecar: "ReactiveCollectorRepositoryImpl.md"
+        section: "understanding + invariants[1]"
+        cite: "ReactiveCollectorRepositoryImpl.java:31 (soft-delete base) + V0_0_29:4 (collector.name FULL UNIQUE)"
+        note: "Soft-delete + FULL (not partial) unique = name permanently reserved on the dead row."
+      - sidecar: "feature-flow F-123 observed_vs_expected.facets[collector_name_full_unique_blocks_recreate_after_soft_delete]"
+        section: "drift_class description + evidence"
+        cite: "V0_0_29:4 vs V0_0_55:42/V0_0_64:88-90"
+        note: "Confirmed drift class — identical error shape to a genuine duplicate, different cause."
+    operator_visible_failure: |
+      (1) An operator who deletes a collector after a naming typo cannot re-create the
+      corrected-name collector if they reuse the old name — hard error, no path forward in
+      the UI. (2) The error message is the generic UniqueConstraintException ("collector
+      with this name already exists"), which is FALSE from the operator's seat — there is
+      no live collector with that name. (3) The operator is likely to conclude the platform
+      is buggy / the row didn't delete, and may file a support ticket or, worse, pick a
+      worse name (`prod-snowflake-2`) permanently polluting the namespace. (4) The
+      asymmetry with Role/DataSource/Namespace (which DO allow recreate) makes the
+      behaviour unpredictable — the operator cannot form a reliable mental model.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+- id: H-003
+  hypothesis: "When an operator deletes a custom Metadata Field (INTERNAL origin) via the UI and then re-adds a field with the same name, the create SUCCEEDS — the dropdown shows the field as gone, so the operator expects to recreate it."
+  derivation: "The read side (`listInternalMetadata`, soft-delete-filtered) reports the field 'doesn't exist' after delete; a user who sees 'doesn't exist' expects 'I can create it'."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The metadata_field partial unique indexes (`IX_UNIQUE_INTERNAL_NAME ON (name)
+      WHERE origin='INTERNAL'`, `IX_UNIQUE_EXTERNAL_NAME_TYPE ON (type,name) WHERE
+      origin<>'INTERNAL'`, V0_0_1:238-244) filter ONLY by origin — they were NEVER
+      updated by V0_0_64 to add `WHERE deleted_at IS NULL` (whereas the sibling
+      `tag_name_unique` WAS updated in the same migration, V0_0_64:103-105). So a
+      soft-deleted INTERNAL field named `cost_centre` still occupies the unique index;
+      `bulkCreate({name:'cost_centre', origin:'INTERNAL'})` raises
+      UniqueConstraintException("Internal metadata with this name already exists")
+      (ExceptionUtils.java:63-65). But `listInternalMetadata` (soft-delete-filtered)
+      reported no such field — so the dropdown shows "doesn't exist" while the create
+      is blocked. No hard-delete path exists in the codebase; the soft-deleted field is
+      a permanent name-blocker until a manual DBA UPDATE.
+    evidence:
+      - sidecar: "ReactiveMetadataFieldRepositoryImpl.md"
+        section: "invariants[3] + bugs_limitations_corner_cases[0]"
+        cite: "V0_0_1__init.sql:238-244 (partial indexes without deleted_at) + V0_0_64:103-105 (Tag's matching migration) + ExceptionUtils.java:63-65"
+        note: "Convergence incomplete: metadata_field partial indexes missing the deleted_at predicate Tag got."
+    operator_visible_failure: |
+      (1) Operator soft-deletes a custom metadata field, then cannot re-create it by the
+      same name — UniqueConstraintException with a message that contradicts the empty
+      dropdown. (2) Dead-end: there is NO UI affordance and NO service method to
+      hard-delete a soft-deleted metadata_field, so the operator is permanently stuck on
+      that name. (3) The behaviour differs from the Tag taxonomy (where the same
+      soft-delete + recreate works), so an operator who learned the Tag behaviour is
+      surprised. (4) Compounds with H-008 (the soft-deleted field still renders on entity
+      detail pages as a ghost), so the operator sees the field they "deleted" both blocked
+      for recreation AND still visible on entities.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+- id: H-004
+  hypothesis: "When an operator deletes an Owner and then re-creates an Owner with the same name, the create SUCCEEDS."
+  derivation: "Owner appears in the same Management 'create / delete' action set as datasource/role; symmetric-recreate expectation."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The concept catalog records that `owner` name UNIQUE is NON-partial — soft-deleted
+      rows permanently block re-creation under the same name (`concepts.yaml:256`:
+      "`name UNIQUE` on `owner` is non-partial — soft-deleted rows permanently block
+      re-creation under the same name (V0_0_1__init.sql vs V0_0_89__update_user_owner.sql
+      which DID get a partial-unique migration applied elsewhere)"). The `user_owner_mapping`
+      table DID get partial-unique on soft-delete (V0_0_89) but the `owner` directory table
+      itself did not. So `OwnerService.create` with a previously-soft-deleted name collides.
+      This is the SAME shape as the collector finding (H-002) — a new drift class.
+    evidence:
+      - sidecar: "concepts.yaml owner concept-note (batch 2026-05-12E)"
+        section: "OwnerController.createOwner finding"
+        cite: "concepts.yaml:255-257 (owner name UNIQUE non-partial)"
+        note: "Owner directory name not partial-scoped; soft-delete blocks recreate."
+    operator_visible_failure: |
+      (1) An operator who deletes an Owner (a team/individual catalog identity) and tries
+      to re-create the same-named Owner is blocked by UniqueConstraintException. (2) Same
+      false-message problem as H-002 — no live Owner with that name is visible. (3) Owner
+      is a heavily-referenced identity (ownership bindings, RBAC role attachments,
+      user-owner associations) — an operator re-onboarding a team that was removed and
+      re-added cannot reuse the canonical team name. (4) The `getOrCreate` path (used by
+      the owner-association claim flow) would also collide, so a user claiming a
+      previously-deleted owner identity hits the same wall.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    note: "MEDIUM/MEDIUM-confidence: derived from the concept-catalog note, not a deep-read OwnerRepository sidecar this pass (the owner table migration history needs the V0_0_1 vs V0_0_89 read confirmed). See VG-3."
+- id: H-005
+  hypothesis: "When an operator deletes an Ownership (the owner↔data-entity binding) and later needs to know who owned an entity 6 months ago, the historical ownership is recoverable from the platform."
+  derivation: "Pillar audit expectation — Management mutations should be reconstructable; an operator asking 'who owned this' is a normal stewardship question."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The `ownership` table is HARD-DELETE — no `deleted_at` column (V0_0_3:10-22), both
+      `delete(id)` and `deleteByDataEntityAndOwner` are physical DELETE
+      (`ReactiveOwnershipRepositoryImpl.java:85-91, 94-107`). The row itself is gone and
+      unrecoverable. PARTIAL because the before/after state IS captured in the `activity`
+      table via `OwnershipDeletedActivityHandler` (the @ActivityLog(OWNERSHIP_DELETED) on
+      `OwnershipServiceImpl.delete`) — so an auditor CAN reconstruct historical ownership
+      *if and only if* the activity feed has not aged the event out. The activity table
+      has its own TTL/partition housekeeping (Activity partition manager + empty-partition
+      housekeeping), so beyond the retention window the answer is irrecoverable. The
+      reconstruction also depends on the @ActivityLog annotation remaining intact — a
+      regression dropping it silently removes the only recovery path.
+    evidence:
+      - sidecar: "ReactiveOwnershipRepositoryImpl.md"
+        section: "invariants[0] + implicit_adrs[0] + security.known_security_gaps[1]"
+        cite: "V0_0_3__add_ownership.sql:10-22 (no deleted_at) + ReactiveOwnershipRepositoryImpl.java:85-91 (physical DELETE) + OwnershipServiceImpl.java:77 (@ActivityLog OWNERSHIP_DELETED)"
+        note: "Hard-delete by design; activity feed is the ONLY reconstruction surface, bounded by activity TTL."
+    operator_visible_failure: |
+      (1) Ownership history older than the activity-feed retention window is permanently
+      unrecoverable — an operator cannot answer "who owned this entity last quarter" once
+      the activity event is purged. (2) The recovery depends on a separate subsystem
+      (activity feed) with its own retention + its own delivery reliability — coupling
+      disaster-recovery to an audit log the operator may not realise is the system of
+      record. (3) Inconsistent with the rest of the platform's soft-delete posture, so an
+      operator who expects "deleted things are recoverable" (true for datasources) is
+      wrong for ownership.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+- id: H-006
+  hypothesis: "When a Collector or DataSource is deleted, its issued token is invalidated / cleaned up (the operator expects deleting the resource to retire its credential)."
+  derivation: "Token lifecycle expectation — a credential should not outlive the resource it authenticates; an orphaned live secret is a security smell."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Neither the Collector nor the DataSource soft-delete touches the TOKEN row. The
+      `token` table has NO `deleted_at` column (V0_0_28:1-9) and there is NO janitor / no
+      cleanup query. `DataSourceServiceImpl.delete` is a soft-delete of `data_source` with
+      NO `tokenRepository.delete(tokenId)` (PLT-087 confirms this is a known gap). The
+      orphaned TOKEN row persists indefinitely with its 40-char plaintext value intact
+      (`ReactiveCollectorRepositoryImpl` invariant 2/3: TOKEN.value is plaintext at rest,
+      no hashing). The live Management doc independently confirms: "Soft-deleted Collectors
+      leave their TOKEN row orphaned … retired Collector tokens persist in the table
+      indefinitely."
+    evidence:
+      - sidecar: "ReactiveCollectorRepositoryImpl.md"
+        section: "invariants[1][2][3]"
+        cite: "V0_0_28__add_token.sql:1-9 (token has no deleted_at) + ReactiveCollectorRepositoryImpl.java:94 (plaintext token equality)"
+        note: "TOKEN outlives its soft-deleted parent; plaintext credential persists."
+      - sidecar: "ReactiveDataSourceRepositoryImpl.md"
+        section: "bugs_limitations_corner_cases (token regenerate, no recovery)"
+        cite: "DataSourceServiceImpl.java:99-106 + V0_0_28 (no grace period / no deleted_at)"
+        note: "Datasource-side: same orphan; regenerate mutates in place (no grace)."
+    operator_visible_failure: |
+      (1) A retired collector's 40-char plaintext token remains valid-shaped and present
+      in the `token` table forever — a credential the operator believes they retired is
+      still at rest (replica/backup/pg_dump exposure surface). (2) For Datasources, the
+      orphaned token + uncleared FTS vector (PLT-087) are operator-invisible residue.
+      (3) Token *regeneration* destroys the prior secret in-place with NO grace period
+      (`ReactiveDataSourceRepositoryImpl` corner-case) — a collector that hasn't picked up
+      the new token 401s immediately, so rotation and deletion both have surprising
+      credential side-effects.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+- id: H-007
+  hypothesis: "When a Collector deletion is attempted while data sources are still attached to it, the platform rejects the delete with a clear, actionable error (rather than silently orphaning or cascading)."
+  derivation: "Cascade-block is a normal protective behaviour an operator relies on; the pillar lists collector deletion as a first-class action."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `CollectorServiceImpl.delete` calls `dataSourceRepository.existsByCollector(id)`
+      first; if any non-soft-deleted data_source has `collector_id = id`, the delete is
+      rejected with `CascadeDeleteException("Collector has associated data sources")`
+      (CollectorServiceImpl.java:73-79). The check is correctly soft-delete-aware
+      (`existsByCollector` filters `deleted_at IS NULL`). The live Management doc confirms
+      the cascade-block posture for Owners/Namespaces/Datasources.
+    evidence:
+      - sidecar: "ReactiveDataSourceRepositoryImpl.md"
+        section: "upstream_callers + implicit_adrs[3] (cascade-delete guards)"
+        cite: "ReactiveDataSourceRepositoryImpl.java:124-132 (existsByCollector) + CollectorServiceImpl.java:73-79"
+        note: "Cascade-block confirmed; soft-delete-aware existence check."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+- id: H-008
+  hypothesis: "When an operator deletes a custom Metadata Field, it disappears from the entities it was attached to (deleting a field removes it from the data-entity detail page)."
+  derivation: "Delete-means-gone expectation applied to the per-entity rendering surface — a soft-deleted field should not keep appearing on entities."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `getDtosByDataEntityId` (the per-entity Metadata-panel query feeding
+      DataEntityDetails) joins `metadata_field_value ⋈ metadata_field` with NO
+      `metadata_field.deleted_at IS NULL` predicate (`ReactiveMetadataFieldRepositoryImpl`
+      operations + invariants[9] + bugs_limitations_corner_cases[3]). So a soft-deleted
+      metadata_field whose values still attach to a data entity STILL renders on the
+      entity detail page — a ghost field. The FK to metadata_field has no ON DELETE
+      CASCADE (V0_0_1:184-185), and there is no hard-delete path, so the values persist.
+      Worse, the FTS path (`updateMetadataVectors`) re-tokenises the ghost field's name,
+      making the "deleted" field searchable again.
+    evidence:
+      - sidecar: "ReactiveMetadataFieldRepositoryImpl.md"
+        section: "operations(getDtosByDataEntityId) + bugs_limitations_corner_cases[3]"
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:111-121 (no soft-delete filter on the join) + DataEntityServiceImpl.java:618 (the caller)"
+        note: "Read side of the panel does NOT filter soft-deleted fields — ghost rendering."
+    operator_visible_failure: |
+      (1) An operator who "deletes" a custom metadata field still sees it (with its value)
+      on every entity that had a value for it — the delete looks like it failed. (2) The
+      ghost field's NAME becomes searchable again via FTS re-indexing, so a "removed"
+      field resurfaces in search results. (3) Combined with H-003 (cannot recreate the
+      same-named field), the operator is in a worst-of-both-worlds state: the field is
+      blocked for recreation AND still visible. (4) Nothing in the UI signals the field is
+      soft-deleted — it renders identically to a live field.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+- id: H-009
+  hypothesis: "When a DataEntity is deleted, it progresses cleanly through its lifecycle to final removal within the configured TTL window — the operator-set 30-day data-entity-delete retention is honoured."
+  derivation: "DataEntity has a documented 4-state machine (LIVE → status=DELETED → deleted_at → purge) driven by scheduled jobs; the operator expects deterministic progression to purge."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The state machine is driven by TWO `@Scheduled` jobs on separate cadences —
+      `DataEntityStatusSwitchJob` (10min) flips switchable statuses to DELETED, and
+      `HousekeepingJobManager` (15min, holding a 14-minute ShedLock, running
+      `DataEntityHousekeepingJob`'s ~25-table cascade) purges past the
+      `data_entity_delete_days` TTL. Per F-121 / SHB-176 these jobs contend on a
+      single-thread executor; the ShedLock's `lockAtMostFor=14m` against `fixedRate=15min`
+      leaves only 60s of slack, so a cascade running >=14min can release the lock early
+      and let a second instance start while the first is still committing
+      (`HousekeepingJobManager.md` invariants). Whether the state machine actually STALLS
+      under sustained backlog — and whether the TTL window is honoured at scale — requires
+      running the system with a large soft-deleted backlog and observing progression.
+      SEPARATELY, the `updateStatus` ordering bug (DataEntityMapperImpl.applyStatus
+      L242-253 sets status BEFORE the if-check → statusUpdatedAt never bumped) is
+      independently documented as breaking the 30-day TTL (concepts.yaml DataEntity
+      aggregate); that is a confirmed code defect, but its end-to-end effect on purge
+      timing is the probe target.
+    evidence:
+      - sidecar: "HousekeepingJobManager.md"
+        section: "understanding + invariants (ShedLock window) + the F-121 cross-link"
+        cite: "HousekeepingJobManager.java:25-26 (@Scheduled 15min, lockAtMostFor=14m) + DataEntityStatusSwitchJob.java:21 (@Scheduled 10min)"
+        note: "Two-cadence state machine; single-thread contention per F-121."
+    operator_visible_failure: |
+      (1) If the machine stalls, soft-deleted DataEntities accumulate past their TTL and
+      are never purged — storage growth + soft-deleted entities lingering in housekeeping
+      limbo. (2) The statusUpdatedAt ordering bug means the 30-day delete TTL is measured
+      from a never-updated timestamp, so entities may be purged on the wrong schedule
+      (too early or never). (3) Operator-invisible: there is no metric / structured audit
+      on job failure (failures log at ERROR and continue), so a stalled machine is silent.
+    severity: HIGH
+    confidence: MEDIUM
+    probe_id: PENDING-F-123-1
+    routes_to_finding: probe-needed
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: "probe PENDING-F-123-1"
+- id: H-010
+  hypothesis: "When an operator deletes a dataset field (column metadata) it is removed; and a deleted column's historical metadata is not silently lost."
+  derivation: "dataset_field is per-column metadata an operator edits (internal name/description); delete-means-gone + history expectation."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      `dataset_field` has NO soft-delete column at all (no `deleted_at`/`is_deleted`/
+      `status` — `ReactiveDatasetFieldRepositoryImpl` invariant 1; confirmed against
+      V0_0_1:148-164 + all ALTERs). `delete(id)` is a HARD DELETE. PARTIAL because in
+      normal operation the platform does NOT hard-delete dataset_field on column removal —
+      instead the version-fork model creates a NEW row on structure change and LEAVES the
+      old row pointed-at by the old dataset_version (invariant 2), and operator-curated
+      internal name/description are CARRIED FORWARD to the new row
+      (`getDatasetFieldUpdatedCopy` restores them). So column *history* is preserved by
+      versioning, not by soft-delete — but any actual hard `delete(id)` (no production
+      caller does this today, but the method exists) is irreversible with no audit. There
+      is also no orphan-cleanup for old dataset_field rows, so they accumulate.
+    evidence:
+      - sidecar: "ReactiveDatasetFieldRepositoryImpl.md"
+        section: "understanding + invariants[1][2][3][4]"
+        cite: "V0_0_1__init.sql:148-164 (no soft-delete column) + DatasetFieldServiceImpl.java:385-394 (hash-diff version fork) + 308-322 (internal-name/desc carried forward)"
+        note: "No soft-delete; history via version-fork; hard-delete path exists but unused; old rows accumulate."
+    operator_visible_failure: |
+      (1) The version-fork model means old dataset_field rows are never cleaned up —
+      unbounded accumulation of historical column rows (no janitor), a slow storage leak.
+      (2) If any future caller invokes the inherited hard `delete`, the column metadata
+      (including operator-curated internal name/description) is gone with no audit trail —
+      unlike the data_entity / datasource soft-delete posture. (3) The cross-link SHB-182
+      / F-125 token-housekeeping gap shares this 'no soft-delete column at all' shape.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+- id: H-011
+  hypothesis: "An operator can determine, from the product (UI affordance or docs), whether deleting a given resource is reversible and whether its name can be reused — before they perform an irreversible action."
+  derivation: "Pillar mission (Management is the operator-facing config surface); a destructive action should disclose its reversibility. Doc-claim seed: the live Management page partially documents deletion semantics."
+  seed_source: doc-claim
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      There is NO per-resource deletion-semantics disclosure in the product: no delete
+      confirmation text states reversibility or name-reuse consequences, no "recover"
+      affordance exists for any resource, and (per the feature-flow
+      `no_doc_page_enumerating_per_resource_deletion_contract` facet) no operator doc page
+      enumerates the per-resource contract. The live Management page DOES now carry SOME
+      deletion claims (namespace recreate-same-name; cascade-block; token orphan) — which
+      is partial and, for namespace, correct. But it is SILENT on the collector.name
+      block (H-002), on owner (H-004), and on metadata_field (H-003/H-008) — exactly the
+      contradicted cases. PROBE-NEEDED to confirm the UI surface: whether ANY delete
+      confirmation modal in the Management tabs renders reversibility/name-reuse text
+      requires inspecting the live React UI, which is NOT in this feature flow's chain
+      (this is an API/schema-contract feature — see VG-1). The verdict on the *doc* claim
+      is contradicted-by-omission; the verdict on the *UI* claim cannot be reached from
+      this chain.
+    evidence:
+      - sidecar: "feature-flow F-123 observed_vs_expected.facets[no_doc_page_enumerating_per_resource_deletion_contract]"
+        section: "drift_class description + evidence"
+        cite: "WebFetch https://docs.opendatadiscovery.org/features/management (partial coverage; collector/owner/metadata_field absent)"
+        note: "Doc partially documents deletion; the three contradicted resources are exactly the undocumented ones."
+    operator_visible_failure: |
+      (1) An operator performs an irreversible-or-name-reserving delete (collector, owner,
+      metadata_field) with no warning and no recovery path — discovers the consequence only
+      when recreation fails. (2) The doc's PARTIAL coverage is arguably worse than none for
+      the contradicted cases: an operator who reads "namespaces can be soft-deleted and
+      re-created with the same name" may reasonably generalise to collectors/owners and be
+      wrong. (3) No UI text anywhere distinguishes the three mechanisms.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-123-2
+    routes_to_finding: probe-needed
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-123-2"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "collector.name is FULL UNIQUE (V0_0_29:4) not partial; soft-deleting a collector permanently reserves its name, blocking recreate while Role/DataSource/Namespace allow it."
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN (upstream code fix — migrate collector.name to partial unique WHERE deleted_at IS NULL)
+  proposed_fix_anchor: "Migration: DROP collector.name FULL UNIQUE (V0_0_29:4); CREATE partial unique index collector_name_unique ON collector(name) WHERE deleted_at IS NULL (mirror V0_0_64 Tag/Role fix)."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "metadata_field partial unique indexes (IX_UNIQUE_INTERNAL_NAME / IX_UNIQUE_EXTERNAL_NAME_TYPE) omit WHERE deleted_at IS NULL; soft-deleted INTERNAL field name is a permanent re-creation blocker with no hard-delete path."
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN (upstream code fix — migrate metadata_field partial indexes to include deleted_at IS NULL, completing the V0_0_64 convergence)
+  proposed_fix_anchor: "Migration adding `WHERE … AND deleted_at IS NULL` to ix_unique_internal_name + ix_unique_external_name_type (and update ingestData's .where() predicate at ReactiveMetadataFieldRepositoryImpl.java:101 in lockstep — see invariant[8] brittleness)."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "owner.name is non-partial UNIQUE; soft-deleted Owner permanently blocks re-creating the same-named Owner (same shape as collector), per concepts.yaml:256."
+  dedup_status: net_new
+  distinct_from: PLT-120
+  recommended_log_as: PLT-NNN (verify owner table migration history V0_0_1 vs V0_0_89, then migrate owner.name to partial unique)
+  proposed_fix_anchor: "Confirm owner.name UNIQUE is non-partial, then partial-scope it WHERE deleted_at IS NULL. NOTE: distinct from PLT-120 (owner getDto returns soft-deleted owners — a read-path filter omission, different locus) and PLT-121 (owner cascade 3-of-4 relations)."
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: "getDtosByDataEntityId omits the metadata_field.deleted_at IS NULL filter; soft-deleted custom metadata fields render as ghost fields on entity detail pages and become FTS-searchable again."
+  dedup_status: net_new
+  recommended_log_as: PLT-NNN (upstream code fix — add deleted_at IS NULL to the metadata_field join in getDtosByDataEntityId)
+  proposed_fix_anchor: "ReactiveMetadataFieldRepositoryImpl.java:111-121 — add `.and(METADATA_FIELD.DELETED_AT.isNull())` to the join, and decide soft-deleted-field-value rendering policy on DataEntityDetails."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Ownership is hard-delete (no deleted_at); historical ownership recoverable ONLY from the activity feed, bounded by activity TTL and dependent on the @ActivityLog annotation."
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/management (Deletion Semantics section) + DOC-NNN
+- hypothesis_id: H-006
+  one_line: "Deleting a Collector/DataSource leaves its plaintext TOKEN row orphaned indefinitely (token table has no deleted_at); token regeneration mutates in-place with no grace period."
+  dedup_status: already_tracked
+  tracked_as: PLT-087
+  note: "PLT-087 tracks the DataSource-side orphan TOKEN + non-transactional regenerate + plaintext-response-no-Cache-Control. The Collector-side orphan is the same shape (V0_0_28 token table shared); reflection re-derives it independently = convergent validation. Do NOT re-file; corroborate PLT-087 and note the Collector-side sibling in its scope."
+- hypothesis_id: H-010
+  one_line: "dataset_field has no soft-delete column at all; column history preserved by version-fork (not recovery), old rows accumulate with no janitor, and the inherited hard-delete path is auditless."
+  dedup_status: net_new
+  distinct_from: PLT-087
+  recommended_log_as: caveat in Deletion Semantics doc page + DOC-NNN (cross-link SHB-182 / F-125 token-housekeeping gap — same 'no soft-delete column' shape, different table)
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# NO real test exists for ANY deletion-semantics behaviour: OwnerRepositoryImplTest covers
+# create/update/delete/getByName but has NO recreate-after-delete-with-same-name test;
+# TagRepositoryImplTest tests only M:N relation delete (not soft-delete name reuse); there is
+# NO e2e/IT spec for deletion semantics anywhere in odd-team/integration-tests or odd-platform/tests.
+- use_case_id: F-123-UC-1
+  hypothesis_id: H-001
+  kind: resolve-later
+  promise: "Delete a DataSource/Role/Namespace/Tag then create same-name → SUCCEEDS (partial-unique frees the slot)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-1)"
+  proposed_test: "ReactiveDataSourceRepositoryImplTest: create ds 'foo' → delete → create ds 'foo' again → assert second create SUCCEEDS (pins the partial-unique-WHERE-deleted_at recreation contract); mirror for Role + Tag."
+- use_case_id: F-123-UC-2
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "Delete a Collector then create same-name → currently FAILS; the fix makes it SUCCEED (regression guard for the partial-unique migration)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-2)"
+  proposed_test: "Characterization test (pins-known-bug per LSN-029): create collector 'foo' → soft-delete → create collector 'foo' → assert UniqueConstraintException TODAY (RED-on-fix); flip to assert SUCCESS when PLT (H-002) lands."
+- use_case_id: F-123-UC-3
+  hypothesis_id: H-003
+  kind: resolve-later
+  promise: "Soft-delete an INTERNAL metadata_field then re-create same-name → currently FAILS; the fix makes it SUCCEED."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-3)"
+  proposed_test: "ReactiveMetadataFieldRepositoryImplTest: bulkCreate(foo,INTERNAL) → soft-delete → bulkCreate(foo,INTERNAL) → assert UniqueConstraint('Internal metadata with this name already exists') TODAY; flip to SUCCESS post-fix. (Sidecar uncovered_behaviours already names this gap.)"
+- use_case_id: F-123-UC-4
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "Delete an Owner then create same-name Owner → currently FAILS; the fix makes it SUCCEED."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-4)"
+  proposed_test: "OwnerRepositoryImplTest: create owner 'foo' → delete → create owner 'foo' → assert current behaviour (pins the non-partial-unique block); the test currently MISSING (testDeletesOwner does not re-create)."
+- use_case_id: F-123-UC-5
+  hypothesis_id: H-005
+  kind: teardown
+  promise: "After deleting an Ownership, before/after ownership state is captured in the activity feed (the only recovery surface)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-5)"
+  proposed_test: "OwnershipServiceImplTest: delete ownership → assert OWNERSHIP_DELETED activity event emitted with before-state payload (pins the @ActivityLog recovery path; regression guard for the only reconstruction surface)."
+- use_case_id: F-123-UC-7
+  hypothesis_id: H-007
+  kind: teardown-constraint
+  promise: "Deleting a Collector with attached data sources is rejected with CascadeDeleteException."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-7)"
+  proposed_test: "CollectorServiceImplTest: attach live data_source to collector → delete collector → assert CascadeDeleteException('Collector has associated data sources'); and after soft-deleting the data_source → delete collector SUCCEEDS (pins the soft-delete-aware cascade guard)."
+- use_case_id: F-123-UC-8
+  hypothesis_id: H-008
+  kind: render
+  promise: "A soft-deleted custom metadata_field does NOT render on data-entity detail pages."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-8)"
+  proposed_test: "ReactiveMetadataFieldRepositoryImplTest: attach value of field F to entity E → soft-delete field F → getDtosByDataEntityId(E) → assert F is ABSENT (currently FAILS — ghost field present); regression guard for the deleted_at-filter fix."
+- use_case_id: F-123-UC-9
+  hypothesis_id: H-009
+  kind: teardown
+  promise: "A deleted DataEntity progresses to purge within the configured TTL window without stalling."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-123-1 (then TEST-GAP-NNN missing-integration once reachability confirmed)"
+  proposed_test: "Probe PENDING-F-123-1 (local docker + large soft-deleted backlog); plus a unit pin for the statusUpdatedAt ordering bug (DataEntityStatusKnownBugTest already pins the mapper bug — extend to assert TTL-timestamp effect)."
+- use_case_id: F-123-UC-10
+  hypothesis_id: H-010
+  kind: teardown
+  promise: "Operator-curated internal name/description on a dataset_field survive a structure-change (version fork carries them forward)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-123-UC-10)"
+  proposed_test: "DatasetFieldServiceTest: set internal_name on field → ingest structure change forking the field → assert new dataset_field row retains the internal_name (pins getDatasetFieldUpdatedCopy carry-forward at L308-322)."
+- use_case_id: F-123-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "The product discloses per-resource deletion reversibility / name-reuse before an irreversible action."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-123-2 (UI surface inspection) + DOC-NNN (Deletion Semantics page)"
+  proposed_test: "Probe PENDING-F-123-2 (Playwright: open each Management delete modal, assert reversibility/name-reuse text present); doc gap routes to DOC-NNN."
+
+### probes_emitted
+- probe_id: PENDING-F-123-1
+  hypothesis_id: H-009
+  hypothesis_text: "When a DataEntity is deleted, it progresses cleanly through its 4-state lifecycle to final purge within the configured TTL window — the operator-set data_entity_delete_days retention is honoured and the state machine does not stall under sustained soft-deleted backlog."
+  local_execution: |
+    Local docker-compose odd-platform + Postgres. Set housekeeping.enabled=true,
+    housekeeping.ttl.data_entity_delete_days short. Ingest a large batch of data entities,
+    soft-delete a sizeable subset, and drive sustained ingestion concurrently so
+    DataEntityStatusSwitchJob (10min) and DataEntityHousekeepingJob (under the 15min
+    HousekeepingJobManager) contend. Observe: (a) do soft-deleted entities purge within TTL;
+    (b) does the ShedLock release early (cascade >=14min) and a second instance start;
+    (c) does statusUpdatedAt advance (it should NOT, per the mapper ordering bug — confirm
+    the TTL is measured from a stale timestamp). Cross-link F-121 / SHB-176.
+  local_execution_blocked: false
+- probe_id: PENDING-F-123-2
+  hypothesis_id: H-011
+  hypothesis_text: "Every Management delete confirmation surface discloses whether the deletion is reversible and whether the resource's name can be reused afterwards, before the operator confirms."
+  local_execution: |
+    Playwright against local odd-platform UI (the odd-platform/tests harness). For each
+    Management tab (Datasources, Collectors, Owners, Namespaces, Roles, Policies, Tags),
+    open the delete confirmation modal and assert whether reversibility / name-reuse text
+    is present. Expected (current): absent for all. This is the UI half of the
+    contradicted-by-omission doc finding; surfaced as probe because the UI surface is NOT
+    in this feature flow's chain (VG-1).
+  local_execution_blocked: false
+
+### validation_gaps
+- gap_id: VG-1
+  sidecar: "(feature flow F-123 chain itself)"
+  field_insufficient: "chain has NO enriched UI hop — hop 1 (migrations) is `unresolved`, hop 3 is `external observers`, hop 2 is the repository layer. There is no React-component contributing node."
+  proposed_refresh: |
+    Per Rule 9 (senior-product-owner-from-the-screen): THIS REFLECTION IS API/SCHEMA-CONTRACT
+    ONLY. The operator-observable surface of deletion is the Management tabs' Delete buttons,
+    delete-confirmation modals, and create forms — NONE of which are contributing nodes here.
+    The UI sidecars EXIST (OwnersList, CollectorsList, RolesList, DataSourcesList,
+    DataSourceForm, DataSourceItemToken) but are not threaded into this feature flow. To judge
+    what the user actually EXPERIENCES on delete (warning text, recover affordance, error
+    rendering), the feature-flow-builder should add the Management delete-action UI components
+    as contributing nodes, and a refresh reflection should re-verdict H-002/H-003/H-004/H-008/
+    H-011 against the real UI. Until then, H-011's UI half is probe-needed (PENDING-F-123-2),
+    not confidently verdicted.
+- gap_id: VG-2
+  sidecar: "ReactiveDataEntityRepositoryImpl.md"
+  field_insufficient: "The DataEntity STATUS + deleted_at double-tracking state machine (the 4-state lifecycle) was validated this pass via the concepts.yaml DataEntity aggregate + feature-flow facet + HousekeepingJobManager sidecar, NOT a deep-read of the ReactiveDataEntityRepositoryImpl sidecar's invariants for the exact state-transition predicates."
+  proposed_refresh: "Next refresh: deep-read ReactiveDataEntityRepositoryImpl invariants to pin the exact (status='DELETED' AND deleted_at IS NULL) waiting-room predicate and the listByOwner/listAllByStatus read filters, strengthening H-009 from probe-needed toward a static verdict on the predicate correctness (the stall reachability stays probe-needed)."
+- gap_id: VG-3
+  sidecar: "(owner repository — no ReactiveOwnerRepositoryImpl sidecar deep-read this pass)"
+  field_insufficient: "H-004 (owner.name non-partial block) is derived from the concepts.yaml batch-2026-05-12E note (concepts.yaml:255-257), not a primary-source read of the owner table's migration history (V0_0_1 vs V0_0_89) or ReactiveOwnerRepositoryImpl. Confidence MEDIUM."
+  proposed_refresh: "Read the owner table migrations + ReactiveOwnerRepositoryImpl to confirm owner.name UNIQUE is non-partial and whether any later migration partial-scoped it (the way V0_0_89 did user_owner_mapping). Promote H-004 to HIGH confidence or retract if owner.name was partial-scoped after the note was written."
+
+### doc_drift_findings
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "Namespaces can be soft-deleted and re-created with the same name (partial-unique frees the slot); cascade-block applies to Owners/Namespaces/Datasources; soft-deleted Collector/Datasource TOKEN rows persist indefinitely."
+  code_does: "TRUE for namespace recreate + cascade-block + token orphan. But SILENT on: collector.name FULL UNIQUE blocking recreate (H-002, contradicts the generalisable namespace claim); owner.name non-partial block (H-004); metadata_field soft-delete blocking recreate (H-003) + ghost rendering (H-008). The doc's partial coverage invites a false generalisation from namespace to collector/owner."
+  recommended_log_as: doc-gap DOC-NNN — extend the Management 'Deletion Semantics' coverage into a per-resource contract table (DataSource / Collector / Owner / Namespace / Role / Policy / Tag / Term / Metadata Field / Ownership / Token / DataEntity / DatasetField), each row stating mechanism (deleted_at / status+deleted_at / hard-delete) + recreate-after-delete (yes/no) + recoverability. Cross-link the feature-flow `no_doc_page_enumerating_per_resource_deletion_contract` facet.
+
+## maintainer_notes
+
+(Preserved across refreshes — maintainer hand-edits only below this line.)
+
+- SME consultation is flagged on the feature flow (`sme_consultation_recommended: true`,
+  archetype `data-platform-architect`): is the three-mechanism contract DELIBERATE
+  (collectors retain rotation history; ownership hard-deleted because audit lives in the
+  Activity feed) or ACCIDENTAL schema drift to converge on `deleted_at IS NULL` everywhere?
+  This reflection treats the DRIFT (H-002/H-003/H-004/H-008) as bug-candidates on the
+  presumption that recreate-after-delete asymmetry is not intentional operator-facing
+  contract — but H-005 (ownership hard-delete) is validated as `partial`/caveat precisely
+  because the activity-feed-is-the-audit-trail design reads as deliberate. The SME verdict
+  could reclassify H-002/H-004 from bug to documented-caveat; until then, surface-by-default
+  (Rule 1) keeps them as bug-candidates with the operator-visible failure enumerated.
+- Cluster context: F-019/F-020/F-028/F-031/F-006/F-076/F-121/F-125 inherit this catalog.
+  This reflection does NOT modify those flows (slice discipline).

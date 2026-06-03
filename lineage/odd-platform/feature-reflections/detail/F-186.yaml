@@ -1,0 +1,750 @@
+---
+feature_id: F-186
+pillar_anchored_id: P-05:F-186
+pillar: P-05 Data Lineage
+feature_name: |-
+  Lineage canvas Compact/Full view-mode toggle — parallel-but-distinct
+  per-subtree implementations (DEG = jotai-atom-driven re-layout; Hierarchy =
+  Redux/Context-driven re-render only). One label, two semantics.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read: []   # ALL 6 contributing nodes are sidecar: unresolved (LSN-025 surface-coverage gap — React components have no substrate node). See validation_gaps + Rule-9 note below; verdicts grounded in direct source reads (source_read_for_validation: true).
+source_reads_for_validation:
+  - 'DEGLineageControls.tsx:1-53 (full file)'
+  - 'LineageControls.tsx:1-124 (full file)'
+  - 'DEGLineageLayouter.tsx:1-76 (full file)'
+  - 'LineageProvider.tsx:1-75 (full file)'
+  - 'DEGLineage.tsx:1-47 (full file — re-mount conditional)'
+  - 'odd-platform-ui/src/components/DataEntityDetails/Lineage/HierarchyLineage/ZoomableLineage/LineageGraph/Node/Info/Info.tsx:1-170 (full file)'
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-lineage/data-objects"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Live page now carries a "View-Mode Toggle: Compact / Full" section
+      documenting (a) DEG = layout re-run with spinner+animation; (b) Hierarchy
+      = re-render only; (c) dense-graph overlap warning; (d) Compact hides the
+      DEG-Items button. Shipped via DOC-198 (status: done). The doc is ACCURATE
+      against the code — it states the dense-graph overlap as a known limitation
+      rather than claiming a fix.
+hypothesis_summary:
+  total: 11
+  confirmed: 7
+  contradicted: 2
+  partial: 0
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: MEDIUM
+    one_line: |-
+      Switching Compact→Full on a dense Hierarchy (visx) canvas does NOT
+      recompute node x/y positions (handleViewChange sets only the `full`
+      param; no layout re-trigger), so larger Full-mode node rects can
+      overlap using the stale Compact-spaced layout.
+related_feature_flows: [F-005, F-016, F-055]
+related_concepts:
+  - data-lineage
+  - graph-rendering
+  - dep-array-staleness (LSN-017)
+related_drift_classes:
+  - parallel_ui_surfaces_with_drift_one_user_label_two_behaviours
+  - compact_mode_loses_navigational_affordance_undocumented
+  - ui_layout_static_after_node_size_change_dense_graph_overlap
+  - useLayoutEffect_deps_empty_array_brittle_to_future_drivers
+  - useMemo_intermediate_outputs_not_propagated_to_consumer_value
+new_drift_classes_proposed: []
+---
+
+# Lineage canvas Compact/Full view-mode toggle — product-owner reflection
+
+## product_owner_narrative
+
+The Lineage canvas is where an operator answers "what is upstream/downstream of this
+entity?" by reading a rendered graph on the entity's **Lineage** tab
+(`/dataentities/{id}/lineage`, per F-186 `discovered_from_entry_point`). On every
+lineage canvas there is a small two-tab control labelled **Full / Compact** (per
+`DEGLineageControls.tsx:42-48` and `LineageControls.tsx:96-102` — `AppTabs` with
+`items=[{Full},{Compact}]`). The promise the label makes to the user is a density
+choice: *Full* shows each node with its full detail (Space / Source labels, the ODDRN
+block, and — for Data Entity Group nodes — a clickable list of members); *Compact*
+strips a node down so more of the graph fits on screen. It is one of two display
+controls in the canvas, the sibling being the Hierarchy-only "Show full names"
+checkbox (related feature F-055).
+
+A user reaches the toggle by opening any entity's Lineage tab and clicking Compact or
+Full. The control writes a single URL query parameter, `?full=` (`handleViewChange`
+sets `full: newViewIndex <= 0` — Full is tab index 0, Compact is index 1, per
+`DEGLineageControls.tsx:21-27` and `LineageControls.tsx:50-54`). Because the state
+lives in the URL, the chosen mode survives a page reload and is shareable in a link.
+The observable output is the graph re-drawn at the chosen node density.
+
+The working part that defines this feature — and the reason it is a discrete F-NNN
+rather than a footnote on the lineage pillar — is that the SAME labelled control drives
+**two entirely different rendering subsystems** depending on the entity class being
+viewed. A Data Entity Group's group-lineage renders through the DEG subtree
+(`DEGLineage.tsx`), which packs nodes with elkjs/dagre using each node's *measured*
+pixel height; switching density there invalidates the measurements, so the DEG control
+also fires `setIsLayouted(false)` (`DEGLineageControls.tsx:24`) which re-mounts the
+layout engine (`DEGLineage.tsx:29-36`) and **re-runs the whole layout** — the user sees
+a "Loading lineage" spinner and nodes animate to new positions. A regular entity's
+lineage renders through the Hierarchy subtree (d3-hierarchy + visx Tree), whose layout
+treats node sizes as static across renders; its control (`LineageControls.tsx:50-54`)
+sets only the `full` param and triggers **no re-layout** — the node shapes change
+instantly in place. One label, two observable experiences.
+
+This feature sits inside the Data Lineage pillar (P-05), whose mission is "upstream and
+downstream traceability across the catalog" (per `system-mission.md` P-05). It composes
+with the DEG-lineage subsystem (F-016) and the per-entity Hierarchy-lineage subsystem
+(F-005) — the toggle is the shared display-mode surface layered over both. The
+cross-pillar relevance is to Data Discovery (P-01): a DEG node in the canvas is a
+gateway to "which entities belong to this group," and the Compact rendering changes
+whether that gateway is reachable.
+
+The edge cases a product owner would flag in a demo are exactly the drift facets the
+bottom-up pass already surfaced: (1) the two-subsystem asymmetry means a user's mental
+model from a DEG canvas does not transfer to a Hierarchy canvas; (2) Compact mode on the
+Hierarchy canvas **hides the DEG-Items drill-in button** (`Info.tsx:120-141`, gated by
+`full && externalName && nodesRelatedWithDEG?.length > 0`) — an operator who switched to
+Compact for readability silently loses the ability to open a group node's member list;
+(3) on a dense Hierarchy graph, switching Compact→Full enlarges node rects without
+re-spacing them, risking visual overlap; and (4) two LSN-017-family React dependency-array
+latent bugs ride along (`DEGLineageLayouter`'s empty `useLayoutEffect` deps and
+`LineageProvider`'s `providerValue` memo omitting `nodeSize`/`titleHeight`/`oddrnHeight`)
+that work only because of incidental re-mount behaviour. The documentation (DOC-198,
+live and verified 2026-06-03) now describes facets 1, 2, and 3 accurately as caveats.
+
+## Rule-9 note (UI surface present, but as unresolved references)
+
+Per Rule 9, the FIRST output for a feature whose UI hops are `unresolved` is a
+validation_gap stating the reflection's grounding. Here all six contributing nodes
+carry `sidecar: unresolved` — but NOT because the UI surface is absent from analysis:
+the feature flow's `note` fields + the five `observed_vs_expected.facets` already carry
+file:line evidence from the SHB-002 graduation, and this reflection directly READ all
+six source files (`source_reads_for_validation` above) to validate each hypothesis from
+the screen and the interaction, not from an endpoint. The verdicts below are therefore
+UI-grounded, not API-only. The validation_gap that remains is the **missing substrate
+sidecars** (LSN-025 surface-coverage gap — these React components were never emitted as
+nodes), recorded in `validation_gaps` so a future extractor extension + `/enrich` pass
+fills them; it is not an "API-only reflection" gap of the F-031 class.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user clicks Compact/Full on the lineage canvas, the choice is written
+    to a single shareable/reload-surviving URL query parameter (`?full=true|false`),
+    so reopening the link reproduces the same density.
+  derivation: |-
+    Both controls' handleViewChange call setQueryParams to set `full`
+    (DEGLineageControls.tsx:23; LineageControls.tsx:52); useQueryParams persists to
+    the URL. Full = tab index 0, Compact = index 1 (`full: newViewIndex <= 0`).
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Both controls read `full` from useQueryParams and write it back via
+      setQueryParams; the value is the URL query param `full`. selectedTab is
+      derived as `full ? 0 : 1` so the rendered tab reflects the URL on load.
+      The mode round-trips through the URL and survives reload / is shareable.
+    evidence:
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../DEGLineageControls/DEGLineageControls.tsx:14-27,46"
+        note: "queryParams.full read; handleViewChange writes full; selectedTab={full?0:1}"
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../LineageControls/LineageControls.tsx:22-25,50-54,100"
+        note: "same pattern in the Hierarchy control"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a user switches view mode on a Data Entity Group (DEG) lineage canvas,
+    the graph re-lays-out (the layout engine recomputes node positions and the user
+    sees a loading state), because DEG node packing depends on measured node heights
+    that change with density.
+  derivation: |-
+    DEGLineageControls.handleViewChange calls setIsLayouted(false)
+    (DEGLineageControls.tsx:24); DEGLineage.tsx:29-36 re-mounts the layouter when
+    !isLayouted; the layouter measures heights and calls layoutDEGLineage.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      handleViewChange sets the `full` param AND setIsLayouted(false). In
+      DEGLineage.tsx the conditional `(!isLayouted || isFetching || isLoading)`
+      mounts the LoaderContainer ("Loading lineage" spinner) + DEGLineageLayouter,
+      while `isSuccess && isLayouted` renders the zoomable graph. So toggling →
+      isLayouted=false → spinner + layouter re-mount → useLayoutEffect measures
+      each node's clientHeight and runs layoutDEGLineage (which sets isLayouted
+      back true). The user observes a re-layout with a brief spinner.
+    evidence:
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../DEGLineageControls/DEGLineageControls.tsx:21-27"
+        note: "setIsLayouted(false) alongside the full flip"
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../DEGLineage/DEGLineage.tsx:29-42"
+        note: "spinner + layouter on !isLayouted; zoomable graph on isLayouted"
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../DEGLineageLayouter/DEGLineageLayouter.tsx:39-56"
+        note: "useLayoutEffect measures clientHeight, calls layoutDEGLineage(setIsLayouted)"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a user switches view mode on a regular entity's (Hierarchy) lineage canvas,
+    the node shapes change instantly with NO loading state and NO position migration —
+    a pure re-render, distinct from the DEG experience.
+  derivation: |-
+    LineageControls.handleViewChange sets ONLY the `full` param
+    (LineageControls.tsx:50-54) — no setIsLayouted, no dispatch that re-runs the
+    d3-hierarchy tree layout. nodeSize is recomputed (LineageProvider.tsx:53-56) but
+    the visx Tree x/y positions are computed elsewhere on data change, not on `full`.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      handleViewChange is `setQueryParams(prev => ({...prev, full: newViewIndex<=0}))`
+      and nothing else. LineageProvider recomputes nodeSize on `full`
+      (LineageProvider.tsx:53-56) but the providerValue and the rendered tree
+      re-render rather than re-layout — there is no spinner branch in the Hierarchy
+      control flow analogous to DEGLineage's isLayouted gate. The two subsystems
+      genuinely deliver two different observable experiences for one label. This is
+      facet `parallel_but_distinct_compact_full_implementations_one_label_two_semantics`.
+    evidence:
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../LineageControls/LineageControls.tsx:50-54"
+        note: "handleViewChange sets only `full` — no layout re-trigger"
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../LineageProvider/LineageProvider.tsx:53-56"
+        note: "nodeSize memo on `full` — node SIZE changes, not positions"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a user views a Data Entity Group node on the per-entity (Hierarchy) lineage
+    canvas in FULL mode, the node exposes a clickable "Items" affordance that opens the
+    list of entities belonging to that group (the DEG-membership drill-in).
+  derivation: |-
+    Info.tsx:120-141 renders the `Items` label + GroupedEntitiesListModal opener
+    when `nodesRelatedWithDEG?.length > 0`, inside the `full && externalName` branch.
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      In the `full && externalName` branch (Info.tsx:65-144), when
+      `nodesRelatedWithDEG && nodesRelatedWithDEG.length > 0` the component renders an
+      `Items` label and a GroupedEntitiesListModal whose open button is an ItemsButton
+      reading `${nodesRelatedWithDEG.length} entities`. Clicking it opens the modal
+      listing the group's members. The drill-in exists exactly as the user would
+      expect for a group node in Full mode.
+    evidence:
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../Node/Info/Info.tsx:65,120-141"
+        note: "Items label + GroupedEntitiesListModal opener inside full&&externalName"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When the same Data Entity Group node is viewed in COMPACT mode on the Hierarchy
+    canvas, the "Items" drill-in affordance is STILL reachable (a density change should
+    not remove a navigational capability) — the user can still open the group's members.
+  derivation: |-
+    Negative-space user expectation: a "compact/full" density toggle conventionally
+    changes visual density, not available actions. The pillar mission (P-05
+    traceability) implies group membership stays reachable regardless of density.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The Items button / GroupedEntitiesListModal opener lives ONLY in the
+      `full && externalName` branch (Info.tsx:65-144). In Compact mode (`!full`) the
+      component returns either the "No Information" placeholder (when externalName is
+      absent, lines 46-56) or `null` (the final `return full ? <ODDRN block> : null`
+      at lines 146-166). Either way the Items button is NOT rendered. Switching to
+      Compact for graph-overview readability silently removes the DEG-membership
+      drill-in entirely — the user must switch back to Full to reach it. This is facet
+      `compact_mode_hides_deg_membership_entry_point_in_hierarchy_canvas`.
+    operator_visible_failure: |-
+      (1) An operator using Compact mode to read a dense lineage graph cannot click
+      into a Data Entity Group node to see its members — the affordance is simply
+      gone, with no tooltip or disabled-state hint explaining why. (2) The loss is
+      discovered only at the moment the operator wants to drill in, after they have
+      already chosen Compact — a dead-end interaction. (3) An operator who learned the
+      drill-in exists in Full mode may conclude the group has no members in Compact
+      mode (the same visual absence the empty-group case would produce), a false
+      negative about the catalog's structure. Mitigation exists (switch to Full, or use
+      the entity Overview -> Members path) but is non-obvious and undocumented in-app.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When a user switches Compact->Full on a DENSE Hierarchy lineage graph (many siblings
+    at one depth), the enlarged Full-mode node rectangles are laid out without overlap —
+    the canvas re-spaces nodes to fit the larger size.
+  derivation: |-
+    Endpoint/UI expectation: enlarging node content should not produce overlapping
+    nodes. LineageControls.handleViewChange (LineageControls.tsx:50-54) sets only
+    `full`; LineageProvider.nodeSize (LineageProvider.tsx:53-56) grows but the visx
+    Tree x/y positions were computed at the previous (Compact) nodeSize and are not
+    recomputed on `full` change.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      handleViewChange changes only the `full` param. nodeSize is recomputed via the
+      LineageProvider memo, but the d3-hierarchy / visx Tree layout that fixes node x/y
+      positions is generated on data change, not on `full` change (the substrate facet
+      cites LineageGraph generateTree on data load). So after Compact->Full the canvas
+      renders larger node rects at the Compact-computed spacing. On dense graphs the
+      larger rects can overlap. This is facet
+      `hierarchy_mode_switch_no_layout_migration_overlap_risk_on_dense_graphs`.
+    operator_visible_failure: |-
+      (1) On a wide Hierarchy graph (10+ siblings at one level) the Full-mode nodes can
+      visually overlap, making labels unreadable and the topology ambiguous exactly when
+      the user wanted MORE detail. (2) The overlap is silent — no warning, no auto-fit —
+      and resolves only by toggling back to Compact (losing the detail) or manually
+      panning/zooming. (3) Because the DEG branch DOES re-layout, an operator who first
+      used a DEG canvas will not anticipate the Hierarchy overlap (the H-003 mental-model
+      mismatch compounds this). Note: the facet carries `ui_unverified: true` in the
+      feature flow — the overlap is a code-traced consequence, but the exact node-count
+      threshold at which overlap becomes visible needs a runtime probe (see H-006 probe).
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When a Data Entity Group node has NO members, the Hierarchy canvas in Full mode does
+    NOT render an empty/zero "Items" affordance (it shows the node without a misleading
+    drill-in), so the user is not invited to open an empty list.
+  derivation: |-
+    Info.tsx:120 gates the Items block on `nodesRelatedWithDEG && nodesRelatedWithDEG?.length > 0`.
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The Items label + GroupedEntitiesListModal render only when
+      `nodesRelatedWithDEG?.length > 0`. A group node with zero related entities
+      renders the Space/Source attributes but no Items affordance — the empty case is
+      handled correctly (no zero-count drill-in).
+    evidence:
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../Node/Info/Info.tsx:120"
+        note: "Items block gated on nodesRelatedWithDEG.length > 0"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a node has no external name and the canvas is in Compact mode, the Hierarchy
+    node shows a clear "No Information" placeholder rather than a blank/empty node, so the
+    user understands the node is intentionally stripped, not broken.
+  derivation: |-
+    Info.tsx:46-56 — `!full && !externalName` returns a "No Information" placeholder.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `if (!full && !externalName)` returns a Group rendering an S.Placeholder with the
+      i18n text "No Information". The intentional-empty state is explicit, not a blank
+      node. (For Compact WITH externalName the info region returns `null` — the title
+      still renders elsewhere — see H-009.)
+    evidence:
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../Node/Info/Info.tsx:46-56"
+        note: "No Information placeholder for Compact + missing externalName"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    The Compact rendering of a Hierarchy node (with an external name) drops the ODDRN
+    block that Full shows — Compact strips the technical detail to save space, as the
+    label "Compact" promises.
+  derivation: |-
+    Info.tsx:146-166 — final `return full ? (<ODDRN block>) : null`. The ODDRN block is
+    gated by `full`; Compact returns null for the info region.
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The terminal branch returns the ODDRN foreignObject block only when `full` is
+      true; in Compact mode the info region is `null`. So Compact shows the node title
+      only (no Space/Source labels — those are in the full&&externalName branch — and no
+      ODDRN). This matches the "Compact = less detail" promise. NOTE: this is a precise
+      correction to the feature-flow note, which described "Compact mode WITH
+      externalName -> ODDRN-only block (lines 146-166)" — the source shows the ODDRN
+      block is `full`-gated, so Compact renders the info region as null, not as an
+      ODDRN-only block. Surfaced as a validation_gap for the substrate note.
+    evidence:
+      - sidecar: unresolved
+        section: source-read
+        cite: "odd-platform-ui/.../Node/Info/Info.tsx:146-166"
+        note: "return full ? <ODDRN block> : null — ODDRN is full-only"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When a user rapidly toggles font/data churn on the Hierarchy canvas, the lineage node
+    sizing stays consistent — the layout consumers always read the current nodeSize, never
+    a stale one (no flicker / no transiently-wrong spacing).
+  derivation: |-
+    LineageProvider.tsx:58-68 — providerValue useMemo includes nodeSize in its output but
+    its deps are [full, fn, renderedLinks, highLightedLinks] — MISSING nodeSize /
+    titleHeight / oddrnHeight. The consumer-facing Context value identity can lag behind
+    the nodeSize value (LSN-017-family stale-closure pattern).
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The nodeSize memo (lines 53-56) recomputes on [full, titleHeight, oddrnHeight], but
+      providerValue (lines 58-68) — the object handed to Context consumers — has deps
+      [full, fn, renderedLinks, highLightedLinks], omitting nodeSize/titleHeight/oddrnHeight.
+      When titleHeight or oddrnHeight changes WITHOUT full/fn/links changing, nodeSize
+      updates but providerValue's identity does not, so Context consumers keep the old
+      nodeSize by closure until the next providerValue re-evaluation. Whether this produces
+      a USER-VISIBLE wrong-spacing/flicker window — and how wide it is — depends on the
+      real render timing (whether titleHeight/oddrnHeight ever change independently of the
+      memo's other deps in practice). This is a runtime-timing question, not statically
+      decidable from the chain. This is facet
+      `lineage_provider_useMemo_omits_titleHeight_oddrnHeight_LSN_017_shape`.
+    operator_visible_failure: |-
+      Potential (probe-gated): a transient frame where Hierarchy nodes are spaced for the
+      previous title/oddrn height while rendered at the new size, i.e. a brief overlap or
+      gap on font-size change or fullNames toggle. Latent and narrow today because the
+      omitted inputs tend to co-change with `full`/`fn`; the probe confirms whether a real
+      window exists. Routed as a code-shape latent bug regardless (the deps array is
+      objectively incomplete) — DOC-198 already noted it as a substrate latent-bug
+      observation but NO code-side item was filed.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-186-1
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    The DEG-canvas view-mode toggle re-runs layout reliably on EVERY toggle (not just the
+    first), so a user can switch Compact<->Full repeatedly and always see correctly
+    re-packed nodes.
+  derivation: |-
+    DEGLineageLayouter.tsx:39-56 — useLayoutEffect deps array is `[]` (runs once on
+    mount). It works today only because DEGLineage.tsx:29-36 re-MOUNTS the layouter on
+    setIsLayouted(false). The effect's correctness depends on incidental re-mount, not on
+    its own contract.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The layouter's useLayoutEffect has empty deps `[]`, so it computes against the
+      mount-time `full`/`nodes`/`edges` closure. Today every toggle sets isLayouted=false,
+      which swaps DEGLineage's conditional and re-mounts the layouter, so the effect fires
+      fresh with the new `full` — repeated toggles work. The probe is to RUN repeated
+      Compact<->Full toggles on a DEG canvas and confirm (a) layout re-runs each time and
+      (b) node packing is correct each time, pinning the current behaviour so the empty-deps
+      array (a latent regression risk if a future refactor keeps the layouter mounted) is
+      guarded. This is facet `deg_layouter_useLayoutEffect_empty_deps_array_LSN_017_shape`.
+    operator_visible_failure: |-
+      No CURRENT user-visible failure (re-mount masks the empty deps). The risk is a future
+      one: a refactor that keeps the layouter mounted across mode switches would silently
+      use stale closures, freezing the DEG layout at the first mode — repeated toggles would
+      stop re-packing. The probe pins today's correct behaviour as a characterization test
+      (RED the instant the deps-array assumption breaks). Routed as bug-candidate (the
+      empty deps array is objectively a latent defect) + a regression-guard test.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-186-2
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-010
+  severity: LOW
+  one_line: |-
+    LineageProvider providerValue useMemo (LineageProvider.tsx:58-68) omits
+    nodeSize/titleHeight/oddrnHeight from its deps; Context consumers can read a stale
+    nodeSize ref (LSN-017-family). Latent staleness window.
+  dedup_status: net_new
+  distinct_from: DOC-198
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    LineageProvider.tsx:67 — add nodeSize (or titleHeight + oddrnHeight) to the
+    providerValue useMemo deps. DOC-198 flagged this as a substrate latent-bug note but
+    explicitly did NOT file a code-side item; this is the net-new code-side finding.
+- hypothesis_id: H-011
+  severity: LOW
+  one_line: |-
+    DEGLineageLayouter useLayoutEffect deps array is `[]` (DEGLineageLayouter.tsx:56);
+    correctness depends on incidental re-mount via setIsLayouted(false), not on the
+    effect's own contract. Latent regression risk (LSN-017-family).
+  dedup_status: net_new
+  distinct_from: DOC-198
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    DEGLineageLayouter.tsx:56 — deps array should be [nodes, edges, full] to make the
+    re-layout contract explicit and independent of the parent's re-mount behaviour.
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: |-
+    Compact mode on the Hierarchy canvas hides the DEG-Items drill-in button — the
+    DEG-membership navigational affordance is silently lost on a density toggle.
+  dedup_status: already_tracked
+  tracked_as: DOC-198
+  recommended_log_as: "documented (DOC-198 Facet 2, status: done; live-verified 2026-06-03)"
+- hypothesis_id: H-006
+  one_line: |-
+    Compact->Full on a dense Hierarchy graph enlarges node rects without re-spacing
+    them; nodes can overlap. (Documented as a known limitation, not fixed.)
+  dedup_status: already_tracked
+  tracked_as: DOC-198
+  recommended_log_as: "documented (DOC-198 AC dense-graph warning, status: done; live-verified 2026-06-03)"
+- hypothesis_id: H-003
+  one_line: |-
+    One label "Compact/Full", two subsystem behaviours (DEG re-layout vs Hierarchy
+    re-render-only) — mental model does not transfer between canvases.
+  dedup_status: already_tracked
+  tracked_as: DOC-198
+  recommended_log_as: "documented (DOC-198 Facet 1, status: done; live-verified 2026-06-03)"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP
+# candidate. This feature has ZERO tests at any layer: no unit tests in the Lineage UI
+# component tree (Glob), no view-mode spec in odd-platform/tests/features/ (only tags /
+# search / owners / activity / filters exist), and IT-029 validates [F-005] (lineage
+# graph RENDERING) NOT the F-186 view-mode toggle. Every confirmed promise is therefore a
+# hand-proven-but-unguarded promise — the exact LSN-030 hole.
+- use_case_id: F-186-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Compact/Full choice round-trips through the `?full=` URL param (survives reload, shareable)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-1)"
+  proposed_test: |-
+    Unit (RTL): render DEGLineageControls + LineageControls, click Compact, assert
+    setQueryParams called with full:false; click Full, assert full:true; assert
+    selectedTab derives from the `full` query param on mount.
+- use_case_id: F-186-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "Toggling on a DEG canvas re-runs layout (spinner + re-pack)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-2)"
+  proposed_test: |-
+    Unit (RTL): click view toggle in DEGLineageControls; assert setIsLayouted(false)
+    fired. Integration (Playwright, e2e:specs): open a DEG-lineage canvas, toggle mode,
+    assert the "Loading lineage" spinner appears then the graph re-renders.
+- use_case_id: F-186-UC-3
+  hypothesis_id: H-003
+  kind: render
+  promise: "Toggling on a Hierarchy canvas re-renders only (no spinner, no layout migration) — distinct from DEG."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-3)"
+  proposed_test: |-
+    Integration (Playwright): open a regular entity's Lineage tab, toggle mode, assert NO
+    "Loading lineage" spinner appears and node shapes change in place (the two-semantics
+    pin — directly guards the F-186 headline drift facet).
+- use_case_id: F-186-UC-4
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "A DEG node in Full mode exposes the clickable Items drill-in to its members."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-4)"
+  proposed_test: |-
+    Integration (Playwright): open a Hierarchy canvas containing a DEG node in Full mode;
+    assert the Items button renders with the member count; click it; assert the
+    GroupedEntitiesListModal opens listing members.
+- use_case_id: F-186-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "(BROKEN) A DEG node's Items drill-in stays reachable in Compact mode."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-5 — characterization/regression guard for the documented caveat)"
+  proposed_test: |-
+    Integration (Playwright): same DEG node in COMPACT mode; assert the Items button is
+    NOT rendered (characterization pin of the documented caveat — RED if the affordance
+    is later restored, prompting a DOC-198 update).
+- use_case_id: F-186-UC-6
+  hypothesis_id: H-006
+  kind: render
+  promise: "(BROKEN on dense graphs) Compact->Full re-spaces Hierarchy nodes so they do not overlap."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-6); also tracked by PENDING-F-186-? probe-gate for the overlap threshold"
+  proposed_test: |-
+    Integration (Playwright) on a seeded dense Hierarchy graph (10+ siblings): toggle
+    Compact->Full and assert bounding-box overlap of sibling node rects (characterization
+    pin of the documented dense-graph limitation).
+- use_case_id: F-186-UC-7
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "A zero-member DEG node shows no misleading empty Items affordance."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-7)"
+  proposed_test: |-
+    Unit (RTL): render Info with nodesRelatedWithDEG=[] and full=true; assert no Items
+    label / no ItemsButton.
+- use_case_id: F-186-UC-8
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: "A no-external-name node in Compact mode shows the 'No Information' placeholder."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-8)"
+  proposed_test: |-
+    Unit (RTL): render Info with full=false, externalName=undefined; assert the
+    "No Information" placeholder text renders.
+- use_case_id: F-186-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "Compact drops the ODDRN block that Full shows (density promise)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-9)"
+  proposed_test: |-
+    Unit (RTL): render Info with full=false, externalName set; assert the info region is
+    empty (no ODDRN block); then full=true; assert the ODDRN block renders.
+- use_case_id: F-186-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "Hierarchy node sizing never reads a stale nodeSize on font/data churn."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-10); verified by probe PENDING-F-186-1"
+  proposed_test: |-
+    Probe PENDING-F-186-1 first (does a visible staleness window exist?). If yes, a
+    Playwright timing assertion; regardless, a unit test pinning that providerValue
+    identity changes when nodeSize changes once the deps array is fixed.
+- use_case_id: F-186-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "DEG-canvas re-runs layout on EVERY toggle, not just the first."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-186-UC-11); verified by probe PENDING-F-186-2"
+  proposed_test: |-
+    Probe PENDING-F-186-2 (repeated Compact<->Full toggles re-pack correctly each time),
+    then a Playwright characterization test pinning multi-toggle re-layout so the
+    empty-deps latent regression is guarded.
+
+### probes_emitted
+- probe_id: PENDING-F-186-1
+  hypothesis_id: H-010
+  probe_path: "(parallel-safe mode — not written; recorded here)"
+  expected_outcome: |-
+    Hypothesis verbatim: "When a user rapidly toggles font/data churn on the Hierarchy
+    canvas, the lineage node sizing stays consistent — the layout consumers always read
+    the current nodeSize, never a stale one (no flicker / no transiently-wrong spacing)."
+    Probe: stand up odd-platform locally (AUTH_TYPE=DISABLED, seed a Hierarchy lineage
+    graph), open the Lineage tab, drive rapid fullNames-toggle + font/data changes via
+    Playwright, and observe whether any frame renders nodes at the previous title/oddrn
+    spacing while sized for the new value (a stale-nodeSize window). Local-only
+    (docker-compose + Playwright). local_execution_blocked: false.
+- probe_id: PENDING-F-186-2
+  hypothesis_id: H-011
+  probe_path: "(parallel-safe mode — not written; recorded here)"
+  expected_outcome: |-
+    Hypothesis verbatim: "The DEG-canvas view-mode toggle re-runs layout reliably on
+    EVERY toggle (not just the first), so a user can switch Compact<->Full repeatedly and
+    always see correctly re-packed nodes." Probe: open a DEG-lineage canvas locally,
+    toggle Compact<->Full N times via Playwright, and assert each toggle shows the
+    "Loading lineage" spinner then re-packs node positions (pins the current re-mount-
+    driven behaviour so the empty useLayoutEffect deps array is guarded against a future
+    keep-mounted refactor). Local-only. local_execution_blocked: false.
+
+### validation_gaps
+- sidecar: "odd-platform ts react-component:DEGLineageControls (+ DEGLineageLayouter, LineageControls, LineageProvider, Info, DEGLineage)"
+  field_insufficient: |-
+    sidecar: unresolved — NO substrate sidecar exists for any of the six contributing
+    Lineage React components (LSN-025 surface-coverage gap: these .tsx files were never
+    emitted as substrate nodes, so there is no node to enrich). This reflection was
+    grounded in direct source reads instead. This is the dominant gap.
+  proposed_refresh: |-
+    Extend the ui_components substrate extractor (or declare/raise the ceiling for the
+    React-component axis per Rule 20) to enumerate src/components/**/Lineage/**/*.tsx,
+    then run /enrich on these six nodes so future reflections trace through real sidecars
+    with Stress-Protocol Category C (orderings) + the dep-array findings already pinned.
+- sidecar: "feature-flow F-186 contributing_nodes[Info].note + primary_subject"
+  field_insufficient: |-
+    The Info.tsx note claims "Compact mode WITH externalName -> ODDRN-only block (lines
+    146-166)" and "Info.tsx:46-56". Source read (H-009) shows the ODDRN block is
+    `full`-gated (return full ? <ODDRN> : null), so Compact renders the info region as
+    NULL, not an ODDRN-only block. Also primary_subject records the Info path as
+    .../HierarchyLineage/Info.tsx whereas the actual path is
+    .../HierarchyLineage/ZoomableLineage/LineageGraph/Node/Info/Info.tsx.
+  proposed_refresh: |-
+    Correct the Info contributing-node note (Compact-with-externalName => null info
+    region, not ODDRN-only) and the primary_subject Info path on the next feature-flow
+    refresh. The behavioural conclusion (Compact hides detail; H-009 confirmed) is
+    unchanged — only the per-line description was imprecise.
+
+### doc_drift_findings
+# None — the live doc (DOC-198, verified 2026-06-03) is ACCURATE against the code:
+# it documents the two-semantics asymmetry, the dense-graph overlap as a known
+# limitation, and the Compact-hides-DEG-Items caveat. Convergent validation, not drift.
+[]
+
+## maintainer_notes

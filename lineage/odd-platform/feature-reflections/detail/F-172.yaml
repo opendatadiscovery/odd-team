@@ -1,0 +1,970 @@
+---
+feature_id: F-172
+pillar_anchored_id: P-08:F-017
+pillar: "P-08 Management & Administration"
+feature_name: |-
+  Admin Direct-Bind UserOwnerMapping Create — the Management → Associations
+  header's "Create association" affordance (OwnerAssociationsHeader, gated by
+  Permission.OWNER_RELATION_MANAGE) opens a modal (OwnerAssociationForm) that
+  lets an operator directly mint a user_owner_mapping row WITHOUT a PENDING
+  OwnerAssociationRequest. This is BRANCH C of the user→owner binding feature
+  (F-075 branches A self-request-and-approve, B DIRECT_OWNER_SYNC auto-approve).
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController.md
+  - odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
+  # The UI hops (OwnerAssociationsHeader, OwnerAssociationForm) and the service tier
+  # (OwnerAssociationRequestServiceImpl) have NO standalone enriched sidecar. The UI
+  # evidence is the feature-flow detail's hop-1/hop-2 chain blocks (slice-H ui-review,
+  # all marked sidecar: unresolved). The service-tier load-bearing claims are
+  # transcribed verbatim (with file:line) inside the OwnerAssociationRequestController
+  # class sidecar's coherence_notes + security + bugs blocks, and were confirmed
+  # against live source this invocation (Rule 8 single-line validation reads — see
+  # source_reads_for_validation below).
+source_reads_for_validation:
+  - file: "odd-platform-api/.../auth/util/SecurityConstants.java:155-162"
+    reason: |-
+      The feature-flow chain hop-3 INFERRED the endpoint as POST /api/user_owner_mapping
+      from the React hook name useCreateUserOwnerMapping. The actual SECURITY_RULES
+      entry is POST /api/owners/mapping gated by OWNER_RELATION_MANAGE (lines 155-158),
+      with the DELETE sibling /api/owners/mapping/{owner_id} on the same permission
+      (159-162). The endpoint path the sidecar inferred is WRONG; this read is
+      load-bearing for H-001/H-007 and is flagged for the next file-analyser refresh
+      to correct the chain hop-3 evidence + mint a UI-hook sidecar.
+  - file: "odd-platform-api/.../service/OwnerAssociationRequestServiceImpl.java:107-148"
+    reason: |-
+      The CENTRAL reversal of this feature's primary drift class. createUserOwnerMapping
+      (109-114) calls createManualAssociationRequest FIRST, THEN createRelation. The
+      manual path (131-148) stamps an OwnerAssociationRequestPojo with status=APPROVED
+      and calls createOwnerAssociationRequestWithActivity(association, isManual=true, ...)
+      at line 146 — which writes BOTH an owner_association_request row AND an
+      owner_association_request_activity row (REQUEST_MANUALLY_APPROVED). The admin
+      direct-bind is NOT audit-silent. Flagged for the next file-analyser refresh to
+      mint an OwnerAssociationRequestServiceImpl service sidecar.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      WebFetched THIS invocation (status 200). The live page has CHANGED since the
+      slice-H ui-review (2026-05-26) and the SR-20260527T1900Z scan: it now documents
+      ALL THREE write-paths explicitly, including "operators holding the
+      OWNER_RELATION_MANAGE permission see a Create association button" that "writes
+      the binding directly — there is no intermediate 'pending' state", AND a History
+      sub-tab where "All three write-paths are recorded here, not only the
+      request-approval path" with "Direct admin bindings appear as 'Approved' rows
+      attributed to the administrator who created them". This SUPERSEDES the feature-flow
+      facet `third_write_path_undocumented_in_user_owner_association_doc` and the
+      scanner finding F-172a (now STALE — the doc gap is closed). The live page does
+      NOT name the /api/owners/mapping endpoint (an API-reference detail, not a user-doc
+      gap). The doc's audit claim independently CONFIRMS the source-derived audit reality.
+hypothesis_summary:
+  total: 11
+  confirmed: 5
+  contradicted: 2
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-005
+    severity: HIGH
+    one_line: |-
+      The operator can bind an Owner to a never-existed oidc-username — the form's
+      oidcUsername field has only required:true, no existence/format check — and
+      F-011's principal resolver will silently never match the dangling mapping, with
+      no diagnostic affordance anywhere.
+related_feature_flows:
+  - F-075  # Branches A + B of this same user→owner binding feature; THIS is branch C
+  - F-171  # Operator-Facing Triage Workflow (the approve/decline UI for branch A)
+  - F-173  # Active-tab Remove UserOwnerMapping — reverses the row this flow inserts (DELETE /api/owners/mapping/{owner_id})
+  - F-019  # Owner Lifecycle — the audit-silence sibling on the Owner side; getOrCreate side-door
+  - F-011  # Principal-to-Owner Resolution — consumer of the user_owner_mapping row this flow writes
+  - F-064  # User-Owner Association Discoverability — silent-empty pattern affecting the consumer side
+related_concepts:
+  - "User-Owner Mapping"
+  - "audit-log-presence-asymmetry-2-tier-audit-story"
+  - "provider-null-cross-mode-bleed"
+  - "read-collaborative-cross-owner-enumeration-posture"
+related_drift_classes:
+  # CONFIRMED from the feature-flow's drift_class_summary this reflection re-derived:
+  - composes_with_owner_get_or_create_side_door_admin_can_self_mint_arbitrary_owner_to_self
+  - form_lacks_validation_on_oidc_username_no_existence_check_no_format_constraint
+  - submit_success_no_toast_no_redirect_modal_silently_closes
+new_drift_classes_proposed:
+  # The load-bearing top-down finding: the feature-flow's PRIMARY drift class is itself wrong.
+  - admin_direct_bind_IS_audited_primary_drift_class_of_F172_is_contradicted_by_backend
+  - feature_flow_chain_hop3_endpoint_path_misinferred_from_react_hook_name
+  - live_doc_now_documents_all_three_write_paths_F172a_doc_gap_is_stale
+---
+
+# Admin Direct-Bind UserOwnerMapping Create — product-owner reflection
+
+## product_owner_narrative
+
+The **Associations** tab under Management is where an operator wires authenticated
+platform users to catalog-side **Owner** identities — the binding that lets
+owner-scoped behaviours (My Objects, owner-filtered alerts, ownership badges, and
+RBAC role resolution) resolve a logged-in principal to a team. Most of that wiring
+happens through a request-and-approve workflow, but this feature is the operator's
+**fast lane**: a "+ Create association" button in the tab header (visible only to
+operators holding `OWNER_RELATION_MANAGE` — a HIDE posture, the button is absent for
+everyone else) opens a small modal that binds a user to an owner in one shot, with no
+pending state and no second approver (per the feature-flow chain hop-1/hop-2,
+`OwnerAssociationsHeader.tsx:29-39` + `OwnerAssociationForm.tsx:22-26`, and confirmed
+verbatim in the live doc this invocation: "operators holding the `OWNER_RELATION_MANAGE`
+permission see a **Create association** button" that "writes the binding directly —
+there is no intermediate 'pending' state").
+
+A user interacts with it by filling three required fields: an **Owner** picked from an
+autocomplete over existing owners (`OwnerIdAutocomplete`), an **oidcUsername** typed as
+free text, and a **provider** picked from the active-provider list (`ProviderAutocomplete`)
+(per feature-flow hop-2, `OwnerAssociationForm.tsx:56-76`). On submit the form fires the
+`useCreateUserOwnerMapping` mutation, which the feature-flow hop-3 inferred targets
+`POST /api/user_owner_mapping`. That inference is **wrong**: the actual endpoint is
+`POST /api/owners/mapping`, gated by `OWNER_RELATION_MANAGE`, served by the SAME
+`OwnerAssociationRequestController` that serves the request-and-approve workflow (per
+`SecurityConstants.java:155-158`, read this invocation, and the controller sidecar's
+`coherence_notes[F-011]` enumerating `createUserOwnerMapping (POST /api/owners/mapping)`).
+
+The working part the product owner would foreground in a demo: the binding is real and
+immediate, but it is **speculative**. The operator picks an existing owner from the
+autocomplete, so they cannot mint a bogus owner from this form — but they type the
+username free-hand with no existence check against the IdP, so they can bind an owner to
+a username that does not yet exist (or never will), and that orphan mapping sits silent
+until the matching user logs in — if they ever do (per controller sidecar
+`bugs_limitations_corner_cases[2]`, `OwnerAssociationRequestServiceImpl.java:109-114`).
+The other demo caveat is the success affordance: on success the modal just closes — no
+toast, no redirect, no inline confirmation that the row exists (per feature-flow facet
+`submit_success_no_toast_no_redirect_modal_silently_closes`,
+`OwnerAssociationForm.tsx:108`).
+
+This feature is one of THREE write-paths into `user_owner_mapping`, and that is the
+integration story that matters: F-075 owns branch A (a user self-requests and an admin
+approves via the F-171 triage UI) and branch B (a `DIRECT_OWNER_SYNC` holder
+auto-approves their own request); this is branch C (an admin binds directly). The row
+this flow writes is consumed by F-011 (the principal-to-owner resolver that turns a
+login into an Owner) and reversed by F-173 (the Active-tab Remove that calls
+`DELETE /api/owners/mapping/{owner_id}`). The `ReactiveUserOwnerMappingRepositoryImpl`
+sidecar is the shared persistence floor for all three branches: `createRelation`
+soft-deletes any active row for the owner then inserts (clear-active-then-insert, not
+upsert), and the `(oidc_username, provider)` compound key with its provider-null collapse
+is the same cross-mode-bleed surface all three branches inherit.
+
+The product owner's headline caveat — and the load-bearing finding of this top-down pass
+— is that **the feature was modelled bottom-up as forensically silent, and it is not**.
+Slice-H's ui-review inferred audit silence from a UI signal (the form calls
+`useCreateUserOwnerMapping`, not `useCreateOwnerAssociationRequest`, so it looked like a
+different controller bypassing the request audit). The backend reality is the opposite:
+`createUserOwnerMapping` calls `createManualAssociationRequest` FIRST, which stamps an
+`owner_association_request` row with `status=APPROVED` and writes a
+`REQUEST_MANUALLY_APPROVED` activity row, THEN creates the mapping (per
+`OwnerAssociationRequestServiceImpl.java:109-148`, read this invocation). The admin
+direct-bind DOES show up in the History tab — and the live doc now says so explicitly
+("All three write-paths are recorded here … Direct admin bindings appear as 'Approved'
+rows attributed to the administrator"). The audit-silence premise the whole F-172 feature
+flow is built around is contradicted on both the code axis and the doc axis.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator with OWNER_RELATION_MANAGE submits the Create-association form,
+    a single active user_owner_mapping row is created binding the chosen Owner to the
+    typed (oidcUsername, provider), with no PENDING intermediate request the operator
+    must later approve.
+  derivation: |-
+    The button is gated by OWNER_RELATION_MANAGE (feature-flow hop-1); the form fires a
+    createUserOwnerMapping mutation (hop-2); the pillar's "process owner-association
+    requests" action plus the doc's "writes the binding directly — no pending state"
+    promise the immediate-bind semantics.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      POST /api/owners/mapping (NOT /api/user_owner_mapping as the chain inferred) is
+      gated by OWNER_RELATION_MANAGE at SecurityConstants.java:155-158. The handler
+      OwnerAssociationRequestServiceImpl.createUserOwnerMapping (109-114) runs
+      createManualAssociationRequest (which stamps status=APPROVED — no PENDING) then
+      userOwnerMappingService.createRelation, which via
+      ReactiveUserOwnerMappingRepositoryImpl.createRelation (line 41-51, plus the
+      service-layer outer clear) soft-deletes any active row for the owner AND for the
+      (username, provider) tuple, then inserts exactly one active row. The whole flow is
+      @ReactiveTransactional (line 108), so the multi-statement write is atomic.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "security.authorization_assertions"
+        cite: "SecurityConstants.java:155-158"
+        note: "POST /api/owners/mapping → OWNER_RELATION_MANAGE; read directly this invocation"
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "coherence_notes[F-011] + source read"
+        cite: "OwnerAssociationRequestServiceImpl.java:107-114"
+        note: "createUserOwnerMapping → createManualAssociationRequest(status=APPROVED) then createRelation; @ReactiveTransactional"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl
+        section: "invariants (clear-active-then-insert)"
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:41-51"
+        note: "exactly one active row per owner after the clear-active-then-insert"
+    severity: null
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When the operator opens the Owner field, they can only pick an EXISTING owner from
+    the autocomplete — the Create-association form cannot mint a brand-new Owner, so the
+    F-075-branch-B self-mint-then-self-bind hazard is NOT reachable from this UI.
+  derivation: |-
+    The ownerId field is an OwnerIdAutocomplete (existing-owner picker over /api/owners),
+    not a free-text input (feature-flow facet
+    composes_with_owner_get_or_create_side_door_...). A product owner would want to know
+    whether the F-075 mint side-door composes here.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The ownerId field is an OwnerIdAutocomplete (existing-owner picker), per
+      OwnerAssociationForm.tsx:56-61. Unlike the SELF-request flow (F-075), which routes
+      ownerName through OwnerService.getOrCreate (the mint side-door at
+      OwnerServiceImpl.java:38-42), the MANUAL flow takes a numeric ownerId and the
+      service calls ownerService.getOwnerDtoById(form.getOwnerId())
+      (OwnerAssociationRequestServiceImpl.java:113) — a lookup, not a getOrCreate. An
+      operator cannot mint an owner from THIS form. POSITIVE finding. (Caveat: an operator
+      can still create an owner from the Owners tab and then bind to it here, but those
+      are two explicit operator actions, not one silent chain.)
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "coherence_notes[F-011] + source read"
+        cite: "OwnerAssociationRequestServiceImpl.java:113"
+        note: "manual flow resolves ownerId via getOwnerDtoById (lookup), not getOrCreate (mint)"
+      - sidecar: unresolved-ui-hop
+        section: "feature-flow F-172 hop-2 + facet composes_with_owner_get_or_create_side_door"
+        cite: "OwnerAssociationForm.tsx:56-61"
+        note: "ownerId is OwnerIdAutocomplete (existing-owner picker), not free text"
+    severity: null
+    confidence: MEDIUM
+    confidence_note: "UI-side cite (OwnerIdAutocomplete) is from the unresolved feature-flow hop, not an enriched UI sidecar; the backend half (getOwnerDtoById not getOrCreate) is HIGH."
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When an operator submits the Create-association form, the binding event is recorded
+    in the Associations → History tab (an operator auditing "who bound Alice to Owner-X
+    and when" can reconstruct it), so the direct-bind affordance is NOT forensically
+    silent.
+  derivation: |-
+    The feature-flow's PRIMARY drift class asserts the opposite
+    (admin_direct_bind_bypasses_..._no_history_tab_entry). The pillar frames Management
+    as the operator's mutating surface; an audit-trail surface (the History tab) that
+    omits a whole write-path would be a load-bearing operator-mental-model break. This is
+    the negative-space hypothesis the top-down pass exists to test.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The feature-flow's drift class is WRONG. createUserOwnerMapping
+      (OwnerAssociationRequestServiceImpl.java:109-114) calls createManualAssociationRequest
+      (131-148) FIRST. That method builds an OwnerAssociationRequestPojo, sets
+      status=APPROVED + statusUpdatedBy=currentUser, and calls
+      createOwnerAssociationRequestWithActivity(association, isManual=true, user.username())
+      at line 146 — which writes an owner_association_request row (152) AND an
+      owner_association_request_activity row via createActivity(item, isManual, createdBy)
+      (153). The activity type for the manual path is REQUEST_MANUALLY_APPROVED (per
+      controller sidecar implicit_adrs[1] + coherence_notes[F-006], citing
+      OwnerAssociationRequestServiceImpl.java:205-221). The History tab consumes
+      owner_association_request_activity (feature-flow hop OwnerAssociationsResolved.tsx:30-35),
+      so the direct-bind IS visible there. The live doc independently confirms: "All three
+      write-paths are recorded here … Direct admin bindings appear as 'Approved' rows
+      attributed to the administrator." The contradiction is benign-direction: the system
+      is SAFER than the feature flow modelled.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "coherence_notes[F-006] + implicit_adrs[1] + source read"
+        cite: "OwnerAssociationRequestServiceImpl.java:131-148, 205-221"
+        note: "manual flow stamps APPROVED + writes REQUEST_MANUALLY_APPROVED activity row"
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "tests_coverage_semantic (History consumer)"
+        cite: "OwnerAssociationRequestController.java:47-53"
+        note: "getOwnerAssociationRequestActivityList serves the History tab from owner_association_request_activity"
+      - sidecar: doc-cross-ref
+        section: "WebFetch this invocation"
+        cite: "https://docs.opendatadiscovery.org/.../user-owner-association"
+        note: "'All three write-paths are recorded here … Direct admin bindings appear as Approved rows'"
+    operator_visible_failure: |-
+      No operator-visible FAILURE results from the contradicted-hypothesis being true —
+      the system behaves correctly (the bind is audited). The failure is at the ONTOLOGY
+      layer: the F-172 feature flow's primary_drift_class
+      (admin_direct_bind_bypasses_owner_association_request_audit_trail_no_history_tab_entry)
+      and the matching observed_vs_expected facet are FALSE, and the scanner finding
+      F-172a (doc-gap: "live /user-owner-association SILENT on the third write-path") is
+      now STALE because the live doc has since been updated to document all three
+      write-paths AND their History coverage. A maintainer triaging from the feature flow
+      alone would chase a non-existent audit-silence bug and re-file a closed doc-gap.
+      Routing this to a feature-flow correction is the load-bearing action.
+    severity: MEDIUM
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When the form's audit row is written for a manual bind, the row attributes the action
+    to the OPERATOR who performed the bind (statusUpdatedBy = the admin), not to the
+    target user being bound — so an auditor can tell who authorised the binding.
+  derivation: |-
+    A response/audit-field hypothesis: the audit row carries a statusUpdatedBy actor. The
+    feature-flow's audit-silence sibling F-019 + the pillar's audit framing make "who did
+    it" the load-bearing audit field. The live doc says bindings are "attributed to the
+    administrator who created them".
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      createManualAssociationRequest sets association.setStatusUpdatedBy(user.username())
+      where user is authIdentityProvider.getCurrentUser() — the acting operator
+      (OwnerAssociationRequestServiceImpl.java:134-141). createOwnerAssociationRequestWithActivity
+      is called with createdBy=user.username() (line 146), so the activity row's actor is
+      the operator, not the bound target. Matches the live doc's "attributed to the
+      administrator who created them". NOTE the cross-mode-bleed caveat from the repository
+      sidecar: the display-name JOIN for activity/owner rows
+      (ReactiveActivityRepositoryImpl / ReactiveOwnerAssociationRequestRepositoryImpl)
+      joins user_owner_mapping ON oidc_username only (no provider), so if two active rows
+      share a username under different providers the displayed owner can be
+      non-deterministic — but the statusUpdatedBy string itself is the operator's username,
+      recorded faithfully.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "source read"
+        cite: "OwnerAssociationRequestServiceImpl.java:134-146"
+        note: "statusUpdatedBy + createdBy = getCurrentUser().username() (the acting operator)"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl
+        section: "bugs_limitations_corner_cases (cross-provider display collision)"
+        cite: "ReactiveActivityRepositoryImpl.java:156-158"
+        note: "display-name JOIN on oidc_username only — non-deterministic owner display on cross-provider username collision (caveat, not actor corruption)"
+    severity: null
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When an operator types an oidcUsername that does NOT correspond to any real identity
+    in the IdP (a typo, or a user who has never logged in), the form rejects it (or at
+    least warns) rather than silently creating a binding that can never resolve.
+  derivation: |-
+    The oidcUsername field is free text with only required:true — no format / existence
+    validator (feature-flow facet form_lacks_validation_on_oidc_username_...). The
+    consumer F-011 silently never matches a dangling mapping. A product owner demoing
+    onboarding would expect at least a "no such user" guard.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No existence check exists anywhere on this path. The form's oidcUsername Controller
+      has only defaultValue:'' + rules:{required:true} (OwnerAssociationForm.tsx:62-76, per
+      feature-flow facet + scanner finding F-172b). The service createManualAssociationRequest
+      maps (oidcUsername, provider, ownerId) straight into an OwnerAssociationRequestPojo
+      and on to userOwnerMappingService.createRelation with NO AuthIdentityProvider.lookupUser
+      or LDAP/OIDC existence lookup (controller sidecar bugs[2],
+      OwnerAssociationRequestServiceImpl.java:109-114). The mapping is created speculatively.
+      The repository createRelation accepts any arbitrary string (its implicit_adrs[3]:
+      "accepts arbitrary strings including SQL-injectable input — sanitisation lives upstream
+      at jOOQ parameter-binding"). So a typo'd or non-existent username produces a permanent
+      active user_owner_mapping row that F-011's getAssociatedOwner
+      (ReactiveUserOwnerMappingRepositoryImpl.getAssociatedOwner, case-sensitive .eq() on
+      oidc_username) will only ever match if a real user logs in under EXACTLY that
+      case-sensitive username + provider.
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "bugs_limitations_corner_cases[2]"
+        cite: "OwnerAssociationRequestServiceImpl.java:109-114"
+        note: "no existence check on oidcUsername; mapping created speculatively"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl
+        section: "invariants (case-sensitive .eq) + implicit_adrs[3]"
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:116-127"
+        note: "getAssociatedOwner is case-sensitive .eq on oidc_username — a typo never matches"
+      - sidecar: unresolved-ui-hop
+        section: "feature-flow F-172 facet form_lacks_validation_on_oidc_username + scanner F-172b"
+        cite: "OwnerAssociationForm.tsx:62-76"
+        note: "oidcUsername field: required:true only, no format/existence validator"
+    operator_visible_failure: |-
+      (1) Silent orphan binding: an operator who fat-fingers the username (e.g. "alce"
+      instead of "alice", or wrong case "Alice" vs "alice") creates a permanent active
+      user_owner_mapping row that never resolves. The intended user logs in, gets NO owner
+      association, and their My Objects / My Alerts / owner-scoped RBAC roles all collapse
+      to empty (per F-064 silent-empty + the repository sidecar's "empty Flux silently
+      returned when user-owner_mapping is missing — no 401/403/404 signal"). (2) No
+      diagnostic affordance: the operator's History tab shows the bind as a successful
+      "Approved" row (per H-003), so the audit trail says the bind worked — there is no
+      surface anywhere that flags "this username does not match any known identity". (3)
+      Provider mismatch compounds it: an operator who picks the wrong provider from the
+      dropdown (e.g. binds alice@LOGIN_FORM when alice actually authenticates via
+      OAUTH2:github) creates a row that never matches the real login, AND under the
+      provider-null collapse a LOGIN_FORM/LDAP/S2S user named "alice" would silently inherit
+      it. (4) The orphan accumulates: the soft-delete-only persistence means a corrected
+      re-bind leaves the bad row soft-deleted, growing the table monotonically.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When the operator's submit succeeds, the UI confirms the binding worked (a success
+    toast, or a redirect/refresh of the Active tab showing the new row), so the operator
+    is not left guessing whether the action took effect.
+  derivation: |-
+    Rule 9 UX seed (convenience / intuitiveness): a mutating operator action with no
+    success affordance is a defect. The feature-flow facet
+    submit_success_no_toast_no_redirect_modal_silently_closes names exactly this.
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      On isSuccess the DialogWrapper closes (handleCloseSubmittedForm={isSuccess},
+      OwnerAssociationForm.tsx:108) — there is NO success toast and NO redirect to the
+      Active tab. The ONLY positive signal is the modal disappearing. Whether the Active
+      tab auto-refetches so the new row is visible without manual navigation depends on
+      whether useCreateUserOwnerMapping invalidates the OwnerAssociationRequestList rq
+      cache — and that hook's source was NOT Read (no enriched UI sidecar for the hook; the
+      feature-flow marks this ui_unverified). The feature-flow notes the cache is
+      invalidated on tab switch (OwnerAssociationsTabs.tsx:44-47), so an operator who
+      switches tabs WILL see the row — but an operator who stays put may not. So the
+      promise is PARTLY met (the bind succeeds and is reachable via tab switch) and partly
+      not (no immediate inline confirmation).
+    evidence:
+      - sidecar: unresolved-ui-hop
+        section: "feature-flow F-172 facet submit_success_no_toast_no_redirect_modal_silently_closes"
+        cite: "OwnerAssociationForm.tsx:108"
+        note: "close-on-success only; no toast/redirect"
+      - sidecar: unresolved-ui-hop
+        section: "feature-flow F-172 facet (rq invalidation)"
+        cite: "OwnerAssociationsTabs.tsx:44-47"
+        note: "rq cache invalidated on tab switch; the create-hook's own invalidation is ui_unverified"
+    operator_visible_failure: |-
+      The operator who binds a user and stays on the (now-closed-modal) header has no
+      on-screen confirmation that the row was written; if they do not switch tabs, the
+      Active list they were looking at may not show the new binding, and they may re-submit
+      (a no-op given clear-active-then-insert, but it adds a soft-deleted row + a second
+      REQUEST_MANUALLY_APPROVED audit entry, polluting the History tab). The convenience/
+      intuitiveness UX bar (Rule 9) is partly unmet.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When a caller without the OWNER_RELATION_MANAGE permission calls POST /api/owners/mapping
+    directly (bypassing the hidden UI button), the platform rejects the call — the binding
+    cannot be created without the permission.
+  derivation: |-
+    The UI HIDES the button for non-holders, but UI hiding is not authorization (cf F-171's
+    DISABLE-vs-HIDE distinction). The pillar P-09 RBAC model gates mutations; the real gate
+    must be at the SecurityRule layer, not just the button visibility.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      POST /api/owners/mapping has a SECURITY_RULES entry → OWNER_RELATION_MANAGE
+      (SecurityConstants.java:155-158, read this invocation). Unlike POST
+      /api/owner_association_request (the self-request endpoint, which has NO SecurityRule
+      and is reachable by any authenticated user per the controller sidecar's
+      known_security_gaps), the MANUAL-bind endpoint IS explicitly gated. The authorization
+      is real at the filter layer, not merely the hidden button. (Caveat re posture: under
+      auth.type=DISABLED the whole RBAC layer is bypassed platform-wide — but the manual
+      flow ALSO calls authIdentityProvider.getCurrentUser().switchIfEmpty(RuntimeException)
+      at OwnerAssociationRequestServiceImpl.java:134-135, so under DISABLED with no principal
+      it fails-fast at the service layer rather than binding anonymously — a POSITIVE finding
+      mirroring the controller sidecar's security.known_security_gaps[5].)
+    evidence:
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "security.authorization_assertions"
+        cite: "SecurityConstants.java:155-158"
+        note: "POST /api/owners/mapping → OWNER_RELATION_MANAGE (real filter-layer gate)"
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "security.known_security_gaps[5] + source read"
+        cite: "OwnerAssociationRequestServiceImpl.java:134-135"
+        note: "fail-fast on null current user (positive under DISABLED)"
+    severity: null
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When an operator reads the live user-owner-association documentation, the admin
+    direct-bind ("Create association") flow is documented, so an operator can discover this
+    third write-path without reading source.
+  derivation: |-
+    Doc-claim seed crossed with the feature-flow facet
+    third_write_path_undocumented_in_user_owner_association_doc and scanner finding F-172a,
+    both of which assert the doc is SILENT on this flow. A top-down pass must re-verify the
+    live doc rather than trust the (dated) facet.
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The live page (WebFetched this invocation, status 200) NOW documents the admin
+      direct-bind: "In the Associations tab header, operators holding the
+      OWNER_RELATION_MANAGE permission see a Create association button" that "writes the
+      binding directly — there is no intermediate 'pending' state and no second-administrator
+      approval", and it enumerates exactly three write-paths (self-request+approve,
+      self-request+auto-approve via DIRECT_OWNER_SYNC, admin direct-bind). The feature-flow
+      facet third_write_path_undocumented_in_user_owner_association_doc and scanner finding
+      F-172a are STALE — the doc gap has been closed since the 2026-05-27 scan. (The page
+      does NOT name the /api/owners/mapping endpoint, but that is an API-reference detail,
+      not a user-doc gap; the user-facing flow IS documented.) NOTE the related cross-feature
+      finding F-075c (a scanner finding on F-075) flagged the doc's ADMIN section as
+      conflating the user home-page widget with the admin direct-bind — that may also now be
+      resolved by the rewrite; out of scope for this reflection but flagged for the F-075
+      doc-gap triage.
+    evidence:
+      - sidecar: doc-cross-ref
+        section: "WebFetch this invocation"
+        cite: "https://docs.opendatadiscovery.org/.../user-owner-association"
+        note: "live doc now documents the Create-association admin direct-bind + all three write-paths"
+      - sidecar: unresolved-ui-hop
+        section: "feature-flow F-172 facet third_write_path_undocumented (now stale) + scanner F-172a"
+        cite: "feature-flows/detail/F-172.yaml:105-121"
+        note: "the facet asserting doc-silence is dated 2026-05-26/27, now superseded"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: |-
+      routes_to_finding is doc-gap-candidate in the STALE-CLOSURE sense: the open doc-gap
+      F-172a should be CLOSED, not authored. The functional_test_demand here is a doc-drift
+      regression guard (assert the live page keeps documenting all three write-paths).
+
+- id: H-009
+  hypothesis: |-
+    When a second operator concurrently binds a DIFFERENT user to the SAME owner that a
+    first operator is binding, exactly one active mapping survives and neither operator's
+    request silently corrupts the other (the clear-active-then-insert is race-safe).
+  derivation: |-
+    Negative-space concurrency seed. The repository sidecar's invariants explicitly flag
+    "No race-window-safe primitives" and a concurrent-INSERT uncovered_behaviour. A
+    product owner of a multi-admin Management surface would want to know the concurrent
+    behaviour.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The repository createRelation is clear-active-then-insert with NO @ReactiveTransactional
+      on the repository or UserOwnerMappingServiceImpl — BUT this MANUAL path enters through
+      OwnerAssociationRequestServiceImpl.createUserOwnerMapping which IS @ReactiveTransactional
+      (line 108), so each call is one transaction. The repository sidecar states the
+      partial unique indexes (unique_deleted_at_per_owner + the (oidc_username,provider)
+      key) are the load-bearing safety net and that a concurrent second INSERT "will raise
+      UniqueConstraintException via JooqReactiveOperations.translateDatabaseException". What
+      the sidecars CANNOT tell me without running it: whether two concurrent manual binds to
+      the same owner under R2DBC connection-pool isolation actually serialise correctly
+      (one commits, the other gets a 4xx from the constraint violation) or whether the
+      inner clear-active soft-deletes the first commit's row before the second's INSERT in a
+      lost-update window. The repository sidecar lists this exact scenario as an uncovered
+      CONCURRENCY behaviour with no test.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl
+        section: "invariants (No race-window-safe primitives) + tests_coverage_semantic (CONCURRENT INSERT)"
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:41-51 + 47-51"
+        note: "clear-active-then-insert; partial unique index is the only safety net; no concurrency test"
+    operator_visible_failure: |-
+      If the concurrent path is NOT safe: a lost binding (operator A binds Alice to Owner-X,
+      operator B simultaneously binds Bob to Owner-X; the partial unique index on owner_id
+      means only one active row may exist for Owner-X, so one operator's bind is silently
+      superseded) OR a partial-failure (the inner clear-active soft-deletes a row, then the
+      INSERT fails the constraint, leaving Owner-X with NO active mapping despite both
+      operators believing they bound a user) — though the enclosing @ReactiveTransactional
+      should roll the latter back. Severity is conditional on the probe outcome.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-172-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: "PENDING-F-172-1 (probe)"
+    local_execution_blocked: false
+
+- id: H-010
+  hypothesis: |-
+    When an operator deletes (soft-deletes) an Owner that has an active manual binding,
+    they are blocked OR the binding's audit history survives so an auditor can still
+    reconstruct who was bound to the now-deleted Owner.
+  derivation: |-
+    Negative-space + cross-feature seed (F-019 Owner Lifecycle / F-173 Remove). The
+    repository sidecar shows isOwnerAssociated cascade-blocks Owner delete, and
+    OwnerAssociationRequest orphan-rows (REFACTOR-427) are a known F-019/F-171 finding. A
+    product owner would want the teardown-constraint behaviour pinned.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      Owner delete IS cascade-blocked when an ACTIVE user_owner_mapping exists:
+      OwnerServiceImpl.delete calls userOwnerMappingRepository.isOwnerAssociated(id)
+      (ReactiveUserOwnerMappingRepositoryImpl.java:88-96) as one leg of a 3-leg Mono.zip and
+      returns HTTP 400 CascadeDeleteException if true (repository sidecar upstream_callers +
+      downstream_side_effects). So an operator CANNOT delete an Owner that currently has a
+      manual binding — the binding must be removed first (F-173). HOWEVER, per the controller
+      sidecar's REFACTOR-427 finding, the cascade-check has 3 legs (term-ownership,
+      ownership, user-owner-mapping) but NOT owner_association_request — so the
+      owner_association_request + activity rows this manual flow wrote are NOT part of the
+      cascade-block and become orphan rows pointing at a soft-deleted Owner once the mapping
+      is removed and the Owner is deleted. The audit HISTORY survives (rows are soft-deleted,
+      never hard-deleted, per the repository's soft-delete-only invariant), so an auditor can
+      still reconstruct the past bind — but the orphan request rows are an F-019/F-171 known
+      defect, not unique to this flow.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl
+        section: "upstream_callers (OwnerServiceImpl.delete) + downstream_side_effects (isOwnerAssociated)"
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:88-96"
+        note: "active mapping cascade-blocks Owner delete (HTTP 400)"
+      - sidecar: odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+        section: "bugs_limitations_corner_cases (REFACTOR-427)"
+        cite: "OwnerAssociationRequestServiceImpl.java:184-190 + F-019 detail"
+        note: "owner_association_request NOT in the cascade-block — orphan rows persist (F-019/F-171 finding)"
+    operator_visible_failure: |-
+      The teardown is mostly safe (active binding blocks delete; audit history survives the
+      soft-delete). The residual operator-visible defect is the F-019/F-171 orphan-row class:
+      after the mapping is removed and the Owner deleted, the owner_association_request +
+      REQUEST_MANUALLY_APPROVED activity rows this flow wrote point at a soft-deleted Owner,
+      and a subsequent list/activity read may surface a row whose owner_id no longer resolves
+      to a listable Owner. This is already tracked under F-019/F-171 (REFACTOR-427); not a
+      net-new F-172 defect.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-000-UI-GAP
+  hypothesis: |-
+    When an operator first lands on the Associations tab, the on-screen affordance makes it
+    understandable and convenient to bind a user to an owner — the operator can tell from
+    the screen what "Create association" does, that it bypasses the request flow, and how to
+    fill the three fields correctly (especially which provider to pick).
+  derivation: |-
+    Rule 9 mandatory UX seed (understandable / convenient / intuitive / customisable /
+    cross-device). The feature has a UI surface but NO enriched UI sidecar in the chain
+    (hops 1+2 are sidecar: unresolved), so the screen-level experience cannot be judged from
+    the substrate.
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The two UI hops (OwnerAssociationsHeader, OwnerAssociationForm) are marked
+      sidecar: unresolved in the feature flow — there is NO enriched UI sidecar capturing
+      the on-screen labels, the field help text, the provider-dropdown contents, the empty/
+      loading/error states, or the responsive behaviour. The button text is just "Create
+      association" with no in-UI explanation that it bypasses the request flow (feature-flow
+      facet third_write_path_..., OwnerAssociationsHeader.tsx:32-37). The provider field is a
+      ProviderAutocomplete but whether its options are labelled in a way that lets an
+      operator pick the RIGHT provider (load-bearing for H-005's orphan-binding hazard)
+      cannot be judged without the screen. This is the F-031/LSN-023 mistake to avoid: do
+      NOT pronounce the UX confirmed from the API alone.
+    evidence:
+      - sidecar: unresolved-ui-hop
+        section: "feature-flow F-172 hop-1 + hop-2 (sidecar: unresolved)"
+        cite: "OwnerAssociationsHeader.tsx:29-39 + OwnerAssociationForm.tsx:22-76"
+        note: "UI hops are unresolved; no enriched UI sidecar; screen-level UX unjudgeable from substrate"
+    operator_visible_failure: |-
+      Unknown without the screen — but H-005 (orphan binding on a wrong username/provider) is
+      a direct consequence of the form's affordances, so the UX quality of the provider
+      dropdown and the username field's helper/validation is load-bearing for a real data
+      defect, not cosmetic. Needs a ui-review pass (Playwright walk or sidecar enrichment) of
+      the OwnerAssociations subtree.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-172-2
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "PENDING-F-172-2 (ui-review / probe)"
+    local_execution_blocked: false
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |-
+    Create-association form binds an Owner to a free-text oidcUsername with no existence/
+    format check; a typo or wrong-provider pick creates a permanent orphan user_owner_mapping
+    that F-011 silently never matches, collapsing the intended user's owner-scoped views to
+    empty with no diagnostic anywhere.
+  dedup_status: already_tracked
+  tracked_as: PLT-024
+  distinct_from: null
+  recommended_log_as: null
+  proposed_fix_anchor: |-
+    OwnerAssociationRequestServiceImpl.createManualAssociationRequest (line 131-148) — add an
+    AuthIdentityProvider/IdP existence lookup before createRelation, OR surface a UI warning
+    on the oidcUsername field (OwnerAssociationForm.tsx:62-76). NOTE convergent validation:
+    the SR-20260527T1900Z scanner independently filed this as F-172b → PLT-024 candidate;
+    this top-down reflection re-derived it from the consumer (F-011) side, raising confidence.
+- hypothesis_id: H-006
+  severity: LOW
+  one_line: |-
+    Successful manual bind gives no success toast and no redirect/refresh of the Active tab
+    — the operator's only signal is the modal closing; staying on the tab risks a silent
+    re-submit that pollutes the History tab with a duplicate REQUEST_MANUALLY_APPROVED row.
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: null
+  recommended_log_as: PLT (UI-polish, LOW) — fold into a UI-affordance batch with F-064 silent-empty pattern
+  proposed_fix_anchor: "OwnerAssociationForm.tsx:108 — add a success toast + invalidate the OwnerAssociationRequestList rq cache on the create-hook so the Active tab refetches."
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    F-172's PRIMARY drift class (admin direct-bind bypasses the audit trail / no History
+    entry) is CONTRADICTED by the backend: the manual flow writes a REQUEST_MANUALLY_APPROVED
+    activity row and IS visible in the History tab; the live doc now documents this. The
+    feature flow's primary_drift_class + observed_vs_expected facet must be corrected and
+    scanner finding F-172a closed as stale.
+  dedup_status: net_new
+  tracked_as: null
+  recommended_log_as: |-
+    feature-flow correction on feature-flows/detail/F-172.yaml (flip primary_drift_class +
+    the matching facet to a confirmed-AUDITED finding); close findings/.../F-172a as stale.
+    This is an ontology-self-correction, not a code bug.
+- hypothesis_id: H-010
+  one_line: |-
+    Owner delete is cascade-blocked while an active manual binding exists (HTTP 400), and
+    audit history survives the soft-delete — but the owner_association_request + activity rows
+    this flow writes are NOT in the cascade-block (REFACTOR-427), leaving orphan rows after
+    Owner deletion.
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-427
+  recommended_log_as: null
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (use_case) becomes a missing-functional
+# TEST-GAP candidate. NO test exists anywhere for this feature (verified: Grep of
+# odd-platform/**/*Test*.java for createUserOwnerMapping|owners/mapping|REQUEST_MANUALLY_APPROVED
+# returned zero; Grep of odd-team integration-tests returned zero; no IT-NNN association test).
+# The confirmed promises (H-001/H-002/H-004/H-007) are the highest-value tests to write —
+# hand-proven behaviours with NO guard. This is the whole point of v0.3.0.
+- use_case_id: F-172-UC-H-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "OWNER_RELATION_MANAGE operator submits the form → exactly one active user_owner_mapping row, no PENDING request."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-001) (pending mint)"
+  proposed_test: |-
+    Integration (IT-NNN, Playwright UI→backend→DB): as an OWNER_RELATION_MANAGE operator,
+    open Management → Associations → Create association, pick an existing owner + type a
+    username + pick a provider, submit; assert exactly one active row in user_owner_mapping
+    (deleted_at IS NULL) for that owner and NO owner_association_request row in PENDING status.
+    Alternatively @WebFluxTest on POST /api/owners/mapping asserting 200 + one active mapping.
+- use_case_id: F-172-UC-H-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "The Owner field only accepts an existing owner (lookup, not getOrCreate) — no owner mint from this form."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-002) (pending mint)"
+  proposed_test: |-
+    Service test: createUserOwnerMapping with a non-existent ownerId returns not-found / errors
+    (getOwnerDtoById path), proving the manual flow does NOT mint an owner unlike the
+    self-request getOrCreate path.
+- use_case_id: F-172-UC-H-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "A manual bind writes a REQUEST_MANUALLY_APPROVED activity row visible in the History tab (the bind is audited)."
+  verdict: contradicted   # (contradicts the feature-flow's silence drift; the AUDITED behaviour is the truth)
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-003) (pending mint) — regression guard that the audit row IS written"
+  proposed_test: |-
+    Service/integration test: after createUserOwnerMapping, assert an owner_association_request
+    row with status=APPROVED AND an owner_association_request_activity row typed
+    REQUEST_MANUALLY_APPROVED with status_updated_by = the acting operator. This pins the
+    audited behaviour and guards against a regression to actual audit-silence.
+- use_case_id: F-172-UC-H-004
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "The audit row attributes the bind to the acting OPERATOR (statusUpdatedBy), not the bound target."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-004) (pending mint)"
+  proposed_test: "Assert the REQUEST_MANUALLY_APPROVED activity row's status_updated_by equals the authenticated operator's username, not form.oidcUsername."
+- use_case_id: F-172-UC-H-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "A non-existent / typo'd oidcUsername is rejected or warned, not silently bound."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-005) (pending mint) — regression guard for the PLT-024 fix"
+  proposed_test: |-
+    After the PLT-024 fix lands: createUserOwnerMapping with a username not present in the
+    IdP returns a 4xx and writes NO mapping. Until the fix: a characterization-pin asserting
+    the CURRENT behaviour (a dangling row IS created) so the change surfaces explicitly.
+- use_case_id: F-172-UC-H-006
+  hypothesis_id: H-006
+  kind: render
+  promise: "Successful submit confirms the bind on-screen (toast or Active-tab refresh)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-006) (pending mint) — for the unmet part (no toast/refresh)"
+  proposed_test: "Playwright: after submit, assert a success toast appears OR the Active tab shows the new row without a manual tab switch."
+- use_case_id: F-172-UC-H-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "POST /api/owners/mapping without OWNER_RELATION_MANAGE is rejected (real RBAC gate, not just hidden UI)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-007) (pending mint)"
+  proposed_test: |-
+    SecurityRules contract test (cf AdrSecurityRulesContractTest pattern used for F-075 H-004):
+    assert POST /api/owners/mapping + DELETE /api/owners/mapping/{owner_id} resolve to
+    OWNER_RELATION_MANAGE; and a @WebFluxTest with a principal lacking the permission gets 403.
+- use_case_id: F-172-UC-H-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "The live user-owner-association doc documents the admin direct-bind / all three write-paths."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-008) (pending mint) — doc-drift regression guard (LOW)"
+  proposed_test: "Doc-link check (live-site verification harness): assert the page enumerates all three write-paths + the History audit coverage; close the stale F-172a doc-gap."
+- use_case_id: F-172-UC-H-009
+  hypothesis_id: H-009
+  kind: resolve-later
+  promise: "Concurrent manual binds to the same owner serialise safely (one survives, no lost-update / no orphaned no-mapping state)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-172-1 (probe)"
+  proposed_test: "Concurrency probe (Testcontainers + local Postgres): two simultaneous POST /api/owners/mapping to the same ownerId; assert one active mapping + the other 4xx (constraint), and never zero active mappings."
+- use_case_id: F-172-UC-H-010
+  hypothesis_id: H-010
+  kind: teardown-constraint
+  promise: "Owner with an active manual binding cannot be deleted; audit history survives soft-delete."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-172-UC-H-010) (pending mint) — for the cascade-block half (orphan-row half is REFACTOR-427)"
+  proposed_test: "DELETE /api/owners/{id} for an owner with an active mapping returns 400 CascadeDeleteException; the soft-deleted mapping + activity rows remain queryable."
+- use_case_id: F-172-UC-H-000-UI-GAP
+  hypothesis_id: H-000-UI-GAP
+  kind: render
+  promise: "The on-screen Create-association affordance is understandable/convenient (Rule 9 UX)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-172-2 (ui-review / probe)"
+  proposed_test: "ui-review pass + Playwright walk of the OwnerAssociations subtree; enrich OwnerAssociationsHeader + OwnerAssociationForm sidecars (resolves the API-only validation gap)."
+
+### probes_emitted
+# PARALLEL-SAFE MODE: probes recorded here only (no P-NNN files created).
+- probe_id: PENDING-F-172-1
+  hypothesis_id: H-009
+  emitted_by: feature-reflector
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  hypothesis: |-
+    When a second operator concurrently binds a DIFFERENT user to the SAME owner that a
+    first operator is binding, exactly one active user_owner_mapping row survives and
+    neither operator's request silently corrupts the other (clear-active-then-insert under
+    R2DBC connection-pool isolation is race-safe; the partial unique index
+    unique_deleted_at_per_owner is the safety net). Expected outcome: one bind commits, the
+    other surfaces a UniqueConstraintException-derived 4xx; the owner is NEVER left with zero
+    active mappings. Run locally via Testcontainers + local Postgres, two concurrent
+    POST /api/owners/mapping calls to the same ownerId.
+- probe_id: PENDING-F-172-2
+  hypothesis_id: H-000-UI-GAP
+  emitted_by: feature-reflector
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  hypothesis: |-
+    When an operator lands on the Associations tab, the on-screen Create-association
+    affordance is understandable and convenient (Rule 9 UX): the button conveys it bypasses
+    the request flow, the three fields have adequate labels/help, and the ProviderAutocomplete
+    lets the operator pick the correct provider (load-bearing for the H-005 orphan-binding
+    hazard). Expected outcome: a ui-review pass / local Playwright walk of the OwnerAssociations
+    subtree enriches the OwnerAssociationsHeader + OwnerAssociationForm sidecars and resolves
+    whether the UX adequately prevents the wrong-username/wrong-provider data defect.
+
+### validation_gaps
+# Rule 9 — the feature has a UI surface but NO enriched UI hop in the chain. This reflection
+# is therefore API/backend-only for the screen-level experience. This is the FIRST output
+# per Rule 9 and is recorded as the top validation gap.
+- sidecar: "feature-flow F-172 hop-1 (ui-component:OwnerAssociationsHeader) + hop-2 (ui-component:OwnerAssociationForm)"
+  field_insufficient: |-
+    Both UI hops are sidecar: unresolved — there is NO enriched UI sidecar for the
+    Create-association button or the modal form. The reflection can judge the backend
+    write-path, the authorization, and the audit behaviour with HIGH confidence (controller +
+    repository sidecars + this-invocation source reads), but it CANNOT judge what the operator
+    experiences on screen: the button's discoverability, the field labels/help, the provider
+    dropdown contents, the empty/loading/error states, the success affordance, or responsive
+    behaviour. Per Rule 9, this reflection does NOT pronounce the user-facing UX confirmed
+    from the API alone (the F-031/LSN-023 mistake). H-006 and H-000-UI-GAP carry the
+    consequences.
+  proposed_refresh: |-
+    Run a ui-review pass on odd-platform-ui/.../Management/OwnerAssociations/ (the
+    OwnerAssociationsHeader + OwnerAssociationForm + the useCreateUserOwnerMapping hook) and
+    mint enriched UI sidecars, then re-reflect. The hook's rq-cache-invalidation behaviour
+    (needed to close H-006) and the provider-dropdown labelling (load-bearing for H-005) are
+    the two highest-value captures.
+- sidecar: "OwnerAssociationRequestServiceImpl (service tier)"
+  field_insufficient: |-
+    The service tier OwnerAssociationRequestServiceImpl has NO standalone enriched sidecar.
+    Its load-bearing behaviour (createUserOwnerMapping → createManualAssociationRequest →
+    REQUEST_MANUALLY_APPROVED activity write) is captured only as cross-references inside the
+    OwnerAssociationRequestController class sidecar, and was confirmed this invocation by
+    direct source reads (lines 107-148). The bottom-up pipeline never minted a service sidecar
+    for this load-bearing service.
+  proposed_refresh: |-
+    Mint a file-analyser sidecar for OwnerAssociationRequestServiceImpl so the audit-emission
+    behaviour, the cascade-cancel fan-out, and the manual-vs-self-request branching are
+    first-class enriched facts rather than controller-sidecar cross-references.
+- sidecar: "feature-flow F-172 chain hop-3"
+  field_insufficient: |-
+    The chain hop-3 INFERRED the endpoint as POST /api/user_owner_mapping from the React hook
+    name. The actual endpoint is POST /api/owners/mapping (SecurityConstants.java:155-158,
+    read this invocation; corroborated by the controller sidecar). The inferred path is wrong
+    and the chain's terminal_side_effect + hop-3 evidence should be corrected.
+  proposed_refresh: "Correct feature-flows/detail/F-172.yaml hop-3 evidence + terminal_side_effect to POST /api/owners/mapping; the scanner SR-20260527T1900Z already flagged this in ui_unverified_resolved_this_scan."
+
+### doc_drift_findings
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: |-
+    (CURRENT, WebFetched 2026-06-03) The page documents the admin "Create association" button
+    gated by OWNER_RELATION_MANAGE, that it "writes the binding directly — no pending state",
+    AND a History sub-tab where "All three write-paths are recorded here … Direct admin
+    bindings appear as 'Approved' rows attributed to the administrator". All three write-paths
+    are enumerated.
+  code_does: |-
+    Matches the code (POST /api/owners/mapping → OWNER_RELATION_MANAGE; createUserOwnerMapping
+    writes status=APPROVED + REQUEST_MANUALLY_APPROVED activity). The doc is now ACCURATE.
+  recommended_log_as: |-
+    CLOSE the stale doc-gap (scanner finding F-172a in
+    findings/docs-coverage-undocumented-features/2026-05-27-batch-9.md) — the doc has been
+    updated since the 2026-05-27 scan and now covers the third write-path + its audit. This is
+    a doc-gap CLOSURE, not a new doc-gap. (Cross-feature: F-075c flagged the doc's admin
+    section as conflating the user widget with the admin direct-bind; re-verify whether the
+    rewrite also resolved that — out of scope here, flagged for F-075 doc triage.)
+
+## maintainer_notes
+
+<!-- preserved across refreshes — only block the maintainer hand-edits -->

@@ -1,0 +1,893 @@
+---
+feature_id: F-154
+pillar_anchored_id: P-06:F-007
+pillar: P-06 Data Glossary
+feature_name: |-
+  Term Create / Edit Form — the dialog mounted from "Add term" CTA
+  (TermSearchHeader) and "Edit" CTA (TermDetailsHeader). Carries client-side
+  duplicate detection, no error-path handling for backend failures,
+  Markdown definition editor (XSS surface), and an invalidate-by-undefined-key
+  bug in create mode.
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__service__service__TermServiceImpl.md
+  # hop-1 ui-component TermsForm has NO dedicated sidecar (chain marks it `unresolved`);
+  # its claims are read from the F-154 feature-flow `observed_vs_expected.facets[]` +
+  # `chain[].evidence` (TermsForm.tsx:31-219), which a UI-walk authored at ui-review-2026-05-26.
+  # TermSearchHeader / TermDetailsHeader (the two CTA mount points) also have no sidecar.
+contributing_facets_read:
+  - "F-154 feature-flow facets: client_side_duplicate_check_loads_1000_terms_in_memory"
+  - "F-154 feature-flow facets: no_error_handler_on_dispatch_chain_silent_failure_on_backend_reject"
+  - "F-154 feature-flow facets: query_client_invalidate_by_undefined_termid_in_create_mode"
+  - "F-154 feature-flow facets: definition_markdown_editor_xss_surface_extension_f_004"
+  - "F-154 feature-flow facets: namespace_create_via_namespace_autocomplete_bypass_at_authoring_time"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Cross-referenced via the TermServiceImpl sidecar's docs_link_semantic block
+      (WebFetched 2026-05-19, status 200, content cross-checked against local clone
+      documentation/docs/data-glossary/business-glossary.md:1-141). The page describes
+      the Business Glossary feature this dialog authors but does NOT show the term
+      create/edit form, does NOT name the Markdown definition field as an HTML/JS
+      surface, does NOT name the namespace-autocomplete soft-create behaviour, and
+      does NOT document the seven TERM_* permissions in relation to NAMESPACE_CREATE.
+      Documentation is a downstream cross-reference here, not the source of intent —
+      intent is reasoned from the endpoint shape, the DTO/form-field names, and the
+      P-06 pillar mission. This reflection did not run a fresh WebFetch (no new doc URL
+      beyond what the sidecar already verified); the doc-claim seeds below are anchored
+      on the sidecar's recorded fetch.
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 12
+  confirmed: 3
+  contradicted: 6
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-007
+    severity: HIGH
+    one_line: |-
+      The Markdown definition field a glossary author types into is the authoring
+      entry point for the F-004 stored-XSS family — a <script> payload pasted here
+      round-trips unsanitised and executes for every later viewer of the term.
+related_feature_flows: [F-002, F-024, F-056, F-004, F-155, F-151]
+related_concepts:
+  - term-create-edit
+  - client-side-validation-fragility
+  - markdown-xss-surface
+  - namespace-create-side-channel
+related_drift_classes:
+  - ui_pre_validation_fragile_at_scale
+  - ui_submit_chain_lacks_catch_silent_failure
+  - ui_cache_invalidation_uses_route_termid_in_create_mode
+  - stored_xss_surface_extends_at_authoring_time
+  - ui_namespace_autocomplete_authors_silent_namespace_creation
+new_drift_classes_proposed:
+  - term_create_edit_zero_test_coverage_all_four_axes_gap
+  - term_status_code_drift_controller_returns_200_not_spec_201_at_authoring_surface
+  - term_lifecycle_authoring_no_activity_audit_event_create_edit_invisible
+related_test_gaps: []
+---
+
+# Term Create / Edit Form — product-owner reflection
+
+## product_owner_narrative
+
+The **Term Create / Edit form** is where an operator actually authors the catalog's
+vocabulary — the single dialog that turns "I want a `finance/Customer` term" into a
+real Term entity in the Data Glossary (pillar P-06; `system-mission.md:182-198`
+"create a Term; assign owner / namespace; author rich description"). It is the
+authoring counterpart of F-024 (the Dictionary search surface that *finds* terms): a
+user opens it two ways — the **"Add term"** call-to-action on the Dictionary header
+(`TermSearchHeader`) for create mode, and the **"Edit"** call-to-action on a term's
+detail page (`TermDetailsHeader`) for edit mode (per F-154 feature-flow
+`discovered_from_entry_point` + `chain` hop-1, TermsForm.tsx:31-219). The same
+component serves both modes, branching on whether the route carries a `termId`.
+
+The user has three fields in their hands (TermsForm.tsx:31-219, per the F-154 UI-walk
+facets): a **Name** (required, non-whitespace), a **Namespace** entered through a
+`NamespaceAutocomplete` combo-box (required), and a **Definition** authored in a
+**Markdown editor** (required, non-whitespace, rendered via `<Markdown editor
+height={200}>` at TermsForm.tsx:168-186). On submit the form dispatches
+`createTerm` (`POST /api/terms`) or `updateTerm` (`PUT /api/terms/{term_id}`), which
+land in `TermController` → `TermServiceImpl.createTerm` / `updateTerm`
+(TermServiceImpl.java:99-117, 119-145, per the TermServiceImpl sidecar). Term-CRUD
+itself is correctly RBAC-gated by `TERM_CREATE` / `TERM_UPDATE` / `TERM_DELETE`
+(SecurityConstants.java:111, 174-176 — verified in the sidecar) — this dialog is NOT
+in the unguarded-linkage-path class that afflicts the term-to-entity endpoints.
+
+The working parts the operator perceives versus what the chain does are where this
+feature diverges. Before submit, the form fires a **client-side duplicate check** —
+on mount it fetches up to 1000 existing terms (`fetchTermsSearchResults({page:1,
+size:1000})`, TermsForm.tsx:71-75) and warns if the typed name collides
+(TermsForm.tsx:84-94). On submit it runs an `.unwrap().then(...)` chain with **no
+`.catch`** (TermsForm.tsx:100-111), then **invalidates a react-query cache slot keyed
+by the route `termId`** (TermsForm.tsx:105-108) and navigates to the new term's
+detail page. Each of these three mechanisms carries a defect the F-154 feature-flow
+already recorded (facets 1-3). Behind the Namespace combo-box, a *novel* namespace the
+user types flows to `namespaceService.getOrCreate(namespaceName)`
+(TermServiceImpl.java:103, 138) — the platform's documented `getOrCreate` soft-create
+pattern (rev-8/rev-19 UX-pattern ADR: a select-or-create combo-box is a deliberate
+affordance, not a side-door) — but the UI gives no signal that typing a new name will
+*create* a namespace, and the backend never consults `NAMESPACE_CREATE`.
+
+The integration story: this dialog feeds F-024 (the Dictionary search index refreshes
+via `updateSearchVectors` on every create/edit, TermServiceImpl.java:324-329), feeds
+F-056 (on create, `resolveUnhandledDescriptionMentions` drains any
+`[[namespace:term]]` mentions that other descriptions parked before this term existed,
+TermServiceImpl.java:116), and shares the F-004 stored-XSS surface (the Markdown
+definition is persisted verbatim and is a third Term-specific authoring entry point
+for that family). For a demo, the product owner would flag five edges a new customer
+will hit within their first week: a catalog past 1000 terms where the duplicate check
+silently goes blind; an edit-mode rename that collides with no warning at all; a
+backend rejection that leaves the dialog frozen with no error; a `<script>` in a
+definition that fires for every later viewer; and a TERM_CREATE-only operator who
+silently mints platform-wide namespaces by typing them. Every one of these is the gap
+between the promise the form makes and what the assembled chain delivers — and none of
+them has a single test of any kind (the F-154 test_matrix is all-GAP across unit /
+integration / performance / security).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator clicks "Add term" on the Dictionary header and fills Name +
+    Namespace + Definition with valid non-empty values, submitting creates a new Term
+    and navigates them to that term's detail page.
+  derivation: |-
+    Endpoint shape + form fields — TermsForm dispatches createTerm (POST /api/terms)
+    on submit with {name, namespaceName, definition}; on success navigates to
+    termDetailsPath(response.id). The pillar mission names "create a Term" as a primary
+    user action.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      TermsForm.tsx:100-111 dispatches createTerm and on `.then(response)` navigates to
+      the new term's detail path; the backend TermServiceImpl.createTerm
+      (TermServiceImpl.java:99-117) guards the (namespace, name) duplicate, getOrCreates
+      the namespace, parses the definition for [[ns:term]] mentions, INSERTs the term,
+      refreshes FTS vectors, and drains unhandled mentions. POST /api/terms is gated by
+      TERM_CREATE (SecurityConstants.java:111, verified in the TermServiceImpl sidecar
+      security block). The happy path works as the user expects.
+    evidence:
+      - sidecar: F-154 feature-flow chain hop-1
+        section: chain.evidence
+        cite: "TermsForm.tsx:100-111"
+        note: "dispatch(createTerm).unwrap().then(navigate to termDetailsPath(response.id))"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: concepts.operations.createTerm
+        cite: "TermServiceImpl.java:99-117"
+        note: "INSERT term + getOrCreate namespace + FTS refresh + resolve unhandled mentions"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: security.authorization_assertions
+        cite: "SecurityConstants.java:111"
+        note: "POST /api/terms IS properly gated by TERM_CREATE"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When an operator clicks "Edit" on a term's detail page, the form opens pre-filled
+    with that term's current Name, Namespace, and Definition.
+  derivation: |-
+    Form mode — TermsForm is dual-purpose; edit mode is entered when term?.id exists in
+    redux (per F-154 chain hop-1). A pre-filled form is the universal expectation for an
+    edit dialog and is consistent with the rest of the platform's edit modals.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Per F-154 feature-flow chain hop-1 (TermsForm.tsx:31-219): create mode when the
+      route has no termId, edit mode when term?.id exists in redux. The form is mounted
+      from TermDetailsHeader's "Edit" CTA with the term already loaded into redux state,
+      so the three Controller fields are populated from the existing term. This is the
+      standard react-hook-form defaultValues pattern; no contradiction surfaced in the
+      UI-walk.
+    evidence:
+      - sidecar: F-154 feature-flow chain hop-1
+        section: chain.evidence
+        cite: "TermsForm.tsx:31-219"
+        note: "dual-purpose dialog; edit mode when term?.id exists in redux"
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When an operator (in create mode) types a Name that already exists in the chosen
+    namespace, the form warns them client-side BEFORE they submit, so they never reach
+    a backend rejection.
+  derivation: |-
+    Endpoint shape + the explicit client-side duplicate detector — TermsForm fetches
+    existingTerms on mount specifically to pre-validate the name (TermsForm.tsx:71-75,
+    84-94). The product-owner intent of a pre-submit check is to spare the user a
+    server round-trip failure.
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The check works ONLY when the catalog has <= 1000 terms AND only in CREATE mode.
+      TermsForm.tsx:71-75 fetches with a hardcoded `size: 1000`; a catalog of 1001+
+      terms silently truncates the candidate set, so the 1001st+ term never participates
+      in the duplicate check and the detector returns no-match (false "name is free").
+      The check is also gated by `if (!term?.id)` (TermsForm.tsx:84), so EDIT mode does
+      no client-side collision check at all. The authoritative gate is the backend
+      (namespace,name) uniqueness guard at TermServiceImpl.java:107-113 — but the form
+      has no error path to surface that rejection (see H-005). So the promise holds for
+      small catalogs in create mode and breaks silently at scale and on rename.
+    evidence:
+      - sidecar: F-154 feature-flow facet client_side_duplicate_check_loads_1000_terms_in_memory
+        section: observed
+        cite: "TermsForm.tsx:71-75"
+        note: "hardcoded size:1000 fetch on mount — blind past 1000 terms"
+      - sidecar: F-154 feature-flow facet client_side_duplicate_check_loads_1000_terms_in_memory
+        section: observed
+        cite: "TermsForm.tsx:84"
+        note: "CREATE-mode-only gate `if (!term?.id)` — EDIT rename never checked"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: concepts.invariants
+        cite: "TermServiceImpl.java:107-113"
+        note: "backend (namespace,name) duplicate guard is the authoritative gate (case-insensitive)"
+    operator_visible_failure: |-
+      (i) On a mature catalog (>1000 terms), an operator typing a name that DOES already
+      exist gets no warning, submits, and hits an unhandled backend rejection that the
+      dialog swallows (H-005) — the term appears to silently fail to save. (ii) In edit
+      mode, renaming a term to collide with another in the same namespace produces no
+      client warning and the same swallowed backend rejection. (iii) The false "name is
+      available" signal actively misleads: an operator trusts the green check and is
+      surprised when Save does nothing.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When the duplicate-check fetch on mount is slow (large catalog), the form is still
+    usable promptly — the operator is not blocked waiting on a 1000-row fetch.
+  derivation: |-
+    Negative-space / performance — TermsForm.tsx:71-75 issues a size:1000 term fetch on
+    every mount; a senior product owner asks whether the authoring dialog blocks on it.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The F-154 feature-flow performance test_matrix names exactly this as uncovered:
+      "Form mount latency for catalog with 999 terms — measure size=1000 fetch wait."
+      Whether the form fields are interactable before the fetch resolves, or are gated
+      on it, is a render-timing question the static chain does not settle — it depends on
+      whether the duplicate-check effect blocks field render or runs in parallel. This
+      requires running the dialog against a seeded large catalog and observing
+      time-to-interactive. Locally executable (Playwright against a docker-compose
+      platform seeded with ~1000 terms).
+    evidence:
+      - sidecar: F-154 feature-flow facet client_side_duplicate_check_loads_1000_terms_in_memory
+        section: observed
+        cite: "TermsForm.tsx:71-75"
+        note: "size:1000 fetch on mount — latency impact unmeasured"
+    probe_id: PENDING-F-154-1
+    confidence: LOW
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "functional (gated on probe PENDING-F-154-1)"
+    local_execution_blocked: false
+
+- id: H-005
+  hypothesis: |-
+    When the backend rejects the submit (duplicate name 400, validation error, or
+    server 5xx), the operator sees an error message explaining why the term was not
+    saved.
+  derivation: |-
+    Negative-space + the existing Alert scaffold — every authoring dialog in the
+    platform is expected to report a failed save. TermsForm already has an Alert
+    component (TermsForm.tsx:50, 122-147) used for the client-side duplicate warning, so
+    a backend error has an obvious home.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The submit chain at TermsForm.tsx:100-111 is `dispatch(createTerm|updateTerm)
+      .unwrap().then(...)` with NO `.catch(...)`. When the backend rejects (a duplicate
+      name surfaces BadUserRequestException from TermServiceImpl, or any 4xx/5xx), the
+      promise chain rejects, the `.then` never runs, navigation never happens, and
+      nothing renders the error. The dialog stays open with the form filled and the
+      operator gets no feedback. This is the LSN-024-shaped silent-empty failure class
+      (cross-link F-064). The Alert component that could surface the error already exists
+      (TermsForm.tsx:50, 122-147) but is wired only to the client-side duplicate path.
+    evidence:
+      - sidecar: F-154 feature-flow facet no_error_handler_on_dispatch_chain_silent_failure_on_backend_reject
+        section: observed
+        cite: "TermsForm.tsx:100-111"
+        note: "dispatch chain with no .catch — backend rejection swallowed"
+      - sidecar: F-154 feature-flow facet no_error_handler_on_dispatch_chain_silent_failure_on_backend_reject
+        section: observed
+        cite: "TermsForm.tsx:50, 122-147"
+        note: "Alert scaffolding already present, only used for client-side duplicate"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: security.data_exposure
+        cite: "TermServiceImpl.java:110-111"
+        note: "backend returns BadUserRequestException 'Term already...' the UI never shows"
+    operator_visible_failure: |-
+      An operator who hits ANY backend rejection (the very duplicate the client check
+      missed at scale per H-003, a transient 5xx, a uniqueness race with another author)
+      clicks Save and nothing visible happens. The dialog does not close, no error
+      appears, the term is not created. They click Save again, get the same silence, and
+      conclude the feature is broken. There is no diagnostic path short of opening the
+      browser network tab. This compounds H-003: the two defects together mean a
+      large-catalog duplicate is invisible both before AND after submit.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When a new term is created, its detail page (and the data it depends on) shows the
+    just-saved values immediately — the operator does not see stale cache after the
+    navigate.
+  derivation: |-
+    Cache-correctness — TermsForm invalidates a react-query cache slot on success
+    (TermsForm.tsx:105-108) specifically so the destination page is fresh. The user
+    expects the term they just authored to display correctly.
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      TermsForm.tsx:105-108 calls `queryClient.invalidateQueries({queryKey: ['term',
+      termId]})` where `termId` comes from useTermsRouteParams() — the URL termId. In
+      CREATE mode the form is mounted from /termsearch/* where the route termId is
+      `undefined` (or NaN per the termsRoutes.ts parseInt propagation noted in F-024
+      batch ZH), so the invalidation fires for queryKey `['term', undefined]` — it
+      invalidates nothing relevant, OR pollutes a wrong slot. The newly-created term's
+      detail still renders correctly because the navigate to termDetailsPath(response.id)
+      triggers a fresh fetch on a NEW key — so the user-visible page is correct (the
+      promise holds for the rendered page), but the intended invalidation is a no-op and
+      `['term', undefined]` accumulates dead cache entries over repeated creates. In EDIT
+      mode the route termId IS defined, so the invalidation is correct there.
+    evidence:
+      - sidecar: F-154 feature-flow facet query_client_invalidate_by_undefined_termid_in_create_mode
+        section: observed
+        cite: "TermsForm.tsx:36"
+        note: "termId from useTermsRouteParams() — the URL termId"
+      - sidecar: F-154 feature-flow facet query_client_invalidate_by_undefined_termid_in_create_mode
+        section: observed
+        cite: "TermsForm.tsx:105-108"
+        note: "invalidate by route termId; undefined/NaN in CREATE mode"
+    operator_visible_failure: |-
+      The user-visible term-detail page is correct after create (the navigate refetches
+      on the real id), so the immediate UX is not broken — this is why the verdict is
+      partial, not contradicted. The latent failure is (i) accumulating dead
+      `['term', undefined]` cache entries across a session of multiple creates, and
+      (ii) any OTHER view depending on the create-time invalidation (e.g. a cached list)
+      is not refreshed in create mode. An operator creating several terms in a row and
+      switching between cached views may see one stale until a hard reload.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When an operator authors a term Definition, the Markdown they type is treated as
+    content — a pasted HTML/JS snippet is NOT executed as live script for later viewers
+    of the term.
+  derivation: |-
+    Response-shape / negative-space — the Definition is a <Markdown editor> field
+    (TermsForm.tsx:168-186) whose value round-trips to other users' screens when they
+    view the term. A senior product owner assumes authored rich text is sanitised before
+    it renders for a different user (the universal stored-XSS expectation).
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The definition field is `<Markdown {...field} editor height={200}>`
+      (TermsForm.tsx:183) which accepts arbitrary Markdown including raw HTML + <script>.
+      On submit the raw string round-trips through TermServiceImpl.createTerm /
+      updateTerm with no Jsoup.clean, no allowlist, no length cap (per the F-154 facet
+      definition_markdown_editor_xss_surface_extension_f_004 + the TermServiceImpl
+      sidecar's F-004 intersection finding). PLT-059 confirms the editor has no
+      rehype-sanitize. This dialog is the AUTHORING entry point for the third
+      Term-specific surface of the F-004 stored-XSS family: an operator with TERM_UPDATE
+      can plant a payload here and it executes for every authenticated viewer who later
+      opens the term. The mention-parser staging path compounds it (a [[<script>:foo]]
+      payload persists verbatim in *_unhandled_term staging rows per the TermServiceImpl
+      F-004-XSS-intersection finding, TermServiceImpl.java:67, 513-522).
+    evidence:
+      - sidecar: F-154 feature-flow facet definition_markdown_editor_xss_surface_extension_f_004
+        section: observed
+        cite: "TermsForm.tsx:168-186"
+        note: "Markdown editor with `editor` prop — accepts raw HTML/JS, no sanitiser"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "TermServiceImpl.java:67, 201-207, 513-522"
+        note: "F-004 stored-XSS intersection; raw definition persisted + staging-row payload persistence"
+    operator_visible_failure: |-
+      Stored XSS: an operator with TERM_UPDATE (or, via the description side-channel, a
+      lower-privileged user) pastes <script>...</script> or an onerror img payload into a
+      term definition; it is persisted verbatim; every authenticated user who opens that
+      term's detail page (or any data entity whose Terms section surfaces the mention)
+      executes the script in their session. Consequences span session-token theft,
+      catalog defacement, and the SQL-injection-token-exfiltration class already
+      confirmed exploitable elsewhere in the platform (PLT-109). This is the
+      highest-severity finding on the form because the authoring surface is exactly where
+      the payload enters.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When an operator with TERM_CREATE permission (but WITHOUT NAMESPACE_CREATE) types a
+    namespace name that does not yet exist into the Namespace combo-box and submits, the
+    platform tells them they cannot create a namespace (or the combo-box does not let
+    them type a novel one).
+  derivation: |-
+    Cross-pillar promise — namespaces are a Management (P-08) entity gated by
+    NAMESPACE_CREATE (system-mission.md P-08). A user with only the Glossary's
+    TERM_CREATE should not be able to mint a Management-tier entity. The NamespaceAuto-
+    complete combo-box is the control whose meaning this hypothesis tests.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The NamespaceAutocomplete (TermsForm.tsx:161-167) accepts a novel namespace name
+      the user types. On submit the string flows to TermServiceImpl.createTerm /
+      updateTerm → namespaceService.getOrCreate(namespaceName)
+      (TermServiceImpl.java:103, 138), which creates the namespace if it does not exist —
+      and NEVER consults NAMESPACE_CREATE. So a TERM_CREATE-only operator silently mints
+      a platform-wide namespace by typing it. The select-or-create combo-box backed by a
+      getOrCreate is itself a deliberate, legitimate UX pattern (rev-8/rev-19 ADR — NOT a
+      "side-door" in the LSN-023 sense), so the PATTERN is intended; the DEFECT is the
+      RBAC gap (no NAMESPACE_CREATE check on the create branch) plus the absent UI signal
+      that typing a new name will create one. This is tracked at the backend layer in
+      PLT-101 and at the form layer in PLT-059 (defect F-154e).
+    evidence:
+      - sidecar: F-154 feature-flow facet namespace_create_via_namespace_autocomplete_bypass_at_authoring_time
+        section: observed
+        cite: "TermsForm.tsx:161-167"
+        note: "NamespaceAutocomplete with no creation gate / no novel-input signal"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: security.known_security_gaps
+        cite: "TermServiceImpl.java:103, 138"
+        note: "NAMESPACE_CREATE bypass via getOrCreate on the term write path"
+    operator_visible_failure: |-
+      (i) RBAC bypass: an operator scoped to TERM_CREATE only mints platform-wide
+      namespaces (a Management-tier entity) merely by typing a new name — the namespace
+      taxonomy an admin curates can be polluted by any term author. (ii) Accidental
+      namespace creation: an operator who fat-fingers an existing namespace name
+      (`finace` for `finance`) silently creates a near-duplicate namespace with no
+      confirmation, fragmenting the term space. The combo-box looks like a pure selection
+      affordance, so neither consequence is anticipated by the user.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an operator creates a term whose definition contains a [[namespace:term]]
+    mention of a term that does not yet exist, and that mentioned term is later created,
+    the mention auto-links — and conversely, creating THIS term resolves any earlier
+    parked mentions of IT.
+  derivation: |-
+    Terminal side-effect — the F-154 feature-flow terminal_side_effect names
+    resolveUnhandledDescriptionMentions (TermServiceImpl.java:116) draining the staging
+    table on create (cross-time auto-link, F-056). A glossary author expects forward
+    references they typed to reconcile when the term arrives.
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      On createTerm, TermServiceImpl.java:116 calls resolveUnhandledDescriptionMentions,
+      which drains the *_unhandled_term staging rows whose (ns, name) matches the newly
+      created term and materialises real is_description_link=TRUE link rows
+      (TermServiceImpl.java:421-442, per the sidecar's unhandled-staging-with-auto-resolve
+      implicit ADR). This is the intended forward-compatibility behaviour: descriptions
+      authored before a term existed reconcile automatically when the term is created via
+      this form. The behaviour is confirmed in the chain but, per the TermServiceImpl
+      sidecar, has ZERO test coverage and is undocumented (F-056 / the data-glossary doc
+      page does not describe it).
+    evidence:
+      - sidecar: F-154 feature-flow terminal_side_effect
+        section: description
+        cite: "TermServiceImpl.java:116"
+        note: "resolveUnhandledDescriptionMentions on create — cross-time auto-link drain"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: implicit_adrs
+        cite: "TermServiceImpl.java:421-442"
+        note: "unhandled-mention staging auto-resolves on term-create (intentional)"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When an operator successfully creates or edits a term, the action is recorded in the
+    Activity feed so an auditor can later see who authored/changed which term and when.
+  derivation: |-
+    Pillar / cross-pillar promise — P-07 Active Platform Features positions the Activity
+    feed as the audit-trail surface; the glossary is a governance pillar. A senior
+    product owner assumes term authoring is auditable.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      createTerm, updateTerm, and delete carry NO @ActivityLog annotation, and the
+      ActivityEventTypeDto enum (ActivityEventTypeDto.java:3-31) defines no TERM_CREATED
+      / TERM_UPDATED / TERM_DELETED value at all — the audit-silence is schema-rooted,
+      not merely a service-side omission (per the TermServiceImpl
+      F-006-audit-silence-enum-rooted finding). Term LINK changes do emit
+      TERM_ASSIGNMENT_UPDATED, but term LIFECYCLE (the create/edit this form performs) is
+      structurally invisible in the Activity feed. An operator who deletes or renames a
+      term leaves no forensic trace.
+    evidence:
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: implicit_adrs
+        cite: "TermServiceImpl.java:99-117, 121-145, 154-165"
+        note: "createTerm/updateTerm/delete carry no @ActivityLog"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl.md
+        section: bugs_limitations_corner_cases
+        cite: "ActivityEventTypeDto.java:3-31"
+        note: "enum has no TERM_CREATED/UPDATED/DELETED — schema-rooted audit silence"
+    operator_visible_failure: |-
+      A governance operator auditing "who changed the glossary" sees term LINK events but
+      no term CREATE / EDIT / DELETE events. A renamed or deleted business term has no
+      activity-feed trace; reconstructing the change requires DB introspection. For a
+      data-governance product this is a real audit-completeness gap, though it is a
+      design-level decision (the enum is hand-curated) rather than a code bug — hence it
+      routes to a caveat/doc finding alongside the test demand.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When the form successfully creates a term, the HTTP response status is 201 Created
+    (the REST convention for a created resource), so API consumers and the generated
+    client treat it as a creation.
+  derivation: |-
+    Endpoint shape + doc-claim — POST /api/terms is a create operation; the OpenAPI spec
+    (per F-002 batch U) specifies 201. The form's API consumer (and any external
+    odd-api-consumer) expects the spec'd status.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      TermController.createTerm returns `.map(ResponseEntity::ok)` (TermController.java:74
+      per the F-154 chain hop-2a evidence + F-002 batch U facet
+      term_create_update_status_code_drift_controller_returns_200_spec_201) — it returns
+      HTTP 200, not the spec'd 201. updateTerm has the same drift. The UI form does not
+      depend on the distinction (it reads the body, not the status), so the form's UX is
+      unaffected — but an external odd-api-consumer coding against the OpenAPI contract
+      (expecting 201 on create) sees 200, and any client that branches on status code
+      misclassifies the create. This is a spec-vs-code drift, not a UI defect.
+    evidence:
+      - sidecar: F-154 feature-flow chain hop-2a
+        section: chain.evidence
+        cite: "TermController.java:74"
+        note: ".map(ResponseEntity::ok) returns 200; F-002 batch U status-code-drift facet"
+    operator_visible_failure: |-
+      An API consumer (odd-api-consumer audience) building against the published
+      Platform API spec expects 201 on POST /api/terms and gets 200; a strict client that
+      asserts 201 fails, and a client that branches create-vs-update on status code
+      misroutes. The UI is unaffected. Surfaces as a spec/doc drift the API-reference
+      page should either correct (document 200) or the controller should fix to 201.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: |-
+    When an operator submits the form with a blank or whitespace-only Name or
+    Definition, the form blocks the submit and tells them the field is required.
+  derivation: |-
+    Form fields — the F-154 chain hop-1 records Name as "required + non-whitespace" and
+    Definition as "required + non-whitespace". Required-field validation is the universal
+    expectation and is consistent across the platform's forms.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Per the F-154 feature-flow chain hop-1 (TermsForm.tsx:31-219): Name is required +
+      non-whitespace, namespaceName is required (NamespaceAutocomplete), Definition is
+      required + non-whitespace. These are react-hook-form field rules enforced before
+      the dispatch fires, so a blank/whitespace Name or Definition blocks submit and
+      surfaces the required-field message. Consistent with the platform's other authoring
+      dialogs. No contradiction surfaced; the gap is purely the absence of a test pinning
+      the whitespace-rejection edge.
+    evidence:
+      - sidecar: F-154 feature-flow chain hop-1
+        section: chain.evidence
+        cite: "TermsForm.tsx:31-219"
+        note: "Name + Definition required + non-whitespace; namespaceName required"
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: |-
+    Term Definition Markdown editor accepts <script> payloads — third Term-specific
+    authoring surface of the F-004 stored-XSS family; executes for every later viewer.
+  dedup_status: already_tracked
+  tracked_as: PLT-059
+  proposed_fix_anchor: |-
+    Add rehype-sanitize (allowlist) to the <Markdown editor> render + a length cap;
+    OR sanitise at storage/render in TermServiceImpl per F-004. PLT-059 defect 1.
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    NamespaceAutocomplete lets a TERM_CREATE-only operator silently mint platform-wide
+    namespaces (NAMESPACE_CREATE bypass) with no UI signal that a novel name creates one.
+  dedup_status: already_tracked
+  tracked_as: PLT-059
+  distinct_from: PLT-101
+  # PLT-059 (defect F-154e) is the FORM-layer finding (the combo-box + UI signal);
+  # PLT-101 is the BACKEND-layer finding (getOrCreate on POST/PUT /api/terms without
+  # NAMESPACE_CREATE). Same root behaviour, two tracked loci — both corroborated here.
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: |-
+    Client-side duplicate check is blind past 1000 terms (hardcoded size:1000) and
+    absent in EDIT mode — false "name available" signal that breaks silently at scale.
+  dedup_status: already_tracked
+  tracked_as: PLT-059
+  proposed_fix_anchor: |-
+    Replace the size:1000 in-memory check with a server-side
+    GET /api/terms/check-name-availability called on blur (PLT-059 recommendation);
+    apply in both create AND edit mode.
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    Submit dispatch chain has no .catch — backend rejection (duplicate/validation/5xx)
+    is swallowed; dialog stays open with no error; LSN-024 silent-empty class.
+  dedup_status: already_tracked
+  tracked_as: PLT-059
+  proposed_fix_anchor: |-
+    Add .catch((e) => setError(serializeBackendError(e))) and render in the existing
+    Alert (TermsForm.tsx:50, 122-147). PLT-059 defect 4.
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: |-
+    queryClient.invalidateQueries keyed by route termId is undefined/NaN in CREATE mode
+    — invalidates nothing / pollutes ['term', undefined]; dead cache entries accumulate.
+  dedup_status: already_tracked
+  tracked_as: PLT-059
+  proposed_fix_anchor: |-
+    Use response.id for the invalidation key in create mode, or scope to the
+    search-results list key. PLT-059 defect 5.
+
+### caveat_candidates
+- hypothesis_id: H-010
+  one_line: |-
+    Term create/edit/delete produce NO Activity-feed event (ActivityEventTypeDto has no
+    TERM_CREATED/UPDATED/DELETED) — term lifecycle is structurally un-audited.
+  dedup_status: already_tracked
+  tracked_as: DOC-199
+  # DOC-199 surfaced in the F-154 / data-glossary doc-gap sweep; the TermServiceImpl
+  # sidecar's doc_drift_findings also enumerate the Term-lifecycle audit-silence DOC-NNN.
+  recommended_log_as: "caveat in data-glossary/business-glossary.md (audit-scope note)"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the bridge confirmed/partial promises were previously losing on
+# routes_to_finding:none. F-154 ships with test_matrix all-GAP (unit/integration/
+# performance/security) and related_test_gaps:[] — the F-056-class hole: a behaviourally
+# complex, security-relevant authoring feature with NO functional test obligation. Every
+# one of the 12 promises is UNVERIFIED. The bug-class promises (H-003/H-005/H-006/H-007/
+# H-008) ALSO carry a regression-guard test demand co-existing with their PLT-059/101 bug
+# routing; the confirmed promises (H-001/H-002/H-009/H-012) carry a pure functional demand;
+# H-004 is gated on a probe; H-011 is a spec/doc drift demand.
+- use_case_id: F-154-UC-H001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Add term with valid Name/Namespace/Definition creates the term and navigates to its detail page."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H001"
+  proposed_test: |-
+    IT (Playwright, reuse odd-platform/tests harness): open Dictionary, click Add term,
+    fill the three fields, submit, assert navigation to term detail + the term renders.
+- use_case_id: F-154-UC-H002
+  hypothesis_id: H-002
+  kind: edit-reconcile
+  promise: "Edit CTA opens the form pre-filled with the term's current Name/Namespace/Definition."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H002"
+  proposed_test: "IT: open a term detail page, click Edit, assert the three fields are pre-populated from the term."
+- use_case_id: F-154-UC-H003
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "Typing an existing name in create mode warns the operator before submit (and the check works at scale + in edit mode)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H003 (regression guard for PLT-059 duplicate-check fix)"
+  proposed_test: |-
+    Unit (RTL): mount TermsForm in create mode with a mocked existingTerms set, type a
+    colliding name, assert the warning Alert renders; PIN the >1000 blind spot and the
+    EDIT-mode no-check as characterization until PLT-059 lands.
+- use_case_id: F-154-UC-H004
+  hypothesis_id: H-004
+  kind: render
+  promise: "The form is interactable promptly even when the size:1000 mount fetch is slow on a large catalog."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H004 (gated on probe PENDING-F-154-1)"
+  proposed_test: "Performance probe: seed ~1000 terms, open the form, measure time-to-interactive vs fetch resolution."
+- use_case_id: F-154-UC-H005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "A backend rejection on submit surfaces an error message; the dialog does not silently freeze."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H005 (regression guard for PLT-059 .catch fix)"
+  proposed_test: |-
+    Unit (RTL): mock dispatch to reject with a 400; assert the Alert renders the error
+    AND the dialog stays open. Characterization-pin the current silent-swallow until fixed.
+- use_case_id: F-154-UC-H006
+  hypothesis_id: H-006
+  kind: edit-reconcile
+  promise: "After create, dependent cached views are correctly invalidated (no stale data, no dead ['term', undefined] entries)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H006 (regression guard for PLT-059 invalidate-key fix)"
+  proposed_test: "Unit (RTL): mock queryClient, submit in create mode, assert invalidate is called with response.id (not undefined)."
+- use_case_id: F-154-UC-H007
+  hypothesis_id: H-007
+  kind: grammar
+  promise: "A <script> / HTML payload in the Definition is sanitised — it does not execute for later viewers."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H007 (regression guard for PLT-059/F-004 sanitise fix; cross-link F-004 P-007/P-009)"
+  proposed_test: |-
+    IT: create a term with <img src=x onerror=...> in the definition; open the term in a
+    second session; assert the payload does NOT execute (no XSS sink fires). RED until sanitised.
+- use_case_id: F-154-UC-H008
+  hypothesis_id: H-008
+  kind: resolve-later
+  promise: "A TERM_CREATE-only operator cannot mint a platform-wide namespace by typing a novel name; the UI signals create-vs-select."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H008 (regression guard for PLT-059/PLT-101 namespace-create-gate fix)"
+  proposed_test: |-
+    Security IT: with a TERM_CREATE-only principal (LDAP mode), submit a term with a novel
+    namespace; assert it is rejected (NAMESPACE_CREATE required) once fixed; characterization-pin
+    the current silent-create until then.
+- use_case_id: F-154-UC-H009
+  hypothesis_id: H-009
+  kind: resolve-later
+  promise: "Creating a term resolves earlier-parked [[ns:term]] mentions of it (cross-time auto-link drain)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H009 (cross-link F-056)"
+  proposed_test: |-
+    IT: author a data-entity description mentioning [[ns:NEW]] (parks as unhandled);
+    create term ns:NEW via the form; assert the data entity's Terms section now shows the
+    auto-link. (This is the F-056 promise; the create-form is its trigger.)
+- use_case_id: F-154-UC-H010
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "Term create/edit/delete is recorded in the Activity feed for audit."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H010 (characterization-pin the schema-rooted audit-silence; cross-link DOC-199 / F-006)"
+  proposed_test: |-
+    Characterization unit/IT: create a term, assert NO activity event is produced (pins
+    the current schema-rooted silence; flips RED if TERM_CREATED is ever added).
+- use_case_id: F-154-UC-H011
+  hypothesis_id: H-011
+  kind: render
+  promise: "POST /api/terms returns 201 Created per the OpenAPI spec."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H011 (status-code drift; characterization-pin 200 or fix to 201; cross-link F-002 batch U)"
+  proposed_test: "API conformance: POST /api/terms, assert status code; characterization-pin 200 vs spec 201."
+- use_case_id: F-154-UC-H012
+  hypothesis_id: H-012
+  kind: empty/no-match
+  promise: "Blank/whitespace Name or Definition blocks submit with a required-field message."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-154-UC-H012"
+  proposed_test: "Unit (RTL): submit with whitespace-only Name; assert submit is blocked and the required message renders."
+
+### probes_emitted
+- probe_id: PENDING-F-154-1
+  hypothesis_id: H-004
+  hypothesis: |-
+    When the duplicate-check fetch on mount is slow (large catalog), the Term Create form
+    is still usable promptly — the operator is not blocked waiting on the size:1000
+    fetch (TermsForm.tsx:71-75) to resolve. Probe: stand up a local docker-compose
+    odd-platform seeded with ~1000 terms, open the Add-term dialog via Playwright, and
+    measure time-to-interactive of the three fields vs the fetch resolution. PASS if the
+    fields are interactable before the fetch resolves; FAIL (perf finding) if the dialog
+    blocks on the fetch.
+  status: pending-reflection-verification
+  local_execution_blocked: false
+
+### validation_gaps
+- sidecar: "odd-platform ts react-component:TermsForm (hop-1)"
+  field_insufficient: |-
+    No dedicated file-analyser sidecar exists for TermsForm.tsx — the chain marks hop-1
+    `sidecar: unresolved`. All UI-layer claims in this reflection are read from the F-154
+    feature-flow's `observed_vs_expected.facets[]` + `chain[].evidence` (a UI-walk authored
+    at ui-review-2026-05-26), NOT from an enriched sidecar with a Stress Protocol pass.
+    This is acceptable for the reflection (the feature IS ui-complete with line-cited UI
+    evidence and ui_unverified:false on 5 of 6 facets), but the form-component substrate
+    node has no sidecar and was not stress-tested.
+  proposed_refresh: |-
+    Enrich a TermsForm sidecar (file-analyser) to capture the react-hook-form validation
+    rules verbatim (H-002/H-012 are MEDIUM-confidence because the field rules are read from
+    the feature-flow facet, not a sidecar), the exact submit/navigate/invalidate sequence,
+    and the Markdown editor's sanitiser configuration — feeding back into H-001/H-002/H-006/
+    H-007/H-012 confidence.
+- sidecar: "odd-platform ts react-component:NamespaceAutocomplete"
+  field_insufficient: |-
+    The NamespaceAutocomplete sub-component was NOT read in the UI walk (F-154 facet 5
+    carries ui_unverified:true / ui_unverified_reason: "novel-input handling shape
+    determines confirmation OR refinement"). H-008's verdict (contradicted) rests on the
+    backend getOrCreate behaviour (TermServiceImpl.java:103,138, HIGH-confidence) which is
+    sufficient to confirm the RBAC bypass, but the EXACT combo-box affordance (whether it
+    visually distinguishes "select existing" from "create new") is unverified.
+  proposed_refresh: |-
+    Enrich a NamespaceAutocomplete sidecar to settle whether the combo-box renders a
+    "Create '<typed>'" option (a labelled create affordance) or silently treats free text
+    as a new namespace — this determines whether H-008's UI-signal half is a missing
+    affordance or a present-but-unlabelled one.
+
+### doc_drift_findings
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/glossary"
+  doc_says: "POST /api/terms is specified (OpenAPI) to return 201 Created on success (per F-002 batch U)."
+  code_does: "TermController.createTerm returns ResponseEntity.ok (HTTP 200), not 201; updateTerm same drift."
+  recommended_log_as: "DOC-NNN (or fold into the F-002 batch U status-code-drift item) — document 200 OR fix controller to 201"
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+  doc_says: |-
+    The Business Glossary page describes authoring a term definition but does NOT name the
+    Markdown definition field as trusted HTML / a stored-XSS surface, nor that TERM_UPDATE
+    confers the ability to plant executable content.
+  code_does: |-
+    The definition is rendered via an unsanitised Markdown editor and persisted verbatim
+    (TermsForm.tsx:168-186 + TermServiceImpl F-004 intersection) — the doc's silence on the
+    trust boundary is itself a gap until the code sanitises.
+  recommended_log_as: "fold into PLT-059 / F-004 remediation — once sanitised, no doc change; until then, the trust boundary is undocumented"
+
+## maintainer_notes

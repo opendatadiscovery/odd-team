@@ -160,6 +160,117 @@ observed_vs_expected:
       evidence:
         - "F-086 facets (Azure / Cognito session-only invalidation)"
       ui_unverified: false
+use_cases:
+  # LSN-030 / feature-reflector/0.3.0 promise layer. Full hypotheses + validation
+  # live in lineage/odd-platform/feature-reflections/detail/F-089.yaml; this is the
+  # compact projection the test-coverage-mapper Step 2b reads. ZERO logout tests
+  # exist (auth/logout/ package uncovered) → every use_case coverage: unverified.
+  - uc_id: F-089-UC-1
+    hypothesis_id: H-001
+    kind: happy-path
+    promise: "A user behind a load balancer / multi-hostname deployment is redirected back to the SAME external hostname they used after logout, without ODD-side hostname enumeration (the intended capability)."
+    actor: odd-platform-ui-end-user
+    trace: "AzureLogoutSuccessHandler.java:38-44 + UriUtils.java:11-23 (getBaseUri keeps scheme+host, strips path to '/')"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional"
+  - uc_id: F-089-UC-2
+    hypothesis_id: H-002
+    kind: grammar
+    promise: "The post-logout redirect host is the platform's pinned URL, not a user-controllable Host-header value (no open-redirect)."
+    actor: platform-operator
+    trace: "All 5 handlers + UriUtils.java:11-23 (no host validation) + application.yml grep (no platform.base-url)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional"
+    regression_guard_for: PLT-075
+  - uc_id: F-089-UC-3
+    hypothesis_id: H-003
+    kind: "empty/no-match"
+    promise: "Under the default forward-headers-strategy=none / a Host-overwriting proxy, the redirect lands on the platform's own URL and the open-redirect is not reachable (the safe default)."
+    actor: platform-operator
+    trace: "Spring WebFlux default forward-headers-strategy=none + application.yml (unset) — X-Forwarded-Host ignored by default"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional"
+  - uc_id: F-089-UC-4
+    hypothesis_id: H-004
+    kind: grammar
+    promise: "An attacker cannot inject a crafted PATH/QUERY into the redirect — getBaseUri always strips to the host root."
+    actor: platform-operator
+    trace: "UriUtils.java:11-23 (replacePath('/'), strips query+fragment)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional"
+  - uc_id: F-089-UC-5
+    hypothesis_id: H-005
+    kind: teardown-constraint
+    promise: "An Azure deployment with logout-uri unset degrades safely (no HTTP 500) rather than crashing the logout endpoint."
+    actor: platform-operator
+    trace: "AzureLogoutSuccessHandler.java:39 (URI.create(null) -> NPE -> 500; no guard) vs CognitoLogoutSuccessHandler.java:33-35 (has guard)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional"
+    regression_guard_for: PLT-130
+  - uc_id: F-089-UC-6
+    hypothesis_id: H-006
+    kind: teardown-constraint
+    promise: "A Cognito deployment with logout-uri unset still clears the LOCAL platform session (logout's core promise) even if the IdP redirect cannot be built."
+    actor: odd-platform-ui-end-user
+    trace: "CognitoLogoutSuccessHandler.java:33-35 (Mono.empty() returns BEFORE line-49 WebSession::invalidate)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional"
+    regression_guard_for: "PLT-NNN (net_new; distinct_from PLT-130)"
+  - uc_id: F-089-UC-7
+    hypothesis_id: H-007
+    kind: grammar
+    promise: "The IdP end-session redirect carries a state/nonce CSRF-binding parameter."
+    actor: platform-operator
+    trace: "AzureLogoutSuccessHandler.java:38-44 + CognitoLogoutSuccessHandler.java:40-46 (no state/nonce on any handler)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional"
+  - uc_id: F-089-UC-8
+    hypothesis_id: H-008
+    kind: cross-actor
+    promise: "Post-logout redirect safety does not depend on the operator using a SPECIFIC (non-wildcard) IdP allowlist."
+    actor: platform-operator
+    trace: "F-089.yaml facet[1] (open_redirect_after_idp_logout_when_idp_allowlist_permissive) — platform pins nothing"
+    verdict: partial
+    coverage: unverified
+    test_demand: "missing-functional"
+  - uc_id: F-089-UC-9
+    hypothesis_id: H-009
+    kind: cross-actor
+    promise: "Logout revokes the IdP-issued tokens (or its inability to is a defined, tested limitation) so the open-redirect cannot compound with live tokens."
+    actor: platform-operator
+    trace: "CognitoLogoutSuccessHandler.java:33-50 (no /revoke) + AzureLogoutSuccessHandler.java:31-48 (session-only) — F-086 cluster"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional"
+  - uc_id: F-089-UC-10
+    hypothesis_id: H-010
+    kind: render
+    promise: "The logout UI gives the user a signal of the post-logout destination / that it was validated."
+    actor: odd-platform-ui-end-user
+    trace: "AppToolbar.tsx:35-37 (window.location.href = '/logout', fire-and-forget, no feedback) — UI hop NOT in this chain (see validation_gaps)"
+    verdict: partial
+    coverage: unverified
+    test_demand: "missing-functional"
+  - uc_id: F-089-UC-11
+    hypothesis_id: H-011
+    kind: render
+    promise: "The docs disclose the post-logout redirect derivation + the reverse-proxy / IdP-allowlist operator dependency."
+    actor: platform-operator
+    trace: "oauth2-oidc.md post-logout-redirect-derivation H2 + reverse-proxy-trust WARNING (DOC-236, done, live-verified 2026-05-28)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional"
+use_case_coverage:
+  verified: 0
+  total: 11
+  note: "0/11 promises behaviourally verified — the SECOND coverage frontier. The entire auth/logout/ package has ZERO tests (Glob *Logout* in odd-platform/src/test -> no matches; both Azure + Cognito sidecars confirm 6 production classes, 0 test files; no IT-NNN logout e2e). All 11 use_cases route to missing-functional TEST-GAP candidates (test-coverage-mapper to mint). Highest-value: regression guards F-089-UC-2 (PLT-075 open-redirect), F-089-UC-5 (PLT-130 Azure NPE), F-089-UC-6 (net-new Cognito session-not-cleared bug), + the happy-path guard F-089-UC-1. Source: feature-reflections/detail/F-089.yaml (feature-reflector/0.3.0)."
 test_matrix:
   unit: GAP
   integration: GAP

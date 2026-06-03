@@ -1,0 +1,968 @@
+---
+feature_id: F-163
+pillar_anchored_id: P-08:F-019
+pillar: Management & Administration
+feature_name: |-
+  Cross-Management one-shot token reveal pattern — the shared UX
+  shape used by DataSourceItemToken AND CollectorItemToken to handle
+  "ONE-SHOT" plaintext-then-masked credential display (substring-prefix
+  detection of the masked form, Copy-vs-Regenerate dispatch, and the
+  parent "save it, you will not be able to retrieve it again" warning
+  banner).
+reflected_at: '2026-06-03T00:00:00Z'
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__DataSourceItemToken.md
+  - odd-platform__ts__react-component__component__DataSourceItem.md
+  - odd-platform__ts__react-component__component__CollectorsList.md
+  - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+sidecars_referenced_but_absent:
+  - "react-component:CollectorItemToken (Collector-side leaf — NOT enriched; chain hop 1 unresolved)"
+  - "react-component:CollectorItem (Collector-side parent warning banner — NOT enriched; chain hop 3 unresolved)"
+  - "java class:TokenMapper (server-side mask format — NO sidecar; referenced via getDataSourceList + regenerateDataSourceToken backend sidecars)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-27T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Cross-referenced via contributing sidecars' docs_link_semantic blocks
+      (DataSourceItemToken WebFetched 2026-05-22 status 200;
+      regenerateDataSourceToken WebFetched 2026-05-21 status 200) and the
+      F-163a/b scanner_reviews WebFetch (2026-05-27 status 200). No fresh
+      WebFetch this reflection (parallel-safe mode); the prior fetches are
+      consistent and recent. The page shows a "Regenerate action" caption and
+      the Collectors "Issue/rotate/revoke" workflow phrase, and is SILENT on
+      the confirmation dialog, the one-shot reveal, the copy affordance, the
+      no-grace-period consequence, and the substring-sniff contract.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-21T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Names DATA_SOURCE_TOKEN_REGENERATE + COLLECTOR_TOKEN_REGENERATE verbatim
+      as Management-tier permissions; gives NO operational guidance (no grace
+      period, no plaintext-in-response, no redeploy consequence).
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: |-
+      The "Regenerate token" confirmation dialog asks "Are you sure?" but
+      never warns that the old token dies instantly and breaks every running
+      collector — operators rotate a "leaked" token and take production
+      ingestion down with no forewarning.
+related_feature_flows: [F-163, F-020, F-031, F-105, F-008, F-076]
+related_concepts:
+  - one-shot-token-reveal
+  - token-mask-format-substring-sniff
+  - plaintext-credential-dom-render
+  - rotate-confirmation-no-grace-warning
+  - cross-surface-replicated-ux-shape
+new_concepts_proposed:
+  # None of the five related_concepts are present in concepts.yaml yet; they
+  # originate in this feature-flow and are forwarded as canonicalisation
+  # candidates (feature-flow-builder Rule 0 / concept-merger owns the merge).
+  - one-shot-token-reveal
+  - token-mask-format-substring-sniff
+  - rotate-confirmation-no-grace-warning
+related_drift_classes:
+  # From the feature-flow's observed_vs_expected.facets that this reflection
+  # confirmed end-to-end through the chain.
+  - token_visibility_detection_via_fragile_substring_prefix_sniff_cross_surface
+  - token_plaintext_rendered_into_dom_text_node_no_password_input_obfuscation_cross_surface
+  - rotate_confirmation_dialog_no_grace_period_warning_cross_surface
+  - warning_banner_disappears_on_next_list_refresh_no_persistence
+new_drift_classes_proposed: []
+---
+
+# Cross-Management one-shot token reveal pattern — product-owner reflection
+
+## product_owner_narrative
+
+The one-shot token reveal is the affordance an operator lives through every time
+they wire a collector to ODD Platform. From the operator's seat it is one inline
+string and one button per row, repeated identically on two Management tabs — the
+Datasources tab and the Collectors tab. When you register a data source or a
+collector, the platform mints a 40-character bearer token, and for that one moment
+the row shows the full plaintext token next to a **Copy** button plus a yellow
+banner: "Save token in a secure location. You will not be able to retrieve it
+again." (per DataSourceItem.tsx:110-121, mirrored at CollectorItem.tsx:87-98 per
+the feature-flow chain). Copy it now, because every later visit to the tab shows
+the same token masked as `******` plus its real last six characters, and the only
+button you get then is **Regenerate** (per DataSourceItemToken.tsx:34-53). The
+product promise is a deliberate security UX: the secret is shown exactly once, and
+the warning tells you so.
+
+The operator interacts with it through three controls. **Copy** writes the
+plaintext token to the OS clipboard (per DataSourceItemToken.tsx:51-53 +
+CopyButton.tsx:43). **Regenerate** — visible only on the masked state and only to a
+holder of DATA_SOURCE_TOKEN_REGENERATE / COLLECTOR_TOKEN_REGENERATE (per
+DataSourceItemToken.tsx:36 + WithPermissions.tsx:27-29) — opens a
+ConfirmationDialog that asks "Are you sure you want to regenerate token for this
+datasource?" and, on confirm, dispatches the rotation thunk → PUT
+/api/datasources/{id}/token (per DataSourceItemToken.tsx:29-49). The third control
+is invisible: the row's own logic that decides masked-vs-plaintext, which it does
+by sniffing whether `token.value.substring(0,6) === '******'` (per
+DataSourceItemToken.tsx:25-27). That substring test is the SOLE discriminator —
+there is no typed `isMasked` field on the wire; the UI re-implements, as a string
+parse, the contract that the backend TokenMapper produces a six-asterisk prefix
+(per the regenerateDataSourceToken backend sidecar's reference to
+TokenMapper.java:15-18).
+
+The working parts the operator perceives are: the one-shot reveal (plaintext once,
+masked forever after), the Copy affordance, the permission-gated Regenerate, and
+the destructive-rotation warning. What the operator does NOT perceive — and this is
+where the product's promise and its delivery diverge — is that "Regenerate" is a
+destructive, no-grace, in-place rotation: the instant the PUT commits, the old
+token is irrecoverably overwritten and any running collector still presenting it
+starts failing POST /ingestion/entities with 401 "Token is not correct" (per the
+regenerateDataSourceToken backend sidecar bugs_limitations_corner_cases + the
+IngestionDataEntitiesFilter coupling). The dialog text says nothing of this.
+
+The feature sits at the boundary between Management (P-08, where the token is
+issued and rotated) and Integrations & Ingestion (P-10, the consumer of the
+token), gated by Security (P-09, the S2S Ingestion filter that validates it). The
+pillar's primary user action "issue / rotate collector tokens" (per
+system-mission.md P-08:225) is exactly this feature. The cross-pillar promise that
+matters: a token rotated here is the credential a collector authenticates with
+there — so the rotation UX must respect the operator's mental model of a running
+production pipeline, and today it does not warn them.
+
+A product owner demoing this would highlight two edge cases. First, the warning
+banner is ephemeral: it shows only while the token is unmasked, and ANY list
+refetch (search clear, delete completion, background refresh) re-masks the token,
+re-fires the substring sniff, and the banner silently disappears — an operator
+distracted mid-create can lose the only copy of a credential they never saved (per
+DataSourceItem.tsx:110-121 + the warning_banner_disappears facet). Second, the
+whole reveal/mask decision is a string-prefix bet against the backend mask format:
+the day anyone changes TokenMapper to emit a different mask (eight stars, a unicode
+bullet, a "last 4 only" redaction), both tabs silently break — Regenerate becomes
+unreachable and the reveal warning never fires (per the
+token_visibility_detection facet, cross-referenced to DataSourceItemToken.tsx:26).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a data source (or collector) is freshly registered or its token is
+    regenerated, the row shows the full 40-char plaintext token with a Copy
+    button and the parent renders the "Save token in a secure location. You will
+    not be able to retrieve it again." warning banner.
+  derivation: |-
+    The one-shot reveal is the feature's core promise; the !isHidden branch
+    renders the plaintext value + CopyButton, and the parent gates the InfoItem
+    warning on !isHidden.
+  seed_source: response-shape + ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      On a regeneration response, datasources.slice.ts:41-42 upserts the
+      plaintext-token DataSource into the store; the row re-renders;
+      DataSourceItemToken.tsx:25-27 recomputes isHidden=false (the value no
+      longer starts with '******'); the ternary at lines 35-53 shows the Copy
+      button; the parent at DataSourceItem.tsx:110-121 renders the warning
+      banner because !isHidden is now true. The Collector side mirrors this per
+      the feature-flow chain (CollectorItem.tsx:87-98), though the leaf
+      Collector components are not independently enriched (see validation_gaps).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: understanding + downstream_side_effects (page-render)
+        cite: "DataSourceItemToken.tsx:25-27,34-53 + datasources.slice.ts:41-42"
+        note: "isHidden recomputes false on plaintext; Copy branch shown."
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+        section: concepts.operations (render-token-warning)
+        cite: "DataSourceItem.tsx:110-121"
+        note: "Warning banner gated on !isHidden."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When the operator returns to the Datasources/Collectors tab on any later
+    visit (the token has been masked by the list endpoint), the row shows NO
+    Copy button — only a Regenerate button — so a masked, useless token string
+    is never offered for copy.
+  derivation: |-
+    The masked-state invariant: Copy is reachable only on plaintext; the masked
+    '******'+last6 form is never copyable.
+  seed_source: view-mode + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      On a list read, TokenMapper emits '******'+last6 (per the backend
+      sidecars). DataSourceItemToken.tsx:25-27 sets isHidden=true; the ternary at
+      35-53 renders the Regenerate ConfirmationDialog (permission-gated) and NOT
+      the CopyButton. The invariant "exactly one of {Regenerate, Copy}" holds
+      (DataSourceItemToken.tsx:35-53). Copying a masked value would be useless and
+      is correctly never offered.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: concepts.invariants
+        cite: "DataSourceItemToken.tsx:35-53 + WithPermissions.tsx:27-29"
+        note: "Mutually-exclusive Copy/Regenerate; masked => Regenerate only."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a signed-in user WITHOUT DATA_SOURCE_TOKEN_REGENERATE (resp.
+    COLLECTOR_TOKEN_REGENERATE) views the tab, they see the masked token string
+    but NO Regenerate button — the affordance is absent, not merely disabled.
+  derivation: |-
+    The Regenerate control is wrapped in WithPermissions, which renders null when
+    hasAccessTo is false; this is the consistent hide-not-disable convention.
+  seed_source: ui-label + pillar (RBAC primary action)
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      Under LOGIN_FORM/OAUTH2/LDAP the claim holds: WithPermissions.tsx:27-29
+      returns null for a non-holder, so the masked token shows with no button
+      (DataSourceItemToken.tsx:35-50). PARTIAL because (a) the masked token VALUE
+      — including its real last-6 plaintext characters — is still shown to every
+      authenticated viewer regardless of permission (DataSourceItem.tsx:95-109
+      has no WithPermissions wrap on the token block); and (b) under
+      auth.type=DISABLED the WithPermissions HOC universally HIDES the button
+      (permissions == []) WHILE the backend accepts an anonymous crafted PUT —
+      the UI gate is UX-only, not a security boundary (per the
+      regenerateDataSourceToken backend sidecar DISABLED-bypass finding). The
+      hide-not-disable behaviour under the three real modes is itself
+      runtime-pinned by P-080/P-084 (PROBE-NEEDED in the source sidecars), not
+      yet measured.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: concepts.invariants + security.authorization_assertions
+        cite: "DataSourceItemToken.tsx:36 + WithPermissions.tsx:27-29"
+        note: "Regenerate hidden for non-holder (UX gate only)."
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+        section: security.known_security_gaps
+        cite: "DataSourceItem.tsx:95-109 (token block, no permission wrap)"
+        note: "Token VALUE (incl. real last-6) visible to every authenticated viewer."
+    operator_visible_failure: |-
+      A read-only viewer cannot rotate, but CAN read every data source's / every
+      collector's masked token including its real last six characters — a partial
+      credential disclosure to anyone who can reach the tab. Separately, on a
+      DISABLED deployment the hidden Regenerate button gives a false sense of
+      lock-down while the backend endpoint is wide open to anonymous rotation.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When the operator clicks Regenerate and confirms, the confirmation step tells
+    them — before they commit — that rotation immediately invalidates the current
+    token and that any running collector still using it will stop ingesting until
+    it is reconfigured and redeployed.
+  derivation: |-
+    A destructive irreversible production action should disclose its consequence
+    at the point of decision; the ConfirmationDialog is that point. The pillar's
+    "rotate collector tokens" action implies the operator understands what
+    rotation costs.
+  seed_source: negative-space + ui-label + pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The ConfirmationDialog body is verbatim minimal on BOTH surfaces:
+      title "Are you sure you want to regenerate token for this {datasource|
+      collector}?" + body "Regenerate token for \"{name}\"?" (DataSourceItemToken.tsx:
+      37-49 + CollectorItemToken.tsx:37-49 per the feature-flow chain). It names
+      only the entity; it says NOTHING about (a) the old token dying instantly
+      (no grace window), (b) the running collector 401-ing on the next ingestion
+      call, or (c) the need to redeploy the collector with the new token. The
+      backend confirms the consequence is real and immediate: regeneration is a
+      destructive in-place UPDATE with no old/new overlap, and
+      IngestionDataEntitiesFilter rejects the old token the moment the UPDATE
+      commits (regenerateDataSourceToken backend sidecar
+      bugs_limitations_corner_cases[1], severity HIGH).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: bugs_limitations_corner_cases[0] + name_behavior_pairs (Regenerate)
+        cite: "DataSourceItemToken.tsx:37-49 (dialog body) — DRIFT_NAME_VS_BEHAVIOR"
+        note: "Dialog mitigates an accidental click but does NOT inform an intentional one."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: bugs_limitations_corner_cases[1] + downstream_side_effects (external-call)
+        cite: "ReactiveTokenRepositoryImpl.java:30-39 + IngestionDataEntitiesFilter.java:56-57"
+        note: "In-place UPDATE, no grace window; old token 401s immediately."
+    operator_visible_failure: |-
+      Obvious failure: an operator rotates a token believing it is a benign
+      additive "get a new one" action (the label "Regenerate" reads as safe), and
+      the running collector stops ingesting within seconds with a 401; paging
+      fires; the operator does not connect the outage to the rotation they just
+      did because the dialog never warned them. Subtle failure: an operator
+      rotating to mitigate a SUSPECTED leak on a DEFAULT deployment
+      (auth.ingestion.filter.enabled=false) takes the ingestion outage for ZERO
+      security benefit on the bulk path — the filter that validates the token is
+      off by default, so rotation fixes only half the surface (per DOC-252
+      Caveat 3) while still breaking the pipeline. Compounding: the rotation is
+      not audit-logged, so post-incident "who rotated this and when" is
+      unanswerable.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When the operator is shown the one-time plaintext token, the system protects
+    that copy long enough to use it — it does not silently discard the only copy
+    of the credential if the operator's attention lapses or a background refresh
+    fires.
+  derivation: |-
+    A "you can never see this again" secret demands that the reveal persist until
+    the operator acknowledges/copies it; otherwise the warning is a trap.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The warning banner and the plaintext value are gated entirely on the
+      transient isHidden=false state, which is recomputed from token.value on
+      every render. ANY list refetch (post-mount fetch, search clear, delete
+      completion, background refetch) overwrites the redux store with masked
+      tokens (TokenMapper '******'+last6), the useEffect re-fires, isHidden flips
+      to true, the Copy button and the warning banner both disappear, and the
+      plaintext is gone from the UI (DataSourceItem.tsx:110-121 +
+      DataSourceItemToken.tsx:25-27 + datasources.slice.ts:41-42). There is no
+      local persistence, no "I have saved it" acknowledgement, no auto-copy, no
+      focus-the-Copy-button, no navigation block. To recover the operator must
+      Regenerate AGAIN — another destructive rotation (the H-004 footgun).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "DataSourceItemToken.tsx:25-27,51-53 + DataSourceItem.tsx:110-121 + datasources.slice.ts:41-42"
+        note: "One-time reveal with no copy prompt; re-masks on refetch, plaintext unrecoverable."
+    operator_visible_failure: |-
+      An operator who registers a data source, gets distracted (a Slack ping, a
+      tab switch, a colleague's question), and comes back after a background
+      refetch finds the token masked and the warning gone. They now hold a data
+      source whose token they never copied, and the ONLY recovery is a
+      destructive Regenerate — which, per H-004, breaks any collector already
+      wired to a prior value and is unaudited. The "you will not be able to
+      retrieve it again" warning is literally true and actively hostile: it warns
+      of a trap the UI does nothing to prevent the operator falling into.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When the backend's masked-token format is what it is today (a leading
+    '******'), both the Datasources and Collectors tabs correctly classify a
+    masked token as masked (show Regenerate) and a plaintext token as plaintext
+    (show Copy + warning).
+  derivation: |-
+    The substring(0,6) === '******' sniff is the sole masked/plaintext
+    discriminator on both surfaces; under today's format it should classify
+    correctly.
+  seed_source: endpoint-shape (wire contract)
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The backend TokenMapper emits exactly six asterisks as the mask prefix on
+      read paths and the full plaintext (showToken=true) on create/rotate paths
+      (per regenerateDataSourceToken backend sidecar implicit_adrs[2] +
+      ReactiveTokenRepositoryImpl.java:38). The UI's substring(0,6) === '******'
+      test (DataSourceItemToken.tsx:26, identical at CollectorItemToken.tsx:26
+      per the feature-flow chain) matches that exact format, so classification is
+      correct TODAY. The token alphabet is RandomStringUtils.randomAlphanumeric
+      (no asterisk), so a real plaintext token cannot accidentally begin with
+      '******' — the false-positive sub-case cannot occur (per
+      DataSourceItemToken.tsx bugs_limitations_corner_cases[1]).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: stress_findings.tunables (masked-token sentinel) + coupling
+        cite: "DataSourceItemToken.tsx:26 + TokenMapper.java:15-18 (via getDataSourceList backend sidecar)"
+        note: "substring sniff matches the current 6-asterisk backend mask exactly."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: implicit_adrs[2]
+        cite: "ReactiveTokenRepositoryImpl.java:38 (showToken on rotate)"
+        note: "Plaintext on rotate; masked on read — the contract the UI sniffs."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    The masked/plaintext detection is robust: if the backend's token mask format
+    ever changes, the UI continues to correctly show Regenerate on masked tokens
+    and the reveal warning on fresh plaintext tokens.
+  derivation: |-
+    A user expects the credential UX to keep working across backend evolution; a
+    server-side mask change is a normal maintenance event a senior owner would
+    expect the UI to survive.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The detection is a verbatim, replicated string-prefix bet hard-coupled to
+      the backend mask format, with NO shared constant, NO helper, and NO
+      server-supplied isMasked discriminator on the Token DTO. The literal
+      '******' is duplicated between DataSourceItemToken.tsx:26 and
+      CollectorItemToken.tsx:26. If TokenMapper.mapValue ships any format change
+      (5 or 7 or 8 asterisks, a unicode bullet U+2022, a "last 4 only"
+      redaction), substring(0,6) === '******' returns false for a masked value,
+      isHidden stays false, and the UI mis-classifies a masked token as
+      plaintext — offering Copy on a useless masked string. Conversely, if the
+      mask happened to start with six asterisks but be longer, plaintext could be
+      mis-read as masked, hiding the one-shot reveal. Both surfaces break
+      identically and silently because the contract lives in two string literals,
+      not one owner.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: bugs_limitations_corner_cases[1] + stress_findings.tunables
+        cite: "DataSourceItemToken.tsx:26 + TokenMapper.java:15-18"
+        note: "Fragile string-prefix coupling; mask change silently breaks classification."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: concepts.invariants
+        cite: "CollectorItemToken.tsx:26 (identical substring sniff)"
+        note: "Replicated verbatim on the Collector surface; both break together."
+    operator_visible_failure: |-
+      After a future backend mask-format change (e.g. a "show last 4 only"
+      redaction request, or a PII-masking toolbar), BOTH tabs silently break: the
+      operator who registers a new data source/collector NEVER sees the one-shot
+      reveal warning (isHidden stays at its mis-classified state), so they never
+      learn they had a one-time copy window — they get a masked-looking string and
+      a Copy button that copies garbage. The failure is invisible at ship time
+      (today's format matches) and surfaces only when an unrelated backend change
+      lands — a latent cross-surface regression no test guards.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When the one-time plaintext token is displayed, the UI obscures it from casual
+    view (password-style masking, reveal-on-hover, or download-only) so a
+    bystander, a screen-share, or a screenshot uploaded to a tracker does not
+    capture the live credential.
+  derivation: |-
+    A credential the product itself labels "secret, save it securely" should not
+    be rendered as clear-view plaintext text; that contradicts the warning's own
+    threat model.
+  seed_source: negative-space + pillar (security posture)
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The plaintext token is rendered into a plain DOM text node
+      (<Token $isHidden={isHidden}>{token.value}</Token>, DataSourceItemToken.tsx:34,
+      identical at CollectorItemToken.tsx:34 per the chain). There is NO
+      <input type='password'> obfuscation, NO reveal-on-hover, NO auto-hide timer,
+      and NO download-only path. The value also persists in the redux store after
+      rotation (datasources.slice.ts:41-42) until the next refetch. The backend
+      sets NO Cache-Control: no-store on the rotation response
+      (regenerateDataSourceToken backend sidecar bugs_limitations_corner_cases[4]),
+      so the plaintext can also sit in a proxy/browser response cache. The $isHidden
+      styling on the visible state is a CSS tint, not obfuscation (the
+      DataSourceItemTokenStyles $isHidden treatment was not read — see
+      validation_gaps; but the substring sniff confirms the masked/plaintext
+      decision is JS-level and the value is always rendered verbatim).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: security.data_exposure + known_security_gaps
+        cite: "DataSourceItemToken.tsx:34,52 + CopyButton.tsx:43 + datasources.slice.ts:41-42"
+        note: "Plaintext into DOM text node + clipboard + redux store; no obfuscation."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: bugs_limitations_corner_cases[4]
+        cite: "DataSourceController.java:56-58 (no Cache-Control: no-store)"
+        note: "Plaintext token in response body, no sensitive-body header."
+    operator_visible_failure: |-
+      The token leaks to anyone the operator's screen is visible to at reveal
+      time: a colleague shoulder-surfing, a Zoom/Meet screen-share during an
+      onboarding walkthrough, a screenshot pasted into a Slack thread or a bug
+      tracker, or a devtools/redux-state export attached to an error report. The
+      warning banner tells the operator to "save it in a secure location" while
+      the UI itself displays it in clear view — the product's own copy contradicts
+      the product's own behaviour.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    Because the Datasources tab and the Collectors tab present the same one-shot
+    token contract, they behave consistently — same reveal model, same dialog,
+    same warning — so an operator who learns one tab is not surprised by the other.
+  derivation: |-
+    Cross-platform consistency is a senior-product-owner expectation (the
+    feature-flow anchors F-163 as a single shared UX shape); the operator should
+    not have to re-learn the credential UX per tab.
+  seed_source: cross-pillar + pillar (consistency)
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The two surfaces are structurally identical by construction: both run the
+      same substring sniff at line 26, both render the token verbatim at line 34,
+      both wrap Regenerate in the same ConfirmationDialog at lines 37-49, both
+      gate the parent warning banner on !isHidden, and both delegate to the SAME
+      backend (TokenGeneratorImpl + ReactiveTokenRepositoryImpl) per the
+      regenerateDataSourceToken backend sidecar's coherence note ("the data-source
+      and collector token-rotation paths are STRUCTURALLY IDENTICAL"). Consistency
+      is confirmed — but it is consistency in the DEFECTS too: both share the
+      no-warning dialog (H-004), the fragile sniff (H-007), and the plaintext DOM
+      render (H-008). A fix to one must be applied to both.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: understanding + concepts.invariants
+        cite: "CollectorItemToken.tsx:26,34,36-49 (mirrors DataSourceItemToken)"
+        note: "Identical reveal model, dialog, permission gate on the Collector tab."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: coherence_notes (strengthens CollectorController sibling)
+        cite: "TokenGeneratorImpl + ReactiveTokenRepositoryImpl (shared backend)"
+        note: "Both surfaces delegate to the same backend rotation path."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    The live Management documentation describes the one-shot reveal contract: that
+    the token is shown once in plaintext, must be copied immediately, masks on
+    refresh, and that Regenerate is destructive and breaks running ingestion.
+  derivation: |-
+    Doc-claim seed — the operator Googles "ODD regenerate token" and lands on the
+    Management page; the page should carry the load-bearing operational facts.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The live /features/management page (WebFetched 2026-05-21/22/27, status 200
+      across the contributing sidecars) shows a "Regenerate action" caption and
+      the Collectors "Issue/rotate/revoke" workflow phrase, but is SILENT on the
+      confirmation dialog, the one-shot reveal, the copy affordance, and the
+      no-grace destructive consequence (per DataSourceItemToken
+      docs_link_semantic.doc_drift_findings). HOWEVER, the gap is PARTIALLY closed
+      already: DOC-252 (status done) added a "Known caveats" section to the
+      Collectors doc covering no-grace rotation + one-shot visibility UX +
+      plaintext-at-rest + filter-off default, and DOC-255 is the DataSource
+      sibling. So the doc-drift is real for the BASE Management narrative but the
+      caveat content is tracked/landed — the residual gap is whether the DataSources
+      tab and the Datasources-tab cross-surface dimension is symmetric (the
+      F-163a scanner finding's "strengthens-extends" angle).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: docs_link_semantic.doc_drift_findings
+        cite: "WebFetch 2026-05-22 status 200 of /features/management"
+        note: "Page silent on confirmation dialog, one-shot reveal, copy, consequence."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: docs_link_semantic.doc_drift_findings
+        cite: "WebFetch 2026-05-21 status 200 of permissions + management pages"
+        note: "Permissions page names the permission, no operational mechanics."
+    operator_visible_failure: |-
+      An operator reading the base Management page (not the freshly-added Known
+      caveats section, if they skim) clicks Regenerate with no warning of the
+      production consequence — the same H-004 footfall, now via the docs path. The
+      DOC-252/DOC-255 caveats mitigate this for the reader who reaches them; the
+      residual is the in-product dialog text (H-004) which no doc caveat can fix.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When the operator double-clicks Regenerate (slow network, impatient click) or
+    re-opens the dialog and confirms twice in quick succession, the system rotates
+    the token exactly once — it does not silently issue a second token that
+    invalidates the one the operator just copied.
+  derivation: |-
+    Endpoint-shape — the PUT is not idempotent and the UI has no pending-guard on
+    the dispatch; a user reasonably expects one confirmed action = one rotation.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The ConfirmationDialog spinner blocks a second confirm WITHIN one open
+      dialog instance (ConfirmationDialog.tsx:24-35), but the component places NO
+      pending-guard on the dispatch itself and nothing stops the operator closing
+      and re-opening the dialog, or — once the row re-masks — clicking Regenerate
+      again (DataSourceItemToken.tsx:29-30). The backend PUT is NOT idempotent:
+      each call mints a fresh random token and overwrites the row (last-write-
+      wins, no @Version, no If-Match) per the regenerateDataSourceToken backend
+      sidecar resource_boundaries. No DB corruption results, but the observable
+      defect is that the operator can copy a token (from response 1) that
+      response 2 has already invalidated. The exact behaviour under a fast
+      double-confirm-across-reopen requires runtime (the source sidecar emits
+      P-050 concurrency + P-082 confirm-flow as PROBE-NEEDED for exactly this).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+        section: resource_boundaries (idempotency) + bugs_limitations_corner_cases[3]
+        cite: "DataSourceItemToken.tsx:29-30 + ConfirmationDialog.tsx:24-35"
+        note: "No dispatch-level pending guard; spinner is dialog-scoped only."
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+        section: stress_findings.resource_boundaries (P-050)
+        cite: "ReactiveTokenRepositoryImpl.java:33-36 (no version predicate)"
+        note: "Non-idempotent PUT; last-write-wins; loser keeps an invalid token."
+    operator_visible_failure: |-
+      If a double-confirm does issue two rotations, the operator copies the token
+      from the first 200 response, but only the second (later-committed) token
+      actually authenticates ingestion — so the carefully-copied credential is
+      already dead, and the operator discovers this only when the collector 401s.
+      Verdict held at probe-needed because whether the dialog spinner + the
+      re-mask timing actually permit a fast second rotation from the UI is not
+      statically provable; it is a headless-browser question.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-163-1
+    routes_to_finding: probe-needed
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: probe
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |-
+    The Regenerate confirmation dialog (both surfaces) ships verbatim "Are you
+    sure?" text and never warns that rotation instantly kills the old token and
+    breaks running collector ingestion until redeploy.
+  dedup_status: net_new
+  distinct_from: PLT-108
+  distinct_reason: |-
+    PLT-108 (+ PLT-087) is the BACKEND mechanic (in-place UPDATE, no grace
+    window, plaintext, not audit-logged) and proposes a backend grace-window /
+    hashing / audit fix. DOC-252 (done) + DOC-255 are the DOC caveats. NONE of
+    them is the UI-tier defect: the in-product ConfirmationDialog at the point of
+    decision carries no consequence warning. This is the F-163 cross-surface
+    UI-affordance finding — a richer dialog body (the consequence + a planned-
+    redeploy checkbox), mirroring the DELETE pattern's explicit-consequence text.
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    DataSourceItemToken.tsx:37-49 + CollectorItemToken.tsx:37-49 — add
+    additionalContent to the ConfirmationDialog listing the three consequences
+    (old token dies now; running collector 401s; redeploy required), applied to
+    BOTH surfaces in one change.
+
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    The one-time plaintext reveal + warning banner are discarded on the next list
+    refetch with no acknowledgement/copy-confirm, so a distracted operator can
+    lose the only copy of a credential and must destructively re-rotate to recover.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    DataSourceItemToken.tsx:25-27,51-53 + DataSourceItem.tsx:110-121 — persist the
+    reveal until explicit dismiss/acknowledge (parent-owned state, not derived
+    from token mask state), OR move the reveal to a non-dismissable modal that is
+    the copy surface. Apply to the Collector sibling.
+
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |-
+    Masked/plaintext detection is a verbatim-replicated substring('******') sniff
+    on both surfaces with no shared constant and no server isMasked field — a
+    future backend mask-format change silently breaks the one-shot reveal on both
+    tabs at once.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    Server-side: add an isMasked boolean (or a {value:null, masked:true} sentinel)
+    to the Token DTO so the UI never string-parses. Client interim: a single
+    shared MASKED_PREFIX constant imported by both Token components
+    (DataSourceItemToken.tsx:26 + CollectorItemToken.tsx:26).
+
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    The one-time plaintext token is rendered into a plain DOM text node (both
+    surfaces) with no password-style obfuscation, no reveal-on-hover, and no
+    Cache-Control: no-store on the response — leaking to bystanders, screen-shares,
+    screenshots, and response caches.
+  dedup_status: net_new
+  distinct_from: PLT-087
+  distinct_reason: |-
+    PLT-087 names "plaintext-token response without Cache-Control" as a BACKEND
+    response-header item for the DataSource path. The F-163 finding is the
+    cross-surface UI-affordance angle: the value is rendered as clear-view DOM
+    text (no <input type=password>, no reveal-on-hover, no download-only) AND held
+    in the redux store on BOTH tabs. The Cache-Control half overlaps PLT-087 and
+    should be co-filed; the DOM-obfuscation half is net new.
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    DataSourceItemToken.tsx:32-34 + CollectorItemToken.tsx:32-34 — render the
+    plaintext into a readOnly <input type='password'> with explicit reveal-on-hover
+    (or a one-time download), and set Cache-Control: no-store on the rotate/create
+    response (DataSourceController.java:56-58, co-file with PLT-087).
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    The masked token VALUE (including its real last-6 plaintext characters) is
+    shown to every authenticated viewer of the tab regardless of the
+    *_TOKEN_REGENERATE permission — only the Regenerate ACTION is gated, not the
+    token display.
+  dedup_status: already_tracked
+  tracked_as: DOC-252
+  note: |-
+    DOC-252 Caveat 1 (done) documents the UI-vs-API asymmetry under DISABLED and
+    the masked-token last-6-char list-enumeration leak for the Collectors section;
+    DOC-255 is the DataSource sibling. The per-viewer masked-value visibility is
+    the same finding. Recorded as corroboration (reflection independently
+    re-derived the DOC-252 caveat from the UI sidecars); NOT routed for re-filing.
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional
+# TEST-GAP candidate. The feature is a heavily-used credential UX with ZERO test
+# coverage at every class (per both UI sidecars + the backend sidecar) and NO
+# Playwright e2e (Grep of odd-platform/tests confirms only auth/session "token").
+# use_case_coverage is 0/11 verified — the second coverage frontier is empty.
+- use_case_id: F-163-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: |-
+    Fresh register/rotate shows the 40-char plaintext token + Copy + the
+    "save it, you cannot retrieve it again" warning banner.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-001"
+  proposed_test: |-
+    UI integration (RTL + redux): mount DataSourceItem with a plaintext-token
+    DataSource; assert Copy button present, Regenerate absent, warning banner
+    rendered. Mirror for CollectorItem.
+
+- use_case_id: F-163-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: |-
+    A masked token ('******'+last6) shows Regenerate and never offers Copy.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-002"
+  proposed_test: |-
+    UI unit: mount DataSourceItemToken with token.value='******abcdef'; assert
+    isHidden=true, Regenerate ConfirmationDialog present, CopyButton absent.
+
+- use_case_id: F-163-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: |-
+    A non-holder of *_TOKEN_REGENERATE sees the masked token but no Regenerate
+    button (UX hide-not-disable); the token VALUE itself is still visible.
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-003 (also pins P-080/P-084 hide-not-disable)"
+  proposed_test: |-
+    UI security: render with permissions=[] and permissions=[DATA_SOURCE_TOKEN_REGENERATE];
+    assert Regenerate absent in the first, present in the second; assert token
+    string rendered in both.
+
+- use_case_id: F-163-UC-004
+  hypothesis_id: H-004
+  kind: teardown-constraint
+  promise: |-
+    The Regenerate confirmation warns the operator that rotation is destructive
+    and breaks running ingestion before they commit.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-004 (regression guard for the PLT bug-candidate fix)"
+  proposed_test: |-
+    UI regression (pins the CURRENT incorrect minimal text, flips RED when the
+    consequence warning is added): assert the ConfirmationDialog body equals the
+    minimal "Regenerate token for \"{name}\"?" and contains NO 'ingestion' /
+    'redeploy' / 'grace' string — characterization test per the pin-known-bug
+    protocol. On both surfaces.
+
+- use_case_id: F-163-UC-005
+  hypothesis_id: H-005
+  kind: edit-reconcile
+  promise: |-
+    The one-time plaintext reveal persists long enough to use; it is not silently
+    discarded on a background refetch.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-005"
+  proposed_test: |-
+    UI integration: render plaintext token (banner shown); dispatch a list refetch
+    that returns the masked form; assert the banner + Copy disappear and the
+    plaintext is gone — characterization of the trap until the fix lands.
+
+- use_case_id: F-163-UC-006
+  hypothesis_id: H-006
+  kind: grammar
+  promise: |-
+    Under today's '******' mask format both tabs classify masked-vs-plaintext
+    correctly.
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-006"
+  proposed_test: |-
+    UI unit: assert substring(0,6)==='******' classification for a masked value
+    and a 40-char plaintext value on both Token components.
+
+- use_case_id: F-163-UC-007
+  hypothesis_id: H-007
+  kind: grammar
+  promise: |-
+    The masked/plaintext detection survives a backend mask-format change.
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-007"
+  proposed_test: |-
+    UI regression: feed a token.value masked with a DIFFERENT sentinel (e.g.
+    8 stars, or U+2022 bullets); assert the CURRENT code mis-classifies (Copy on a
+    masked value) — characterization pin that flips RED when an isMasked field or
+    shared constant replaces the sniff. On both surfaces.
+
+- use_case_id: F-163-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: |-
+    The displayed plaintext token is obscured from casual view (password masking /
+    reveal-on-hover / download-only).
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-008"
+  proposed_test: |-
+    UI security: render the plaintext branch; assert the token is NOT in a
+    type=password input and IS present verbatim in document text — characterization
+    of the leak until obfuscation lands. Co-assert no Cache-Control with PLT-087.
+
+- use_case_id: F-163-UC-009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: |-
+    The Datasources and Collectors token UX behave consistently (same reveal,
+    dialog, warning).
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-163-UC-009"
+  proposed_test: |-
+    Shared UI test harness exercising BOTH DataSourceItemToken and
+    CollectorItemToken through the same assertions (reveal, dialog text, gate) —
+    the consistency contract AND the place a fix to one-but-not-both regresses.
+
+- use_case_id: F-163-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: |-
+    The Management docs describe the one-shot reveal + destructive-rotation
+    contract.
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "DOC follow-up — partially closed by DOC-252/DOC-255; residual is DataSources-tab cross-surface symmetry (F-163a scanner finding)"
+  proposed_test: |-
+    Doc cross-reference (not a code test): confirm the DataSources section carries
+    the same Known-caveats block as the Collectors section (DOC-252).
+
+- use_case_id: F-163-UC-011
+  hypothesis_id: H-011
+  kind: edit-reconcile
+  promise: |-
+    One confirmed Regenerate = exactly one rotation; a double-confirm does not
+    silently invalidate the copied token.
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "Probe PENDING-F-163-1 (then TEST-GAP-NNN once the probe resolves the verdict)"
+  proposed_test: |-
+    Headless-browser (Playwright) probe: rapidly confirm Regenerate twice
+    (close+reopen) and assert exactly one PUT fires OR the second response's token
+    is the one shown — resolves the verdict before minting the test.
+
+### probes_emitted
+- probe_id: PENDING-F-163-1
+  hypothesis_id: H-011
+  status: pending-reflection-verification
+  hypothesis_text: |-
+    When the operator double-clicks Regenerate (slow network, impatient click) or
+    re-opens the dialog and confirms twice in quick succession, the system rotates
+    the token exactly once — it does not silently issue a second token that
+    invalidates the one the operator just copied. (Local-execution: Playwright
+    headless against a local docker-compose odd-platform; intercept PUT
+    /api/datasources/{id}/token count; assert the displayed token authenticates.)
+  local_execution_blocked: false
+  note: |-
+    Parallel-safe mode — recorded here only; no P-NNN file created. Overlaps the
+    source sidecars' P-050 (backend concurrency) + P-082 (UI confirm-flow); a
+    real probe should reuse those skeletons.
+
+### validation_gaps
+- sidecar: "react-component:CollectorItemToken + react-component:CollectorItem (ABSENT)"
+  field_insufficient: |-
+    The entire Collector-side leaf (CollectorItemToken + CollectorItem) is NOT
+    enriched — chain hops 1 and 3 are `unresolved: true` in the feature-flow. The
+    cross-surface claims (H-004, H-007, H-008, H-009) lean on the Collector side
+    via the feature-flow's line citations + the CollectorsList sidecar's
+    description, NOT via independent leaf sidecars. This reflection is
+    DataSource-evidenced and Collector-asserted-by-symmetry.
+  proposed_refresh: |-
+    Enrich CollectorItemToken.tsx + CollectorItem.tsx as file-analyser sidecars
+    (mirror the DataSourceItemToken/DataSourceItem pass) so the cross-surface
+    verdicts are dual-anchored rather than symmetry-inferred. Per Rule 9 this is
+    the API/partial-UI gap to name explicitly — the DataSource UI IS in the chain,
+    the Collector UI leaf is not.
+- sidecar: "java class:TokenMapper (ABSENT — no sidecar)"
+  field_insufficient: |-
+    TokenMapper.java:15-18 (the server-side mask format that H-006/H-007 hinge on)
+    has no sidecar; it is cited only by REFERENCE through the getDataSourceList +
+    regenerateDataSourceToken backend sidecars. The exact mask-emit code was not
+    read this reflection.
+  proposed_refresh: |-
+    Enrich TokenMapper as a node so the '******' mask format + showToken branch
+    are primary-source, not reference-only — the contract the entire substring
+    sniff depends on deserves its own attested sidecar.
+- sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+  field_insufficient: |-
+    The DataSourceItemTokenStyles / CollectorItemTokenStyles CSS treatment of the
+    $isHidden visible state was not read (the sidecar notes ui_unverified for the
+    facet). Whether the visible-state CSS offers ANY copy-protection (it does not
+    appear to) is unconfirmed — H-008 is MEDIUM-confidence partly for this.
+  proposed_refresh: |-
+    Read DataSourceItemTokenStyles.ts:8-18 to confirm the $isHidden visible-state
+    treatment is a cosmetic tint with no obfuscation, lifting H-008 to HIGH.
+
+### doc_drift_findings
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: |-
+    Shows a "Regenerate action" caption + the Collectors "Issue/rotate/revoke"
+    workflow phrase; the base narrative is silent on the confirmation dialog, the
+    one-shot reveal, the copy affordance, and the no-grace destructive consequence.
+  code_does: |-
+    Confirmation dialog exists (minimal text, no consequence warning); one-shot
+    plaintext reveal + Copy + warning banner; destructive in-place no-grace
+    rotation that 401s running collectors.
+  dedup_status: already_tracked
+  tracked_as: DOC-252
+  note: |-
+    DOC-252 (done) + DOC-255 land the Known-caveats content on the Collectors and
+    DataSource sections respectively. The residual is the F-163a scanner finding's
+    "strengthens-extends" angle — symmetric coverage of the DataSources TAB
+    cross-surface dimension — already routed via the F-163a/b/c scanner_reviews on
+    the feature-flow. NOT a fresh DOC item; corroboration of the existing ones.
+
+## maintainer_notes
+
+(empty — first reflection of this feature at v0.3.0; no prior reflection existed
+at this path. No maintainer-curated hypotheses to preserve.)

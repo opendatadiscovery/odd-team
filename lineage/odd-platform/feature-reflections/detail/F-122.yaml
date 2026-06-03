@@ -1,0 +1,848 @@
+---
+feature_id: F-122
+pillar_anchored_id: P-09:F-008
+pillar: "P-09 Security & Access Control"
+feature_name: "Operator Management-Endpoint Exposure Surface — `/actuator/env` enumerates configured credentials"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - "odd-platform__java__MinioConfig__config-class__MinioConfig.md"
+  - "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+  - "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDLDAPProperties.md"
+  - "odd-platform__java__R2DBCConfiguration__config-class__R2DBCConfiguration.md"
+  - "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+sidecars_referenced_but_absent:
+  - node: "odd-platform java utils class:SecurityConstants"
+    note: |-
+      Chain hop 2 (`SecurityConstants.WHITELIST_PATHS contains /actuator/**`) is
+      cited in the feature-flow `contributing_nodes` but has NO enriched sidecar
+      file under understanding/. The WHITELIST_PATHS claim was confirmed by a
+      Rule-8 source read (SecurityConstants.java:95-96). Surfaced as a
+      validation_gap.
+  - node: "odd-platform java config-key-consumer:management.endpoints.web.exposure.include"
+    note: |-
+      Chain hop 1 (the `management.*` config-key-consumer node) is cited in
+      `contributing_nodes` but has NO enriched sidecar. The application.yml
+      management block was confirmed by a Rule-8 source read
+      (application.yml:226-240). Surfaced as a validation_gap.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The operator-facing deployment-config page NOW documents the actuator
+      exposure surface in full (the `/actuator/**` whitelist-ahead-of-auth
+      posture, the `env`/`info` default exposure, the `show-values: NEVER`
+      default redaction, the `management.server.port: 8081` isolation
+      mitigation, the `exposure.include: health,prometheus` drop-env-info
+      mitigation, AND the `odd-platform-password` well-known-default warning).
+      The three DOC-NNN candidates the concept-invariant proposed are
+      RESOLVED at the doc surface. The CODE-side residue remains (shipped
+      defaults, whitelist membership, Lombok-`@Data` toString). See
+      doc_drift_findings — there is NO doc-drift; the doc is accurate.
+hypothesis_summary:
+  total: 11
+  confirmed: 7
+  contradicted: 2
+  partial: 2
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      The feature-flow's own facet claims `show-values=WHEN_AUTHORIZED` is set
+      at application.yml:240, but no `show-values` key exists in application.yml
+      — the masking is the Spring-Boot framework default (`NEVER`), an
+      operator-removable framework guarantee, not a platform-authored contract.
+related_feature_flows:
+  - F-122
+  - F-119
+related_concepts:
+  - "actuator-credential-exposure"
+  - "plaintext-db-credentials-default-with-actuator-env-exposed-default"
+  - "lombok-data-tostring-sensitive-field-leak"
+related_drift_classes:
+  - actuator_path_whitelisted_reachable_unauthenticated_every_mode
+  - value_masking_is_defence_in_depth_not_contract
+  - field_name_leak_credential_schema_enumeration
+  - jdbc_url_unmasked_pg_host_leak
+  - shipped_default_database_password_well_known_credential
+  - lombok_data_tostring_includes_passwords_unfiltered
+  - management_server_port_unset_actuator_on_main_port
+new_drift_classes_proposed:
+  - feature_flow_facet_show_values_when_authorized_inaccurate_no_key_in_yaml
+---
+
+# Operator Management-Endpoint Exposure Surface — product-owner reflection
+
+## product_owner_narrative
+
+This "feature" is not a screen a user opens; it is an **operator-infrastructure
+surface** that exists by inheritance — ODD Platform mounts Spring Boot Actuator on
+the same HTTP port as the application, exposes four endpoints by default
+(`health`, `prometheus`, `env`, `info`), and places the entire `/actuator/**` tree
+ahead of the authentication chain in every auth mode. The capability a security
+reviewer or operator cares about is the inverse of a normal feature: not "what can
+the user do" but "what does an unauthenticated network caller learn about this
+deployment by hitting `/actuator/env`." The pillar anchor is P-09 Security & Access
+Control (per `system-mission.md` P-09, "three independently-configured
+authentication surfaces … gating mutations") — but this surface sits *outside* all
+three: it is reachable BEFORE any of them runs (per the WHITELIST_PATHS membership
+at SecurityConstants.java:95-96, confirmed by source read). The cross-pillar note
+in the feature-flow detail is precise: actuator is "operator-infrastructure rather
+than user-facing API; the P-11 API Reference page does not enumerate them."
+
+There is no UI hop. The terminal side effect is an `HTTP 200 JSON` response
+(per feature-flow `terminal_side_effect`), consumed by ops tooling (Prometheus
+scrapers, debugging operators) or by an attacker who has reached the port. The
+inputs are not user inputs — they are the *shipped configuration defaults*: a
+well-known database password (`odd-platform-password` at application.yml:7), a
+JDBC URL that names the PG host/port/database (application.yml:5), and every
+`@Value`/`@ConfigurationProperties`-bound credential across the auth providers
+(S3 access/secret keys per `MinioConfig` sidecar:14-17; LDAP password per
+`ODDLDAPProperties` sidecar:14; OAuth2 client secrets per `ODDOAuth2Properties`
+sidecar:34; R2DBC passwords per `R2DBCConfiguration` sidecar:35,58). The
+"working parts" are three defence layers that each have a gap: (1) value masking
+(`show-values`, which the framework defaults to `NEVER` and which masks only
+key-names matching `password|secret|key|token`); (2) the whitelist (which makes
+the endpoint reachable pre-auth); and (3) the absence of a separate management
+port (so operators cannot trivially firewall actuator off the public surface).
+
+A senior product owner reasons about this surface from the *operator's deployment
+moment*: an operator clones the compose file, brings the stack up, and — if they
+skip the hardening steps — ships a deployment where an attacker scanning the
+network can (a) confirm which auth providers are wired (Google + Azure + LDAP
+keys appear as distinct prefixes — schema fingerprinting per the
+`field_name_leak_credential_schema_enumeration` drift class), (b) read the
+unmasked JDBC URL to locate the database (per `jdbc_url_unmasked_pg_host_leak`),
+and (c) — if the operator also skipped rotating the password — combine the two
+into a one-line-away PG compromise (per `shipped_default_database_password_well_known_credential`).
+This is the LSN-001/LSN-002 class: a convenient dev/demo default that is unsafe
+in production, with safety resting entirely on operator discipline that two prior
+retrospectives proved insufficient (per the concept-invariant
+`plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml`).
+
+The integration story is cross-pillar by construction. Every Properties class that
+binds a credential — across P-08 Management, P-09 Security, P-10 Integrations
+(attachment storage), and P-07 Active Platform Features (notification webhook
+URLs) — surfaces through this single endpoint (per the feature-flow
+`cross_pillar_relationships` P-08 entry, and per the concept-invariant's
+5-sidecar triangulation). F-119 (the AppInfo fingerprint surface, SHB-173) is the
+complementary narrower surface; F-122 is the broader schema fingerprint. A
+defence-in-depth gap in any one Properties class (a missing `@ToString.Exclude`)
+compounds here: a future `log.info("props={}", properties)` line would emit the
+LDAP password or OAuth2 client-secret in cleartext (per `ODDLDAPProperties`
+sidecar bugs[0] and `ODDOAuth2Properties` sidecar bugs[3]).
+
+The product owner's demo edge cases are the auth-mode permutations: under DISABLED,
+`/actuator/env` is anonymously reachable; under LOGIN_FORM, it requires auth but
+every form-authenticated user is ADMIN (so any user reads it, plus the plaintext
+`auth.login-form-credentials`); under OAUTH2/LDAP, it is unauthenticated via the
+`/actuator/**` whitelist even though the UI auth chain runs (per the concept-invariant
+"COMPOUND WITH AUTH MODE" section). The honest summary: the masking is real but is
+a framework default, not a platform guarantee; the whitelist is a deliberate choice
+that shifts the trust boundary to the operator's network discipline; and — the
+finding this reflection adds — the feature-flow's own facet text claims a
+platform-authored `show-values=WHEN_AUTHORIZED` that does not exist in the YAML.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an unauthenticated network caller issues `GET /actuator/env` against an
+    OAUTH2- or LDAP-configured deployment, the request is NOT rejected by the auth
+    chain — it returns HTTP 200 with the property-source enumeration, because
+    `/actuator/**` is whitelisted ahead of authentication.
+  derivation: |-
+    `WHITELIST_PATHS` at SecurityConstants.java:95-96 contains `/actuator/**`;
+    the concept-invariant's "COMPOUND WITH AUTH MODE" section states OAUTH2/LDAP
+    reach it unauthenticated via this whitelist.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `SecurityConstants.WHITELIST_PATHS = {"/actuator/**", "/favicon.ico",
+      "/ingestion/**", "/img/**", "/api/slack/events"}` (source read,
+      SecurityConstants.java:95-96 — actual path
+      auth/util/SecurityConstants.java). The whitelist is applied ahead of the
+      SECURITY_RULES authentication chain in every auth mode. The concept-invariant
+      confirms: under OAUTH2/LDAP the env endpoint is unauthenticated even though
+      the UI auth chain runs; under DISABLED it is anonymous via
+      `.anyExchange().permitAll()`. The live doc independently states `/actuator/**`
+      is "intentionally whitelisted ahead of the authentication chain in every
+      auth.type."
+    evidence:
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: "COMPOUND WITH AUTH MODE"
+        cite: "concept-invariant:63-77 + SecurityConstants.java:95-96"
+        note: "OAUTH2/LDAP reach /actuator/env unauthenticated via the whitelist."
+      - sidecar: source_read_for_validation
+        section: WHITELIST_PATHS
+        cite: "odd-platform-api/.../auth/util/SecurityConstants.java:95-96"
+        note: "/actuator/** is the first element of WHITELIST_PATHS."
+    source_read_for_validation: true
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+- id: H-002
+  hypothesis: |-
+    When an operator inspects the platform's default configuration, they find a
+    platform-authored `management.endpoint.env.show-values=WHEN_AUTHORIZED` setting
+    governing actuator value masking (as the feature-flow facet
+    `value_masking_is_defence_in_depth_not_contract` and chain hop 1 evidence both
+    state at application.yml:240).
+  derivation: |-
+    The feature-flow detail at line 32 and the facet at lines 70-77 both claim
+    "Platform sets show-values=WHEN_AUTHORIZED at application.yml:240."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      No `show-values` key exists anywhere in the application.yml management block
+      (source read, application.yml:226-245 — the block contains
+      `endpoints.enabled-by-default: false`, `exposure.include: health, prometheus,
+      env, info`, and per-endpoint `enabled: true` for health/prometheus/env/info,
+      but NO `management.endpoint.env.show-values` line). Masking is therefore at
+      the Spring Boot framework default (`NEVER` in 3.4+). All four config sidecars
+      independently and correctly state this: MinioConfig sidecar:125 ("Spring Boot
+      3.4+ defaults show-values=NEVER … the field names themselves … leak");
+      ODDLDAPProperties sidecar:128 ("Spring Boot's default, NOT a platform-authored
+      protection"); the concept-invariant:31-35 ("Spring Boot 3.4+ defaults
+      show-values=NEVER"); R2DBCConfiguration sidecar:195 ("no test … asserts this
+      masking"). The live doc also states the default is `show-values: NEVER`. The
+      feature-flow facet's claim of an explicit `WHEN_AUTHORIZED` platform setting is
+      inaccurate — the difference is load-bearing: a framework default is an
+      operator-removable guarantee, whereas the facet implies a platform contract.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: management-block
+        cite: "application.yml:226-245 (no show-values key)"
+        note: "The management block has no show-values; default NEVER governs."
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: "DEFAULT 2"
+        cite: "concept-invariant:26-35"
+        note: "Spring Boot 3.4+ default show-values=NEVER; not platform-set."
+      - sidecar: "odd-platform__java__MinioConfig__config-class__MinioConfig.md"
+        section: bugs_limitations_corner_cases
+        cite: "MinioConfig sidecar:125"
+        note: "Spring Boot 3.4+ default; field names + presence still leak."
+    source_read_for_validation: true
+    operator_visible_failure: |-
+      An operator reading the F-122 feature-flow (or any artefact that copied its
+      facet text) believes the platform actively sets `WHEN_AUTHORIZED` and so
+      assumes masking is a platform guarantee they cannot accidentally weaken. In
+      reality (a) masking is the framework default — a Spring Boot major-version
+      change, or a pre-3.4 inherited `ALWAYS` default, silently flips it; (b)
+      `WHEN_AUTHORIZED` and `NEVER` differ in behaviour — `WHEN_AUTHORIZED` shows
+      values to an authorized caller, but under the WHITELIST there is no
+      authorization on `/actuator/env`, so the difference is moot AND the facet's
+      framing misleads. The maintainer-facing risk is reasoning about the masking
+      posture from a wrong premise. Routes to a feature-flow facet correction.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+- id: H-003
+  hypothesis: |-
+    When an attacker reads `/actuator/env` on a default deployment, the
+    `spring.datasource.url` value is returned UNMASKED (revealing PG host, port,
+    and database name), because the masker matches only key-names containing
+    `password|secret|key|token` and `url` is not in that set.
+  derivation: |-
+    Feature-flow facet `jdbc_url_unmasked_pg_host_leak`; concept-invariant "THE GAPS
+    THE MASKING DOES NOT COVER" item 1.
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The masker is a substring match on the property KEY name
+      (`password|secret|key|token`). `spring.datasource.url` (application.yml:5,
+      shipped `jdbc:postgresql://127.0.0.1:5432/odd-platform`) does not match any
+      masked substring and renders verbatim. The R2DBCConfiguration sidecar
+      data_exposure[1] states it directly ("JDBC URL exposed via /actuator/env
+      reveals the database host/port/database-name … Standard masking does NOT
+      cover URL keys"); the concept-invariant item 1 corroborates. The live doc
+      confirms only values for masked keys are redacted; URL keys are out of scope.
+    evidence:
+      - sidecar: "odd-platform__java__R2DBCConfiguration__config-class__R2DBCConfiguration.md"
+        section: security.data_exposure
+        cite: "R2DBCConfiguration sidecar:191-192"
+        note: "JDBC URL not covered by the substring masker; host:port:db leak."
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: "THE GAPS THE MASKING DOES NOT COVER"
+        cite: "concept-invariant:37-41"
+        note: "spring.datasource.url not masked — PG location disclosed."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+- id: H-004
+  hypothesis: |-
+    When an operator deploys the bundled compose/default config without overriding
+    `spring.datasource.password`, the platform runs against the database with the
+    well-known shipped credential `odd-platform-password` and boots successfully
+    (no fail-fast guard rejects the default).
+  derivation: |-
+    Feature-flow facet `shipped_default_database_password_well_known_credential`;
+    application.yml:7; R2DBCConfiguration sidecar known_security_gaps[0].
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      application.yml:7 ships `spring.datasource.password: odd-platform-password`
+      (source read). The R2DBCConfiguration sidecar known_security_gaps[0] states
+      "a deployment that forgets to override … runs with a well-known credential …
+      No IllegalStateException at bean creation if the password equals the shipped
+      default — silent acceptance." There is no boot guard anywhere in the chain;
+      the concept-invariant lists "fail-fast boot guard" as an UNIMPLEMENTED
+      mitigation. The live doc warns this is "one-line-away-from-full-PostgreSQL-
+      compromise … if exposed on a non-trusted network" — confirming the behaviour
+      and that mitigation is doc-only/operator-discipline.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: datasource
+        cite: "application.yml:7"
+        note: "Shipped default password is the literal odd-platform-password."
+      - sidecar: "odd-platform__java__R2DBCConfiguration__config-class__R2DBCConfiguration.md"
+        section: security.known_security_gaps
+        cite: "R2DBCConfiguration sidecar:194"
+        note: "Silent acceptance of the default password; no boot guard."
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: mitigations_unimplemented
+        cite: "concept-invariant:168-173"
+        note: "Fail-fast boot guard is an unimplemented mitigation."
+    source_read_for_validation: true
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+- id: H-005
+  hypothesis: |-
+    When `/actuator/env` is read on a deployment with OAuth2 configured for
+    multiple providers, the response reveals WHICH providers are wired (e.g.
+    `auth.oauth2.client.google.*` and `auth.oauth2.client.azure.*` key prefixes
+    appear), enabling deployment fingerprinting even though the secret VALUES are
+    masked.
+  derivation: |-
+    Feature-flow facet `field_name_leak_credential_schema_enumeration`;
+    ODDOAuth2Properties sidecar (map-keyed per-client schema).
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `ODDOAuth2Properties` binds `Map<String, OAuth2Provider> client` where the
+      map key is the operator-chosen client identifier used verbatim as the URL
+      segment and registrationId (sidecar concepts.entities + implicit_adrs[0]).
+      Each registered client's keys (`auth.oauth2.client.{key}.client-id`, etc.)
+      appear in `/actuator/env` as distinct property keys; masking redacts the
+      `client-secret` VALUE (key matches `secret`) but the KEY NAMES enumerate the
+      provider set. The concept-invariant item 5 states the same for S3
+      (`accessKey`/`secretKey` field-name + presence leak); the feature-flow facet
+      generalises it to the OAuth2 provider schema. The live doc names this as
+      schema fingerprinting beyond AppInfo (F-119).
+    evidence:
+      - sidecar: "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+        section: concepts.entities
+        cite: "ODDOAuth2Properties sidecar:35 + implicit_adrs[0]"
+        note: "Map key is the per-client identifier — surfaces as a distinct env key prefix."
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: "THE GAPS THE MASKING DOES NOT COVER"
+        cite: "concept-invariant:50-55"
+        note: "Field name + configuration presence leak even when values are masked."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+- id: H-006
+  hypothesis: |-
+    When the platform logs a Properties object at any future point (e.g.
+    `log.info("loaded properties: {}", oddLdapProperties)`), the LDAP password
+    and the OAuth2 client-secret are emitted in CLEARTEXT, because the `@Data`
+    Lombok annotation generates a `toString()` covering every field with no
+    `@ToString.Exclude` on any credential field.
+  derivation: |-
+    Feature-flow facet `lombok_data_tostring_includes_passwords_unfiltered`;
+    ODDLDAPProperties sidecar:14; ODDOAuth2Properties sidecar:34.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `ODDLDAPProperties` declares `@Data` (sidecar:10) and `private String
+      password` (sidecar:14) with NO `@ToString.Exclude`/`@JsonIgnore`; the
+      sidecar bugs[0] states "any log statement log.info('properties = {}',
+      properties) would emit the cleartext password." `ODDOAuth2Properties`
+      declares `@Data` on the nested `OAuth2Provider` (sidecar:30) with `private
+      String clientSecret` (sidecar:34) and NO `@ToString.Exclude` — sidecar
+      bugs[3] confirms `provider.toString()` returns `clientSecret=<plaintext>`.
+      This is a defence-in-depth gap: not currently breached (no log site found),
+      but the guard is absent. The actuator `/configprops` endpoint masks
+      `*secret*`/`*password*` by default — but the toString vector is independent
+      of actuator masking.
+    evidence:
+      - sidecar: "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDLDAPProperties.md"
+        section: bugs_limitations_corner_cases
+        cite: "ODDLDAPProperties sidecar:107"
+        note: "@Data toString includes password; no @ToString.Exclude."
+      - sidecar: "odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md"
+        section: bugs_limitations_corner_cases
+        cite: "ODDOAuth2Properties sidecar:95"
+        note: "provider.toString() returns clientSecret=<plaintext>."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+- id: H-007
+  hypothesis: |-
+    When an operator wants to move actuator off the public surface by binding it to
+    a separate internal port, they find the platform provides a default
+    `management.server.port` and runs actuator on an internal-only port out of the
+    box.
+  derivation: |-
+    Feature-flow facet `management_server_port_unset_actuator_on_main_port`.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `management.server.port` is unset in application.yml (the management block
+      at application.yml:226-245 has no `server.port` key — source read). Actuator
+      runs on the same HTTP port as the application. The feature-flow facet
+      `management_server_port_unset_actuator_on_main_port` states this directly,
+      and the concept-invariant lists "separate the management endpoint port" as an
+      UNIMPLEMENTED mitigation. The live doc RECOMMENDS operators set
+      `management.server.port: 8081` — i.e. it is an operator action, not a
+      platform default.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: management-block
+        cite: "application.yml:226-245 (no management.server.port)"
+        note: "Actuator shares the application port; no isolation by default."
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: mitigations_unimplemented
+        cite: "concept-invariant:189-193"
+        note: "Separate management port is an unimplemented mitigation."
+    source_read_for_validation: true
+    operator_visible_failure: |-
+      An operator who assumes actuator is isolated by default exposes
+      `/actuator/env` (and the credential-schema enumeration of H-005, the JDBC URL
+      of H-003) on the same public ingress as the catalog UI/API. Splitting
+      actuator onto an internal port requires a deliberate `management.server.port`
+      config change plus an ingress/firewall rule the platform does not scaffold.
+      For DISABLED-mode deployments this means anonymous internet access to the
+      env enumeration; for OAUTH2/LDAP it means unauthenticated access via the
+      whitelist (H-001). The mitigation now lives in the doc (resolved doc-gap),
+      but the code default does not encourage it.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+- id: H-008
+  hypothesis: |-
+    When a Slack/webhook notification receiver is configured and `/actuator/env`
+    is read, the receiver URL (`notifications.receivers.slack.url`) is returned
+    UNMASKED, because `url` is not in the default masker substring set — and a
+    webhook URL is itself a credential (anyone holding it can post to the channel).
+  derivation: |-
+    Concept-invariant "THE GAPS THE MASKING DOES NOT COVER" items 3-4;
+    NotificationConfiguration is a contributor to the concept-invariant.
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The concept-invariant item 3 states `notifications.receivers.slack.url`
+      (NotificationConfiguration.java:77) is bound and that Spring's default mask
+      does NOT include `url`, so the Slack URL is fetchable via `/actuator/env` if
+      notifications are enabled (P-07 cross-pillar). This is CONFIRMED at the
+      concept level. It is PARTIAL because: (a) it is conditional on the operator
+      enabling notifications (P-07 is opt-in per system-mission P-07 "all five off"
+      default), so the leak does not exist on a default deployment; and (b) the
+      `NotificationConfiguration` sidecar itself was NOT in this reflection's
+      contributing-sidecar read set — the claim rests on the concept-invariant's
+      summary of it, not on a direct sidecar trace. The unverified half is
+      precisely the conditional-on-enabled path.
+    evidence:
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: "THE GAPS THE MASKING DOES NOT COVER"
+        cite: "concept-invariant:45-49 + contributors NotificationConfiguration"
+        note: "Slack/webhook URL not masked; webhook URL is a credential-by-nature."
+    operator_visible_failure: |-
+      An operator who enables Slack notifications and exposes actuator leaks the
+      incoming-webhook URL to any actuator caller; anyone with that URL can post
+      arbitrary messages into the operator's Slack channel (spoofing alerts,
+      phishing the team). The leak is silent because the operator reasonably
+      assumes URLs are not sensitive — but an incoming-webhook URL embeds the
+      secret token in its path. Surfaced as a caveat tied to the
+      notifications-enabled condition.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+- id: H-009
+  hypothesis: |-
+    When the platform boots, ONLY the four endpoints `health, prometheus, env,
+    info` are exposed under `/actuator/**` — other actuator endpoints (beans,
+    configprops, mappings, heapdump, threaddump) are NOT reachable, because the
+    platform sets `endpoints.enabled-by-default: false` and explicitly enables only
+    those four.
+  derivation: |-
+    application.yml:228 (`enabled-by-default: false`) + 230-240 (the four-endpoint
+    include + per-endpoint enabled).
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      application.yml:226-240 (source read): `management.endpoints.enabled-by-default:
+      false`, then `web.exposure.include: health, prometheus, env, info`, then
+      per-endpoint `enabled: true` for exactly health/prometheus/env/info. The
+      `enabled-by-default: false` gate means an endpoint must be BOTH included AND
+      individually enabled — so `beans`/`configprops`/`heapdump`/`threaddump` are
+      off. This narrows the surface relative to a naive "expose env" config: the
+      richer `/actuator/configprops` (which would dump bound Properties objects,
+      and the `/actuator/beans` introspection) are NOT reachable. The exposure is
+      deliberately limited to the four, which is a mitigating design choice the
+      feature-flow facets do not credit.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: management-block
+        cite: "application.yml:226-240"
+        note: "enabled-by-default:false + explicit four-endpoint enable closes beans/configprops/heapdump."
+    source_read_for_validation: true
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+- id: H-010
+  hypothesis: |-
+    When a security reviewer checks for a test that asserts the actuator masking
+    covers every configured credential key (so a future config addition cannot
+    silently leak a new credential through `/actuator/env`), they find such a
+    regression test in the platform test suite.
+  derivation: |-
+    Feature-flow facet `value_masking_is_defence_in_depth_not_contract` ("No
+    platform-side test asserts the masker covers every configured key"); the four
+    config sidecars all report zero test coverage.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      No such test exists. `HealthAPITest` (the only actuator test found) hits only
+      `/actuator/health` for a liveness check (HealthAPITest.java:17-21 — source
+      read). `SecurityRulesAuthzGapsKnownBugsTest` source-scans
+      SecurityConstants.java but pins UNRELATED whitelist gaps (PLT-054 slack,
+      PLT-020 genai, PLT-012 term path) — it does NOT assert anything about
+      `/actuator/**` membership or actuator-env masking
+      (SecurityRulesAuthzGapsKnownBugsTest.java:48-79 — source read). The
+      MinioConfig/ODDLDAP/ODDOAuth2/R2DBC sidecars each report
+      `covered_behaviours: []` and grep-verified zero test files. The feature-flow
+      facet says it plainly: "No platform-side test asserts the masker covers every
+      configured key." Confirmed: the masking is wholly unguarded by tests.
+    evidence:
+      - sidecar: source_read_for_validation
+        section: HealthAPITest
+        cite: "HealthAPITest.java:17-21 (only /actuator/health)"
+        note: "The only actuator test checks liveness, not env masking."
+      - sidecar: source_read_for_validation
+        section: SecurityRulesAuthzGapsKnownBugsTest
+        cite: "SecurityRulesAuthzGapsKnownBugsTest.java:48-79"
+        note: "Pins PLT-054/020/012 whitelist gaps; nothing about /actuator/** or env masking."
+      - sidecar: "odd-platform__java__R2DBCConfiguration__config-class__R2DBCConfiguration.md"
+        section: security.known_security_gaps
+        cite: "R2DBCConfiguration sidecar:195"
+        note: "No test asserts masking covers spring.custom-datasource.password."
+    source_read_for_validation: true
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+- id: H-011
+  hypothesis: |-
+    When an operator reads the deployment-configuration documentation, they find
+    explicit guidance to (a) restrict/isolate the actuator endpoints and (b) rotate
+    the shipped default database password before any non-local deployment.
+  derivation: |-
+    Concept-invariant proposes three DOC-NNN candidates (operator-hardening
+    checklist, management-endpoint isolation, per-auth-mode actuator cross-links);
+    this hypothesis tests whether the doc surface delivers them.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The live doc (`/configuration-and-deployment/odd-platform`, WebFetch
+      2026-06-03 status 200) NOW delivers the actuator-hardening guidance the
+      concept-invariant proposed: it documents the `/actuator/**` whitelist-ahead-of-auth
+      posture, the `env`/`info` default exposure, the `show-values: NEVER`
+      redaction, the `management.server.port: 8081` isolation mitigation, the
+      `exposure.include: health,prometheus` drop-env-info mitigation, AND the
+      `odd-platform-password` well-known-credential warning. So DOC-candidates (a)
+      and (b) from the concept-invariant are RESOLVED. It is PARTIAL because the
+      concept-invariant's third candidate — a cross-link from EACH auth-mode page
+      (DISABLED/LOGIN_FORM/OAUTH2/LDAP) to the actuator-exposure consequence under
+      that mode — was not verified in this reflection (only the deployment-config
+      page was fetched); the per-auth-mode reachability nuance (LOGIN_FORM-ADMIN-for-all
+      reaching env, DISABLED anonymous) may not be surfaced on those pages.
+    evidence:
+      - sidecar: "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+        section: live-doc
+        cite: "WebFetch 2026-06-03 status 200"
+        note: "Doc now documents actuator isolation + password-rotation hardening."
+      - sidecar: "concepts/detail/invariants/plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml"
+        section: notes
+        cite: "concept-invariant:217-222"
+        note: "Three DOC-NNN candidates; (a)/(b) resolved, (c) per-auth-mode cross-link unverified."
+    operator_visible_failure: |-
+      The deployment-config page carries the hardening; an operator who reads it is
+      protected. But an operator who lands on a specific auth-mode page (e.g. the
+      LDAP page) to configure authentication, and never visits the
+      deployment-config page, may not learn that enabling LDAP still leaves
+      `/actuator/env` unauthenticated via the whitelist (H-001). The gap is the
+      missing cross-link from the auth-mode pages to the actuator consequence —
+      a reader-flow defect, routed as a doc-gap candidate for the third
+      concept-invariant DOC candidate.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    The F-122 feature-flow facet `value_masking_is_defence_in_depth_not_contract`
+    claims `show-values=WHEN_AUTHORIZED` is set at application.yml:240, but no
+    show-values key exists in the YAML — masking is the framework default NEVER.
+  dedup_status: net_new
+  distinct_from: "PLT-029 (the actuator-env credential exposure itself, REFACTOR-029) — this is an ARTEFACT-accuracy defect in the feature-flow facet text, not the runtime exposure"
+  recommended_log_as: "feature-flow facet correction (annotate F-122 detail) — not an upstream BUG"
+  proposed_fix_anchor: |-
+    F-122 feature-flow detail line 32 (hop-1 evidence) + lines 70-77 (facet
+    description): replace "Platform sets show-values=WHEN_AUTHORIZED at
+    application.yml:240" with "show-values is unset → Spring Boot framework default
+    NEVER governs; no platform-authored masking contract; no keys-to-sanitize
+    override (grep zero)."
+
+### caveat_candidates
+- hypothesis_id: H-007
+  one_line: |-
+    management.server.port is unset → actuator shares the application port; no
+    platform default isolates it. Operator must set management.server.port +
+    ingress rule.
+  dedup_status: already_tracked
+  tracked_as: "DOC (resolved) — /configuration-and-deployment/odd-platform now documents management.server.port: 8081 isolation"
+  recommended_log_as: "caveat already on /configuration-and-deployment/odd-platform (verified live 2026-06-03)"
+- hypothesis_id: H-002
+  one_line: |-
+    Actuator value masking is the Spring Boot framework default (NEVER), not a
+    platform guarantee — a framework upgrade or a pre-3.4 inherited ALWAYS default
+    silently changes it.
+  dedup_status: already_tracked
+  tracked_as: "concept-invariant plaintext-db-credentials-default-with-actuator-env-exposed-default.yaml (DEFAULT 2)"
+  recommended_log_as: "caveat already captured in concept-invariant; doc states show-values: NEVER default (verified live 2026-06-03)"
+- hypothesis_id: H-008
+  one_line: |-
+    With notifications enabled, the Slack/webhook receiver URL leaks unmasked via
+    /actuator/env (url not in the default mask set); a webhook URL is a credential.
+  dedup_status: already_tracked
+  tracked_as: "concept-invariant (THE GAPS THE MASKING DOES NOT COVER item 3-4) + NotificationConfiguration sidecar known_security_gaps[2]"
+  recommended_log_as: "caveat in /configuration-and-deployment/odd-platform (extend the keys-to-sanitize hardening note to name webhook URLs)"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every promise this reflection PROVED real (or proved broken/conditional)
+# but found UNGUARDED becomes a missing-functional TEST-GAP candidate. This security-infrastructure
+# feature ships at use_case_coverage 0/11 — the highest-leverage tests to write are the regression
+# guards for the credential-reachability invariants a future config change could silently break.
+- use_case_id: F-122-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "/actuator/env is reachable unauthenticated under OAUTH2/LDAP (whitelisted) and anonymous under DISABLED."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-001)"
+  proposed_test: |-
+    @WebFluxTest/@SpringBootTest with auth.type=OAUTH2: assert GET /actuator/env
+    returns 200 WITHOUT credentials (pins the WHITELIST_PATHS /actuator/** membership;
+    RED the instant /actuator/** is removed from the whitelist or auth-gated — a
+    deliberate characterization pin per LSN-029, since the current posture is a
+    documented operator-discipline default, not a bug to fix blindly).
+- use_case_id: F-122-UC-002
+  hypothesis_id: H-002
+  kind: grammar
+  promise: "Actuator value masking posture is whatever the platform config + framework default produce — and is asserted, not assumed."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-002)"
+  proposed_test: |-
+    A config-assertion test: parse application.yml management block and assert the
+    actual show-values posture (currently: key ABSENT → framework default). Pins the
+    facet so the feature-flow text and the YAML cannot drift again. ALSO the
+    regression guard for the H-002 facet correction.
+- use_case_id: F-122-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "spring.datasource.url renders UNMASKED in /actuator/env (PG host:port:db disclosed)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-003)"
+  proposed_test: |-
+    @SpringBootTest hitting /actuator/env: assert the spring.datasource.url value is
+    present and NOT redacted to ******, while spring.datasource.password IS redacted.
+    Pins the masker's URL-blind-spot as a known invariant (RED if a keys-to-sanitize
+    override is added covering URLs — at which point the gap is closed).
+- use_case_id: F-122-UC-004
+  hypothesis_id: H-004
+  kind: teardown-constraint
+  promise: "The platform boots without rejecting the shipped default DB password odd-platform-password (no fail-fast)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-004)"
+  proposed_test: |-
+    Characterization pin (@pins, LSN-029): assert application.yml ships
+    spring.datasource.password=odd-platform-password AND no boot guard rejects it.
+    RED the instant a fail-fast-on-default-password guard is added — the desired
+    flip direction.
+- use_case_id: F-122-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "/actuator/env enumerates the configured OAuth2 provider key prefixes (schema fingerprint) even when secret values are masked."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-005)"
+  proposed_test: |-
+    @SpringBootTest with two OAuth2 clients (google + azure) configured: assert
+    /actuator/env exposes the auth.oauth2.client.google.* and ...azure.* KEY names
+    (provider schema) while client-secret values are redacted. Pins the
+    field-name-leak invariant.
+- use_case_id: F-122-UC-006
+  hypothesis_id: H-006
+  kind: teardown-constraint
+  promise: "No credential field on the @Data Properties classes is emitted by toString() — i.e. @ToString.Exclude guards every password/secret/key field."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-006)"
+  proposed_test: |-
+    Reflective/structural test over ODDLDAPProperties + ODDOAuth2Properties.OAuth2Provider:
+    assert that toString() does NOT contain the bound password/clientSecret value
+    (currently FAILS the desired posture — so a characterization pin asserting the
+    CURRENT leak per LSN-029, RED when @ToString.Exclude is added). Cheap insurance
+    against the future log.info(props) accident.
+- use_case_id: F-122-UC-007
+  hypothesis_id: H-007
+  kind: teardown-constraint
+  promise: "Operators can isolate actuator on a separate management port — but the platform does not do so by default."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-007)"
+  proposed_test: |-
+    Config-assertion test: assert management.server.port is unset in application.yml
+    (actuator shares the app port). Pins the default; RED if a default management
+    port is introduced (the desired hardening flip).
+- use_case_id: F-122-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "With notifications enabled, the Slack/webhook receiver URL leaks unmasked via /actuator/env."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-008)"
+  proposed_test: |-
+    @SpringBootTest with notifications.receivers.slack.url configured: assert the
+    URL value is present and NOT redacted in /actuator/env. Pins the url-not-masked
+    gap on the notifications-enabled path.
+- use_case_id: F-122-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "Only health/prometheus/env/info are reachable under /actuator/**; beans/configprops/heapdump/threaddump are off."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-009)"
+  proposed_test: |-
+    @SpringBootTest: assert GET /actuator/configprops and /actuator/beans return 404
+    (not exposed) while /actuator/env returns 200. Pins the deliberate
+    enabled-by-default:false + explicit-four-endpoint surface limitation — a
+    mitigating invariant a future "expose all" config change could regress.
+- use_case_id: F-122-UC-010
+  hypothesis_id: H-010
+  kind: teardown-constraint
+  promise: "A regression test guards that actuator masking covers every configured credential key."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-010)"
+  proposed_test: |-
+    THE meta-test: parameterised assertion over the full set of bound credential
+    keys (datasource/custom-datasource password, S3 access/secret-key, LDAP password,
+    each OAuth2 client-secret) that each renders ****** in /actuator/env. This is
+    the guard whose absence is the H-010 finding — adding it converts the
+    masking-is-defence-in-depth gap into a tested invariant.
+- use_case_id: F-122-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: "Operator-hardening guidance (actuator isolation + password rotation) is documented; per-auth-mode actuator cross-links exist."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-122-UC-011) — OR doc-gap (per-auth-mode cross-link)"
+  proposed_test: |-
+    Doc-link assertion (live-site or local SUMMARY scan): assert each auth-mode page
+    (DISABLED/LOGIN_FORM/OAUTH2/LDAP) cross-links to the actuator-exposure consequence.
+    The deployment-config hardening half is already live (verified 2026-06-03).
+
+### probes_emitted
+[]
+
+### validation_gaps
+- sidecar: "odd-platform java utils class:SecurityConstants"
+  field_insufficient: "entire sidecar absent — no understanding/ file for SecurityConstants"
+  proposed_refresh: |-
+    Enrich SecurityConstants (auth/util/SecurityConstants.java) as a first-class
+    sidecar: it is the central WHITELIST_PATHS + SECURITY_RULES wiring referenced by
+    F-038/F-039/F-029/F-122 and pinned by SecurityRulesAuthzGapsKnownBugsTest. The
+    `/actuator/**` whitelist membership (line 95-96) is load-bearing for H-001 and
+    had to be confirmed by a Rule-8 source read.
+- sidecar: "odd-platform java config-key-consumer:management.endpoints.web.exposure.include"
+  field_insufficient: "entire sidecar absent — no understanding/ file for the management config-key-consumer"
+  proposed_refresh: |-
+    Enrich the application.yml management block as a config-key-consumer sidecar.
+    The block (application.yml:226-245) is hop 1 of the F-122 chain; its `show-values`
+    ABSENCE (not WHEN_AUTHORIZED) is the H-002 contradiction and had to be confirmed
+    by a Rule-8 source read. A sidecar would have caught the feature-flow facet drift
+    at enrichment time.
+- sidecar: "Spring Boot Actuator EnvEndpoint (chain hop 3)"
+  field_insufficient: "hop 3 is `unresolved` — EnvEndpoint is a Spring framework class with no platform node"
+  proposed_refresh: |-
+    Per Rule 20 (LSN-025) this is a substrate-coverage gap, NOT a missing-sidecar gap:
+    the EnvEndpoint enumeration behaviour is framework-owned. The fix is to record the
+    masking contract (substring key-match on password|secret|key|token; default NEVER)
+    as a documented external-dependency assumption on the feature-flow, not to enrich a
+    node that does not exist in nodes.jsonl.
+
+### doc_drift_findings
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security (per-auth-mode pages: DISABLED / LOGIN_FORM / OAUTH2 / LDAP)"
+  doc_says: |-
+    The deployment-config page documents actuator isolation + password rotation
+    fully (verified live 2026-06-03). The per-auth-mode pages were not verified to
+    cross-link the actuator-exposure consequence under each mode.
+  code_does: |-
+    Under DISABLED /actuator/env is anonymous; under LOGIN_FORM any (ADMIN) user
+    reaches it; under OAUTH2/LDAP it is unauthenticated via the /actuator/**
+    whitelist (concept-invariant COMPOUND WITH AUTH MODE + SecurityConstants.java:95-96).
+  recommended_log_as: "doc-gap-NNN (pending) — per-auth-mode cross-link to actuator exposure (the third concept-invariant DOC candidate)"
+
+## maintainer_notes
+
+(none — first reflection of F-122; no maintainer-curated entries to preserve)

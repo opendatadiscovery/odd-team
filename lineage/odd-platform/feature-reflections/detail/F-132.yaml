@@ -1,0 +1,676 @@
+---
+feature_id: F-132
+pillar_anchored_id: P-02:F-001
+pillar: P-02 Data Modelling
+feature_name: |-
+  Query Example Details Tab Navigation — Overview / Linked Entities /
+  Linked Terms tabs with ?tab URL-state + count-hint badges; per-tab
+  pure-render sub-views
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+parallel_safe_mode: true
+contributing_sidecars_read:
+  # The four UI hops in the feature-flow chain are all `sidecar: unresolved` — NO enriched
+  # react-component sidecar exists for QueryExampleDetailsContainer / Tabs / LinkedEntities /
+  # LinkedTerms / Overview. The UI evidence consumed here is the feature-flow detail's own
+  # primary-source walk (the .tsx file:line citations embedded in `chain` + `observed_vs_expected`),
+  # NOT a standalone sidecar. See the first validation_gap (Rule 9 — API-only reflection).
+  - odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md  # the backend that fills the pre-fetched details payload
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Cross-referenced via the QueryExampleController sidecar's docs_link_semantic (live WebFetch
+      2026-05-20 status 200) and the F-025 sibling reflection (re-fetched 2026-06-03 status 200).
+      The page documents the Query Examples feature (fields, RBAC, faceted search) but does NOT
+      enumerate the three-tab structure of the Details page (Overview / Linked Entities / Linked
+      Terms), nor the ?tab URL-state, nor the count-hint badges. This doc-silence on the tab
+      navigation is already tracked as the feature-flow's own scanner finding F-132a (composite
+      missing-page) — see doc_drift_findings.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 3
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-007
+    severity: HIGH
+    one_line: "The Overview tab renders the snippet definition + query through MDEditor.Markdown with no extra sanitiser — the F-004 4th stored-XSS surface; a planted payload renders to every authenticated reader (read-collaborative blast radius)."
+related_feature_flows: [F-025, F-131, F-037, F-002, F-004, F-155]
+related_concepts:
+  - "Query Example"
+  - "Linked Entities (per Query Example)"
+  - "Linked Terms (per Query Example)"
+  - "URL-as-typed-state (no runtime validation)"
+  - "Markdown Rendering Pipeline"
+  - "Read-collaborative Catalog Posture"
+related_drift_classes:
+  # confirmed/validated from the feature-flow's own observed_vs_expected facets
+  - query_example_details_tab_url_param_no_runtime_validation_arbitrary_strings_fall_through_to_overview_silently
+  - query_example_details_linked_entities_hint_uses_page_info_total_but_linked_terms_hint_uses_items_length_inconsistent_counting_pattern_for_paginated_vs_unpaginated_collections
+  - query_example_details_no_breadcrumb_back_to_list_page_user_relies_on_browser_back_or_left_sidebar_tab
+  - query_example_details_linked_entities_and_linked_terms_pure_render_no_inline_unlink_or_edit_affordance_management_only_via_external_data_entity_or_term_page
+  # inherited from the backend the page consumes (QueryExampleController sidecar)
+  - markdown_render_no_sanitisation_xss_surface_extension_f_004_4th
+  - ten_of_thirteen_endpoints_no_security_rule_authenticated_only
+new_drift_classes_proposed:
+  - query_example_details_linked_terms_hint_items_length_silently_understates_when_linked_term_list_pageinfo_total_exceeds_fetched_items
+  - query_example_details_zero_fetch_on_tab_switch_stale_badge_after_external_link_change_until_full_page_reload
+
+---
+
+# Query Example Details Tab Navigation — product-owner reflection
+
+## product_owner_narrative
+
+The Query Example Details page is where an analyst lands after clicking a snippet in the Data Modelling catalog (or following a deep link at `/data-modelling/query-examples/:queryExampleId`). It is the *reading* surface for one curated query example — the companion to F-025's catalog + authoring surface and F-131's edit dialog. The page organises everything known about a single snippet into three tabs: **Overview** (the human `definition` and the executable `query` body, both rendered as Markdown), **Linked Entities** (a table of every data entity the snippet is attached to — Name, Namespace, Datasource, Owner, Created, Updated), and **Linked Terms** (a table of every glossary term the snippet is attached to — Name, Namespace) (per the feature-flow chain hops 1-4, `QueryExampleDetailsContainer.tsx:74-94` + the two table components). The audience is the read side of Query Examples: analysts and BI engineers discovering vetted query knowledge, plus the data engineers and stewards who authored it (per the QueryExampleController sidecar `concepts.audiences`).
+
+The interaction is deliberately lightweight. The whole details payload — definition, query, the full linked-entities list (with dimensions), and the full linked-terms list — is fetched ONCE at container mount via `useGetQueryExampleDetails` → `GET /api/queryexample/{id}` → `QueryExampleController.getQueryExampleDetails` (per controller sidecar `operations.getQueryExampleDetails`; amplification_factor STATIC=1 per the feature-flow). Switching tabs is then a zero-network client re-render: the active tab is read from `?tab=overview|linked-entities|linked-terms` (`QueryExampleDetailsContainer.tsx:30-31`), and clicking a tab writes the new value back to the URL via `setSearchParams` (`QueryExampleDetailsTabs.tsx:44-53`). Each tab carries a count-hint badge so the user can see at a glance how many entities and terms are linked before opening the tab (`QueryExampleDetailsTabs.tsx:15-33`).
+
+The working parts a product owner would demo: **URL-shareable tab state** (a colleague can be sent a link straight to the Linked Entities view); **count-hint badges** (the Linked Entities tab shows a count from `linkedEntities.pageInfo.total`, the Linked Terms tab a count from `linkedTerms.items.length` — note the asymmetry, the load-bearing observation of this reflection); **deep navigation out** (clicking a Linked Entities row jumps to that dataset's detail page via `dataEntityDetailsPath`; clicking a Linked Terms row jumps to that term's page via `termDetailsPath` — the two cross-pillar exits, to P-01 and P-06); and **an empty-state placeholder** when a tab has no rows (`EmptyContentPlaceholder` on both tables).
+
+The feature sits squarely between three pillars. It is the *read terminus* of F-025 Query Examples (P-02 Data Modelling) — the snippet it shows is created and edited elsewhere (the authoring modal of F-131, the link CRUD that lives on `DataEntityController` and `TermController` per the controller sidecar `concepts` note). Its Linked Entities tab *feeds* P-01 Data Discovery (a row click is a jump into the dataset catalog) and its Linked Terms tab *feeds* P-06 Data Glossary (a row click is a jump into the term glossary). The reverse directions — viewing query examples ON a dataset page or ON a term page — are sibling features (F-024 / F-155, the latter covered by integration test IT-034). It also inherits the platform-wide read-collaborative posture: `getQueryExampleDetails` has no RBAC gate, so any authenticated user can open any snippet's details (per controller sidecar `security.owner_scoping`).
+
+In an honest demo the product owner would flag the rough edges. The tab state has no runtime validation: a hand-edited or stale `?tab=foo` link lands the user on a page with a header but a BLANK body and NO active tab highlighted (`QueryExampleDetailsContainer.tsx:31,74,80,85` + `QueryExampleDetailsTabs.tsx:38` — `findIndex` returns -1). The two count badges count differently — `pageInfo.total` for entities versus `items.length` for terms — so if the linked-terms list is ever server-paginated, the terms badge silently understates the true count. There is no breadcrumb back to the catalog, so a deep-linked user has only the browser Back button or the left-sidebar tab. The two tables are strictly read-only — to detach a snippet from a dataset the user must navigate to that dataset's page and remove the link from there, a multi-step workflow paper-cut for anyone disconnecting a snippet from several datasets. The Overview tab is the F-004 4th stored-XSS surface (Markdown render with no extra sanitiser). And — the frame this whole reflection is written under — the entire surface has ZERO automated tests: the tab navigation, the URL-state round-trip, the two tables, the empty states, and the count badges are verified only by a human clicking. There is also NO enriched UI sidecar for any of the four components, so this reflection reasons from the feature-flow's primary-source walk plus the backend sidecar, and cannot judge the rendered pixel-level experience (see the first validation_gap).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens a query example's details page, the page loads the snippet's definition, query, linked entities and linked terms in a single fetch — switching between the three tabs afterwards shows no loading spinner and makes no further network call."
+  derivation: "Endpoint shape + view-mode — the container fetches the full QueryExampleDetails payload (which includes linkedEntities + linkedTerms) at mount; the three tab branches are conditional client re-renders (chain hop 1; amplification_factor STATIC=1)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `QueryExampleDetailsContainer` fetches once via `useGetQueryExampleDetails` →
+      `GET /api/queryexample/{id}` → `QueryExampleController.getQueryExampleDetails`, which returns a
+      `QueryExampleDetails` carrying `definition`, `query`, `linkedEntities` (DataEntityList with full
+      dimensions) and `linkedTerms` (LinkedTermList) in one response (controller sidecar
+      concepts.QueryExampleDetails + operations.getQueryExampleDetails). The three tab branches at
+      QueryExampleDetailsContainer.tsx:74,80,85 select among pre-rendered sub-views from that single
+      cached payload; the feature-flow records `cardinality_per_call: 0 fetches per tab switch` and
+      `amplification_factor: 1 (STATIC — confirmed from primary source)`. So tab switches are
+      zero-network re-renders.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 chain hop 1 + terminal_side_effect"
+        section: "chain[1].evidence + terminal_side_effect + amplification_factor_provenance"
+        cite: "QueryExampleDetailsContainer.tsx:30-31,74-94 + QueryExampleDetailsTabs.tsx:15-33"
+        note: "single fetch at mount; tab switches are 0-fetch re-renders"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: concepts.QueryExampleDetails + operations.getQueryExampleDetails
+        cite: "QueryExampleController.java:66-70 + QueryExampleMapper.java:102-113"
+        note: "the details payload bundles definition+query+linkedEntities+linkedTerms in one read"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: |-
+      No test (unit, UI, or integration) opens the details page and asserts the single-fetch +
+      zero-fetch-on-tab-switch contract. The QueryExampleController service tests cover
+      getQueryExampleDetails at the SERVICE layer (QueryExampleServiceTest.getQueryExampleDetailsTest)
+      but not the UI tab behaviour or the HTTP leg. IT-034 covers the TERM page's query-examples tab
+      (F-155), a different component — it does NOT cover this page.
+
+- id: H-002
+  hypothesis: "When a user clicks the Linked Entities tab, the Linked Entities count badge equals the number of rows actually shown in the table."
+  derivation: "Response shape + UI label — the badge promises 'how many entities are linked'; a product owner expects the badge to match the table the user then sees."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The Linked Entities badge is `linkedEntities.pageInfo.total` (QueryExampleDetailsContainer.tsx:69
+      passes linkedEntitiesHint = linkedEntities.pageInfo.total per the feature-flow facet evidence),
+      and the table maps over the same `linkedEntities.items` array (QueryExampleDetailsLinkedEntities.tsx:12-50).
+      Because `getQueryExampleDetails` returns ALL linked entities in one un-paginated payload (the details
+      read is a single fetch, not a paged list — controller sidecar; the broken hasNext=false applies to the
+      by-dataset/by-term LIST endpoints, NOT to the details payload), pageInfo.total equals items.length for
+      the entities collection in practice. So the entities badge matches the table.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 observed_vs_expected facet[1]"
+        section: "observed_vs_expected.facets[1].evidence"
+        cite: "QueryExampleDetailsContainer.tsx:69 + QueryExampleDetailsLinkedEntities.tsx:12-50"
+        note: "entities hint = pageInfo.total; table maps linkedEntities.items"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: concepts.QueryExampleDetails
+        cite: "QueryExampleMapper.java:102-113"
+        note: "details payload returns the full linkedEntities set in one read (not server-paged)"
+    severity: null
+    confidence: MEDIUM
+    confidence_note: |-
+      MEDIUM not HIGH: the EQUALITY pageInfo.total == items.length for the details payload is inferred
+      from the single-fetch nature of getQueryExampleDetails; the mapper that builds the details
+      linkedEntities.pageInfo was not read line-by-line in this slice (the controller sidecar describes
+      the by-dataset LIST mapper, not the details-embedded list mapper). If the details mapper ever
+      sets pageInfo.total from a COUNT query independent of the returned items, the badge could diverge.
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: "No test asserts the entities badge equals the rendered row count."
+
+- id: H-003
+  hypothesis: "When a user looks at the Linked Terms count badge, it equals the true number of terms linked to the snippet (not merely the number that happened to be fetched)."
+  derivation: "Response shape + cross-pillar (the badge is a promise of completeness) + the feature-flow's own counting-asymmetry facet — the entities badge uses pageInfo.total but the terms badge uses items.length."
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The Linked Terms badge is `linkedTerms.items.length` (QueryExampleDetailsContainer.tsx:70 passes
+      linkedTermsHint = linkedTerms.items.length per the feature-flow facet) — the COUNT OF FETCHED ITEMS,
+      NOT a pageInfo.total. This diverges from the Linked Entities badge, which uses pageInfo.total. If
+      the `LinkedTermList` is returned complete (un-paginated) in the details payload — which is what the
+      single-fetch getQueryExampleDetails appears to do — then items.length equals the true total and the
+      badge is correct. BUT if LinkedTermList ever carries a pageInfo.total that exceeds the items array
+      (server-side cap, or a future paginated details read), the terms badge would silently UNDERSTATE the
+      true count while the entities badge (pageInfo.total) would stay correct. The feature-flow flags this
+      facet `ui_unverified: true` precisely because the LinkedTermList backend schema (does it carry
+      pageInfo, and is the details read ever capped?) was not read. Verdict is partial: correct today
+      under the un-paginated assumption, latently wrong under the asymmetry.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 observed_vs_expected facet[1]"
+        section: "observed_vs_expected.facets[1] (the counting-asymmetry facet, ui_unverified: true)"
+        cite: "QueryExampleDetailsContainer.tsx:69-70 (pageInfo.total vs items.length)"
+        note: "entities=pageInfo.total, terms=items.length — divergent counting treatment"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: concepts.QueryExampleDetails (linkedTerms = LinkedTermList)
+        cite: "QueryExampleMapper.java:102-113"
+        note: "details bundles linkedTerms as LinkedTermList; pageInfo presence/cap not read in this slice"
+    operator_visible_failure: |-
+      (1) Today, for a snippet linked to a handful of terms, the badge is correct. (2) The latent failure:
+      if a snippet is linked to many terms and the details read caps or pages the LinkedTermList, the Linked
+      Terms badge shows the FETCHED count (e.g. "20") while the true link count is higher — an operator
+      trusts the badge as a completeness signal and under-counts the snippet's term linkages, while the
+      sibling Entities badge stays accurate. (3) The inconsistency itself is an operator surprise: two
+      adjacent badges on the same page count by two different rules. Same shape as the F-037 sibling
+      pagination-aware-counts-vs-item-array-length facet.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: probe-needed
+    probe_id: PENDING-F-132-1
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: |-
+      No test asserts the terms badge equals the true link count for a many-term snippet. Needs a probe
+      (PENDING-F-132-1) to read the LinkedTermList details-mapper + observe whether the details read ever
+      caps terms; then a regression test pinning badge == true count (or characterizing the understatement).
+
+- id: H-004
+  hypothesis: "When a user opens a link with a tab value that does not exist (e.g. a stale or hand-typed /data-modelling/query-examples/42?tab=foo), the page falls back to a sensible default tab (Overview) and shows content."
+  derivation: "Negative-space + UI device behaviour — tab links get shared in chat and edited by hand; a product owner expects graceful fallback, not a blank screen. This is the feature-flow's own facet[0]."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The fallback is HALF-wired. `QueryExampleDetailsContainer.tsx:31` reads
+      `searchParams.get('tab') ?? 'overview'` — the `??` only defaults when the param is ABSENT; for
+      `?tab=foo` the value is the literal string 'foo', which is truthy, so NO default applies. None of
+      the three conditional render branches at lines 74 ('overview'), 80 ('linked-entities'), 85
+      ('linked-terms') match 'foo', so the body renders NOTHING. In parallel, QueryExampleDetailsTabs.tsx:38
+      derives the active tab index via `tabs.findIndex(tab => tab.value === type)`, which returns -1 for
+      'foo', so AppTabs highlights NO tab. Net user-visible result: the page header renders, but the body
+      is BLANK and no tab is active. This is the feature-flow's facet[0]
+      (query_example_details_tab_url_param_no_runtime_validation_arbitrary_strings_fall_through_to_overview_silently)
+      — same URL-as-typed-state-without-validation family as F-037's relationships_type facet.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 observed_vs_expected facet[0]"
+        section: "observed_vs_expected.facets[0].evidence"
+        cite: "QueryExampleDetailsContainer.tsx:30-31,74,80,85 + QueryExampleDetailsTabs.tsx:38"
+        note: "?? defaults only on absence; 'foo' falls through all 3 branches → blank body, findIndex -1 → no active tab"
+    operator_visible_failure: |-
+      (1) A user who clicks a stale shared link, or whose link was line-wrapped/truncated by a chat client
+      to a malformed ?tab value, lands on a page that shows the snippet header but a completely empty body
+      with no active tab and no error message — they cannot tell whether the snippet has no content or the
+      page is broken. (2) A future rename of a tab value (e.g. 'linked-entities' → 'entities') would
+      silently break every previously-shared link to that tab with the same blank-body symptom. (3) Recovery
+      requires the user to manually delete the ?tab segment or click a tab — non-obvious. The facet is rated
+      LOW severity in the feature-flow (cosmetic/UX), but as a user-facing promise the blank-body-no-active-tab
+      outcome is a clear contradiction of the 'sensible default' expectation.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    coverage_note: |-
+      No test exercises a malformed ?tab value and asserts the rendered fallback. The fix (validate
+      `tab` against the known set and default to 'overview' when not found) would make this a clean
+      happy-path; a regression test would pin the validated fallback.
+
+- id: H-005
+  hypothesis: "When a user clicks a row in the Linked Entities table, they are taken to that data entity's detail page."
+  derivation: "UI label + cross-pillar — the Linked Entities table is a navigation surface into P-01 Data Discovery; a row click is the natural drill-in (chain hop 3)."
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Per the feature-flow chain hop 3, QueryExampleDetailsLinkedEntitiesItem.tsx:18-20 navigates the
+      per-row click to `dataEntityDetailsPath(entity.id)` — the P-01 dataset detail route. This is the
+      cross-pillar P-01 'feeds' relationship the feature-flow records (Linked Entities row clicks navigate
+      to the dataset overview page).
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 chain hop 3 + cross_pillar_relationships P-01"
+        section: "chain[3].evidence + cross_pillar_relationships[0]"
+        cite: "QueryExampleDetailsLinkedEntitiesItem.tsx:18-20"
+        note: "row click → dataEntityDetailsPath(entity.id) (P-01 exit)"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    coverage_note: "No test clicks a Linked Entities row and asserts navigation to the dataset detail route."
+
+- id: H-006
+  hypothesis: "When a user clicks a row in the Linked Terms table, they are taken to that glossary term's detail page."
+  derivation: "UI label + cross-pillar — the Linked Terms table is a navigation surface into P-06 Data Glossary; a row click is the natural drill-in (chain hop 4)."
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Per the feature-flow chain hop 4, QueryExampleDetailsLinkedTermsItem.tsx:15-17 navigates the per-row
+      click to `termDetailsPath(term.id)` — the P-06 term detail route. This is the cross-pillar P-06
+      'feeds' relationship the feature-flow records.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 chain hop 4 + cross_pillar_relationships P-06"
+        section: "chain[4].evidence + cross_pillar_relationships[1]"
+        cite: "QueryExampleDetailsLinkedTermsItem.tsx:15-17"
+        note: "row click → termDetailsPath(term.id) (P-06 exit)"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    coverage_note: |-
+      No test clicks a Linked Terms row and asserts navigation to the term detail route. NOTE: IT-034
+      exercises the INVERSE direction (the term page's query-examples tab), not this page's terms tab.
+
+- id: H-007
+  hypothesis: "When a user views the Overview tab, the snippet definition and query are displayed as the literal text the author typed — not interpreted as Markdown/HTML, and not executing any embedded payload."
+  derivation: "Response shape + negative-space — the Overview tab is the read surface for a SQL body; a user does not expect SQL or a comment containing < or a Markdown link to be reinterpreted. This is the F-004 family render site QueryExampleDetailsOverview.tsx."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The Overview tab renders both `definition` and `query` through `@uiw/react-md-editor`'s
+      MDEditor.Markdown at QueryExampleDetailsOverview.tsx:19,25 (per the QueryExampleController sidecar
+      security.data_exposure + known_security_gaps + DOC-183 Caveat 3). The fields are stored verbatim
+      (text NOT NULL, no HTTP/service sanitisation) and the shared Markdown.tsx adds no rehype-sanitize
+      allowlist beyond the library default. So Markdown IS interpreted: `**bold**` renders bold,
+      `[x](javascript:...)` renders a link, raw HTML blocks render. This is the 4th member of the F-004
+      stored-XSS family — the SAME render site the F-025 sibling reflection H-007 routes to PLT-018.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: security.known_security_gaps[0] + security.data_exposure + bugs_limitations_corner_cases.[Markdown XSS]
+        cite: "QueryExampleDetailsOverview.tsx:19,25 + Markdown.tsx:1-127 + V0_0_84__create_query_example.sql:5"
+        note: "Overview tab renders definition+query via MDEditor.Markdown, no extra sanitiser — F-004 4th surface"
+    operator_visible_failure: |-
+      (1) An author pasting a SQL body that contains Markdown-significant characters (a comment with
+      `**` or a URL in brackets) sees it reflowed/rendered on the Overview tab rather than shown verbatim
+      — confusing for a 'query body' the user expects to copy-paste. (2) The security failure: an author
+      with QUERY_EXAMPLE_CREATE can plant a payload (javascript: href link, target/data-attr injection)
+      that renders to EVERY authenticated reader who opens the Overview tab — and because
+      getQueryExampleDetails is read-collaborative (no RBAC gate), the blast radius is every authenticated
+      user. (3) No length cap (text up to 1GB; WebFlux 256KB default request cap). The live doc warns about
+      this (DOC-183, done); the code fix is PLT-018.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: |-
+      No stored-XSS regression-pin protects THIS render site specifically (the Overview tab). The
+      F-004-family demand covers it; the guarding test (POST a payload, open the details page, assert the
+      rendered DOM neutralises the active vector once PLT-018 lands) is a distinct functional demand.
+
+- id: H-008
+  hypothesis: "When a user finishes reading a snippet's details (especially after arriving via a deep link), there is an in-page way to navigate back to the Query Examples catalog list."
+  derivation: "Negative-space + pillar mission + UI consistency — a product owner expects a breadcrumb or back affordance on a detail page reached by deep link; this is the feature-flow's facet[2]."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Per the feature-flow facet[2]
+      (query_example_details_no_breadcrumb_back_to_list_page_user_relies_on_browser_back_or_left_sidebar_tab),
+      QueryExampleDetailsContainer.tsx has NO breadcrumb component and no 'Back to Query Examples' link
+      across its entire JSX (lines 44-95). The user reaching the page via a deep link (or after a tab
+      drill-in from elsewhere) has only the browser Back button OR the left-sidebar DataModelling 'Query
+      Examples' tab (which returns to the list with the original search-session URL state, not a true Back).
+      Same UX paper-cut shape as F-037's relationships row-click landing.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 observed_vs_expected facet[2]"
+        section: "observed_vs_expected.facets[2].evidence"
+        cite: "QueryExampleDetailsContainer.tsx:44-95 (entire JSX — no breadcrumb)"
+        note: "no in-page back affordance to the catalog list"
+    operator_visible_failure: |-
+      (1) A user who lands on the details page from an external deep link (a chat message, a bookmark, a
+      doc) has no in-page affordance back to the Query Examples catalog — they must use the browser Back
+      button (which leaves the SPA if they arrived directly) or hunt for the left-sidebar tab. (2) The
+      experience is inconsistent with detail pages elsewhere in the platform that carry breadcrumbs,
+      breaking the platform-consistency expectation a product owner holds. Rated LOW in the feature-flow
+      (UX paper-cut), but it is a genuine contradiction of the in-page-back expectation for a deep-linkable
+      surface.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: "No test asserts presence of an in-page back/breadcrumb affordance (the fix would add one; a UI test would pin it)."
+
+- id: H-009
+  hypothesis: "When a user wants to detach the snippet from one of the data entities or terms shown in the Linked Entities / Linked Terms tabs, they can do it inline from this page (e.g. an unlink button on the row)."
+  derivation: "Pillar mission + UI convenience — a product owner reviewing a management surface asks whether the user can act on what they see; the tables list linkages the user might want to curate. This is the feature-flow's facet[3]."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Per the feature-flow facet[3]
+      (query_example_details_linked_entities_and_linked_terms_pure_render_no_inline_unlink_or_edit_affordance_management_only_via_external_data_entity_or_term_page),
+      both QueryExampleDetailsLinkedEntities (lines 12-50) and QueryExampleDetailsLinkedTerms (lines 12-39)
+      are strictly READ-ONLY tables. There is no inline unlink or edit button. A row click NAVIGATES AWAY
+      (to the entity/term page). To remove a linked entity, the user must go to that data entity's page and
+      remove the link from there; to remove a linked term, via the term page. This conforms to the backend
+      split — the link-CRUD endpoints live on DataEntityController + TermController, NOT on
+      QueryExampleController (per the controller sidecar concepts note + the F-025
+      query_example_partial_rbac_grid_split_across_three_controllers facet) — but it creates a workflow
+      paper-cut.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 observed_vs_expected facet[3]"
+        section: "observed_vs_expected.facets[3].evidence"
+        cite: "QueryExampleDetailsLinkedEntities.tsx:12-50 + QueryExampleDetailsLinkedEntitiesItem.tsx:18-20 + QueryExampleDetailsLinkedTerms.tsx:12-39 + QueryExampleDetailsLinkedTermsItem.tsx:15-17"
+        note: "read-only tables; row click navigates away; no inline unlink"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: "concepts (Note on what is NOT here — link CRUD lives on DataEntityController + TermController)"
+        cite: "QueryExampleController.java (link CRUD absent) + openapi.yaml:996-1064,2908-2944"
+        note: "the link-management endpoints are on sibling controllers, not this one"
+    operator_visible_failure: |-
+      (1) An operator who opens a snippet's details, sees it is wrongly attached to three datasets, and
+      wants to disconnect it must visit three separate data-entity pages and remove the link from each —
+      the details page they are already on offers no way to do it. (2) The same for term linkages. (3) For
+      a user whose mental model is 'this is the snippet's page, so I manage the snippet's links here', the
+      read-only tables are a discoverability gap — the management affordance is on a different page entirely.
+      Rated LOW (workflow paper-cut), but a clear contradiction of the inline-management expectation.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: "Read-only-by-design; no test applies to a non-existent affordance. A caveat/UX-improvement, not a test demand."
+
+- id: H-010
+  hypothesis: "When a user empties a snippet of all linked entities (or it never had any), the Linked Entities tab shows a clear empty-state message rather than a blank table."
+  derivation: "Negative-space + UI consistency — a product owner expects an empty state, not a blank grid; the chain references EmptyContentPlaceholder."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Per the feature-flow chain hop 3, QueryExampleDetailsLinkedEntities.tsx:47 renders an
+      `EmptyContentPlaceholder` for the empty state. So a snippet with no linked entities shows the
+      platform's standard empty-state placeholder on the Linked Entities tab rather than a bare header row.
+      (The Linked Terms table's empty-state was not separately cited in the chain evidence; see the
+      validation_gap and probe PENDING-F-132-2 — the symmetry is assumed but not confirmed from primary
+      source for the terms table.)
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 chain hop 3"
+        section: "chain[3].evidence"
+        cite: "QueryExampleDetailsLinkedEntities.tsx:47 (EmptyContentPlaceholder)"
+        note: "Linked Entities empty state uses EmptyContentPlaceholder"
+    severity: null
+    confidence: MEDIUM
+    confidence_note: |-
+      MEDIUM: confirmed for the Linked Entities table (EmptyContentPlaceholder cited at line 47); the
+      Linked Terms table empty state is not separately cited in the feature-flow chain evidence (hop 4
+      cites the header + map + row click but not an explicit empty placeholder). Treated as confirmed
+      for entities, with a probe (PENDING-F-132-2) for the terms-table empty state.
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    coverage_note: "No test asserts the empty-state placeholder renders for a snippet with no linked entities / no linked terms."
+
+- id: H-011
+  hypothesis: "When a snippet's linkages change on another page (e.g. a colleague detaches a dataset on the data-entity page) while this details page is open, the Linked Entities tab and its count badge update to reflect the change without a full page reload."
+  derivation: "Negative-space + multi-user collaboration — the page fetches once at mount and never re-fetches on tab switch; a product owner asks whether the view goes stale when the underlying linkages mutate elsewhere."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Static trace: the details payload is fetched ONCE at container mount and tab switches are zero-fetch
+      re-renders (feature-flow amplification_factor STATIC=1; cardinality_per_call: 0 fetches per tab
+      switch). The hint badges are derived from that same cached payload. So a linkage change made on the
+      data-entity page or term page AFTER this details page mounted would NOT be reflected on the open
+      details page (tab, table, and badge all read the stale cached payload) until a full re-fetch — which
+      the static evidence says does not happen on tab switch. The EXACT staleness window (does react-query's
+      default cache invalidation or a window-focus refetch re-pull the details on tab focus / window refocus?)
+      depends on the useGetQueryExampleDetails react-query options (staleTime / refetchOnWindowFocus), which
+      are NOT captured in any sidecar (no enriched UI sidecar exists). Requires a runtime probe to confirm
+      whether the view self-heals on refocus or stays stale until manual reload.
+    evidence:
+      - sidecar: "(feature-flow primary-source) F-132 terminal_side_effect + amplification_factor_provenance"
+        section: "terminal_side_effect (0 fetches per tab switch) + amplification_factor_provenance (single fetch at mount)"
+        cite: "QueryExampleDetailsContainer.tsx:74-94 + QueryExampleDetailsTabs.tsx:15-33"
+        note: "single fetch at mount; badges from cached payload; tab switch is zero-fetch"
+    operator_visible_failure: |-
+      If the view does not self-heal: two users editing a snippet's linkages collaboratively can see
+      divergent states — user A detaches a dataset on the data-entity page, user B (with the details page
+      open) continues to see the dataset in the Linked Entities table and a stale count badge, and may make
+      decisions on stale data. Bounded by how often the details page is left open across a concurrent edit;
+      the staleness is invisible (no 'data may be stale' indicator). Needs a probe to confirm the exact
+      refetch behaviour.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-132-2
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    coverage_note: |-
+      No test exercises concurrent linkage mutation against an open details page. Probe first (observe
+      refetch-on-focus behaviour), then a characterization test pinning the staleness contract.
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "Overview tab renders snippet definition + query through MDEditor.Markdown with no extra sanitiser — F-004 4th stored-XSS surface (QueryExampleDetailsOverview.tsx:19,25); read-collaborative blast radius to every authenticated reader."
+  dedup_status: already_tracked
+  tracked_as: PLT-018
+  recommended_log_as: null
+  proposed_fix_anchor: "Markdown.tsx:113-124 — add rehype-sanitize to the shared renderer config (closes the Overview render site + the wider F-004 family in one change), per PLT-018 Defect 1. The F-025 sibling reflection H-007 routes the same site to PLT-018 — convergent validation across two reflections."
+- hypothesis_id: H-004
+  severity: LOW
+  one_line: "?tab with an unknown value (e.g. ?tab=foo) falls through all three render branches → blank body + no active tab (findIndex -1); the ?? default only applies when the param is absent, not when it is an unrecognised string."
+  dedup_status: net_new
+  distinct_from: PLT-018
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "QueryExampleDetailsContainer.tsx:31 — validate the tab param against the known set ['overview','linked-entities','linked-terms'] and default to 'overview' when not found (mirror in QueryExampleDetailsTabs.tsx:38). Same URL-as-typed-state family as F-037's relationships_type facet — candidate for a shared validated-tab-param helper. Tracked as the feature-flow facet[0]; no PLT yet."
+
+### caveat_candidates
+- hypothesis_id: H-008
+  one_line: "Query Example Details page has no breadcrumb / no 'Back to Query Examples' affordance — a deep-linked user relies on browser Back or the left-sidebar tab; inconsistent with breadcrumb-bearing detail pages elsewhere."
+  dedup_status: net_new
+  recommended_log_as: "DOC-GAP-NNN (pending mint) OR a small UI REFACTOR scope — add an in-page back affordance to the details page; the feature-flow facet[2] is not tracked by DOC-183 (which scoped the catalog page's RBAC/XSS/audit caveats, not the details-page navigation)."
+  proposed_fix_anchor: "QueryExampleDetailsContainer.tsx:44-95 — add a breadcrumb / back-link to queryExamplesListPath (the catalog list). UX-consistency improvement."
+- hypothesis_id: H-009
+  one_line: "Linked Entities + Linked Terms tabs are read-only — no inline unlink; to detach a snippet from N datasets the user visits N separate data-entity pages. Conforms to the backend's three-controller link-CRUD split but is a workflow paper-cut."
+  dedup_status: net_new
+  recommended_log_as: "DOC-GAP-NNN (pending mint) OR a UX-improvement REFACTOR — document that link management happens on the data-entity / term page, OR add an inline unlink affordance (gated by QUERY_EXAMPLE_DATASET_DELETE / _TERM_DELETE on the sibling controllers). The feature-flow facet[3] is not covered by DOC-183. Related to the F-025 RBAC-grid-split facet."
+  proposed_fix_anchor: "QueryExampleDetailsLinkedEntities.tsx + QueryExampleDetailsLinkedTerms.tsx — optionally add a per-row unlink button calling DataEntityController.deleteQueryExampleToDatasetRelationshipNew / TermController.deleteQueryExampleToTermRelationship, gated by the respective permission."
+- hypothesis_id: H-003
+  one_line: "Linked Terms count badge uses items.length while Linked Entities uses pageInfo.total — divergent counting; the terms badge silently understates if the LinkedTermList is ever capped/paginated in the details payload."
+  dedup_status: net_new
+  recommended_log_as: "caveat / small UI fix — align the Linked Terms badge to pageInfo.total (matching the entities badge) once the probe confirms LinkedTermList carries pageInfo. The feature-flow facet[1] is ui_unverified: true. Cross-link to the F-037 pagination-aware-counts-vs-item-length sibling facet."
+  proposed_fix_anchor: "QueryExampleDetailsContainer.tsx:70 — change linkedTermsHint from linkedTerms.items.length to linkedTerms.pageInfo.total (pending probe PENDING-F-132-1 confirming the field exists)."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the promise layer. F-132 ships ZERO automated tests (test_matrix: all GAP) and
+# has NO enriched UI sidecar. EVERY user-facing promise below is unverified — the confirmed ones
+# (single-fetch, row-click navigation, empty state) are the highest-value functional guards to mint,
+# NOT to drop to `none`. None of these are covered by DOC-183 (docs) or PLT-018 (the XSS code fix).
+- use_case_id: F-132-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "Opening a query example's details fetches everything once; switching tabs shows no spinner and makes no further network call."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-001)"
+  proposed_test: "e2e (Playwright, odd-minimal): seed a query example with linked entities + terms; open /data-modelling/query-examples/{id}; assert exactly one GET /api/queryexample/{id}; click each tab; assert no additional /queryexample fetch and the correct sub-view renders."
+- use_case_id: F-132-UC-002
+  hypothesis_id: H-005
+  kind: happy-path
+  promise: "Clicking a Linked Entities row navigates to that data entity's detail page (P-01 exit)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-002)"
+  proposed_test: "e2e: open the Linked Entities tab; click a row; assert URL is dataEntityDetailsPath(entity.id) and the dataset detail page loads."
+- use_case_id: F-132-UC-003
+  hypothesis_id: H-006
+  kind: happy-path
+  promise: "Clicking a Linked Terms row navigates to that glossary term's detail page (P-06 exit)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-003)"
+  proposed_test: "e2e: open the Linked Terms tab; click a row; assert URL is termDetailsPath(term.id) and the term detail page loads. (Distinct from IT-034, which tests the inverse term-page query-examples tab.)"
+- use_case_id: F-132-UC-004
+  hypothesis_id: H-010
+  kind: empty/no-match
+  promise: "A snippet with no linked entities (and no linked terms) shows an empty-state placeholder, not a blank table."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-004)"
+  proposed_test: "e2e: seed a query example with zero linked entities and zero linked terms; open both tabs; assert EmptyContentPlaceholder renders on each."
+- use_case_id: F-132-UC-005
+  hypothesis_id: H-002
+  kind: render
+  promise: "The Linked Entities count badge equals the number of rows shown in the Linked Entities table."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-005)"
+  proposed_test: "e2e: seed a snippet linked to N entities; open the details page; assert the Linked Entities badge reads N and the table has N rows."
+- use_case_id: F-132-UC-006
+  hypothesis_id: H-004
+  kind: resolve-later
+  promise: "(CONTRADICTED) An unknown ?tab value should fall back to Overview; today it renders a blank body with no active tab."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-006) — regression-pin the validated fallback once H-004's fix lands; characterization of the current blank-body symptom until then."
+  proposed_test: "e2e: open /data-modelling/query-examples/{id}?tab=foo; assert (post-fix) the Overview tab is active and its content renders (pre-fix: characterize the blank body + no active tab)."
+- use_case_id: F-132-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "(CONTRADICTED) The Overview tab should display definition/query verbatim; they are Markdown-rendered (F-004 4th XSS surface)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-007) — F-004-family stored-XSS regression-pin for the Overview render site; the code fix is PLT-018, the guarding test is a distinct demand."
+  proposed_test: "Security e2e: seed a snippet with query='[click](javascript:alert(1))' and a raw-HTML definition; open the Overview tab; assert the rendered DOM neutralises the active vector (pins the post-rehype-sanitize contract once PLT-018 lands)."
+- use_case_id: F-132-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "(CONTRADICTED) A deep-linked details page should offer an in-page way back to the catalog; there is no breadcrumb / back affordance."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-008) — pin presence of a back/breadcrumb affordance once H-008's UX fix lands."
+  proposed_test: "e2e: open the details page via a direct URL; assert an in-page back/breadcrumb to the Query Examples list exists and navigates correctly."
+- use_case_id: F-132-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "(CONTRADICTED) The user should be able to unlink a dataset/term from the details page; the tabs are read-only (management is on the sibling pages)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "n/a (UX caveat / improvement, not a test demand on current behaviour) — routed to caveat_candidates. A test would only apply if an inline-unlink affordance is added."
+  proposed_test: "n/a today (read-only by design); if an inline unlink is added, e2e: click row unlink → assert the link row is removed and the badge decrements."
+- use_case_id: F-132-UC-010
+  hypothesis_id: H-003
+  kind: render
+  promise: "(PARTIAL) The Linked Terms badge should equal the true term-link count; it uses items.length and may understate under pagination."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-010) — pending probe PENDING-F-132-1."
+  proposed_test: "Probe first (read the LinkedTermList details-mapper + observe whether the details read caps terms), then e2e: seed a snippet with many linked terms; assert the badge equals the true count (or characterize the understatement)."
+- use_case_id: F-132-UC-011
+  hypothesis_id: H-011
+  kind: resolve-later
+  promise: "An open details page should reflect linkage changes made elsewhere without a full reload; behaviour is unconfirmed (single-fetch-at-mount suggests staleness)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-132-UC-011) — pending probe PENDING-F-132-2."
+  proposed_test: "Probe first (observe refetch-on-window-focus behaviour of useGetQueryExampleDetails), then a characterization e2e pinning the staleness contract."
+
+### probes_emitted
+- probe_id: PENDING-F-132-1
+  hypothesis_id: H-003
+  probe_path: "(parallel-safe mode — no P-NNN file created; orchestrator/maintainer to mint)"
+  hypothesis_text: |-
+    The Linked Terms count badge uses `linkedTerms.items.length` (QueryExampleDetailsContainer.tsx:70)
+    while the Linked Entities badge uses `linkedEntities.pageInfo.total` (line 69). PROBE: (a) read the
+    QueryExampleMapper details mapper (QueryExampleMapper.java:102-113) + the LinkedTermList schema to
+    determine whether LinkedTermList carries a pageInfo.total and whether the details read ever caps the
+    terms array; (b) if cappable, run the SPA against a live backend with a snippet linked to more terms
+    than the cap and observe whether the terms badge understates the true count while the entities badge
+    stays correct. Local-only: docker-compose ODD + Postgres seeded via helpers/db.ts + Playwright headless.
+    local_execution_blocked: false. expected_outcome: confirm whether the items.length badge understates
+    (CONTRADICTED) or equals the true count under the un-paginated details read (the partial verdict's
+    today-correct branch).
+- probe_id: PENDING-F-132-2
+  hypothesis_id: H-011
+  probe_path: "(parallel-safe mode — no P-NNN file created; orchestrator/maintainer to mint)"
+  hypothesis_text: |-
+    The details payload is fetched once at mount; tab switches are zero-fetch (amplification_factor
+    STATIC=1). PROBE: run the SPA against a live backend; open a snippet's details page; in a second
+    session detach one of its linked datasets via the data-entity page; return to the first session and
+    (a) switch tabs — assert the Linked Entities table + badge still show the detached dataset (stale,
+    expected from single-fetch); (b) refocus the window / wait the react-query staleTime — observe whether
+    useGetQueryExampleDetails refetches and the view self-heals, or stays stale until manual reload. ALSO
+    confirms H-010's secondary leg: whether the Linked Terms table renders an EmptyContentPlaceholder for a
+    snippet with zero linked terms (the entities table's placeholder is cited at line 47; the terms table's
+    is not). Local-only: docker-compose ODD + Postgres + Playwright two-context. local_execution_blocked: false.
+
+### validation_gaps
+- sidecar: "(missing) odd-platform ts react-component:QueryExampleDetailsContainer / Tabs / LinkedEntities / LinkedTerms / Overview"
+  field_insufficient: |-
+    Rule 9 — API-only reflection. The feature's ENTIRE UI surface (all four chain hops) is
+    `sidecar: unresolved`: there is NO enriched react-component sidecar for QueryExampleDetailsContainer,
+    QueryExampleDetailsTabs, QueryExampleDetailsLinkedEntities, QueryExampleDetailsLinkedTerms, or
+    QueryExampleDetailsOverview. This reflection reasons from the feature-flow detail's own primary-source
+    walk (the .tsx file:line citations embedded in `chain` + `observed_vs_expected`) plus the backend
+    QueryExampleController sidecar — it CANNOT judge the rendered, pixel-level user experience (the active-tab
+    styling, the badge layout, responsive/device behaviour, the AppTabs primary-variant look). Per Rule 9,
+    confident `confirmed` verdicts for a user-facing feature must not be issued from the API + flow-walk
+    alone for the experience-level questions; the structural promises (single-fetch, navigation targets,
+    empty state) are traced through the flow evidence, but the lived-on-screen experience is not covered.
+  proposed_refresh: |-
+    Enrich the QueryExampleDetails subtree as first-class react-component sidecars (the same gap the F-025
+    sibling reflection flagged for the QueryExample list/form/detail subtree): capture the ?tab URL-state
+    round-trip + the no-validation fallthrough (facet[0]), the two count-badge sources + the asymmetry
+    (facet[1]), the two read-only tables + EmptyContentPlaceholder usage on BOTH (facet[3] + H-010), the
+    Overview MDEditor.Markdown render sites (F-004 4th surface), the absence of a breadcrumb (facet[2]),
+    and the useGetQueryExampleDetails react-query options (staleTime / refetchOnWindowFocus) that decide
+    H-011. The feature is flagged ui-complete in the flow but ui-incomplete at the enriched-sidecar layer.
+- sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+  field_insufficient: |-
+    concepts.QueryExampleDetails describes `linkedEntities` (DataEntityList) and `linkedTerms`
+    (LinkedTermList) but does not state whether the DETAILS-embedded mappers populate `pageInfo.total`
+    independently of the returned items array, nor whether the details read caps either collection. This
+    is the gap that forces H-002 to MEDIUM confidence and H-003 to a probe — the by-dataset/by-term LIST
+    mapper's hasNext=false is documented, but the details-embedded list shaping is not.
+  proposed_refresh: |-
+    On the next QueryExampleController (or QueryExampleMapper) sidecar refresh, capture whether
+    mapToQueryExampleDetails sets linkedEntities.pageInfo.total / linkedTerms.pageInfo (and from a COUNT
+    or from items.size()), and whether getQueryExampleDetails ever caps the linked collections — settling
+    the F-132 count-badge hypotheses without a runtime probe.
+
+### doc_drift_findings
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+  doc_says: "(silent on the Details-page tab structure) — the page documents the Query Examples feature but does NOT enumerate the three-tab Details page (Overview / Linked Entities / Linked Terms), the ?tab URL-state, the count-hint badges, the no-breadcrumb navigation, or the read-only-tabs link-management model."
+  code_does: "The Details page at /data-modelling/query-examples/{id} has three ?tab-selected tabs with count badges, no breadcrumb back to the list, and read-only linked-entities/linked-terms tables (link management is on the data-entity / term pages)."
+  recommended_log_as: |-
+    Already tracked as the feature-flow's own scanner finding F-132a (category: missing-page, MEDIUM,
+    docs/coverage/undocumented-features SR-20260527T1800Z, findings/docs-coverage-undocumented-features/2026-05-27-batch-5.md#finding-f-132a)
+    — the composite undocumented-tab-navigation finding. dedup_status: already_tracked as F-132a. The
+    facet[2] (no breadcrumb) and facet[3] (read-only tabs) caveats above are the operator-frame
+    sub-points of that finding; they are NOT among the four DOC-183 caveats (which scoped the catalog
+    page's RBAC/XSS/audit). When F-132a is triaged into a DOC item, fold these two caveats in.
+
+## maintainer_notes
+
+(intentionally left empty — no prior reflection existed; this is the first F-132 reflection)

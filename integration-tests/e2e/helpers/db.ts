@@ -394,6 +394,37 @@ export async function seedTermWithDefinition(
   });
 }
 
+// IT-033 — F-002 (term-side reverse view): seed a term linked to entity 2001 and RETURN its id, so the
+// term's "Linked entities" tab (/terms/{id}/linked-entities → GET /api/terms/{id}/linked_entities)
+// shows the entity. The reverse of IT-016 (entity→term); distinct surface/code path. Idempotent.
+export async function seedTermLinkedToEntity(termName: string, namespaceName = 'IT033-ns'): Promise<number> {
+  await seedEntity();
+  return withClient(async (c) => {
+    const nsSel = await c.query('SELECT id FROM namespace WHERE name = $1 LIMIT 1', [namespaceName]);
+    const nsId = nsSel.rows[0]
+      ? Number(nsSel.rows[0].id)
+      : Number((await c.query('INSERT INTO namespace (name) VALUES ($1) RETURNING id', [namespaceName])).rows[0].id);
+    const tSel = await c.query('SELECT id FROM term WHERE name = $1 AND namespace_id = $2 LIMIT 1', [termName, nsId]);
+    const termId = tSel.rows[0]
+      ? Number(tSel.rows[0].id)
+      : Number(
+          (
+            await c.query('INSERT INTO term (name, definition, namespace_id) VALUES ($1, $2, $3) RETURNING id', [
+              termName,
+              'IT033 linked term',
+              nsId,
+            ])
+          ).rows[0].id,
+        );
+    await c.query('DELETE FROM data_entity_to_term WHERE data_entity_id = $1 AND term_id = $2', [ENTITY_ID, termId]);
+    await c.query(
+      'INSERT INTO data_entity_to_term (data_entity_id, term_id, is_description_link) VALUES ($1, $2, false)',
+      [ENTITY_ID, termId],
+    );
+    return termId;
+  });
+}
+
 // IT-026 — F-031 data source management: seed a named data source so the management list
 // (/management/datasources → GET /api/datasources) renders it. The list shows the source name
 // verbatim (verified live). Distinct id so it never collides with the entity-seed source 2001.

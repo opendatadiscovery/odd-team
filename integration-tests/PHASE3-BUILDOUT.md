@@ -272,6 +272,15 @@ graph/canvas labels.
   Count: **32 ITs total (20 new this session)**. Next clean veins: search suggestions, term linked-entities
   (F-153), external_description, more term/entity detail nuances. RE-INGEST ~IT-037.
 
+- 2026-06-03 — IT-033 (F-002 term-side — term Linked-entities tab) — e2e:term-linked-entities.spec.ts.
+  Success (term linked to entity 2001 → /terms/{id}/linked-entities lists it002_table) + negative (an
+  unlinked term lists none). **GREEN (2 passed 8.9s)**. Reverse of IT-016 (entity→term) — distinct surface
+  + code path (TermController.getLinkedEntities). Helper seedTermLinkedToEntity (returns term id). DEFERRED
+  this iter: linked_columns (F-153) — GET /api/terms/{id}/linked_columns 500s (NPE: column's parent
+  dataEntityPojo null; needs the full column→dataset_structure→data_entity chain — see Discovered findings).
+  feature-complete + ui-e2e. Count: **33 ITs total (21 new this session)**. Next clean veins: search
+  suggestions, external_description, linked-terms (F-?), query-examples. RE-INGEST ~IT-037.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at
@@ -295,6 +304,12 @@ graph/canvas labels.
   management lists are NOT raw-seedable as-is → an RBAC-config IT needs the create-API or the missing join
   reverse-engineered. Deferred (not a bug — a seeding-shape gap). Also: generic entity "runs" tab has no
   clean dedicated feature id (F-040 is DQ-specific) → skip.
+- **linked_columns NPE → HTTP 500 on a column's null parent dataEntityPojo** (found IT-033). `GET
+  /api/terms/{id}/linked_columns` 500s (NPE getExternalName on a null DataEntityPojo) when the linked
+  dataset_field isn't fully associated with its parent dataset (dataset_structure→dataset_version→
+  data_entity chain). A raw dataset_field + dataset_field_to_term link is insufficient. F-153 (term linked
+  columns) DEFERRED — needs the full column→dataset chain seeded, OR ingestion. Likely
+  ingestion-only-reachable (a real ingest always has the parent) → defensive gap, NOT pinned.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

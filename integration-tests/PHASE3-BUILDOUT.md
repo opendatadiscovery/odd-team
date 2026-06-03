@@ -38,6 +38,8 @@ targets). Verified image schema (odd-minimal, 2026-06-03) for the common seed ta
 - `tag`(id, name, important?) · `tag_to_data_entity`(tag_id, data_entity_id, external)
 - `term`(id, name, definition, namespace_id, …, deleted_at) · `namespace`(id, name, …, deleted_at) · `data_entity_to_term`(data_entity_id, term_id, is_description_link)
 - `metadata_field`(id, type, name, origin, deleted_at) · `metadata_field_value`(data_entity_id, metadata_field_id, value, active)
+- `alert`(id, data_entity_oddrn, last_created_at **NOT NULL**, status_updated_at **NOT NULL**, status smallint [OPEN=1/RESOLVED=2/RESOLVED_AUTOMATICALLY=3], type smallint [BACKWARDS_INCOMPATIBLE_SCHEMA=1/FAILED_DQ_TEST=2/FAILED_JOB=3/DISTRIBUTION_ANOMALY=4]) · `alert_chunk`(alert_id, created_at NOT NULL, description) — the alerts list **INNER-JOINs alert_chunk**, so seed BOTH or the alert is invisible
+- `data_source`(id, oddrn, name, namespace_id) · `group_entity_relations`(group_oddrn, data_entity_oddrn, is_deleted) · `dataset_version`(id, version, version_hash, dataset_oddrn) · `dataset_field`(id, name, oddrn, type jsonb, stats jsonb [non-null!], field_order, is_*) · `dataset_structure`(dataset_version_id, dataset_field_id)
 To re-inspect: `docker-compose -p probe-stacks -f lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml up -d`, wait for `/actuator/health`, `docker exec probe-database psql -U odd-platform -d odd-platform -c "\d <table>"`, then `down -v`.
 
 ## ⚠ KEY LESSON 2 — the UI transforms displayed text; assert on the VALUE, not the field name
@@ -203,10 +205,19 @@ namespace, any enum picker).
   CONFIGURATION-AUDIENCE surface (/management/datasources, not entity detail). Success (seeded data source
   renders in the management list) + negative (a name belonging to no source absent, visible-scoped).
   **GREEN (2 passed 8.3s)** — ground-truth-first. Helper seedDataSource(id,name). feature-complete + ui-e2e.
-  Count: **26 ITs total (14 new this session)**. NOTE: activity-feed + alerts surfaces probed but DEFERRED
-  (activity /api/activity param shape finicky; alert needs status/type smallint enum ids + alert_chunk) —
-  revisit with dedicated ground-truth. RE-INGEST DUE at IT-027 (next). Next: more management lists
-  (namespaces/owners/collectors/tags), data-quality, metrics, or ready-now.
+  Count: **26 ITs total (14 new this session)**. NOTE: activity-feed surface DEFERRED (/api/activity param
+  shape finicky) — revisit with dedicated ground-truth. RE-INGEST DUE at IT-027 (next). Next: more
+  management lists (namespaces/owners/collectors/tags), data-quality, metrics, or ready-now.
+
+- 2026-06-03 — RE-INGEST at IT-027 (commit abc49b4): 152 test nodes, VALIDATES=121, graph 6778n; PILOT-READY.
+- 2026-06-03 — IT-027 (F-014 Per-Entity Alert View) — e2e:entity-alerts-display.spec.ts. Success (seed an
+  OPEN alert + chunk → Alerts tab renders the type label "Backwards incompatible schema") + negative (no
+  alert → type absent, visible-scoped). **GREEN (2 passed 8.5s)** — cracked the deferred alerts surface:
+  the alerts list INNER-JOINs alert_chunk (a bare alert is invisible — seed a chunk too); alert needs
+  status_updated_at NOT NULL + status/type smallint ids (OPEN=1; BACKWARDS_INCOMPATIBLE_SCHEMA=1). Verified
+  schema banked below. Helpers seedEntityAlert/clearEntityAlerts. feature-complete + ui-e2e. Count: **27 ITs
+  total (15 new this session)**. Observability surface now covered. Next: management lists, data-quality,
+  metrics. Re-ingest ~IT-032.
 
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`

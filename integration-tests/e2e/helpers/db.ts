@@ -322,6 +322,46 @@ export async function seedDataSource(id: number, name: string): Promise<void> {
   });
 }
 
+// IT-027 — F-014 per-entity alert view: seed an OPEN alert on entity 2001 so the Alerts tab renders
+// it. Verified schema: alert(data_entity_oddrn, last_created_at NOT NULL, status_updated_at NOT NULL,
+// status smallint [OPEN=1/RESOLVED=2/RESOLVED_AUTOMATICALLY=3], type smallint [BACKWARDS_INCOMPATIBLE
+// _SCHEMA=1 "Backwards incompatible schema" / FAILED_DQ_TEST=2 / FAILED_JOB=3 / DISTRIBUTION_ANOMALY=4]).
+// ⚠ The alerts list INNER-JOINs alert_chunk — an alert with NO chunk is invisible, so we also seed a
+// chunk. The Alerts tab renders the TYPE label verbatim ("Backwards incompatible schema") + status.
+export async function seedEntityAlert(description = 'IT027 alert: schema changed'): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM alert_chunk ac USING alert a WHERE ac.alert_id = a.id AND a.data_entity_oddrn = $1', [
+      DATASET_ODDRN,
+    ]);
+    await c.query('DELETE FROM alert WHERE data_entity_oddrn = $1', [DATASET_ODDRN]);
+    const alertId = Number(
+      (
+        await c.query(
+          `INSERT INTO alert (data_entity_oddrn, last_created_at, status_updated_at, status, type)
+           VALUES ($1, NOW(), NOW(), 1, 1) RETURNING id`,
+          [DATASET_ODDRN],
+        )
+      ).rows[0].id,
+    );
+    await c.query('INSERT INTO alert_chunk (alert_id, created_at, description) VALUES ($1, NOW(), $2)', [
+      alertId,
+      description,
+    ]);
+  });
+}
+
+// Negative-path helper: entity 2001 exists but has NO alerts.
+export async function clearEntityAlerts(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM alert_chunk ac USING alert a WHERE ac.alert_id = a.id AND a.data_entity_oddrn = $1', [
+      DATASET_ODDRN,
+    ]);
+    await c.query('DELETE FROM alert WHERE data_entity_oddrn = $1', [DATASET_ODDRN]);
+  });
+}
+
 // IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
 // Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
 // external). The tag NAME renders verbatim on the Overview (no transform — verified live).

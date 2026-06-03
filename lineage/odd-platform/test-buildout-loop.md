@@ -193,6 +193,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 10 (behavioral service): DataEntityRunServiceImplTest (2, runs only for runs-capable classes + NotFound, validates F-040) GREEN. odd-platform 52c2d910. Phase-2 total: 42 methods / 10 services + validators. Dedup-skipped DataEntityStatistics (existing ingestion test + murky gate). Next: Lineage/Reference/DatasetVersion/DatasetField services; re-ingest ~56.
 
+- 2026-06-03 — PHASE 2 iter 11 (behavioral service): ReferenceDataServiceImplTest (4, lookup-table not-found + column-belongs-to-table invariant, validates F-026) GREEN. odd-platform 7bffe688. Phase-2 total: 46 methods / 11 services + validators. Next: Lineage/DatasetVersion/DatasetStructure/DataEntityFilled services + mappers; RE-INGEST due (crossing ~56 next iter).
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

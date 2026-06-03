@@ -14,8 +14,8 @@ _generated 2026-06-03 · `lineage-extractor alignment odd-platform` · determini
 
 > Is this scorecard itself trustworthy? Every alignment metric below is discounted by reflection coverage.
 
-- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD 2ad6e020 @ 2026-06-03
-- `GREEN` graph embeddings present — built 2026-06-03 · vectors 7711
+- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD 596ffa98 @ 2026-06-03
+- `GREEN` graph embeddings present — built 2026-06-03 · vectors 7720
 - `AMBER` latest /panel verdict — changes-needed
 - `AMBER` reflection coverage (alignment discount) — 23/112 features reflected → alignment UNKNOWN over 79% of features
 - `AMBER` intent↔impl contradictions surfaced — 176 contradictions across 23 reflected features — the deepest alignment-drift findings; triage feature-reflections/detail/ (HIGH → bug-fix or operator caveat)
@@ -49,11 +49,11 @@ _generated 2026-06-03 · `lineage-extractor alignment odd-platform` · determini
 
 ### D — Test-Traceability Ledger  (RED)
 
-- `GREEN` **Test nodes ingested (+ COVERS to code)** — 4/134 · 134 existing tests ingested · 4 COVERS edges resolved to substrate code
+- `GREEN` **Test nodes ingested (+ COVERS to code)** — 4/143 · 143 existing tests ingested · 4 COVERS edges resolved to substrate code
 - `GREEN` **known-bug pins (characterization tripwires)** — 12 · GREEN while the documented bug exists, RED the instant behaviour changes (unplanned fix or deeper regression) — never a dead @Disabled; navigate via status=pins-known-bug. odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/SecurityRulesAuthzGapsKnownBugsTest.java::SecurityRulesAuthzGapsKnownBugsTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/filter/S2sPrincipalKnownBugTest.java::S2sPrincipalKnownBugTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/MinioConfigRegionTest.java::MinioConfigRegionTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/NotificationFailSoftContractTest.java::NotificationFailSoftContractTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/datacollaboration/DataCollabEventDedupKnownBugTest.java::DataCollabEventDedupKnownBugTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingTtlKnownBugsTest.java::HousekeepingTtlKnownBugsTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/mapper/DataEntityStatusKnownBugTest.java::DataEntityStatusKnownBugTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ActivityActorFilterKnownBugTest.java::ActivityActorFilterKnownBugTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/CollectorTokenStorageKnownBugTest.java::CollectorTokenStorageKnownBugTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnerRoleStripKnownBugTest.java::OwnerRoleStripKnownBugTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TokenEntropyKnownBugTest.java::TokenEntropyKnownBugTest; odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/attachment/AttachmentLinkSchemeKnownBugTest.java::AttachmentLinkSchemeKnownBugTest (LSN-029)
-- `AMBER` **tests/gaps carrying a typed gate (why)** — 590/1172 · 0/134 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
+- `AMBER` **tests/gaps carrying a typed gate (why)** — 599/1181 · 0/143 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
 - `AMBER` **ADRs with an enforcing test/gap** — 26/27 · are we checking ADR ALIGNMENT? 26/27 ADRs gated (26 via real ENFORCES edge, rest via gated gaps)
-- `AMBER` **features with a validating test/gap** — 46/112 · are we checking FUNCTIONALITY? 46/112 features gated (37 via real VALIDATES edge)
+- `AMBER` **features with a validating test/gap** — 47/112 · are we checking FUNCTIONALITY? 47/112 features gated (41 via real VALIDATES edge)
 - `AMBER` **bugs/scopes with a regress/guard test** — 41/1355 · are we checking REGRESSION? 41/1355 findings/scopes gated · LSN-001/002 landmines captured as 24 gated TestGaps but NO regression test authored yet
 - `RED` **probes executed / defined** — 9/186 · 9/186 run · 6 probe-stack(s) · named-integration keyword hits 2/4 (great-expectations, ✗airflow-lineage, ✗postgres-ingestion, webhook-notifications) — KEYWORD scan, NOT verified e2e
 

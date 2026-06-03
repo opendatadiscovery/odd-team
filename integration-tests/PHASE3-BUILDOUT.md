@@ -281,6 +281,17 @@ graph/canvas labels.
   feature-complete + ui-e2e. Count: **33 ITs total (21 new this session)**. Next clean veins: search
   suggestions, external_description, linked-terms (F-?), query-examples. RE-INGEST ~IT-037.
 
+- 2026-06-03 — IT-034 (F-155 Term Query-Example Linkage) — e2e:term-query-examples.spec.ts. Success (term
+  + linked query_example → /terms/{id}/query-examples renders the definition + SQL) + negative (term with
+  no example lists none). **GREEN (2 passed 32.3s)** after ONE fix → wait-pattern lesson: for TAB content
+  that loads after navigation, do NOT strict-`waitForResponse` the tab's own API (it can fire before the
+  listener or under a different URL → 60s timeout); instead wait (catch-safe) on the always-present detail
+  GET (/api/terms/{id}) + a short settle, and let toBeVisible/toHaveCount poll. Verified schema:
+  query_example(id, definition, query) · query_example_to_term(query_example_id, term_id). Helper
+  seedTermWithQueryExample (returns term id). feature-complete + ui-e2e. Count: **34 ITs total (22 new this
+  session)**. Remaining clean veins thinning: search suggestions, external_description, linked-terms.
+  RE-INGEST ~IT-037. ⚠ If next iter's clean candidates exhaust → ping plateau (built-vs-blocked).
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

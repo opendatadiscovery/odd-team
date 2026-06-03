@@ -425,6 +425,46 @@ export async function seedTermLinkedToEntity(termName: string, namespaceName = '
   });
 }
 
+// IT-034 — F-155 term query-example linkage: seed a term with a linked query example and RETURN the
+// term id, so the term's "Query Examples" tab (/terms/{id}/query-examples → GET /api/terms/{id}/queryexample)
+// shows the example. Verified schema: query_example(id, definition, query, …) · query_example_to_term
+// (query_example_id, term_id, is_description_link). Idempotent (clears the term's prior link).
+export async function seedTermWithQueryExample(
+  termName: string,
+  definition: string,
+  query: string,
+  namespaceName = 'IT034-ns',
+): Promise<number> {
+  return withClient(async (c) => {
+    const nsSel = await c.query('SELECT id FROM namespace WHERE name = $1 LIMIT 1', [namespaceName]);
+    const nsId = nsSel.rows[0]
+      ? Number(nsSel.rows[0].id)
+      : Number((await c.query('INSERT INTO namespace (name) VALUES ($1) RETURNING id', [namespaceName])).rows[0].id);
+    const tSel = await c.query('SELECT id FROM term WHERE name = $1 AND namespace_id = $2 LIMIT 1', [termName, nsId]);
+    const termId = tSel.rows[0]
+      ? Number(tSel.rows[0].id)
+      : Number(
+          (
+            await c.query('INSERT INTO term (name, definition, namespace_id) VALUES ($1, $2, $3) RETURNING id', [
+              termName,
+              'IT034 query-example term',
+              nsId,
+            ])
+          ).rows[0].id,
+        );
+    await c.query('DELETE FROM query_example_to_term WHERE term_id = $1', [termId]);
+    const qeId = Number(
+      (await c.query('INSERT INTO query_example (definition, query) VALUES ($1, $2) RETURNING id', [definition, query]))
+        .rows[0].id,
+    );
+    await c.query(
+      'INSERT INTO query_example_to_term (query_example_id, term_id, is_description_link) VALUES ($1, $2, false)',
+      [qeId, termId],
+    );
+    return termId;
+  });
+}
+
 // IT-026 — F-031 data source management: seed a named data source so the management list
 // (/management/datasources → GET /api/datasources) renders it. The list shows the source name
 // verbatim (verified live). Distinct id so it never collides with the entity-seed source 2001.

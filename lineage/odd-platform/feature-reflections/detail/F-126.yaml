@@ -1,0 +1,821 @@
+---
+feature_id: F-126
+pillar_anchored_id: P-07:F-008
+pillar: Active Platform Features
+feature_name: |-
+  Global Alerts list page — three-tab cross-owner / scoped alert
+  enumeration view (`/alerts` route with All / My Objects / Dependents
+  sub-routes) — the operator-visible UI consumer for the
+  REFACTOR-024 catalog-wide cross-owner read posture
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__Alerts.md
+  - odd-platform__java__AlertController__controller-method__getAllAlerts.md
+  - odd-platform__java__service__service__AlertServiceImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+  - odd-platform__openapi__tags__openapi-tag__alert.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      LIVE DOC HAS CHANGED since the 2026-05-26 sidecar WebFetch. The page now
+      states verbatim "Every open alert across the whole platform" and "All three
+      tabs are open-work-queue views — they list OPEN alerts only" and "a RESOLVED
+      or RESOLVED_AUTOMATICALLY alert disappears from every global tab the moment it
+      is resolved". It ALSO now documents "hardcoded page size of 30, no filter UI,
+      no status selector". The May doc-drift (doc said "open and resolved") is FIXED
+      (DOC-291 / DOC-200 / DOC-201 done) — so the All-tab status semantics are now a
+      doc-code MATCH, not a contradiction. Access-control framing for the All tab,
+      sort order, and the Resolve/Reopen permission remain undocumented.
+hypothesis_summary:
+  total: 12
+  confirmed: 3
+  contradicted: 6
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: |-
+      Any authenticated user (and, under auth.type=DISABLED, any anonymous caller)
+      reading /alerts/all enumerates every OPEN alert across the whole platform —
+      entity names, triager usernames, and free-text alert-chunk descriptions — with
+      no owner/role/permission gate at any layer.
+related_feature_flows: [F-007, F-009, F-014, F-021, F-064]
+related_concepts:
+  - Alert
+  - Cross-Owner Enumeration
+  - Read-Collaborative Posture
+  - User-Owner Association
+  - Active Platform Features
+related_drift_classes:
+  - alerts_global_page_all_tab_cross_owner_default_no_filter_ux
+  - alerts_default_redirect_to_all_silently_lands_unprivileged_users_on_cross_owner_feed
+  - alerts_tabs_hidden_property_hides_tab_but_routes_remain_directly_navigable
+  - alerts_list_hardcoded_size_30_no_status_filter_no_type_filter_no_date_filter
+  - alerts_tabs_show_my_and_depends_consults_ownership_selector_but_silent_empty_remains_when_mapped_owner_has_no_alerts
+new_drift_classes_proposed:
+  - alerts_list_by_owner_empty_result_reports_platform_wide_total_not_owner_scoped_total
+  - alerts_totals_badge_fetched_once_on_mount_never_refreshed_after_resolve
+  - alerts_global_list_renders_triager_oidc_username_verbatim_to_every_authenticated_reader
+---
+
+# Global Alerts list page — product-owner reflection
+
+## product_owner_narrative
+
+The global **Alerts** page (mounted at `/alerts/*`, per `Alerts.md`:understanding + App.tsx:64) is ODD's
+platform-wide alert inbox — the operator-visible read surface for the alert lifecycle that the AlertManager
+webhook (F-007) and the ingestion pipeline (DQ-test failures, failed jobs, schema breaks) feed into. A
+steward or data owner opens it to answer "what is currently broken across the data platform, and which of
+it is mine to fix?". It is the symmetric Active-Platform read surface to the global Activity feed (F-021),
+and it shares its per-row `AlertItem` component with the per-entity Alerts tab (F-014, per `Alerts.md`:dependencies_semantic).
+
+A user interacts with the page through **three tabs** — All / My Objects / Dependents — backed by three
+REST endpoints (`GET /api/alerts`, `/api/alerts/my`, `/api/alerts/my/dependents`) and a badge-counter call
+(`GET /api/alerts/totals`) fired once on mount (per `Alerts.md`:downstream_side_effects + AlertServiceImpl.md
+operations). Each tab renders a paginated list of alert cards — each card carries the alert's type, status,
+last-reason, the data-entity it was raised on (a click-through link), a collapsible alert-chunk history, and
+a Resolve / Reopen button. The list pages in fixed chunks of 30 via infinite-scroll; there is no filter UI
+(no status, type, date, or entity-name search), no bulk-resolve, and no export (per `AlertsList` evidence in
+the feature-flow + `Alerts.md`:bugs_limitations_corner_cases). The live alerting doc now documents this
+explicitly: "hardcoded page size of 30, no filter UI, no status selector" (WebFetch 2026-06-03, status 200).
+
+The working parts the product owner would demo: the **All tab** lists every OPEN alert across the whole
+platform regardless of who owns the entity — the read-collaborative posture (REFACTOR-024) made operator-visible;
+the **My Objects tab** filters to alerts on entities the signed-in user is a registered owner of (via an
+`OWNERSHIP` join, per `ReactiveAlertRepositoryImpl.md`:owner_scoping); the **Dependents tab** walks a recursive
+`LINEAGE` CTE from the user's owned entities to surface alerts on downstream dependents. The My/Dependents tabs
+are hidden entirely when the signed-in user has no Owner association (`getOwnership` selector falsy → tab
+`hidden`, per `Alerts.md`:implicit_adrs) — and the live doc now documents this requirement verbatim
+("hidden unless the signed-in user is linked to an Owner"). A bare `/alerts` URL auto-redirects to `/alerts/all`
+(AlertsRoutes.tsx:18, per `Alerts.md`:downstream_side_effects).
+
+The integration story: F-126 is the read counterpart to F-007's webhook ingress — alerts forged via the
+unauthenticated AlertManager webhook surface here on the All tab to every authenticated user (per the F-126
+feature-flow cross_pillar_relationships P-01/P-07). It shares its actor-attribution model with the Activity
+feed: the `status_updated_by` username (the human who triaged the alert) is resolved from `USER_OWNER_MAPPING`
+with `DELETED_AT IS NULL` and rendered verbatim on each card (`AlertItem.tsx:86`, per `Alerts.md`:security.data_exposure).
+The page sits behind no UI route-guard (unlike the LookupTables route which wraps `WithPermissionsProvider`),
+and the backing list endpoints carry no `@PreAuthorize` — access falls through to the catch-all
+`.authenticated()` (per `getAllAlerts.md`:implicit_adrs + AlertServiceImpl.md).
+
+Edge cases a product owner would highlight in a demo: a **RESOLVED alert vanishes from every global tab the
+moment it is resolved** (the data still exists on a single entity's Alerts tab, which has no status filter) —
+the doc now warns of this; an operator with **30K open alerts** must scroll through ~1000 infinite-scroll pages
+because there is no server-side filter; an operator who **resolves an alert watches the tab badge stay stale**
+until a full page reload (totals fetched once on mount, never invalidated, per `Alerts.md`:bugs_limitations_corner_cases);
+and an operator viewing **My Objects with zero owned-entity alerts** sees an empty list whose pagination total
+silently reports the platform-wide open count, not zero (`ReactiveAlertRepositoryImpl.java:177`, per
+`ReactiveAlertRepositoryImpl.md`:bugs_limitations_corner_cases).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator opens the global Alerts page "All" tab and there is at least one OPEN alert on
+    some data entity, the alert appears in the list with its type label and the data-entity it was
+    raised on — regardless of which owner the entity belongs to.
+  derivation: |-
+    Tab label "All" + endpoint GET /api/alerts (getAllAlerts) → listAllWithStatusOpen with no owner
+    predicate; pillar primary action "watch the full alert surface".
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      getAllAlerts (AlertController.getAllAlerts) delegates to AlertService.listAll(page,size) →
+      ReactiveAlertRepositoryImpl.listAllWithStatusOpen, a flat SELECT FROM alert WHERE status=OPEN with
+      no owner join. The outer select adds DATA_ENTITY + ALERT_CHUNK joins (the list inner-joins
+      alert_chunk, so a chunk must exist). The card renders the alert type + entity name. The IT-030
+      Playwright e2e ('an open alert appears in the global alerts list') seeds an OPEN alert+chunk on
+      entity 2001, opens /alerts, waits for GET /api/alerts, and asserts the type label
+      'Backwards incompatible schema' is visible — PASS at odd-platform commit 596ffa98 (run-log 2026-06-03).
+    evidence:
+      - sidecar: odd-platform__java__AlertController__controller-method__getAllAlerts.md
+        section: understanding + security.owner_scoping
+        cite: "ReactiveAlertRepositoryImpl.java:142-145"
+        note: "WHERE STATUS=OPEN, no owner predicate; cross-owner by design."
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: downstream_side_effects
+        cite: "AlertsList.tsx:74-93 + alerts.thunks.ts:33-70"
+        note: "All-tab list fetch bound to fetchAllAlertList → GET /api/alerts."
+      - sidecar: "(odd-team IT)"
+        section: integration-tests/e2e/specs/global-alerts-list.spec.ts:21-32
+        cite: "integration-tests/protocols/IT-030-global-alerts-list.md"
+        note: "GREEN e2e — the open alert's type label renders in the global list. coverage source: odd-team IT, NOT odd-platform unit."
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "IT-030 (odd-team integration-tests/e2e/specs/global-alerts-list.spec.ts — 'an open alert appears in the global alerts list')"
+
+- id: H-002
+  hypothesis: |-
+    When there are no OPEN alerts on the platform, the global Alerts "All" tab shows an empty list (no
+    alert cards), not a stale or error-masked state.
+  derivation: |-
+    Negative-space of the All-tab list contract; empty-result is a normal user expectation for an inbox view.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      With zero OPEN alerts, listAllWithStatusOpen returns an empty page and the list renders no AlertItem
+      rows. IT-030's NEGATIVE case clears entity alerts, opens /alerts, waits for GET /api/alerts, and
+      asserts the alert type label has count 0 — PASS. CAVEAT (does not break this hypothesis but worth
+      noting): the empty render carries no contextual messaging distinguishing "no open alerts" from
+      "backend unreachable" — if fetchAlertsTotals 403s/network-errors, all three badges fall back to '0'
+      with no visible failure indicator (Alerts.md:bugs_limitations_corner_cases — totals-error-mask). The
+      empty-LIST state itself is correct; the empty-state diagnostics are weak.
+    evidence:
+      - sidecar: "(odd-team IT)"
+        section: integration-tests/e2e/specs/global-alerts-list.spec.ts:34-46
+        cite: "IT-030 NEGATIVE case"
+        note: "GREEN e2e — with no open alert, the alert type is absent (count 0)."
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: bugs_limitations_corner_cases
+        cite: "AlertsTabs.tsx:23,28,34 + Alerts.tsx:15-17"
+        note: "empty-state has no error/empty diagnostic — '?? 0' fallback masks a totals fetch failure."
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: empty/no-match
+    coverage: verified
+    test_ref: "IT-030 (odd-team integration-tests/e2e/specs/global-alerts-list.spec.ts — negative case 'with no open alert the alert is not listed')"
+
+- id: H-003
+  hypothesis: |-
+    When an operator looks for a recently RESOLVED alert on the global Alerts page (any of the three
+    tabs), they can find it.
+  derivation: |-
+    Tab label "All" + the general user expectation that an alert inbox retains resolved items as history;
+    the live doc was historically read as promising "open and resolved".
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      All three global list queries (listAllWithStatusOpen, listByOwner, listDependentObjectsAlerts) carry
+      a hard-coded ALERT.STATUS = OPEN predicate. RESOLVED and RESOLVED_AUTOMATICALLY alerts never appear on
+      any global tab. There is no `status` query parameter on getAllAlerts / getAssociatedUserAlerts /
+      getDependentEntitiesAlerts — ALERT.STATUS is an available-but-unused column on the list API. The
+      resolved alert IS still reachable via a single data entity's Alerts tab (getAlertsByDataEntityId has
+      no status filter), so the data is not lost — but the global page cannot surface it. NOTE: this is the
+      same finding the F-007 reflection already filed as PLT-121; the live alerting doc has since been
+      CORRECTED to state "they list OPEN alerts only" (WebFetch 2026-06-03), so this is no longer a doc-drift
+      — it is a label-vs-behaviour drift on the UI tab named "All".
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: bugs_limitations_corner_cases + owner_scoping
+        cite: "ReactiveAlertRepositoryImpl.java:142-145, 160-166, 217-230"
+        note: "all three global queries hard-filter STATUS=OPEN."
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: stress_findings.request_inputs.tab-route
+        cite: "AlertController.java:36-57 + ReactiveAlertRepositoryImpl.java:182-199"
+        note: "no status param on list endpoints; getAlertsByDataEntityId (per-entity) has no status filter — the data exists there."
+    operator_visible_failure: |-
+      An operator who resolves an alert (or whose colleague does) and later returns to the global Alerts
+      page to confirm/review it cannot find it on any of the three tabs — the tab labelled "All" shows
+      open-only. Failure modes: (1) the operator assumes the alert was purged by housekeeping and either
+      re-investigates the underlying issue from scratch or files a support ticket about "lost alerts";
+      (2) an auditor reconstructing an incident timeline from the global page sees only currently-open
+      alerts and misses the resolved history; (3) the only recovery path (open the specific data entity's
+      Alerts tab) is non-obvious because nothing on the global page hints that resolved alerts live elsewhere.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_ref: ""
+
+- id: H-004
+  hypothesis: |-
+    When an unprivileged user (no Owner association, no admin role) — or, under auth.type=DISABLED, an
+    anonymous caller — reaches /alerts/all, the platform restricts what they can see, or at minimum frames
+    the All tab as a privileged platform-wide view before showing cross-owner data.
+  derivation: |-
+    Pillar P-09 cross-pillar relationship (security gates reads) + the live doc's "stewards and admins"
+    audience language + the normal expectation that a platform-wide surface is access-controlled.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      There is no gate at any layer. (1) The frontend route /alerts/* has NO WithPermissionsProvider
+      wrapper (contrast LookupTables at App.tsx:75-87). (2) getAllAlerts has no @PreAuthorize; GET /api/alerts
+      has no entry in SecurityConstants.SECURITY_RULES, so it falls through to the catch-all
+      pathMatchers('/**').authenticated(). (3) listAllWithStatusOpen has no owner/role predicate. Under
+      LOGIN_FORM/OAUTH2/LDAP any authenticated user reads every OPEN alert across the platform; under
+      auth.type=DISABLED the endpoint is anonymously reachable. The bare-/alerts auto-redirect to /alerts/all
+      (AlertsRoutes.tsx:18) combined with the My/Dependents tabs being hidden for unprivileged users means
+      the cross-owner All tab is the ONLY visible tab and the DEFAULT landing — there is no framing that
+      "All" means platform-wide. This is the operator-visible manifestation of REFACTOR-024.
+    evidence:
+      - sidecar: odd-platform__java__AlertController__controller-method__getAllAlerts.md
+        section: implicit_adrs + security.known_security_gaps
+        cite: "AlertController.java:35-41 + SecurityConstants.java:98-295 + AuthorizationCustomizer.java:29-30"
+        note: "no SecurityRule for GET /api/alerts → catch-all .authenticated() only."
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: security.known_security_gaps + bugs_limitations_corner_cases
+        cite: "App.tsx:64 vs App.tsx:75-87 + AlertsRoutes.tsx:18"
+        note: "no UI route-guard; bare-/alerts redirects onto the cross-owner All tab by default."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: security.data_exposure
+        cite: "ReactiveAlertRepositoryImpl.java:143-156 + AlertServiceImpl.java:185"
+        note: "payload includes entity names, triager owner/username, and alert-chunk descriptions (AlertManager generatorURL embeds internal monitoring host)."
+    operator_visible_failure: |-
+      Failure modes, ordered by blast radius: (1) DISABLED-mode internet-facing deployment — any anonymous
+      network caller enumerates every open alert: data-entity names, the OIDC/LDAP usernames of whoever
+      triaged each one, and free-text alert-chunk descriptions which for AlertManager-forged alerts embed
+      the Prometheus generatorURL (often an internal monitoring hostname). (2) Authenticated-but-unprivileged
+      user under LOGIN_FORM/OAUTH2/LDAP — a read-only viewer with no ownership lands by default on a feed of
+      every team's broken pipelines, framed as "All" with no signal that this is privileged platform-wide
+      data. (3) The implicit UX framing "alerts = the whole platform" (because All is the only visible tab
+      for unprivileged users) trains operators to triage other teams' alerts. NOTE: per the read-collaborative
+      ADR (REFACTOR-024) the cross-owner read under authenticated modes is DELIBERATE; the DISABLED-mode
+      anonymous reach and the absence of any framing are the load-bearing failures here.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-005
+  hypothesis: |-
+    When a signed-in user who IS a registered Owner opens the "My Objects" tab, they see exactly the OPEN
+    alerts on the entities they own — and the page's count/pagination reflects that owner-scoped set.
+  derivation: |-
+    Tab label "My Objects" + endpoint /api/alerts/my (listByOwner) which JOINs OWNERSHIP on the caller's owner id.
+  seed_source: view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The ITEM LIST is correct: listByOwner JOINs OWNERSHIP on the caller's owner id (resolved at the service
+      via authIdentityProvider.fetchAssociatedOwner) and filters STATUS=OPEN + DATA_ENTITY.STATUS != DELETED.
+      BUT the pagination TOTAL is wrong on the empty-result path: listByOwner passes
+      countAlertsWithStatusOpen() (platform-wide count) as the empty-record total counter into pageifyResult,
+      instead of countAlertsWithStatusOpenByOwner(ownerId). pageifyResult consults the empty-record counter
+      only when the result set is empty — so an owner with ZERO owned-entity alerts gets a Page whose total
+      reports the platform-wide open-alert count, not 0.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: bugs_limitations_corner_cases + owner_scoping
+        cite: "ReactiveAlertRepositoryImpl.java:160-179 (line 177 countAlertsWithStatusOpen())"
+        note: "wrong empty-result total counter; expected countAlertsWithStatusOpenByOwner(ownerId)."
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: downstream_side_effects (listByOwner row)
+        cite: "AlertServiceImpl.java:82-87"
+        note: "service resolves the caller's owner and forwards to the owner-scoped repo method — list scoping is correct."
+    operator_visible_failure: |-
+      An owner who has no alerts on their owned entities opens My Objects, sees an empty list (correct), but
+      the pagination metadata / any total-derived UI reports a non-zero count (the platform-wide open total).
+      The discrepancy "the list is empty but the total says 42" is confusing and erodes trust in the count;
+      if any UI element drives off Page.total (e.g. a "showing 0 of 42" string or a load-more affordance), it
+      misbehaves. Surfaces ONLY on the zero-owned-alert path, which is exactly the common case for a new owner.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: ""
+
+- id: H-006
+  hypothesis: |-
+    When a signed-in owner opens the "Dependents" tab, they see OPEN alerts on data entities that are
+    downstream (via lineage) of the entities they own.
+  derivation: |-
+    Tab label "Dependents" + endpoint /api/alerts/my/dependents (listDependentObjectsAlerts) which walks a
+    recursive LINEAGE CTE from the owner's oddrns; live doc confirms "downstream ... via lineage".
+  seed_source: view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The query is correct: listDependentObjectsAlerts resolves the owner's oddrns via getObjectsOddrnsByOwner
+      then walks a recursive LINEAGE CTE (WITH RECURSIVE, LINEAGE.IS_DELETED=false) to find downstream
+      entities and filters STATUS=OPEN. The gap is a silent-empty: the tab is shown to any owner (showMyAndDepends
+      true once an Owner association exists), but it renders empty with no diagnostic when the owner's lineage
+      is missing/broken or the owner simply has no downstream dependents — visually indistinguishable from
+      "no alerts". The doc now states the tab uses lineage, but operators with broken/missing lineage edges
+      get no signal that lineage is the join.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: dependencies_semantic + operations
+        cite: "ReactiveAlertRepositoryImpl.java:429-454, 217-243"
+        note: "recursive LINEAGE CTE + STATUS=OPEN; depends on lineage data existing."
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: docs_link_semantic.doc_drift_findings
+        cite: "AlertsList.tsx:101-105"
+        note: "empty-state placeholder with no contextual messaging — broken-lineage and no-dependents are indistinguishable."
+    operator_visible_failure: |-
+      An owner whose lineage edges are missing (collectors not configured for downstream consumers, or
+      lineage not yet ingested) opens Dependents, sees an empty list, and concludes "no downstream alerts"
+      when the truth is "lineage is not populated so the CTE finds nothing". They miss real downstream
+      breakage. The failure is silent — same F-064 silent-empty class as the My tab — and is the kind of gap
+      that defeats the whole point of a dependents view during an incident.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: ""
+
+- id: H-007
+  hypothesis: |-
+    When a user has no Owner association, the My Objects and Dependents views are not reachable for them
+    (consistent with the doc's "hidden unless linked to an Owner").
+  derivation: |-
+    AlertsTabs hidden:!showMyAndDepends + getOwnership selector; live doc states the tabs are hidden without
+    an Owner link. The senior-PO question: is the interaction consistent and is the restriction actually enforced?
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The tabs are HIDDEN but the routes are NOT blocked. AlertsTabs.tsx sets hidden:!showMyAndDepends on the
+      My/Dependents tab items, so the tabs do not render for a user with no ownership. But AlertsRoutes mounts
+      /alerts/my and /alerts/dependents unconditionally — a user with prior URL knowledge or browser history
+      can navigate to them directly. The backend then resolves the owner via authIdentityProvider; with no
+      user_owner_mapping the owner Mono completes empty and the list renders empty (no rows) — visually
+      indistinguishable from "no alerts in this scope". The doc's "hidden" framing implies the views are
+      unavailable, but they are reachable-by-URL and silently empty.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: implicit_adrs + concepts.invariants
+        cite: "AlertsTabs.tsx:30-37 + AlertsRoutes.tsx:10-21"
+        note: "hidden flag at the UI layer; all three routes mounted unconditionally."
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: dependencies_semantic (Ownership subsystem)
+        cite: "AlertServiceImpl.java:84,93,235"
+        note: "owner resolution returns empty for unmapped users → empty list, no diagnostic."
+    operator_visible_failure: |-
+      A user with no Owner association who navigates directly to /alerts/my (a bookmarked URL, a shared link,
+      or browser autocomplete) lands on a half-broken view: no tab is highlighted (the tab is hidden), the
+      list is empty, and there is no message explaining that an Owner association is required. They conclude
+      "I have no alerts" when the real state is "you are not linked to an Owner so 'mine' cannot be evaluated".
+      This is a UX-leak rather than a security hole (the empty result leaks nothing), but it is the kind of
+      dead-end that makes the feature feel broken.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-008
+  hypothesis: |-
+    When an operator clicks the Resolve (or Reopen) button on an alert card, the action either succeeds or,
+    if they lack permission, the button communicates that BEFORE they attempt the action.
+  derivation: |-
+    The Resolve/Reopen button is a labelled UI control; the senior-PO convenience/intuitiveness question —
+    a privileged action should signal availability up front, consistent with the rest of the platform.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The Resolve/Reopen button uses post-action permission discovery. AlertItem renders the button
+      unconditionally enabled for every alert; the permission probe (fetchResourcePermissions) fires only
+      AFTER the click; if the caller lacks DATA_ENTITY_ALERT_RESOLVE the component then sets disableResolve
+      and renders a "No access!" caption inline. The user learns their permission by clicking. The backend
+      side: PUT /api/alerts/{alert_id}/status IS gated (SecurityConstants registers a rule resolving the
+      alert's data entity via AlertResourceExtractor), so the mutation itself is protected — but the UI
+      affordance is shown to users who cannot perform it. (Already tracked as PLT-033.)
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: bugs_limitations_corner_cases + security.known_security_gaps
+        cite: "AlertItem.tsx:159-166 (button rendered unconditionally) + AlertItem.tsx:55-67 (permission check on click)"
+        note: "post-action permission discovery; permission resolved only after click."
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: couples-to (AlertResourceExtractor)
+        cite: "SecurityConstants.java:295-296 + AlertServiceImpl.java:111"
+        note: "the PUT mutation is gated server-side; the UI affordance is not."
+    operator_visible_failure: |-
+      A read-only viewer (or any user without DATA_ENTITY_ALERT_RESOLVE on the alert's entity) sees a
+      Resolve button on every alert, clicks it expecting to resolve, and only then gets "No access!". Failure
+      modes: (1) wasted clicks + confusion across a list of alerts they cannot action; (2) the button's
+      existence is itself a minor signal-leak — it confirms the alert is OPEN and resolvable; (3) inconsistent
+      with a permission-aware UI where unavailable actions are disabled or hidden up front. Not a data-integrity
+      bug (the backend rejects the unauthorized PUT), but a convenience/clarity defect on a primary action.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-009
+  hypothesis: |-
+    When an operator resolves an alert from the list, the tab badge counts (All / My / Dependents) update to
+    reflect the new state.
+  derivation: |-
+    Badge counts come from GET /api/alerts/totals; the normal expectation is that resolving an alert
+    decrements the relevant count — the senior-PO question of whether the surface stays coherent after a mutation.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The totals (total, myTotal, dependentTotal) are fetched ONCE on Alerts mount via a useEffect with an
+      empty dependency array (Alerts.tsx:15-17) and are never re-fetched after a Resolve, after navigating
+      tabs, or after new alerts arrive. After an operator resolves an alert, the resolved card disappears from
+      the list (its own list state updates), but the badge count stays at its pre-resolve value until the
+      operator leaves and re-enters /alerts (or full-reloads). The totals backend call itself is correct (a
+      zipDelayError of three count queries); the staleness is purely the UI's missing invalidation.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: bugs_limitations_corner_cases + performance.known_performance_gaps
+        cite: "Alerts.tsx:15-17"
+        note: "useEffect([]) — totals fetched once, never invalidated after Resolve/navigation."
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: downstream_side_effects (getTotals row)
+        cite: "AlertServiceImpl.java:89-109"
+        note: "getTotals fans out three count queries — the data source is correct; the UI just doesn't re-call it."
+    operator_visible_failure: |-
+      An operator triaging a batch of alerts resolves several and watches the All badge stay at, say, "42"
+      while the list visibly shrinks. The badge and the list disagree. Failure modes: (1) the operator
+      distrusts the counts and reloads repeatedly; (2) in a shared-deployment, another user's freshly-created
+      alert is not reflected until reload, so the badge under-reports; (3) the off-by-N badge undermines the
+      page's role as an at-a-glance "how much is broken" indicator. Not a correctness bug in the data, but an
+      obvious coherence gap on the primary surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_ref: ""
+
+- id: H-010
+  hypothesis: |-
+    The username shown on an alert card as the person who last actioned it (status_updated_by) is only
+    exposed to users who are entitled to see who triaged that alert.
+  derivation: |-
+    Response field status_updated_by.identity.username rendered on the card; the negative-space question of
+    whether actor-identity PII is appropriately scoped on a cross-owner surface.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The card renders statusUpdatedBy?.identity?.username verbatim (AlertItem.tsx:86). Because the All tab is
+      readable by every authenticated user (and anonymously under DISABLED — see H-004), the OIDC/LDAP username
+      of whoever triaged each alert is exposed to every reader of the global page. The repository resolves the
+      username → OWNER via USER_OWNER_MAPPING with DELETED_AT IS NULL, but the username STRING itself is stored
+      on the alert row and rendered regardless of the OWNER resolution. There is no field-level redaction in the
+      mapper. This is the same anonymous-fingerprint class the sidecar flags against the broader DOC-GAP-082
+      username-exposure pattern.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: security.data_exposure
+        cite: "AlertItem.tsx:86"
+        note: "statusUpdatedBy.identity.username rendered verbatim to any reader of the global list."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: implicit_adrs (status_updated_by resolution)
+        cite: "ReactiveAlertRepositoryImpl.java:83-86,499-502"
+        note: "username string is the durable source-of-truth; OWNER display is best-effort; no redaction layer."
+    operator_visible_failure: |-
+      On the cross-owner All tab, any authenticated user (or anonymous caller under DISABLED) can see the
+      OIDC/LDAP username of the human who resolved/reopened each alert across every team. Failure modes: (1)
+      cross-team identity exposure — who is working which incident becomes visible platform-wide; (2) under
+      DISABLED-mode internet exposure this is PII leaked to anonymous callers; (3) combined with the alert-chunk
+      descriptions (which can embed internal monitoring URLs) the card is an information-disclosure surface. The
+      exposure scales with the cross-owner read posture (H-004) — it is the actor-identity dimension of the same
+      surface. Whether this is a bug or a documented consequence of the read-collaborative posture is a
+      maintainer call; it is at minimum an undocumented exposure.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-011
+  hypothesis: |-
+    When two events/alerts share the boundary of a page (e.g. equal last_created_at at the page edge),
+    paginating the global list with infinite-scroll does not skip or duplicate any alert.
+  derivation: |-
+    Ordering + pagination semantics: the list sorts by LAST_CREATED_AT DESC, ID DESC and pages via
+    OFFSET=(page-1)*size; the negative-space question of deterministic, gap-free pagination under concurrent writes.
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The ordering is deterministic at the SQL layer: createAlertJoinQuery declares ORDER BY
+      (ALERT.LAST_CREATED_AT DESC, ALERT.ID DESC) applied to both the inner CTE and the outer select — so
+      ties on last_created_at are broken by id, giving a total order. That makes a STATIC snapshot gap-free.
+      What cannot be settled statically is the behaviour under concurrent writes during scrolling: the list
+      uses OFFSET pagination (not keyset), so if new OPEN alerts are inserted (or existing ones resolved,
+      removing rows) between page N and page N+1 fetches, the OFFSET window shifts and an operator can skip or
+      re-see a row. The UI also has a documented page-race: a slow page-2 response can land into a just-cleared
+      tab state, and there is no request cancellation on tab-switch. Whether a real operator scrolling a
+      live-updating high-alert deployment observes skipped/duplicated alerts requires running it.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: stress_findings.orderings + stress_findings.resource_boundaries
+        cite: "ReactiveAlertRepositoryImpl.java:474-507 + alerts.slice.ts:25-32 + AlertsList.tsx:74-93"
+        note: "total order on (last_created_at DESC, id DESC); OFFSET pagination; documented page-race + no cancellation."
+    operator_visible_failure: |-
+      On a high-alert deployment where alerts are continuously created/resolved while an operator scrolls the
+      global list, OFFSET pagination can cause a row to be skipped (a new alert inserted above the current
+      window pushes an unseen row past the offset) or duplicated (a resolved alert removed above the window
+      pulls a seen row back into the next page). The on-mount-only totals (H-009) compound the confusion. The
+      static ordering is sound; the live-pagination correctness is the open question.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-126-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: grammar
+    coverage: unverified
+    test_ref: ""
+
+- id: H-012
+  hypothesis: |-
+    The global Alerts list remains usable for an operator on a deployment with many thousands of open alerts
+    (it does not freeze the browser tab).
+  derivation: |-
+    Pillar operator-effectiveness expectation + the hardcoded size=30 infinite-scroll with no DOM virtualisation;
+    the senior-PO question of behaviour at scale / across device types.
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      CONFIRMED that the page accumulates O(N) DOM nodes with no virtualisation: AlertsList wraps a Grid
+      container + map of AlertItem rows (no react-window); each AlertItem mounts a useMemo + three useState
+      slots and a Collapse-wrapped history. Every infinite-scroll page appends to a single JS array on the
+      heap. For ~300 alerts (10 pages) the page is fine; for 3000 it degrades visibly; for 30000 it likely
+      freezes the tab. So the hypothesis as stated ("remains usable ... does not freeze") is CONFIRMED only up
+      to a few hundred alerts and FAILS at tens of thousands. I record this as confirmed-with-a-ceiling: the
+      mechanism is unambiguous from the code (no virtualisation, O(N) DOM), but the exact freeze threshold is
+      a probe (P-194 was emitted by the sidecar for the N=3000 memory/DOM-render measurement). The doc now
+      documents the size-30 no-filter posture, so the operator is warned the page is a "recent alerts" view.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: performance.resource_allocation + performance.known_performance_gaps
+        cite: "AlertsList.tsx:84-99"
+        note: "Grid + map, no react-window; O(N) DOM; P-194 emitted for the N=3000 measurement."
+    operator_visible_failure: |-
+      On a deployment with thousands of unresolved alerts, an operator who scrolls deep into the global list
+      accumulates thousands of mounted AlertItem components; the tab's memory and scroll-render cost grow
+      linearly and the page becomes the bottleneck before the backend does — eventually an unresponsive tab on
+      lower-end hardware. With no server-side filter, there is no way to narrow the set to avoid this. The
+      backend would serve the pages fine; the UI is the limiting factor. (Covered by the PLT-050 UX cluster +
+      the deferred N=3000 probe.)
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_ref: ""
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    My Objects tab: owner with zero owned-entity alerts gets a Page whose total reports the PLATFORM-WIDE
+    open count, not 0 — listByOwner passes countAlertsWithStatusOpen() as the empty-result counter instead
+    of countAlertsWithStatusOpenByOwner(ownerId) (ReactiveAlertRepositoryImpl.java:177).
+  dedup_status: net_new
+  distinct_from: PLT-067
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "ReactiveAlertRepositoryImpl.listByOwner line 177 — pass countAlertsWithStatusOpenByOwner(ownerId) as the empty-record total counter."
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    AlertItem Resolve/Reopen uses post-action permission discovery — the button renders enabled for users
+    without DATA_ENTITY_ALERT_RESOLVE; access is revealed only after click ('No access!').
+  dedup_status: already_tracked
+  tracked_as: PLT-033
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: |-
+    Tab badge totals are fetched once on mount and never invalidated after Resolve / navigation / new
+    alerts — the badge goes stale (off-by-N) until full reload (Alerts.tsx:15-17).
+  dedup_status: net_new
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "Alerts.tsx — re-dispatch fetchAlertsTotals after a successful updateAlertStatus and/or on tab change; or invalidate the totals slice on the alerts-mutation action."
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    'All' tab (and My/Dependents) show OPEN alerts only; RESOLVED/RESOLVED_AUTOMATICALLY are invisible on
+    every global tab and reachable only via a single entity's Alerts tab. Doc already corrected; UI tab label
+    'All' still over-promises.
+  dedup_status: already_tracked
+  tracked_as: PLT-121
+- hypothesis_id: H-004
+  one_line: |-
+    /alerts/all is cross-owner with no gate at any layer (deliberate read-collaborative posture under auth
+    modes; anonymous reach under auth.type=DISABLED) and is the default landing for unprivileged users with
+    no platform-wide framing.
+  dedup_status: already_tracked
+  tracked_as: PLT-050
+  note: |-
+    The cross-owner-default + bare-/alerts-redirect-onto-All facet is PLT-050 Defect 2. The DISABLED-mode
+    anonymous-enumeration sub-finding is the broader REFACTOR-024 read-collaborative posture (tracked as a
+    refactoring scope, doc-side noted). Recorded as corroboration; not re-filed.
+- hypothesis_id: H-006
+  one_line: |-
+    Dependents tab silent-empty when the owner's lineage is missing/broken or there are no downstream
+    dependents — indistinguishable from 'no alerts'; doc says 'via lineage' but UI gives no diagnostic.
+  dedup_status: net_new
+  recommended_log_as: "caveat in features/active-platform-features/alerting (add an empty-state note that Dependents requires populated lineage) OR DOC-GAP-NNN"
+- hypothesis_id: H-007
+  one_line: |-
+    My/Dependents tabs are hidden for users with no Owner association but the /alerts/my and
+    /alerts/dependents routes remain directly navigable and render a silent-empty view.
+  dedup_status: already_tracked
+  tracked_as: PLT-050
+  note: "PLT-050 Defect 3 (hidden-but-navigable routes). Recorded as corroboration."
+- hypothesis_id: H-010
+  one_line: |-
+    Triager OIDC/LDAP username (status_updated_by) is rendered verbatim on every card of the cross-owner
+    global list — exposed platform-wide to every authenticated reader (and anonymously under DISABLED); no
+    field-level redaction.
+  dedup_status: net_new
+  recommended_log_as: "DOC-GAP-NNN (document the actor-username exposure as a consequence of the read-collaborative posture) OR BUG-NNN if redaction is intended"
+- hypothesis_id: H-012
+  one_line: |-
+    Global Alerts list has no DOM virtualisation; O(N) DOM growth degrades/freezes the tab at thousands of
+    open alerts, and there is no server-side filter to narrow the set.
+  dedup_status: already_tracked
+  tracked_as: PLT-050
+  note: "Part of the PLT-050 UX cluster (no-filter + size-30 at scale). Recorded as corroboration; N=3000 freeze threshold deferred to probe P-194."
+
+### functional_test_demands
+# LSN-030 (Rule 11): every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# Confirmed-but-untested promises (H-012) belong HERE, not silently dropped to routes_to_finding: none.
+- use_case_id: F-126-UC-3
+  hypothesis_id: H-003
+  kind: render
+  promise: "A RESOLVED alert is absent from every global tab (All/My/Dependents) but present on the entity's own Alerts tab."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-3)"
+  proposed_test: "Integration: seed one OPEN + one RESOLVED alert on the same entity; assert GET /api/alerts returns only the OPEN one; assert GET /api/dataentities/{id}/alerts returns both. Regression guard for the All-label semantics + PLT-121 fix."
+- use_case_id: F-126-UC-4
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "An unprivileged authenticated user reading /alerts/all sees the platform-wide OPEN alert set (read-collaborative posture) — and an anonymous caller can reach it ONLY when auth.type=DISABLED."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-4)"
+  proposed_test: "Security integration: assert a non-owner authenticated user gets the full OPEN set from GET /api/alerts (pins REFACTOR-024 current behaviour); assert anonymous GET /api/alerts is 401 under LOGIN_FORM/OAUTH2/LDAP and reachable under DISABLED. Pins the posture so a future owner-predicate tightening cannot land green."
+- use_case_id: F-126-UC-5
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "My Objects for an owner with zero owned-entity alerts returns an empty list AND a total of 0."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-5)"
+  proposed_test: "Repository/integration: create an owner with no alerts on owned entities; call listByOwner; assert Page.total == 0 (currently reports platform-wide open count). Regression guard for the BUG-NNN fix at line 177."
+- use_case_id: F-126-UC-6
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "Dependents returns OPEN alerts on lineage-downstream entities of the owner; empty when lineage is absent."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-6)"
+  proposed_test: "Integration: owner with a downstream entity that has an OPEN alert + a lineage edge → assert it appears on /api/alerts/my/dependents; same owner with the lineage edge removed → assert empty. Pins the lineage-CTE join."
+- use_case_id: F-126-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "My/Dependents views are unavailable to a user with no Owner association."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-7)"
+  proposed_test: "e2e: as a user with no owner association, navigate directly to /alerts/my; assert either a redirect/guard OR an explicit owner-required empty-state (current behaviour: silent empty). Regression guard for the PLT-050 Defect-3 fix."
+- use_case_id: F-126-UC-8
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "The Resolve/Reopen affordance communicates permission state before the action is attempted."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-8)"
+  proposed_test: "e2e: as a user without DATA_ENTITY_ALERT_RESOLVE, open /alerts; assert the Resolve button is disabled/hidden (current behaviour: enabled, reveals 'No access!' after click). Regression guard for the PLT-033 fix."
+- use_case_id: F-126-UC-9
+  hypothesis_id: H-009
+  kind: edit-reconcile
+  promise: "Resolving an alert updates the tab badge counts without a full page reload."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-9)"
+  proposed_test: "e2e: open /alerts with N open alerts; resolve one; assert the All badge decrements to N-1 without reload (current behaviour: badge stays N). Regression guard for the totals-staleness BUG-NNN fix."
+- use_case_id: F-126-UC-10
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "Triager identity on a card is shown only to entitled readers (or its platform-wide exposure is a documented, intended consequence)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-10)"
+  proposed_test: "Integration/security: assert GET /api/alerts payload exposes status_updated_by username to a non-owner reader (pins current exposure); if redaction is added, flip to assert redaction. Documents/guards the actor-identity exposure dimension of REFACTOR-024."
+- use_case_id: F-126-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "An OPEN alert appears on the global /alerts All tab with its type + entity (cross-owner)."
+  verdict: confirmed
+  coverage: verified
+  recommended_log_as: "n/a — VERIFIED by IT-030 (odd-team)"
+  proposed_test: "Already covered: IT-030 SUCCESS case. No new demand."
+- use_case_id: F-126-UC-2
+  hypothesis_id: H-002
+  kind: empty/no-match
+  promise: "With no OPEN alerts the global All tab lists none."
+  verdict: confirmed
+  coverage: verified
+  recommended_log_as: "n/a — VERIFIED by IT-030 (odd-team) negative case"
+  proposed_test: "Already covered: IT-030 NEGATIVE case. No new demand."
+- use_case_id: F-126-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "The global list stays usable up to a few hundred alerts; it has no DOM virtualisation, so it degrades at thousands."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-126-UC-12)"
+  proposed_test: "Performance/e2e (deferred to probe P-194): render /alerts with N=3000 open alerts; measure DOM-node count + scroll-render time + heap. Confirmed-but-untested ceiling — the highest-value perf guard before adding virtualisation."
+
+### probes_emitted
+- probe_id: PENDING-F-126-1
+  hypothesis_id: H-011
+  full_hypothesis: |-
+    When two alerts share the page boundary (equal last_created_at at the page edge), paginating the global
+    list with infinite-scroll does not skip or duplicate any alert — INCLUDING under concurrent writes
+    (new alerts inserted / existing alerts resolved) while the operator scrolls. Static ordering is a total
+    order (LAST_CREATED_AT DESC, ID DESC), so a static snapshot is gap-free; the open question is OFFSET
+    pagination correctness under live writes + the documented page-race (slow page-2 landing into a cleared
+    tab; no request cancellation on tab-switch).
+  expected_outcome: "No skipped or duplicated alert across infinite-scroll page boundaries, including under a concurrent create/resolve workload."
+  local_execution: |-
+    Local-only per Rule 6: Testcontainers + local Postgres seeded with >60 OPEN alerts sharing timestamps at
+    a page boundary; Playwright headless drives /alerts scroll while a background task inserts/resolves alerts;
+    assert the rendered id set is gap-free and duplicate-free. No remote infra.
+  status: pending-reflection-verification
+  note: "Parallel-safe mode: recorded as PENDING id; no P-NNN file created (orchestrator/probe-runner mints)."
+
+### validation_gaps
+- sidecar: feature-flows/detail/F-126.yaml
+  field_insufficient: "chain[].sidecar == 'unresolved' for all five UI hops (hops 0-4)"
+  proposed_refresh: |-
+    The feature-flow marks every UI hop (Alerts / AlertsTabs / AlertsRoutes / AlertsList / AlertItem) as
+    sidecar: unresolved, but a complete, HIGH-confidence sidecar EXISTS at
+    understanding/odd-platform__ts__react-component__component__Alerts.md (file-analyser/0.4.0, enrichment
+    complete) covering the whole UI subtree with file:line citations into ReactiveAlertRepositoryImpl. The
+    next feature-flow-builder refresh of F-126 should bind hop 0 (and ideally the AlertsTabs/Routes/List/Item
+    detail) to that sidecar and drop the unresolved flag — the UI surface is enriched, not missing. (This
+    reflection used the existing sidecar directly; it is NOT API-only.)
+- sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+  field_insufficient: "tests_coverage_semantic — 'no AlertService*Test exists'"
+  proposed_refresh: |-
+    The sidecar (session 2026-05-20) states `find ... -name 'AlertService*'` returned zero matches. As of
+    odd-platform commit 596ffa98 an AlertServiceImplTest.java now EXISTS
+    (odd-platform-api/src/test/java/.../service/AlertServiceImplTest.java) covering F-014 per-entity not-found
+    + F-007 empty-batch no-op — but NONE of F-126's global-tab read promises (listAll cross-owner, listByOwner
+    empty-total, getTotals, updateStatus reopen guard). The next file-analyser refresh should record the new
+    test class + that it does not touch the global-list paths.
+
+### doc_drift_findings
+# NONE that are net-new this run. The historical All-tab 'open and resolved' doc-drift (sidecar-flagged
+# 2026-05-26) is now RESOLVED: the live page (WebFetch 2026-06-03, status 200) states "they list OPEN alerts
+# only" and documents the size-30 / no-filter posture. The remaining doc GAPS (not drifts) — All-tab access
+# framing, sort order, Resolve permission — are folded into the caveat_candidates above (H-004, H-010) rather
+# than re-listed here. doc_drift_findings: []
+
+## maintainer_notes
+
+(empty — fresh reflection; no prior version provided)

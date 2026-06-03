@@ -1,0 +1,722 @@
+---
+feature_id: F-028
+pillar_anchored_id: P-08:F-006
+pillar: "P-08 Management & Administration"
+feature_name: "Namespace Lifecycle — create / list / details / update / delete"
+reflected_at: "2026-06-03T00:00:00Z"
+reflected_at_commit: unknown-bash-not-available
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__NamespaceController__controller-class__NamespaceController.md
+  - odd-platform__ts__react-component__component__NamespaceAutocomplete.md
+  - odd-platform__java__service__service__TermServiceImpl.md
+  - odd-platform__ts__routes__route__management.md
+contributing_concepts_read:
+  - concepts/detail/invariants/namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths.yaml
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: "Re-used the contributing-sidecar live fetches (2026-05-20 / 2026-05-22 / 2026-05-27). Not re-fetched this reflection; the three sidecar fetches are concordant and recent."
+  - url: "https://docs.opendatadiscovery.org/features/management/namespaces"
+    last_verified_at: "2026-05-27T00:00:00Z"
+    last_verified_status: 404
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 13
+  confirmed: 7
+  contradicted: 4
+  partial: 1
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: "A typed-in namespace name longer than 64 chars returns HTTP 500 (opaque DatabaseException), not a clean 400 — the operator cannot tell they hit a length cap."
+related_feature_flows: [F-008, F-018, F-019, F-002, F-006, F-020, F-074, F-076, F-161]
+related_concepts:
+  - "Namespace (Management — label-dimension scope)"
+  - "namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths"
+  - "read-collaborative posture"
+  - "select-or-create combo-box (platform-wide UX pattern — NamespaceAutocomplete canonical instance)"
+  - "Partial Unique Index on Soft-Delete Tables (V0_0_31 pattern)"
+related_drift_classes:
+  - namespace_create_side_door_bypass_via_four_sister_services
+  - case_sensitivity_undocumented_silent_duplication
+  - name_length_dbcap_only_no_app_validation_500_on_overflow
+  - soft_delete_reincarnation_undocumented
+  - list_pagination_no_size_cap_at_controller_or_service
+  - ungated_list_and_detail_reads_no_security_rule_for_get
+  - cascade_check_toctou_non_transactional
+  - disabled_mode_anonymous_namespace_mutation_lsn_001_pattern
+new_drift_classes_proposed: []
+---
+
+# Namespace Lifecycle — create / list / details / update / delete — product-owner reflection
+
+## product_owner_narrative
+
+**What the feature is.** Namespaces are the platform's label-dimension scoping primitive — the
+logical grouping ("finance", "data-engineering", a team or a domain name) that tags, terms,
+datasources, collectors, data entities, and lookup tables attach to (per system-mission.md:235 P-08
+sub-feature seed; per NamespaceAutocomplete:understanding which enumerates the five binding forms).
+Namespace Lifecycle Management is the operator-facing CRUD surface over that primitive: an operator
+opens **Management → Namespaces** (the canonical landing tab — `<Navigate to='namespaces' replace />`
+at ManagementRoutes.tsx:151, per management-route sidecar implicit_adrs[2]), sees the list of every
+namespace, and can create, rename, or delete one. Five HTTP endpoints back it
+(`NamespaceController.java:1-62` — create / get / list / update / delete) and the user-facing promise
+is the Management doc's verbatim line: *"Create a namespace before authoring tags or terms that should
+be scoped to a particular team or domain"* (per NamespaceController:docs_link_semantic, live
+/features/management 2026-05-20).
+
+**How a user interacts with it.** Two distinct entry surfaces, and the distinction is the whole story
+of this feature. (1) The **dedicated Management → Namespaces tab** is the deliberate-create surface:
+the operator types a name into a one-field form (NamespaceForm — `rules={{required, validate:trim}}`
+only, per ui_review_2026_05_26 note 2) and saves; this path POSTs `/api/namespaces` and is gated by the
+`NAMESPACE_CREATE` permission (per NamespaceController:security.authorization_assertions,
+SecurityConstants.java:98-102). (2) The **inline select-or-create combo-box** — `NamespaceAutocomplete`
+— is mounted on FIVE other forms (Add-datasource, term, data-entity-group, collector, lookup-table; per
+NamespaceAutocomplete:upstream_callers). From the user's seat, they click the "Namespace" field, see a
+debounced dropdown of existing namespaces, and — if they type a name that matches nothing — a labelled
+row appears: *"No result. Create new custom namespace «X»"* (NamespaceAutocomplete.tsx:78-84,168-174).
+Selecting it sends the typed name to the backend's `getOrCreate`, which creates the namespace as a side
+effect of saving the parent entity. This is a deliberate, on-screen, labelled affordance — NOT a hidden
+back door (per NamespaceAutocomplete:coherence_notes, the LSN-023 case-law artefact).
+
+**The working parts.** Name uniqueness is DB-enforced via a *partial* unique index
+`namespace_unique ON namespace(name) WHERE deleted_at IS NULL` (V0_0_31:25), which deliberately enables
+**soft-delete reincarnation** — delete "finance", and a later create of "finance" succeeds with a brand
+new id and history (per NamespaceController:implicit_adrs[3]). Name comparison is **case-sensitive**
+("finance" and "Finance" are two distinct namespaces; ReactiveNamespaceRepositoryImpl.java:26). Delete
+is guarded at the application tier against exactly **four referent classes** — DataSource, Collector,
+Term, non-deleted DataEntity — via a `Mono.zip` of four `existsByNamespace*` checks
+(NamespaceServiceImpl.java:73-90); if any referent exists the delete raises `CascadeDeleteException`
+(surfaced as 400). List/details reads are **ungated** — any authenticated user enumerates every
+namespace (read-collaborative posture, per system-mission.md:267 and NamespaceController:implicit_adrs[1]).
+
+**The integration story.** This feature feeds Discovery (namespace pills on catalog/search facets, P-01),
+the Data Glossary (term-to-namespace binding, P-06), and the producer ecosystem (datasource/collector
+namespace, P-10), and shares the RBAC boundary with Security (P-09). The load-bearing cross-pillar
+interaction is the side-door: four sister services — TermServiceImpl, DataSourceServiceImpl,
+CollectorServiceImpl, DataEntityGroupServiceImpl — call `namespaceService.getOrCreate(name)` from their
+own create/update flows (8 call sites; TermServiceImpl.java:103,138 confirmed primary-source), so a
+caller holding TERM_CREATE / DATA_SOURCE_CREATE / COLLECTOR_CREATE / DATA_ENTITY_GROUP_CREATE — but NOT
+NAMESPACE_CREATE — mints namespaces. The two readings of this fact (an RBAC-bypass of the dedicated
+permission vs. the intended product UX) are reconciled in H-007.
+
+**Edge cases a product owner would flag in a demo.** (a) Type a 65-character namespace name → you get an
+opaque server error, not a friendly "too long" message (H-006). (b) Delete a namespace someone bookmarked
+→ recreating the name gives a new id; the bookmark and historical links break silently (H-008). (c) There
+is **no audit trail** — `ActivityEventTypeDto` has no `NAMESPACE_CREATED/_UPDATED/_DELETED` value, so
+"who created the finance namespace and when" is unanswerable from production data (H-011 negative-space).
+(d) Delete a namespace while someone else is concurrently attaching a datasource to it — the check + the
+delete are not atomic, so an orphan referent row pointing at a soft-deleted namespace is possible (H-013).
+None of (a)–(d), nor the case-sensitivity surprise, nor the side-door, is documented anywhere
+user-facing — and there is no dedicated `/features/management/namespaces` page at all (404 confirmed
+2026-05-27).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator with NAMESPACE_CREATE submits the Management → Namespaces form with a new name, exactly one namespace with that name is created and appears in the list."
+  derivation: "Endpoint POST /api/namespaces named for create; pillar primary user action 'create namespaces'; NamespaceForm one-field create UI."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      NamespaceController.createNamespace (line ~23) proxies `@Valid Mono<NamespaceFormData>` to
+      NamespaceServiceImpl.create, which maps the form, calls repository.create (INSERT INTO namespace),
+      and maps the resulting pojo back. The NAMESPACE_CREATE gate is wired at SecurityConstants.java:98-102.
+      A unit test exercises the create happy path; a repository integration test confirms the row is
+      created and retrievable.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: concepts.operations + security.authorization_assertions
+        cite: "NamespaceController.java:23 + SecurityConstants.java:98-102"
+        note: "create proxy + NAMESPACE_CREATE gate."
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: tests_coverage_semantic.covered_behaviours
+        cite: "NamespaceServiceImplTest.java:114-144"
+        note: "create(form) happy path test."
+      - sidecar: source_read_for_validation
+        section: repository integration test
+        cite: "NamespaceRepositoryImplTest.java:19-46 (testCreate + testCreateByName)"
+        note: "Read this validation (Rule 8 exception): asserts the created row is retrievable by id."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "NamespaceServiceImplTest.testCreate + NamespaceRepositoryImplTest.testCreate/testCreateByName"
+    test_demand: none
+    source_read_for_validation: true
+
+- id: H-002
+  hypothesis: "When two namespaces are created with names that differ only in case ('finance' and 'Finance'), both succeed and are stored as two distinct namespaces."
+  derivation: "Repository getByName uses NAMESPACE.NAME.eq (case-sensitive byte-equality); unique index over (name) with no case-folding; NamespaceForm applies no normalisation."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      ReactiveNamespaceRepositoryImpl.getByName uses `NAMESPACE.NAME.eq(name)` (line 26), a case-sensitive
+      comparison, and the partial unique index is over raw `(name)` with no `lower()` expression. No
+      case-fold hook exists at controller, mapper, or repository tier (NamespaceMapper.java:1-29). So
+      'finance' and 'Finance' do NOT collide on the unique index and both persist. NOTE the cross-pillar
+      DIVERGENCE: TermServiceImpl treats the namespace natural key as case-INSENSITIVE (`equalIgnoreCase`,
+      ReactiveTermRepositoryImpl.java:156-157) — so the SAME namespace name is matched case-insensitively
+      when reached via the term side-door but case-sensitively when reached via NamespaceController. This
+      is an internal inconsistency worth a caveat.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: concepts.invariants[4] + bugs_limitations_corner_cases[3]
+        cite: "ReactiveNamespaceRepositoryImpl.java:26 + V0_0_31__add_deleted_at_field.sql:25"
+        note: "case-sensitive eq + no case-fold on the unique index."
+      - sidecar: odd-platform__java__service__service__TermServiceImpl
+        section: concepts.invariants
+        cite: "ReactiveTermRepositoryImpl.java:156-157,167 (equalIgnoreCase)"
+        note: "term-side namespace lookup is case-INSENSITIVE — opposite of the namespace-controller path."
+    operator_visible_failure: |
+      An operator who created 'finance' and later types 'Finance' (or vice versa) on the Namespaces form
+      gets a SECOND namespace silently, splitting the label dimension: tags/terms/entities scoped under
+      'finance' and 'Finance' are now in two different scopes that look identical in a list and on pills.
+      Worse, because the term side-door matches case-insensitively, a term author typing 'Finance' may
+      bind to the existing 'finance' row, while a datasource author typing 'Finance' via the same combo-box
+      could land differently — the same typed string resolves to different namespaces depending on the
+      entry path. No UI warning, no doc caveat.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    note: "No test asserts that 'finance' + 'Finance' produce two distinct ids (NamespaceServiceImplTest + NamespaceRepositoryImplTest both use random UUID names — they never collide on case). Promise hand-proven from code, untested."
+
+- id: H-003
+  hypothesis: "When a namespace name already exists, creating it again returns a clean operator-friendly 400 ('Namespace with this name already exists'), not a 500."
+  derivation: "Partial unique index violation path; ExceptionUtils.formatMessage translates the index-name match to a 400."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      A duplicate-name INSERT violates the `namespace_unique` partial index; ExceptionUtils.java:42-44
+      matches the index name and returns the operator-friendly 400 message. This is the documented
+      contrast against the value-too-long path (H-006), which does NOT get a clean 400.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: concepts.invariants[3] + implicit_adrs[3]
+        cite: "V0_0_31__add_deleted_at_field.sql:25 + ExceptionUtils.java:42-44"
+        note: "unique-violation → 400 via index-name string match."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    note: "ExceptionUtils' unique→400 translation for namespace is asserted by NO test; NamespaceServiceImplTest uses mocks (never hits the real index) and NamespaceRepositoryImplTest uses unique UUIDs (never collides). Confirmed from code, untested."
+
+- id: H-004
+  hypothesis: "When an operator deletes a namespace that still has a datasource, collector, term, or non-deleted data entity attached, the delete is rejected and the namespace stays."
+  derivation: "Pillar primary user action 'delete namespaces'; cascade-on-delete app-tier guard across exactly 4 referent classes."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      NamespaceServiceImpl.delete (lines 73-90) runs four `existsByNamespace*` checks via Mono.zip; if any
+      returns true it raises CascadeDeleteException ('Namespace cannot be deleted: there are still resources
+      attached') and never invokes repository.delete. The four referent classes are DataSource, Collector,
+      Term, and non-deleted DataEntity. Each blocker is unit-tested.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: implicit_adrs[2] + tests_coverage_semantic.covered_behaviours
+        cite: "NamespaceServiceImpl.java:73-90 + NamespaceServiceImplTest.java:237-319"
+        note: "4-referent cascade guard + one unit test per blocker class (collector/datasource/term/data-entity)."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: teardown-constraint
+    coverage: verified
+    test_ref: "NamespaceServiceImplTest.testDeleteTiedNamespaceWith{Collector,DataSource,Term,DataEntity}:237-319 + testDelete:210-235"
+    test_demand: none
+
+- id: H-005
+  hypothesis: "When a namespace is deleted and then a namespace is created again with the same name, the create succeeds and the new namespace is a fresh entity (new id, fresh history)."
+  derivation: "Partial unique index WHERE deleted_at IS NULL deliberately enables delete-then-recreate (soft-delete reincarnation); implicit ADR."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Delete sets deleted_at = NOW() (soft-delete via ReactiveAbstractSoftDeleteCRUDRepository:50-59); the
+      partial unique index only constrains rows WHERE deleted_at IS NULL, so the deleted row no longer
+      participates and a same-name create succeeds with a NEW id. This behaviour is DIRECTLY asserted by a
+      repository integration test that creates, deletes, recreates, and asserts the second id differs from
+      the first and the first row's deleted_at is non-null.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: implicit_adrs[3] + concepts.invariants[5]
+        cite: "V0_0_31__add_deleted_at_field.sql:25 + ReactiveAbstractSoftDeleteCRUDRepository.java:50-59"
+        note: "partial unique index + soft-delete = reincarnation by design."
+      - sidecar: source_read_for_validation
+        section: repository integration test
+        cite: "NamespaceRepositoryImplTest.java:85-100 (testCreateNamespacePojoAfterDeletingIt)"
+        note: "Read this validation (Rule 8 exception): asserts new id + non-null deleted_at on the old row. The reincarnation MECHANIC is verified."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: resolve-later
+    coverage: verified
+    test_ref: "NamespaceRepositoryImplTest.testCreateNamespacePojoAfterDeletingIt:85-100"
+    test_demand: none
+    source_read_for_validation: true
+
+- id: H-006
+  hypothesis: "When an operator submits a namespace name longer than the storage cap (65+ characters), the system returns a clear operator-facing validation error (a 400 explaining the length limit)."
+  derivation: "A user-facing form field with no visible length hint; the operator expects the form to tell them what is wrong, consistent with the unique-name 400 (H-003)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      NamespaceFormData declares `name: string, required: true` with NO maxLength/minLength/pattern
+      (components.yaml:262-268), the NamespaceForm UI applies only required+trim (ui_review_2026_05_26
+      note 2), and the only length cap is the DB column `varchar(64)` (V0_0_1__init.sql:13). A 65-char name
+      reaches the DB, fails with 'value too long for type character varying(64)', and surfaces as
+      `DatabaseException` → HTTP 500, because ExceptionUtils.java:30-36 only translates
+      C23_INTEGRITY_CONSTRAINT_VIOLATION (unique index) to a friendly message — the value-too-long path
+      falls through to a 500.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: bugs_limitations_corner_cases[4]
+        cite: "V0_0_1__init.sql:13 + components.yaml:262-268 + ExceptionUtils.java:30-36"
+        note: "varchar(64) only cap; value-too-long → DatabaseException → 500, not a translated 400."
+      - sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+        section: bugs_limitations_corner_cases[3]
+        cite: "NamespaceAutocomplete.tsx:124-127 + DataSourceForm.tsx:124-129"
+        note: "the combo-box path ALSO applies no length shaping before emitting the name."
+    operator_visible_failure: |
+      An operator pasting a long descriptive name (or a generated identifier) into the Namespaces form, or
+      into any of the five combo-box forms, sees an opaque 500 server error with no indication that the
+      problem is name length. They cannot self-correct: the form gave no maxlength hint, the error names no
+      field and no cap. On the combo-box forms (datasource/term/etc.) the failure aborts the parent-entity
+      save too, so the operator loses the whole form's work to an unexplained 500. A monitoring operator
+      sees a 500 in logs that looks like a server fault, not user error — noise in the error budget.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    note: "No test pins the 500-vs-400 contract (feature-flow test_matrix lists it explicitly as uncovered). Both a bug-fix (translate to 400 + app-tier maxLength) and a regression-guard test are demanded."
+
+- id: H-007
+  hypothesis: "When an operator's RBAC policy grants TERM_CREATE / DATA_SOURCE_CREATE / COLLECTOR_CREATE / DATA_ENTITY_GROUP_CREATE but withholds NAMESPACE_CREATE, that operator cannot create new namespaces."
+  derivation: "Endpoint shape: NAMESPACE_CREATE is the named gate on POST /api/namespaces; the doc implies namespace creation is a deliberate, separately-authorised operator step ('Create a namespace before authoring tags or terms')."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The DEDICATED surface is correctly gated — POST /api/namespaces requires NAMESPACE_CREATE
+      (SecurityConstants.java:98-102). BUT four sister services call `namespaceService.getOrCreate(name)`
+      from their own create/update flows (TermServiceImpl.java:103,138 confirmed; plus DataSourceServiceImpl,
+      CollectorServiceImpl, DataEntityGroupServiceImpl per the side-door invariant). getOrCreate has NO
+      permission check at the service callsite, so a caller holding any of the four parent *_CREATE
+      permissions mints a brand-new namespace by submitting a never-seen namespaceName — NAMESPACE_CREATE
+      is never consulted. So the hypothesis is HALF TRUE: the dedicated path enforces the permission; the
+      five inline paths do not.
+      CRITICAL REFINEMENT (Rule 9, LSN-023): the inline path is NOT a hidden back door — it is the deliberate
+      `NamespaceAutocomplete` select-or-create combo-box, which shows existing namespaces, lets the user PICK
+      one (the default path), and offers a LABELLED 'Create new custom namespace «X»' row only on a genuine
+      no-match. The product INTENDS inline namespace creation as a convenience; the LSN-023-prescribed 'fix'
+      (add a namespace_id field to force selection) would DELETE that affordance. So this is simultaneously
+      (a) an RBAC-design surprise — TERM_CREATE silently grants implicit namespace-create, more permissive
+      than additive policy-reasoning suggests; and (b) intended UX. The honest finding is a documentation +
+      RBAC-granularity gap, not a vulnerability.
+    evidence:
+      - sidecar: odd-platform__java__service__service__TermServiceImpl
+        section: dependencies_semantic.requires-feature + concepts.operations(createTerm)
+        cite: "TermServiceImpl.java:103,138 (namespaceService.getOrCreate)"
+        note: "primary-source side-door call sites in createTerm + updateTerm."
+      - sidecar: concepts/detail/invariants/namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+        section: description (SIDE-DOOR 1) + WHY THIS MATTERS FOR THE OPERATOR'S RBAC POLICY DESIGN
+        cite: "invariant nodes[TermController, TermServiceImpl]; 8 call sites enumerated"
+        note: "the cross-pillar bypass is catalogued MEDIUM; lists all four sister services."
+      - sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+        section: coherence_notes (refines registerDataSource) + understanding
+        cite: "NamespaceAutocomplete.tsx:78-84,127,165-178 + LSN-023"
+        note: "the getOrCreate is the deliberate server half of a labelled select-or-create combo-box; prescribed namespace_id 'fix' would delete the affordance."
+    operator_visible_failure: |
+      An organisation that grants its data-engineering team TERM_CREATE (scoped to namespace=data-engineering)
+      expecting they can author terms in that namespace ONLY discovers — only by trial or by reading service
+      code — that the team can also mint ANY new namespace name ('finance', 'compliance'), platform-wide and
+      audit-silent. Because there is no NAMESPACE_CREATED activity event (H-011), the operator investigating
+      'who created the finance namespace' finds nothing. The RBAC catalog also does not document the
+      NAMESPACE_* permission triad at all (authorization doc 200 but silent, 2026-05-20), so the operator
+      cannot even discover that NAMESPACE_CREATE exists, let alone that four other permissions bypass it.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    note: "Side-door bypass is asserted by NO test (NamespaceServiceImplTest is mock-based and never exercises the cross-service path; the side-door invariant explicitly requests a regression-pin). A characterization test pinning the CURRENT intended-but-surprising state is demanded."
+
+- id: H-008
+  hypothesis: "When an operator deletes a namespace, an external reference (a bookmark, an API client holding the old namespace id, or historical tag/term assignments) continues to resolve correctly afterwards."
+  derivation: "Negative-space: soft-delete + reincarnation means a recreated same-name namespace has a NEW id; an operator does not expect a delete-then-recreate to silently break references."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Delete soft-deletes (deleted_at = NOW()). A subsequent same-name create (H-005) yields a NEW id. Any
+      external reference using the OLD id now points at a soft-deleted row that all reads filter out
+      (ReactiveAbstractSoftDeleteCRUDRepository applies `deleted_at IS NULL`). Tag/term/entity assignments
+      that were bound to the old namespace_id persist in the DB but are filtered out of every read and are
+      NOT migrated to the recreated namespace. There is no operator-facing warning at delete time and no doc
+      caveat (per NamespaceController:bugs_limitations_corner_cases[5]).
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: bugs_limitations_corner_cases[5] + implicit_adrs[3]
+        cite: "ReactiveAbstractSoftDeleteCRUDRepository.java:50-59 + V0_0_31:25"
+        note: "soft-delete + new-id reincarnation; old assignments orphaned and filtered out."
+    operator_visible_failure: |
+      An operator who deletes 'finance' to 'clean it up' and recreates it the same day believes they restored
+      the namespace — but every tag, term, datasource, and data entity previously scoped to it is now
+      invisible (bound to the orphaned old id), and any saved deep-link or API integration referencing the old
+      id 404s. The data is not gone, but it is unreachable, and nothing tells the operator that delete is not
+      reversible-by-recreate. This is the LSN-001-shaped class (a destructive default with no warning) one
+      tier up from data loss.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+    note: "testCreateNamespacePojoAfterDeletingIt (H-005) verifies the NEW-id mechanic but NOT the orphaning consequence — no test asserts that old assignments become unreachable. The consequence is the operator-facing part and is untested + undocumented."
+
+- id: H-009
+  hypothesis: "When any authenticated user (regardless of permissions) calls GET /api/namespaces or opens the Namespaces tab, they can see the full list of every namespace in the platform."
+  derivation: "Endpoint shape: GET endpoints have NO SecurityRule entry; read-collaborative posture implicit ADR; UI fetches list unconditionally on mount."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Neither GET /api/namespaces nor GET /api/namespaces/{id} appears in SecurityConstants SECURITY_RULES
+      (only POST/PUT/DELETE rules exist, lines 98-108); the reads fall through to `.authenticated()`. So any
+      authenticated session enumerates every namespace and fetches any by id. At the UI tier the
+      NamespaceList fires fetchNamespaceList unconditionally on mount (ui_review_2026_05_26 note 1), and the
+      management route mounts /management/namespaces with no route-level permission guard (management-route
+      sidecar security: only associations/* is hard-gated). This is the platform-wide read-collaborative
+      posture (system-mission.md:267), an INTENTIONAL implicit ADR — confirmed, but the posture is
+      undocumented on the operator-facing Namespaces surface.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: implicit_adrs[1] + security.known_security_gaps[2]
+        cite: "SecurityConstants.java:98-108 (no GET rule) + NamespaceController.java:29-50"
+        note: "reads ungated by design; read-collaborative posture."
+      - sidecar: odd-platform__ts__routes__route__management
+        section: concepts.audiences + security
+        cite: "ManagementRoutes.tsx; App.tsx:62 (splat route, no route-level guard)"
+        note: "the /management/namespaces URL renders for any authenticated user; only buttons hide."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: "No test pins the ungated-read posture for namespaces (feature-flow test_matrix lists it uncovered; SecurityRulesAuthzGapsKnownBugsTest does not cover namespace GET). Confirmed-by-design but unverified; a characterization test is the right guard so a future SECURITY_RULES edit that accidentally gates reads is caught. Routed to caveat (doc the posture) AND functional-test-demand (pin it)."
+
+- id: H-010
+  hypothesis: "When the namespace list endpoint is called with a very large page size (size=100000), the server bounds the work it does (caps the page size) rather than performing an unbounded scan."
+  derivation: "Endpoint shape: a `size` query parameter on the list endpoint; an operator/client expects a hardened list endpoint not to honour an arbitrary size."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      NamespaceController.getNamespaceList (lines 44-50) passes `size` straight to
+      namespaceService.list(page, size, query) with no server-side cap at the controller or service tier. A
+      request with size=100000 performs an unbounded scan. (The UI combo-box hard-codes size=30, so the UI
+      itself is bounded, but the API contract is not.)
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: bugs_limitations_corner_cases[7] + performance.known_performance_gaps
+        cite: "NamespaceController.java:44-50"
+        note: "size passed through uncapped."
+    operator_visible_failure: |
+      An API consumer (or a naive admin script) requesting size=100000 triggers a full-table scan and
+      transfers the entire namespace inventory in one response. Operationally low-impact because namespace
+      counts are bounded, but it is an unbounded-resource pattern repeated platform-wide (cross-link to
+      AlertController / DataEntityController), and on a large catalog it is a denial-of-service amplifier and
+      a reconnaissance vector (the data_exposure note: prefix enumeration). Severity is LOW for namespaces
+      specifically.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: "Contradicts the hardening expectation but LOW severity for namespaces; the fix is a platform-wide page-size cap (out of scope to fix here). Caveat + a functional-test-demand to pin the bound once a cap exists."
+
+- id: H-011
+  hypothesis: "When a namespace is created, renamed, or deleted, the platform records who did it and when, so an operator/auditor can later reconstruct the namespace's lifecycle."
+  derivation: "Pillar P-08 is operator-facing administration; an audit-trail is a normal operator expectation for a mutating admin surface; the platform HAS an Activity Feed (P-07) for exactly this."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is NO audit trail for namespace lifecycle. A Grep across NamespaceController,
+      NamespaceServiceImpl, and ReactiveNamespaceRepositoryImpl returns ZERO @ActivityLog annotations and
+      ZERO log statements (NamespaceController:observed_vs_expected audit-silence facet). The cause is
+      schema-rooted, not just an omission: `ActivityEventTypeDto` has no NAMESPACE_CREATED / _UPDATED /
+      _DELETED enum value (confirmed via TermServiceImpl:concepts.entities 'Critical absence' note,
+      ActivityEventTypeDto.java:3-31). So namespace mutations cannot participate in the Activity Feed at all.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: observed_vs_expected (audit_silence facet)
+        cite: "Grep NamespaceController/NamespaceServiceImpl/ReactiveNamespaceRepositoryImpl — zero @ActivityLog"
+        note: "no audit at any layer."
+      - sidecar: odd-platform__java__service__service__TermServiceImpl
+        section: concepts.entities (Critical absence — F-006 intersection)
+        cite: "ActivityEventTypeDto.java:3-31 (no NAMESPACE_CREATED/_UPDATED/_DELETED)"
+        note: "the audit gap is enum-rooted; the side-door (H-007) compounds it — side-door creates are doubly invisible."
+    operator_visible_failure: |
+      An operator investigating 'who created the finance namespace and when' — or auditing a compliance
+      requirement that namespace changes be attributable — has NO answer from production data. Combined with
+      H-007 (any of four parent *_CREATE permissions can mint a namespace), the platform offers a way to
+      create namespaces that is both ungated by NAMESPACE_CREATE AND invisible to the audit feed. For a
+      data-governance product whose value proposition includes an audit-trail surface, a silent admin
+      mutation surface is a credibility gap.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: "Audit-silence is a structural (enum-rooted) gap shared with Term/Tag/Owner lifecycle; the fix is adding the enum values + @ActivityLog. A regression-guard test would assert a namespace create emits an activity event (after the fix). Cross-feature finding — dedup against the F-006 audit-silence cluster."
+
+- id: H-012
+  hypothesis: "When a user types a brand-new namespace name into the inline 'Namespace' combo-box on the Add-datasource (or term/DEG/collector/lookup-table) form and saves, exactly one namespace with that name is created and the parent entity is linked to it."
+  derivation: "UI label: the 'No result. Create new custom namespace «X»' affordance on NamespaceAutocomplete; the request field namespaceName is populated by this combo-box (Rule 9 — a field's meaning is what its UI control means)."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      NamespaceAutocomplete emits the typed name as a plain `namespaceName` string (never an id); on parent
+      form submit the backend get-or-creates the namespace by name and links the entity. The component shows
+      existing namespaces (pick = default path) and offers the labelled create row only on a genuine no-match
+      (guard: searchText non-empty AND no fetched option name equals it). The end-to-end create path is the
+      subject of probe P-089 (pending) but the static trace through NamespaceAutocomplete + the getOrCreate
+      backend half is unambiguous. One TUNABLE caveat: when >30 namespaces share the typed prefix, the
+      size=30 fetch cap can hide an exact existing match behind the 'Create new' label (P-086) — the backend
+      get-or-create still resolves the existing row, so no duplicate is created, but the UI label is wrong.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+        section: understanding + stress_findings.name_behavior_pairs[0] (drift NONE) + downstream_side_effects(db-write)
+        cite: "NamespaceAutocomplete.tsx:78-84,127,165-178 + AutocompleteSuggestion.tsx:23-30"
+        note: "labelled select-or-create; emits name string; backend getOrCreate fulfils the create."
+      - sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+        section: bugs_limitations_corner_cases[1] + stress_findings(P-086)
+        cite: "NamespaceAutocomplete.tsx:52 (size:30) + 81 (no-match guard)"
+        note: "30-row cap mislabel edge — data-safe, label-wrong."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: "Zero test coverage on NamespaceAutocomplete (sidecar tests_coverage_semantic.covered_behaviours == []); probe P-089 is PENDING not run; the odd-platform Playwright suite has only an EMPTY namespaces-page.ts stub (class NamespacesPage extends ManagementPage {}) and NO tests/features/namespaces/ spec. The canonical instance of an ~11-component shared pattern is unverified — highest-leverage UI functional test in the feature."
+
+- id: H-013
+  hypothesis: "When a DELETE /api/namespaces/{id} runs concurrently with a request that registers a new datasource/collector/term/data-entity-group referencing that same namespace id, the system does NOT leave an orphan referent row pointing at a soft-deleted namespace (the cascade-check + delete behave atomically)."
+  derivation: "Endpoint shape + negative-space: delete promises a safe teardown; an operator does not expect a concurrent attach to slip a referent past the cascade guard. NamespaceServiceImpl.delete runs the existsByNamespace checks then deletes with no transaction or lock."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      NamespaceServiceImpl.delete (lines 73-90) runs the four `existsByNamespace*` checks via Mono.zip,
+      filters on !exists, then invokes namespaceRepository.delete(id). The flow is NOT inside any
+      @ReactiveTransactional, there is no SELECT FOR UPDATE on the namespace row, and no advisory-lock
+      (NamespaceController:bugs_limitations_corner_cases[2], MEDIUM). The data_entity / data_source FKs to
+      namespace(id) carry NO ON DELETE clause (V0_0_1:84 etc.), so an orphan referent row is schema-possible.
+      Whether the race is actually reachable — and whether it produces an orphan row pointing at a
+      soft-deleted namespace or a delete-deferred outcome — requires RUNNING the system under concurrent
+      load; it is not statically determinable.
+    evidence:
+      - sidecar: odd-platform__java__NamespaceController__controller-class__NamespaceController
+        section: bugs_limitations_corner_cases[2] + performance.scaling_characteristics
+        cite: "NamespaceServiceImpl.java:73-90 (no @ReactiveTransactional / no lock) + V0_0_1__init.sql:84 (FK without ON DELETE)"
+        note: "check + delete not atomic; orphan-row is schema-possible; race reachability needs runtime."
+    operator_visible_failure: |
+      If the race is reachable: a datasource (or collector/term/entity) ends up referencing a soft-deleted
+      namespace_id. That referent's namespace pill resolves to nothing (reads filter deleted_at IS NULL), the
+      entity looks 'namespace-less' in the catalog, and a later same-name namespace recreate does NOT re-link
+      it (H-008's orphaning). The operator sees an entity that lost its namespace scope with no action of
+      their own and no error at the time. Severity pending probe (MEDIUM if reachable).
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-028-1
+    routes_to_finding: validation-gap
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: "probe PENDING-F-028-1"
+    note: "Verdict requires running the system (concurrency race). Probe recorded in cross_references.probes_emitted as PENDING-F-028-1 (parallel-safe mode — no P-NNN file minted). Local docker-compose probe: fire DELETE + concurrent createDataSource(namespace_id=id) from two Reactor parallel threads; observe orphan vs cascade-deferred."
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Oversize (>64-char) namespace name returns opaque HTTP 500 (DatabaseException), not a clean 400; operator cannot self-correct and loses the whole combo-box form's work."
+  dedup_status: net_new
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "ExceptionUtils.java:30-36 (translate value-too-long to 400) + components.yaml:262-268 (add maxLength:64 to NamespaceFormData/NamespaceUpdateFormData) + NamespaceForm.tsx client-side maxlength hint."
+- hypothesis_id: H-011
+  severity: MEDIUM
+  one_line: "Namespace create/update/delete emit NO audit event (ActivityEventTypeDto has no NAMESPACE_* value); combined with the side-door, namespace creation is ungated-by-NAMESPACE_CREATE AND audit-invisible."
+  dedup_status: net_new
+  distinct_from: "F-006 audit-silence cluster"
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "ActivityEventTypeDto.java:3-31 (add NAMESPACE_CREATED/_UPDATED/_DELETED) + @ActivityLog on NamespaceServiceImpl create/update/delete. NOTE: this is one vertex of a platform-wide enum-rooted audit-silence pattern (Term/Tag/Owner share it) — file with cross-feature scope, do not patch the namespace instance alone (Linus-bar: diagnose the class)."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "Namespace names are case-SENSITIVE via NamespaceController ('finance' != 'Finance') but case-INSENSITIVE via the term side-door — the same typed string can resolve to different namespaces depending on entry path."
+  dedup_status: net_new
+  recommended_log_as: "caveat on https://docs.opendatadiscovery.org/features/management (Namespaces) + DOC-GAP-NNN (case-sensitivity + cross-path inconsistency)"
+- hypothesis_id: H-007
+  one_line: "TERM_CREATE / DATA_SOURCE_CREATE / COLLECTOR_CREATE / DATA_ENTITY_GROUP_CREATE each implicitly grant namespace-create via the select-or-create combo-box; this is intended UX, NOT a hidden back door, but operators authoring additive RBAC policies are surprised. Document the implicit grant + the NAMESPACE_* triad."
+  dedup_status: already_tracked
+  tracked_as: "DOC-GAP-262 (extended W-batch from 1 vertex to 4 vertices) + the namespace-create-side-door invariant"
+  note: "Reflection INDEPENDENTLY re-derived the side-door from the UI direction (NamespaceAutocomplete) and reconciled it with the RBAC reading per LSN-023 — convergent validation of the tracked finding, NOT a re-file. The LSN-023 refinement (it is intended UX; the prescribed namespace_id 'fix' is wrong) is the value this reflection adds to the tracked item."
+- hypothesis_id: H-008
+  one_line: "Deleting a namespace soft-deletes it; recreating the same name yields a NEW id and silently orphans all prior tag/term/entity assignments + breaks external references using the old id. No warning at delete, no doc caveat."
+  dedup_status: net_new
+  recommended_log_as: "caveat (admonition) on the Namespaces doc page + DOC-GAP-NNN (soft-delete reincarnation lifecycle)"
+- hypothesis_id: H-009
+  one_line: "Namespace list + details reads are ungated (any authenticated user enumerates every namespace) — intentional read-collaborative posture, undocumented on the operator-facing Namespaces surface."
+  dedup_status: already_tracked
+  tracked_as: "REFACTOR-024 (read-collaborative family) + the read-collaborative-posture concept"
+  note: "Convergent re-derivation from the namespace surface; the posture is platform-wide and already tracked. Reflection's contribution: the namespace-specific doc-silence on the Namespaces page."
+- hypothesis_id: H-010
+  one_line: "GET /api/namespaces honours an arbitrary size (size=100000 → unbounded scan); no controller/service page-size cap (LOW for namespaces; platform-wide pattern)."
+  dedup_status: net_new
+  distinct_from: "AlertController / DataEntityController unbounded-size findings (same class, different endpoints)"
+  recommended_log_as: "caveat note; folds into a platform-wide page-size-cap REFACTOR if one is opened"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate,
+# INCLUDING confirmed-but-untested promises (H-003, H-009, H-012). NO confirmed hypothesis routed to `none`
+# while its promise was untested.
+- use_case_id: F-028-UC-002
+  hypothesis_id: H-002
+  kind: empty/no-match
+  promise: "'finance' and 'Finance' create two distinct namespaces (case-sensitive via NamespaceController)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-002)"
+  proposed_test: "NamespaceServiceImplTest/RepositoryImplTest: create('finance') then create('Finance'); assert two distinct ids both present."
+- use_case_id: F-028-UC-003
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "Duplicate namespace name returns a clean 400 ('Namespace with this name already exists')."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-003)"
+  proposed_test: "Integration test (real index): POST same name twice; assert 2nd returns 400 with the friendly message (pins ExceptionUtils unique->400 translation)."
+- use_case_id: F-028-UC-006
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "A 65+ char namespace name returns a clear 400 length error (NOT a 500)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-006) — regression guard for BUG-NNN (H-006)"
+  proposed_test: "Controller integration test: POST /api/namespaces name of 65 chars; assert 400 (currently 500 — RED until the fix lands; pin as characterization in the interim per the pin-known-bugs protocol)."
+- use_case_id: F-028-UC-007
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "A TERM_CREATE-only (no NAMESPACE_CREATE) caller can mint a namespace via POST /api/terms — the intended-but-surprising current state."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-007)"
+  proposed_test: "Controller integration test: principal with TERM_CREATE but NOT NAMESPACE_CREATE; POST /api/terms with never-seen namespaceName; assert namespace IS created (characterization-pins the side-door; flips to 403/409 if a future fix gates it). Repeat for the other 3 sister services (4-cell matrix)."
+- use_case_id: F-028-UC-008
+  hypothesis_id: H-008
+  kind: teardown
+  promise: "Deleting then recreating a same-name namespace orphans prior assignments (the consequence, not just the new-id mechanic)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-008)"
+  proposed_test: "Integration test: create ns, bind a term, delete ns, recreate same name; assert the new ns has the new id AND the term's binding does NOT resolve to the recreated ns (pins the orphaning consequence)."
+- use_case_id: F-028-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "Any authenticated user (no permissions) can GET /api/namespaces (read-collaborative posture)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-009)"
+  proposed_test: "Controller integration test (WebTestClient): authenticated principal with no namespace permissions; assert GET /api/namespaces + GET /api/namespaces/{id} return 200 (pins the ungated-read posture so a future SECURITY_RULES edit that accidentally gates reads is caught)."
+- use_case_id: F-028-UC-010
+  hypothesis_id: H-010
+  kind: render
+  promise: "GET /api/namespaces bounds the work for a huge page size (size=100000) rather than scanning unbounded."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-010)"
+  proposed_test: "Controller test: GET /api/namespaces?size=100000; assert the response page size is capped at the platform max (RED until a cap exists; LOW priority for namespaces)."
+- use_case_id: F-028-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: "Namespace create/update/delete emit an attributable audit event."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-011) — regression guard for the audit-silence fix"
+  proposed_test: "Integration test (post-fix): create a namespace; assert a NAMESPACE_CREATED activity row is written with the actor. Pin RED until the enum + @ActivityLog land."
+- use_case_id: F-028-UC-012
+  hypothesis_id: H-012
+  kind: happy-path
+  promise: "Typing a new namespace in the inline combo-box and saving the datasource form creates exactly one namespace and links the entity (the canonical select-or-create UX)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-028-UC-012) — HIGHEST-LEVERAGE: template for ~11 sibling autocompletes"
+  proposed_test: "Playwright e2e (the empty tests/ui/pages/management/namespaces-page.ts stub is the scaffold) OR component test of NamespaceAutocomplete: type new name -> select 'Create new custom namespace X' -> submit Add-datasource -> assert one namespace X created + datasource linked. This is probe P-089 promoted to a standing test."
+
+### probes_emitted
+- probe_id: PENDING-F-028-1
+  hypothesis_id: H-013
+  hypothesis_text: "When a DELETE /api/namespaces/{id} runs concurrently with a POST that registers a new datasource/collector/term/data-entity-group referencing that same namespace id, the system does NOT leave an orphan referent row pointing at a soft-deleted namespace (i.e. the cascade check + delete are atomic)."
+  probe_path: "PENDING (parallel-safe mode — no P-NNN file created)"
+  local_execution_blocked: false
+  note: "NamespaceServiceImpl.delete (73-90) runs 4 existsByNamespace zip-checks then deletes, NOT inside @ReactiveTransactional and with no SELECT FOR UPDATE / advisory-lock; a concurrent referent insert can interleave between check and delete. Local docker-compose probe: fire DELETE + a concurrent createDataSource(namespace_id=id) from two Reactor parallel threads; observe orphan data_source row OR cascade-deferred outcome. Verdict requires running the system (race) — probe-needed, not statically determinable. Backs H-013."
+- probe_id: P-089
+  hypothesis_id: H-012
+  hypothesis_text: "End-to-end: selecting 'Create new custom namespace X' on the Add-datasource form and submitting creates exactly one namespace X and links the data source to it (confirming the labelled affordance over the LSN-023 'side-door' framing)."
+  probe_path: "lineage/odd-platform/probes/P-089.yaml (PRE-EXISTING — emitted by the NamespaceAutocomplete sidecar; recorded here as the verification owner for H-012, NOT re-minted)"
+  local_execution_blocked: false
+  note: "P-089 already exists (NamespaceAutocomplete:stress_findings.probes_emitted), status pending. H-012's confirmed verdict rests on a static trace; P-089 is the runtime confirmation. Once P-089 runs GREEN, H-012 coverage can move toward verified IF promoted to a standing test (F-028-UC-012)."
+
+### validation_gaps
+- sidecar: "odd-platform (NamespaceServiceImpl — referenced, not enriched as a standalone sidecar)"
+  field_insufficient: "the whole service sidecar is absent — NamespaceServiceImpl.java:1-100 is cited by line through the NamespaceController sidecar and the feature-flow, but has no standalone understanding/ file. The transactional-asymmetry (update @ReactiveTransactional vs delete not), the dual-FTS-vector update, and the H-013 TOCTOU were validated via the controller sidecar's quotes, not a service sidecar."
+  proposed_refresh: "Enrich odd-platform__java__service__service__NamespaceServiceImpl.md so the delete TOCTOU (H-013), the update/delete transactional asymmetry, and getOrCreate's no-permission-check (H-007) are first-class service-tier citations, not controller-sidecar paraphrases."
+- sidecar: "the dedicated-create UI (NamespaceList.tsx / NamespaceForm.tsx / EditableNamespaceItem.tsx)"
+  field_insufficient: "Rule 9 — these were WALKED in ui_review_2026_05_26 (primary-source confirmed) but have NO standalone sidecars. The dedicated Management → Namespaces CRUD screens (the deliberate-create surface, distinct from the inline combo-box) are not enriched, so H-001/H-006's UI half rests on the ui_review note + the combo-box sidecar, not on a screen sidecar."
+  proposed_refresh: "Enrich NamespaceList/NamespaceForm/EditableNamespaceItem so the dedicated-create form's validation (required+trim only), the terse delete confirmation (no cascade-block preview), and the page-1-refresh-only-if-!query staleness are first-class UI citations. This reflection is NOT UI-blind (the inline combo-box IS enriched as NamespaceAutocomplete), but the dedicated CRUD screen is sidecar-thin."
+
+### doc_drift_findings
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "'Create a namespace before authoring tags or terms that should be scoped to a particular team or domain' — implies namespace creation is a deliberate, separate, pre-requisite operator step."
+  code_does: "Five inline forms create namespaces as a side effect of saving a term/datasource/collector/DEG/lookup-table (getOrCreate), gated by the parent *_CREATE permission, not NAMESPACE_CREATE. Namespace creation is BOTH a deliberate step AND an inline affordance — the doc names only the former."
+  recommended_log_as: "DOC-GAP-NNN (document the inline select-or-create affordance + the implicit *_CREATE grants)"
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/features/management/namespaces"
+  doc_says: "404 — no dedicated Namespaces page exists (confirmed 2026-05-27 via the W-batch scanner re-verify)."
+  code_does: "Five endpoints + a Management tab with deletion guards (4 referent classes), case-sensitivity, soft-delete reincarnation, the partial-unique-index semantic, the RBAC triad, the side-door, and ungated reads — none of it documented."
+  recommended_log_as: "DOC-GAP-NNN (create /features/management/namespaces page) — already tracked as F-028a missing-page (SR-20260527T2100Z); reflection corroborates."
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization"
+  doc_says: "Status 200 but the permission catalog is NOT on the page; NAMESPACE_CREATE / _UPDATE / _DELETE are not named (confirmed 2026-05-20)."
+  code_does: "Three NAMESPACE_* permissions gate the mutation endpoints (SecurityConstants.java:98-108); operators authoring policies cannot discover them from the docs."
+  recommended_log_as: "DOC-GAP-NNN (enumerate the NAMESPACE_* permission triad in the authorization/permissions catalog)"
+
+## maintainer_notes
+
+(empty — first reflection at this path; no maintainer-curated hypotheses to preserve)

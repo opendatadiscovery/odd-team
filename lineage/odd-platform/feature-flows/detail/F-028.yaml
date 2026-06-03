@@ -375,6 +375,142 @@ observed_vs_expected:
   - 'ReactiveNamespaceRepositoryImpl.java:1-50 (referenced but not yet enriched as standalone sidecar)'
   - 'SecurityConstants.java:98-108 (referenced by sidecar)'
   - 'V0_0_1__init.sql:9-15 + V0_0_31__add_deleted_at_field.sql:25'
+use_cases:
+# LSN-030 / feature-reflector v0.3.0 — the PROMISE LAYER. Each use_case is the projection of a
+# feature-reflection hypothesis (uc_id = hypothesis id). Full hypothesis + validation lives in
+# lineage/odd-platform/feature-reflections/detail/F-028.yaml. coverage: verified ONLY where a REAL
+# test for the promise exists (sidecar covered_behaviours + Grep of the odd-platform test tree).
+# Authored 2026-06-03 by feature-reflector; idempotent (preserve any use_case carrying maintainer_curated).
+- uc_id: F-028-UC-001
+  kind: happy-path
+  promise: "An operator with NAMESPACE_CREATE submits the Namespaces form with a new name → exactly one namespace with that name is created and listed."
+  actor: platform-operator
+  trace: "NamespaceController.java:23 → NamespaceServiceImpl.create → repository.create; gate SecurityConstants.java:98-102"
+  coverage: verified
+  test_ref: "NamespaceServiceImplTest.testCreate:114-144 + NamespaceRepositoryImplTest.testCreate/testCreateByName:19-46"
+  test_demand: none
+- uc_id: F-028-UC-002
+  kind: empty/no-match
+  promise: "'finance' and 'Finance' create two DISTINCT namespaces (case-sensitive via NamespaceController)."
+  actor: platform-operator
+  trace: "ReactiveNamespaceRepositoryImpl.java:26 (NAMESPACE.NAME.eq) + V0_0_31:25 (unique index, no case-fold)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "Confirmed from code; both service+repo tests use random UUID names so they never collide on case. Cross-path inconsistency: term side-door matches case-INSENSITIVE."
+- uc_id: F-028-UC-003
+  kind: empty/no-match
+  promise: "A duplicate namespace name returns a clean operator-friendly 400, not a 500."
+  actor: platform-operator
+  trace: "V0_0_31:25 (unique index violation) → ExceptionUtils.java:42-44 (index-name match → 400)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "Confirmed from code; ExceptionUtils unique->400 translation asserted by NO test (mocks never hit the index; repo test uses unique UUIDs)."
+- uc_id: F-028-UC-004
+  kind: teardown-constraint
+  promise: "Deleting a namespace that still has a datasource/collector/term/non-deleted data entity is rejected; the namespace stays."
+  actor: platform-operator
+  trace: "NamespaceServiceImpl.java:73-90 (Mono.zip of 4 existsByNamespace* → CascadeDeleteException)"
+  coverage: verified
+  test_ref: "NamespaceServiceImplTest.testDeleteTiedNamespaceWith{Collector,DataSource,Term,DataEntity}:237-319 + testDelete:210-235"
+  test_demand: none
+- uc_id: F-028-UC-005
+  kind: resolve-later
+  promise: "Deleting then recreating a same-name namespace succeeds with a fresh entity (new id, fresh history)."
+  actor: platform-operator
+  trace: "ReactiveAbstractSoftDeleteCRUDRepository.java:50-59 (soft-delete) + V0_0_31:25 (partial index WHERE deleted_at IS NULL)"
+  coverage: verified
+  test_ref: "NamespaceRepositoryImplTest.testCreateNamespacePojoAfterDeletingIt:85-100"
+  test_demand: none
+- uc_id: F-028-UC-006
+  kind: empty/no-match
+  promise: "A 65+ character namespace name returns a clear 400 length error (NOT a 500)."
+  actor: platform-operator
+  trace: "components.yaml:262-268 (no maxLength) + V0_0_1:13 (varchar 64) + ExceptionUtils.java:30-36 (value-too-long falls through to 500)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "CONTRADICTED — currently returns 500. Routes to BUG-NNN (H-006) + a regression-guard test (RED until fixed; characterization-pin in interim)."
+- uc_id: F-028-UC-007
+  kind: cross-actor
+  promise: "A caller with TERM_CREATE/DATA_SOURCE_CREATE/COLLECTOR_CREATE/DATA_ENTITY_GROUP_CREATE but NOT NAMESPACE_CREATE cannot create namespaces."
+  actor: data-steward-owner
+  trace: "TermServiceImpl.java:103,138 (namespaceService.getOrCreate, no permission check) + SecurityConstants.java:98-102 (dedicated gate)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "PARTIAL — dedicated path gated; 5 inline paths bypass via the select-or-create combo-box (INTENDED UX per LSN-023, NOT a back door). Pin the current state with a 4-cell characterization test."
+- uc_id: F-028-UC-008
+  kind: teardown
+  promise: "After deleting a namespace, prior tag/term/entity assignments + external references (old id) continue to resolve."
+  actor: platform-operator
+  trace: "ReactiveAbstractSoftDeleteCRUDRepository.java:50-59 + V0_0_31:25 (recreate gives new id; old assignments orphaned + read-filtered)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "CONTRADICTED — soft-delete + new-id reincarnation orphans prior bindings silently; no warning, no doc caveat. testCreateNamespacePojoAfterDeletingIt verifies the new-id mechanic but NOT the orphaning consequence."
+- uc_id: F-028-UC-009
+  kind: render
+  promise: "Any authenticated user (no permissions) can GET /api/namespaces / open the Namespaces tab and see every namespace."
+  actor: odd-platform-ui-end-user
+  trace: "SecurityConstants.java:98-108 (no GET rule → fall-through to .authenticated()) + NamespaceController.java:29-50"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "CONFIRMED-by-design (read-collaborative posture, intentional implicit ADR) but undocumented + unpinned. Caveat (doc the posture) + characterization test (catch a future SECURITY_RULES edit that accidentally gates reads)."
+- uc_id: F-028-UC-010
+  kind: render
+  promise: "GET /api/namespaces with a huge page size (size=100000) bounds the work rather than scanning unbounded."
+  actor: odd-api-consumer
+  trace: "NamespaceController.java:44-50 (size passed through uncapped)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "CONTRADICTED — no controller/service page-size cap. LOW severity for namespaces (bounded count); platform-wide pattern. Test pins the bound once a cap exists."
+- uc_id: F-028-UC-011
+  kind: render
+  promise: "Namespace create/update/delete record who did it and when (an attributable audit trail)."
+  actor: platform-operator
+  trace: "Grep NamespaceController/ServiceImpl/RepositoryImpl — zero @ActivityLog; ActivityEventTypeDto.java:3-31 has no NAMESPACE_* value"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "CONTRADICTED — no audit at any layer; enum-rooted (shared with Term/Tag/Owner lifecycle). Compounds the side-door (UC-007): namespace creation is ungated-by-NAMESPACE_CREATE AND audit-invisible."
+- uc_id: F-028-UC-012
+  kind: happy-path
+  promise: "Typing a new namespace in the inline combo-box and saving the Add-datasource form creates exactly one namespace and links the entity (the canonical select-or-create UX)."
+  actor: platform-operator
+  trace: "NamespaceAutocomplete.tsx:78-84,127,165-178 (labelled select-or-create, emits name string) → backend getOrCreate"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  note: "CONFIRMED via static trace; NamespaceAutocomplete has ZERO tests; probe P-089 PENDING; the Playwright tests/ui/pages/management/namespaces-page.ts is an EMPTY stub and there is no tests/features/namespaces/ spec. HIGHEST-LEVERAGE UI functional test (template for ~11 sibling autocompletes)."
+- uc_id: F-028-UC-013
+  kind: teardown-constraint
+  promise: "Concurrent DELETE namespace + attach-referent does NOT leave an orphan referent row pointing at a soft-deleted namespace (cascade-check + delete are atomic)."
+  actor: platform-operator
+  trace: "NamespaceServiceImpl.java:73-90 (check + delete, no @ReactiveTransactional / no lock) + V0_0_1:84 (FK without ON DELETE)"
+  coverage: unverified
+  test_ref: null
+  test_demand: "probe PENDING-F-028-1"
+  note: "PROBE-NEEDED (race; needs running the system). Backed by probe PENDING-F-028-1 in feature-reflections/detail/F-028.yaml cross_references.probes_emitted. Not a functional_test_demand — verdict pending the probe outcome."
+use_case_coverage:
+  verified: 3
+  total: 13
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises), distinct from line/method coverage
+    and from the test_matrix cells. 3 of 13 user-facing promises are guarded by a real test: UC-001
+    (create happy path — NamespaceServiceImplTest + NamespaceRepositoryImplTest), UC-004 (cascade-on-delete
+    4-referent block — NamespaceServiceImplTest, one test per blocker), UC-005 (soft-delete reincarnation
+    new-id mechanic — NamespaceRepositoryImplTest.testCreateNamespacePojoAfterDeletingIt). The other 10
+    promises are UNVERIFIED → 9 functional_test_demands + 1 probe (UC-013/H-013 TOCTOU) — see
+    feature-reflections/detail/F-028.yaml cross_references. NOTABLE: the entire UI surface (UC-012, the
+    canonical select-or-create combo-box) and every security-posture promise (UC-007 side-door, UC-009
+    ungated reads, UC-011 audit-silence) sit at coverage:unverified — a user-facing Management feature whose
+    happy-path UI flow and whose RBAC behaviour have no standing test. 3 promises are CONTRADICTED with
+    HIGH/MEDIUM operator impact (UC-006 500-on-oversize, UC-008 reincarnation-orphaning, UC-011
+    audit-silence) and route to bug/caveat plus a regression-guard test demand.
 test_matrix:
   unit:
     state: PARTIAL
@@ -493,6 +629,8 @@ related_retrospectives:
 - LSN-017  # cross-layer effects — the controller alone cannot show the side-door reach
 - LSN-018  # pre-emit coherence — the side-door enumeration STRENGTHENS rather than supersedes the F-018 tag side-door analog
 - LSN-001  # permissive defaults hiding operator error — DISABLED + missing dedicated doc page combination
+- LSN-023  # the feature-reflector reconciliation — the getOrCreate side-door is the intended select-or-create UX, not a hidden back door; the prescribed namespace_id 'fix' would delete the affordance
+- LSN-030  # the promise layer — use_cases + use_case_coverage added by feature-reflector this batch
 related_features:
 - F-008   # Batch Ingestion — ADR-CANDIDATE-143 counterfactual (UI accepts namespace_name, S2S drops it); the namespace inheritance asymmetry
 - F-018   # Manual Object Tagging — structurally identical side-door bypass via DATA_ENTITY_TAGS_UPDATE etc.; cross-pillar pattern match

@@ -1,0 +1,748 @@
+---
+feature_id: F-004
+pillar_id: P-01
+pillar_anchored_id: P-01:F-002
+pillar: Data Discovery
+pillar_anchored_feature_name: Entity Description Editing
+feature_name: "Data entity description — Markdown content storage"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: a50f2fff6ac7f4cd3579bd8c2b56aafb51c31312
+substrate_enriched_at_commit: ede5d277
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription.md
+  - odd-platform__ts__react-component__component__DataEntityDescription.md
+  - odd-platform__java__service__service__DataEntityServiceImpl.md
+  - odd-platform__java__service__service__TermServiceImpl.md
+  - "(feature-flow detail F-004.yaml — full read; batch R/U/V/W/Y/ZG/ui-review facets + observed_vs_expected + test_matrix + shoebox_merged_facets)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/entity-description"
+    last_verified_at: "2026-05-30T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Cross-referenced via lineage/odd-platform/doc-gaps.md (lines 71-72, 673-677) which records the page
+      was WebFetched 2026-05-30 and now EXISTS. It documents the [[Namespace:Term]] auto-link convention
+      (closed DOC-GAP-100) and the rehype-raw / no-rehype-sanitize stored-injection surface (closed
+      DOC-GAP-096). Not independently re-fetched this reflection (Rule 1: docs are cross-reference, not the
+      source of intent; the page was authored from the same code). Treated as the doc baseline for doc-drift checks.
+hypothesis_summary:
+  total: 12
+  confirmed: 3
+  contradicted: 5
+  partial: 4
+  probe_needed: 0
+  highest_severity_contradiction:
+    hypothesis_id: H-003
+    severity: HIGH
+    one_line: "A user with only DATA_ENTITY_DESCRIPTION_UPDATE silently auto-links glossary terms by typing [[ns:term]] in a description — the dedicated DATA_ENTITY_ADD_TERM permission is bypassed entirely."
+related_feature_flows:
+  - F-002   # Term lifecycle / Term-to-Entity linkage — owns the explicit-link permission gate the description channel side-doors
+  - F-005   # DatasetController read-side surface (cross-owner enumeration lens; same controller, different facet)
+  - F-013   # Custom Metadata editing — silent-UPDATE-not-UPSERT sibling shape
+  - F-025   # Query Examples — 4th XSS surface
+  - F-026   # Lookup Tables — 5th XSS surface
+  - F-009   # Slack notification fan-out — 6th XSS surface (cross-channel mrkdwn)
+related_concepts:
+  - "Internal Description (Markdown body)"
+  - "Markdown Rendering Pipeline"
+  - "Term Definition (Markdown body)"
+  - "Term Linkage"
+related_drift_classes_confirmed:
+  - external_lib_assumes_sanitisation
+  - partial_mitigation_via_unrelated_layer
+  - closed_by_browser_mitigation_not_app_layer
+  - ui_hides_control_backend_doesnt_enforce
+  - silent_write_on_missing_anchor
+  - response_decoupled_from_storage
+  - description_link_permission_bypass_anyone_with_description_update_can_add_terms
+  - description_edit_auto_links_terms_dual_activity_events
+new_drift_classes_proposed: []   # this reflection confirmed existing drift classes; no new class surfaced
+---
+
+# Data entity description — Markdown content storage — product-owner reflection
+
+## product_owner_narrative
+
+**What the feature is.** Every data entity in the catalog (a dataset, a table, a job, a DEG, an ML
+experiment) carries an operator-authored *description* — a free-text Markdown body that explains, in human
+language, what the entity is for. This is the single richest annotation surface in Data Discovery: where a
+tag is one word and a status is one enum, the description is the place an owner writes the paragraph a new
+joiner reads first. Its audience is everyone — any authenticated user with `DATA_ENTITY_VIEW` on the entity
+reads the rendered description on the entity's Overview tab (per `DataEntityDescription.md:understanding` +
+`InternalDescriptionPreview.tsx:21`). Its authors are the entity's owners (or anyone an operator grants
+`DATA_ENTITY_DESCRIPTION_UPDATE` to via a Policy, typically scoped `dataEntity:owner` — per
+`upsertDataEntityInternalDescription.md:security.authorization_assertions`).
+
+**How a user interacts with it.** On the entity Overview tab, the Description panel shows the rendered
+Markdown; an Edit/Add button (gated by `DATA_ENTITY_DESCRIPTION_UPDATE`) opens an in-page Markdown editor
+(`@uiw/react-md-editor`, with a live preview and spell-check); the user types Markdown, can link a glossary
+term inline by writing `[[Namespace:TermName]]` (the syntax is surfaced only in an InformationIcon tooltip —
+`InternalDescriptionHeader.tsx:22-28`), and saves via a Save button or the undocumented Shift+Enter shortcut
+(`useTermWiki.ts:179-184`). The save fires `PUT /api/dataentities/{id}/description`; the body is stored
+verbatim in `data_entity.internal_description` (Postgres `text`, unbounded — `V0_0_1__init.sql:80`), with the
+sole transformation being empty→NULL normalisation (`ReactiveDataEntityRepositoryImpl.java:431`).
+
+**The working parts.** A single description save fans out to *seven* side effects inside one reactive
+transaction (per `upsertDataEntityInternalDescription.md:performance.hot_paths` +
+`DataEntityServiceImpl.md:downstream_side_effects[F-004]`): (1) the `UPDATE data_entity` write; (2) a
+full-entity FTS-vector rebuild (description indexed at weight `B` — `FTSConstants.java:40`); (3) a
+`data_entity_filled.internal_description_filled` toggle; (4) a regex scan of the body for `[[ns:term]]`
+mentions; (5) `term_relations` row create/remove for each mention (`is_description_link=TRUE`); (6) a
+`DESCRIPTION_UPDATED` activity event; and (7) — when mentions are present — a SECOND
+`TERM_ASSIGNMENT_UPDATED` activity event. The rendered description flows through the platform's *sole*
+Markdown renderer (`Markdown.tsx:84-127`), which bundles `rehype-raw` and configures NO `rehype-sanitize`
+(grep-verified 0 matches across the UI) — the feature's load-bearing security property.
+
+**The integration story.** This feature sits at a crossroads of four pillars. It is anchored in **P-01 Data
+Discovery** (entity-metadata authoring), but the description body is also (a) a write-path into **P-06 Data
+Glossary** via the `[[ns:term]]` auto-link side-channel; (b) a content source for **P-07 Active Platform
+Features** — the activity feed replays the verbatim old/new description text to any authenticated user
+(`upsertDataEntityInternalDescription.md:security.data_exposure[1]`); and (c) gated by **P-09 Security &
+Access Control** through `DATA_ENTITY_DESCRIPTION_UPDATE` and the four auth modes. The render component
+(`Markdown.tsx`) is the single fix anchor for three of the six XSS-class surfaces in the F-004 family
+(entity description + dataset-field description + term definition; per the ui-review-2026-05-26 facet).
+
+**Edge cases a product owner would highlight in a demo.** Clearing a description (submitting empty) stores
+NULL but echoes `""` back to the caller — the response reflects the request, not the DB
+(`DataEntityServiceImpl.md:concepts.invariants[3]`). Editing a description that no longer exists (wrong/typoed
+id) returns `200 OK` with an empty body — not `404` — and emits no activity event, so both the operator and
+the auditor are blind to the wrong-id write
+(`upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases[1,6]`). A single edit that adds a term
+mention produces TWO activity-feed rows at the same timestamp. And a malicious/careless writer can plant HTML
+that reaches every reader's DOM (tags pass; event-handler attributes are stripped by React; script execution
+is closed only by Chromium's HTML-parser policy — measured by probe P-009, not by the application).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator saves a description containing Markdown with embedded raw HTML (e.g. <script>alert(1)</script>, <img src=x onerror=...>, <iframe>), the platform stores the body verbatim and the dangerous tags reach the rendered DOM of every viewer of that entity's Overview tab."
+  derivation: "Endpoint stores body verbatim (no Jsoup/Encode/allowlist at repo); the sole UI Markdown renderer bundles rehype-raw with no rehype-sanitize. This is the feature's primary security property; the pillar audience is read-collaborative."
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      MEASURED end-to-end. P-007 (security, multiple PASS runs incl. R-20260519T023711Z-P-007) PUT the XSS
+      payload, GET back, SELECT the raw column — all three dangerous-tag substrings present verbatim. P-009
+      (R-20260519T020610Z-P-009) confirmed at the DOM layer: dom_has_script_tag == True, dom_has_xss_img_id
+      == True, dom_has_xss_iframe_id == True. The storage is a bare DSL.update(DATA_ENTITY).set(INTERNAL_DESCRIPTION,...)
+      with only empty→null normalisation; the render is MDEditor.Markdown with no rehypePlugins override.
+      NUANCE (does not weaken the verdict): event-handler ATTRIBUTES are stripped (dom_has_onerror_attr ==
+      False) and script EXECUTION is closed (xss_dialog_fired == 0, xss_leak_count == 0) by TWO mitigations
+      external to the app — Chromium's innerHTML script policy + React's attribute filtering. The stored-and-
+      rendered-verbatim promise is fully confirmed; the execution surface is partially closed by luck, not by design.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription
+        section: bugs_limitations_corner_cases[0] + security.known_security_gaps[0]
+        cite: "ReactiveDataEntityRepositoryImpl.java:430-438 + Markdown.tsx:113-124 + pnpm-lock.yaml:5922"
+        note: "verbatim store; rehype-raw bundled, rehype-sanitize absent (grep 0 matches)"
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDescription
+        section: invariants[0] + tests_coverage_semantic.covered_behaviours[0]
+        cite: "Markdown.tsx:112-124 + probes/P-009.yaml:147-167"
+        note: "DOM-presence empirically pinned; tags reach DOM, attributes stripped, no execution"
+      - sidecar: "(feature-flow F-004.yaml observed_vs_expected)"
+        section: "facets[0,1,2] provenance"
+        cite: "run R-20260519T012123Z-P-007 + run R-20260519T020610Z-P-009 on commit ede5d277"
+        note: "MEASURED backend storage + UI render + UI execution"
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: verified
+    test_ref: "probe P-007 (security) + P-009 (security) — pinning-bug probes, both PASS on ede5d277"
+    test_demand: none
+    use_case_note: "Verified by the probe layer (not a JVM/Vitest unit test). The probe is the regression guard; if rehype-sanitize lands, P-009's first three asserts flip to False (the pinning-bug-to-fixed transition)."
+
+- id: H-002
+  hypothesis: "When an operator submits an empty (or whitespace-only) description body to clear a description, the platform stores SQL NULL and a subsequent page reload shows the description as cleared/empty."
+  derivation: "Repo normalises StringUtils.isEmpty(description) ? null : description; OpenAPI marks internal_description required (forces the key, not non-empty content). Clearing is a normal operator action."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The DB-write half is confirmed: setInternalDescription normalises empty/whitespace to NULL at
+      ReactiveDataEntityRepositoryImpl.java:431, and the filled-flag toggles to unfilled. BUT the immediate
+      PUT response does NOT reflect the DB truth — DataEntityServiceImpl.upsertDescription line 329-332
+      binds the response from formData.getInternalDescription() (the REQUEST payload), not a post-write
+      re-read. So a PUT of {"internal_description": "   "} echoes "   " in the 200 response while the column
+      stores NULL. The UI re-reads the redux slice populated from that echo, so immediately after save the
+      preview can briefly reflect the echoed value rather than the stored NULL; a fresh GET /api/dataentities/{id}
+      reconciles to the cleared state. The user-facing "clears the description" promise holds on reload; the
+      response-vs-storage decoupling is the gap (a programmatic client comparing the PUT echo to a later GET
+      sees a mismatch on the whitespace case).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription
+        section: invariants[0]
+        cite: "ReactiveDataEntityRepositoryImpl.java:431"
+        note: "empty/whitespace → NULL normalisation"
+      - sidecar: odd-platform__java__service__service__DataEntityServiceImpl
+        section: invariants[3] + downstream_side_effects[F-004].exact_response_binding
+        cite: "DataEntityServiceImpl.java:329-332"
+        note: "response echoes request payload, not post-write pojo"
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDescription
+        section: bugs_limitations_corner_cases (empty-string echo)
+        cite: "InternalDescription.tsx:44 + InternalDescriptionPreview.tsx:20"
+        note: "UI empty-state branch keys on !description; coupling to backend null-to-empty conversion"
+    operator_visible_failure: |
+      (a) A programmatic caller (odd-cli / script) that PUTs whitespace and immediately compares the response
+      body to the stored value sees "   " echoed but NULL stored — a silent normalisation the response hides.
+      (b) The "  " vs "" vs NULL distinction is invisible to the writer through the API echo; only a follow-up
+      GET reveals the server collapsed it to NULL. (c) Cosmetic UI-flicker risk: the preview can momentarily
+      reflect the echoed value before a refetch reconciles.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "No JVM/Vitest test asserts the empty→NULL store OR the response-echoes-request decoupling. ReactiveDatasetFieldRepositoryImplTest covers updateDescription for the SIBLING dataset-field surface, not the data-entity surface."
+
+- id: H-003
+  hypothesis: "When a user with only DATA_ENTITY_DESCRIPTION_UPDATE (and NOT DATA_ENTITY_ADD_TERM) saves a description containing [[finance:Customer]], the platform refuses to auto-link the glossary term — because term-linking is gated by the dedicated DATA_ENTITY_ADD_TERM permission."
+  derivation: "Pillar P-09 model: DATA_ENTITY_ADD_TERM is a distinct permission from DATA_ENTITY_DESCRIPTION_UPDATE (SecurityConstants registers them separately). A product owner expects the two privileges to be orthogonal — the docs describe DATA_ENTITY_ADD_TERM as the term-linking gate."
+  seed_source: pillar + cross-pillar (P-06/P-09 boundary)
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The platform DOES auto-link the term — the dedicated DATA_ENTITY_ADD_TERM permission is BYPASSED
+      entirely. DataEntityServiceImpl.upsertDescription (line 328) calls
+      termService.handleDataEntityDescriptionTerms UNCONDITIONALLY after the description write; that method
+      (TermServiceImpl.java:201-207) parses [[ns:term]] mentions and INSERTs data_entity_to_term rows with
+      is_description_link=TRUE, with NO permission check inside. The only gate the side-channel passes through
+      is DATA_ENTITY_DESCRIPTION_UPDATE on the description endpoint itself. The Policy framework's intended
+      separation between "edit description" and "link terms" is structurally undermined: anyone who can edit a
+      description can effectively ADD_TERM. (Compounding: TermServiceImpl's headline finding REFACTOR-217 is
+      that even the EXPLICIT term-link endpoint's SecurityConstants rule is wired to the wrong path — singular
+      /term vs plural /terms — so the explicit gate never fires either; but the description side-channel is a
+      second, independent bypass that lands regardless.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription
+        section: security.known_security_gaps[3]
+        cite: "DataEntityServiceImpl.java:328 + TermServiceImpl.java:198-207 + SecurityConstants.java:194-197 vs :237-239"
+        note: "term-handler invoked unconditionally; the two SECURITY_RULES that should be orthogonal"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl
+        section: operations[handleDataEntityDescriptionTerms] + understanding
+        cite: "TermServiceImpl.java:201-207 (no permission check inside) + :67 (regex)"
+        note: "auto-link side-channel; is_description_link=TRUE rows synthesised, ADD_TERM gate bypassed"
+      - sidecar: "(feature-flow F-004.yaml shoebox_merged_facets)"
+        section: "SHB-017 description_link_permission_bypass_anyone_with_description_update_can_add_terms"
+        cite: "TermServiceImpl.java:198-207 + DataEntityServiceImpl.java:329-332"
+        note: "homed at F-004 as the entry-point that triggers the bypass; cross-pillar to F-002"
+    operator_visible_failure: |
+      (a) An operator deliberately granted ONLY description-edit rights (e.g. a documentation contributor who
+      should not curate the glossary taxonomy) can create glossary associations on entities by typing
+      [[ns:term]] — silently widening their effective privilege. (b) Under auth.type=DISABLED an anonymous
+      caller gets the same term-write power on every entity. (c) The complementary asymmetry: term-management's
+      DELETE-term path filters is_description_link=FALSE, so a user CANNOT remove description-created links via
+      the term UI — the link is created by a side-channel and is sticky from the term-management surface
+      (cross-pillar concern surfaced for F-002/P-06). (d) The audit story is muddied: the auto-link emits a
+      TERM_ASSIGNMENT_UPDATED event the operator never explicitly triggered.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "TEST-GAP-295 (missing-security, HIGH) is the EXACT pre-existing, still-unwritten test demand for this promise (test_files_existing: []). The functional test demand maps to it, not a fresh mint."
+
+- id: H-004
+  hypothesis: "When an operator edits a description and adds a [[ns:term]] mention, the Activity feed shows ONE row for the change (a description edit is a single user action)."
+  derivation: "A product owner reasons about the activity feed as one row per user action. The user clicked Save once; they expect one audit entry."
+  seed_source: response-shape + pillar (P-07 audit)
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The platform emits TWO activity-feed rows at the same timestamp for a single description-edit-with-mention
+      save: DESCRIPTION_UPDATED (from DataEntityInternalStateServiceImpl.updateDescription's @ActivityLog, the
+      inner service) AND TERM_ASSIGNMENT_UPDATED (from TermServiceImpl.handleDataEntityDescriptionTerms'
+      @ActivityLog). Both fire inside the same @ReactiveTransactional boundary in upsertDescription. The live
+      activity-feed docs list the two event types separately but do NOT explain that one description edit emits
+      BOTH (per the SHB-017 evidence + the doc cross-reference). This is intentional at the code level (two
+      distinct @ActivityLog annotations on two service methods) but surprising at the operator level.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription
+        section: implicit_adrs[3] + coupling[1]
+        cite: "DataEntityInternalStateServiceImpl.java:56 + TermServiceImpl.java:200 + DataEntityServiceImpl.java:327-328"
+        note: "two @ActivityLog annotations on two sequential service methods"
+      - sidecar: "(feature-flow F-004.yaml shoebox_merged_facets)"
+        section: "SHB-017 description_edit_auto_links_terms_dual_activity_events"
+        cite: "DataEntityInternalStateServiceImpl.java:28 + TermServiceImpl.java:243"
+        note: "operator sees TWO rows per description edit at the same timestamp"
+    operator_visible_failure: |
+      (a) An operator auditing the activity feed infers two distinct user actions (a description change AND a
+      separate term-assignment) when only one save happened — over-counting change activity and potentially
+      mis-attributing intent. (b) A description edit that ONLY changes prose (no mention change) emits one row;
+      a description edit that adds/removes a mention emits two — the row count is non-obvious and condition-
+      dependent. Severity is MEDIUM (it muddies the audit trail) but not a data-integrity bug.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "ActivityMapperTest covers the JSON-state serialization of DESCRIPTION_UPDATED + TERM_ASSIGNMENT_UPDATED (mapper level), but NO test asserts that one description-edit-with-mention EMITS both events. The dual-emission promise is unverified."
+
+- id: H-005
+  hypothesis: "When an operator (or a script) sends PUT /api/dataentities/{id}/description for a data-entity id that does not exist, the platform returns 404 Not Found."
+  derivation: "REST convention + sibling-endpoint parity: updateStatus and createMetadata both switchIfEmpty(NotFoundException) on a missing entity. A product owner expects a wrong id to be a 404, not a silent success."
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The platform returns 200 OK with an EMPTY body. setInternalDescription is a bare
+      DSL.update(...).where(ID.eq(dataEntityId)).returning() — on a missing id it touches 0 rows, returns
+      Mono.empty, the whole reactive chain (FTS rebuild, filled-flag, term-handling, activity emission) short-
+      circuits via empty-mono propagation, and the controller emits 200 with no body — NOT 404. There is no
+      switchIfEmpty(Mono.error(new NotFoundException)) on this path, unlike the sibling updateStatus (line 467)
+      and createMetadata (line 257-258) which DO guard. The "upsert" operationId is also misleading — the
+      endpoint is a pure UPDATE, never an INSERT.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription
+        section: invariants[2] + bugs_limitations_corner_cases[1]
+        cite: "ReactiveDataEntityRepositoryImpl.java:432-435 + DataEntityServiceImpl.java:324-333 (no NotFound path)"
+        note: "UPDATE-only, silent no-op; contrast updateStatus line 467"
+      - sidecar: odd-platform__java__service__service__DataEntityServiceImpl
+        section: invariants[5] + downstream_side_effects[F-004]
+        cite: "DataEntityServiceImpl.java:257-258 (createMetadata DOES guard) vs upsertDescription (does NOT)"
+        note: "catalog-wide asymmetry — description path is the one that silently no-ops"
+    operator_visible_failure: |
+      (a) A script scraping ids from search results and PUTting descriptions cannot distinguish "wrote
+      successfully" from "id was wrong / soft-deleted" — both return 200. (b) The activity feed shows nothing
+      for the no-op (the @ActivityLog AOP advice doesn't fire on an empty Mono), so the auditor is ALSO blind.
+      (c) The 200-vs-403 distinction leaks the permission-decision shape even for non-existent ids (a probe-by-id
+      side-channel). NOTE: this is a CAVEAT-or-bug judgment call — the silent-200 may be a deliberate
+      idempotent contract; changing it to 404 would break any existing client depending on the 200. DOC-GAP-097
+      already tracks this as a documentation gap; the maintainer's triage decides bug-fix vs documented-contract.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "No test asserts the 200-on-missing-id contract for the DATA-ENTITY description path. (DatasetFieldInternalInformationServiceImplTest.updateDescription_nonExistentField_errorsNotFound pins the SIBLING dataset-field path, which correctly returns 404 — the two surfaces DIVERGE, and only the dataset-field divergence is tested.)"
+
+- id: H-006
+  hypothesis: "When a viewer who has DATA_ENTITY_VIEW but NOT DATA_ENTITY_DESCRIPTION_UPDATE opens an entity's Overview tab, they can read the rendered description but cannot see an Edit affordance."
+  derivation: "UI label/control: the Edit button is wrapped in <WithPermissions permissionTo=DATA_ENTITY_DESCRIPTION_UPDATE>. A product owner expects view-without-edit to render content but hide the edit control."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Confirmed at primary source. Only the Edit/Add button is gated — InternalDescriptionHeader.tsx:40-50 and
+      InternalDescriptionPreview.tsx:32-40 wrap the BUTTON in <WithPermissions permissionTo=DATA_ENTITY_DESCRIPTION_UPDATE>.
+      The <Markdown value={value} /> content render at InternalDescriptionPreview.tsx:21 is UNCONDITIONAL for
+      any DATA_ENTITY_VIEW holder. So a view-only user sees the description content rendered and no Edit button —
+      exactly the promise. (This is the read-collaborative posture; it is correct behaviour, but see H-007 for
+      the security nuance that this same placement creates.)
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDescription
+        section: invariants[1] + implicit_adrs[1]
+        cite: "InternalDescriptionHeader.tsx:40-50 + InternalDescriptionPreview.tsx:21,32-40"
+        note: "WithPermissions wraps button only; content render unconditional"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "Zero UI tests exist in odd-platform-ui (the whole SPA has no .test.tsx/.spec.tsx). The permission-gated-render promise is unverified — a refactor hoisting <WithPermissions> to wrap the whole cluster would silently break view-only read access and no test would catch it."
+
+- id: H-007
+  hypothesis: "When a viewer opens an entity whose description was authored by a malicious writer with an embedded HTML payload, the platform protects the viewer from script execution by application-layer sanitisation."
+  derivation: "A product owner of a multi-tenant catalog expects the platform itself to sanitise untrusted user content before rendering it to other users — defence-by-design, not defence-by-browser."
+  seed_source: negative-space + pillar (P-09)
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The viewer IS protected from script EXECUTION today (P-009 measured xss_dialog_fired == 0, xss_leak_count
+      == 0) — but NOT by the application. The protection is two mitigations external to ODD: Chromium's policy
+      of not executing <script> inserted via innerHTML, plus React's attribute filtering stripping event-handler
+      attributes on the rehype-raw render path. The application layer applies NO sanitisation at EITHER tier
+      (no backend Jsoup/Encode; no UI rehype-sanitize). The promise of application-layer defence is unmet; the
+      effective-today protection is fragile (a CSP relaxation, a switch to dangerouslySetInnerHTML, a non-React
+      renderer, or an SVG-onload / CSS-expression / href-javascript payload re-opens the surface — none of
+      which P-009 currently pins). The fix (rehype-sanitize at the shared Markdown.tsx) closes three of six
+      surfaces in one commit (REFACTOR-218).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDescription
+        section: security.known_security_gaps[1]
+        cite: "feature-flows/detail/F-004.yaml:797-833 (slice-6 measurement) + probes/P-009.yaml:151-167"
+        note: "execution closed by browser+framework, not by app; SVG/CSS/href vectors unmeasured"
+      - sidecar: "(feature-flow F-004.yaml observed_vs_expected)"
+        section: "facet[2] closed_by_browser_mitigation_not_app_layer"
+        cite: "run R-20260519T020610Z-P-009 on commit ede5d277"
+        note: "MEASURED — defence-in-depth, not defence-by-design"
+    operator_visible_failure: |
+      (a) An operator self-hosting ODD for a multi-tenant or untrusted-writer scenario has NO documented way to
+      assess the XSS posture from the product behaviour — the protection is invisible and unguaranteed. (b) Any
+      future change to the render pipeline silently re-opens the surface with no caught regression except the
+      probe. (c) The unmeasured vector classes (SVG onload, CSS expression, href javascript:) may already
+      exercise an execution surface against the current pipeline — P-009 pins only the common vectors.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: verified
+    test_ref: "probe P-009 (security) — pins the COMMON-vector subset; PASS on ede5d277"
+    test_demand: functional
+    use_case_note: "Partially verified: P-009 pins the common attack vectors but NOT SVG-onload / CSS-expression / href-javascript. The unmet part (broaden the payload corpus to the OWASP filter-evasion catalog — slice-7 candidate) is an unverified functional/security promise."
+
+- id: H-008
+  hypothesis: "When two operators concurrently edit the same entity's description and both save, the platform preserves both contributions or warns of the conflict."
+  derivation: "A product owner of a collaborative editing surface expects either last-write-wins WITH a warning, or conflict detection — not silent loss."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Last-writer-wins with silent loss. There is no optimistic locking on the description write — no @Version,
+      no WHERE ... AND internal_description = ?oldValue? guard; the UPDATE is a plain set-by-id. Under
+      concurrent writes, both DESCRIPTION_UPDATED events capture the SAME oldState snapshot (resolved via a
+      separate get(dataEntityId) call, not the in-flight pojo) and different newState values — so the audit
+      trail shows two parallel transitions from the same baseline, and operator A's contribution is silently
+      overwritten by operator B with no warning.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription
+        section: bugs_limitations_corner_cases[3]
+        cite: "ReactiveDataEntityRepositoryImpl.java:432-435 (no version/etag predicate) + DescriptionUpdatedActivityHandler.java:26-31"
+        note: "plain UPDATE, oldState from separate read — concurrent edits lose silently"
+    operator_visible_failure: |
+      (a) In a team where two owners curate the same entity, one operator's description edit vanishes with no
+      error and no merge — they only discover it on a later read. (b) The activity feed misleads: two events
+      from the same oldState baseline look like independent transitions, hiding the lost update. Severity MEDIUM
+      (collaborative-loss, not catalog corruption); the description surface is low-RPS so the race window is
+      small but real.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "No test exercises two simultaneous PUTs against the same id (lost-update vs last-writer-wins). The concurrency promise is unverified."
+
+- id: H-009
+  hypothesis: "When an operator types the documented [[Namespace:TermName]] syntax in a description and the named term exists, the saved description renders the mention as a clickable link to that term with the term's definition on hover."
+  derivation: "UI tooltip documents the syntax as the term-link contract; the render pipeline substitutes the token for a Markdown link. A product owner expects the documented affordance to work."
+  seed_source: ui-label + doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Confirmed at primary source. transformDescriptionToMarkdown (useTermWiki.ts:186-201) substitutes each
+      resolved [[ns:term]] token with a Markdown link [name](termPath "definition"); the shared Markdown's
+      custom TermLink anchor (Markdown.tsx:49-69) inspects href — if it includes 'terms' it wraps the link in
+      an AppTooltip showing the term definition; otherwise a plain anchor. The backend (TermServiceImpl) resolves
+      the mention against the term dictionary and materialises the link row. The documented affordance works for
+      resolved terms. (Caveats handled by other hypotheses: the UI regex is stricter than the backend regex —
+      H-010; unresolved mentions render as raw [[ns:term]] text until resolution; the side-channel permission
+      bypass — H-003.)
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDescription
+        section: operations[render-internal-description]
+        cite: "useTermWiki.ts:186-201 + Markdown.tsx:49-69,112-124"
+        note: "token → [name](termPath \"definition\") → TermLink tooltip-anchored render"
+      - sidecar: odd-platform__java__service__service__TermServiceImpl
+        section: operations[findTermsInDescription] + understanding
+        cite: "TermServiceImpl.java:337-360 + :201-207"
+        note: "backend resolves mentions, materialises is_description_link rows"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "No UI test (whole SPA has zero) and no backend test asserts the [[ns:term]] → clickable-link-with-tooltip happy path. A suspected odd-team Playwright IT (e.g. an entity-description e2e) could cover this end-to-end, but no such coverage is verifiable in odd-platform (REPO_ROOT_ABS) — marked unverified."
+
+- id: H-010
+  hypothesis: "When an operator types a malformed mention like [[:foo]] (empty namespace) or [[foo:]] (empty term) in the editor, the UI and backend agree on whether it is a valid term mention."
+  derivation: "Consistency-across-platform UX seed (Rule 9): a user expects the live editor preview and the persisted behaviour to agree on what counts as a mention."
+  seed_source: ui-label + negative-space (cross-layer naming/parse drift, Rule 4)
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The UI and backend regexes DIVERGE (Rule-4 cross-layer drift). UI TERM_PATTERN
+      = /\[\[([^:\]]+):([^\]]+)\]\]/g (lib/constants.ts:177) REQUIRES non-empty namespace AND non-empty term
+      (character class one-or-more). Backend Pattern.compile("\\[\\[([^:]*?):([^\\]]*?)\\]\\]")
+      (TermServiceImpl.java:67) is non-greedy and ALLOWS empty groups. So [[:foo]] / [[foo:]] is INVISIBLE to
+      the UI parser (renders verbatim, no link, no error) but the backend parses it (then short-circuits on the
+      empty group inside handleDataEntityDescriptionTerms). For an interactive UI user the behaviour is
+      consistent (both effectively no-op the malformed mention), so the promise holds for the screen user; for
+      a programmatic caller writing descriptions with empty groups, the two layers silently disagree with no
+      error surfaced anywhere.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDescription
+        section: invariants[3] + bugs_limitations_corner_cases (UI/backend regex divergence)
+        cite: "lib/constants.ts:177 (UI regex) + TermServiceImpl.java:67 (backend regex)"
+        note: "UI requires non-empty groups; backend allows empty — latent inconsistency"
+    operator_visible_failure: |
+      (a) A programmatic caller (odd-cli / collector) that writes [[:foo]] sees the UI render it verbatim later
+      while the backend silently no-ops it — neither surfaces an error, so a typo in a mention is undetectable.
+      (b) Subtle confusion if a description is authored partly via API and partly via UI: the same string is
+      parsed by two different grammars. Severity LOW (both layers effectively ignore the malformed mention; the
+      drift is a correctness-of-contract concern, not a data bug).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "No test pins the UI-regex vs backend-regex parity contract. The grammar-divergence promise is unverified at both layers."
+
+- id: H-011
+  hypothesis: "When an operator is editing a long description and clicks Cancel (or accidentally navigates away), the platform protects their in-flight work (confirm prompt, draft preservation, or warn-on-navigate)."
+  derivation: "Senior-product-owner UX seed (Rule 9 — convenience / data-loss avoidance): a user editing a long body expects not to lose work on an accidental cancel."
+  seed_source: negative-space (UX convenience)
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No protection. toggleEditMode (useTermWiki.ts:46-49) re-syncs internalDescription = description (the
+      redux-stored value) on EVERY flip — so a user who clicks Cancel then re-clicks Edit sees the LAST SAVED
+      description, not their cancelled work. There is NO autosave, NO draft preservation, NO warn-on-navigate,
+      NO undo, NO confirm-discard prompt. The sidecar's implicit-ADR reading is that this is deliberate (the
+      reset line is explicit and would have been trivial to omit) — but a product owner would flag it as a
+      data-loss UX hazard on a free-text surface where users write paragraphs.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDescription
+        section: invariants[4] + implicit_adrs[2]
+        cite: "useTermWiki.ts:46-49 + InternalDescriptionEdit.tsx:35"
+        note: "Cancel re-syncs to last-saved; no draft preservation / warn-on-navigate"
+    operator_visible_failure: |
+      (a) A user writing a long description who accidentally clicks Cancel (or hits a browser back / SPA-nav)
+      loses all unsaved work irrecoverably with no warning. (b) On a Markdown surface — where the whole point
+      is long-form prose — this is the highest-friction UX gap in the feature. Severity LOW-to-MEDIUM as a UX
+      defect (no data corruption, but real user pain); a confirm-discard prompt is the minimal fix.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "Zero UI tests. The cancel-discards-silently behaviour is unverified — a test pinning toggleEditMode's re-sync would document the intent and guard against an accidental draft-preservation regression either way."
+
+- id: H-012
+  hypothesis: "When an operator submits a very large description (megabytes of Markdown), the platform rejects it with a clear validation error or accepts it without degrading the entity's read and search behaviour."
+  derivation: "A product owner expects a bound on a free-text surface, or graceful handling — not an unbounded text column that bloats search and the activity table on every edit."
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      There is NO application-level length cap. InternalDescriptionFormData.internal_description has no
+      maxLength (components.yaml:2188-2194), no @Size on the generated DTO; the column is Postgres text
+      (unbounded). The ONLY de-facto bound is Spring WebFlux's spring.codec.max-in-memory-size (default 256 KB)
+      which returns a generic 413/500, NOT a validation-shaped 400. Below that bound, a large description is
+      accepted, FTS-indexed (full-entity tsvector rebuild on every edit), and JSON-serialised into the activity
+      table TWICE (oldState + newState) per edit. So the feature "handles" large input up to ~256 KB but
+      degrades search/activity-table cost; above 256 KB the error is a generic, non-validation-shaped failure.
+      The promise is half-met: there is a bound, but it is implicit, non-validation-shaped, and below it the
+      cost characteristics are unbounded.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription
+        section: bugs_limitations_corner_cases[2] + performance.known_performance_gaps[0,2]
+        cite: "components.yaml:2188-2194 + V0_0_1__init.sql:80 + DescriptionUpdatedActivityHandler.java:39-42"
+        note: "no maxLength/@Size; text column; activity row holds description twice per edit"
+    operator_visible_failure: |
+      (a) A 256 KB+ description PUT returns a generic 413/500, not a 400 with a field error — the writer can't
+      tell it was a length problem. (b) A frequently-edited large description grows the activity table ~2x the
+      body size per edit with no documented TTL — a slow table-growth operational hazard. (c) The full-entity
+      FTS rebuild on every description write does I/O proportional to the entity's tags/owners/metadata, not
+      just the description bytes. Severity LOW (per-edit, low-RPS surface) but a real scaling caveat.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: null
+    test_demand: functional
+    use_case_note: "No test exercises a >256 KB body or asserts the request-size-limit behaviour. The length-bound promise is unverified. Confidence MEDIUM because the exact codec limit is the framework default, not statically pinned in this repo's config."
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "DATA_ENTITY_DESCRIPTION_UPDATE bypasses DATA_ENTITY_ADD_TERM — anyone who can edit a description auto-links glossary terms via [[ns:term]] with no term-link permission check (and under DISABLED, anonymously)."
+  dedup_status: already_tracked
+  tracked_as: "TEST-GAP-295 (the missing-security test for this exact side-channel) + F-004 shoebox facet description_link_permission_bypass_anyone_with_description_update_can_add_terms (SHB-017)"
+  proposed_fix_anchor: "Add a DATA_ENTITY_ADD_TERM permission check inside DataEntityServiceImpl.upsertDescription before invoking termService.handleDataEntityDescriptionTerms (line 328), OR document the side-channel as an intentional contract. Cross-pillar fix lands partly in F-002/P-06 (the explicit-link gate REFACTOR-217 path-mismatch)."
+  convergence_note: "Reflection independently re-derived a finding the bottom-up pipeline already homed at F-004 (SHB-017) and demanded a test for (TEST-GAP-295). Two methods agreeing = high confidence; recorded as corroboration, NOT routed for re-filing."
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "Descriptions are stored verbatim (no backend sanitisation) and rendered through rehype-raw with no rehype-sanitize; dangerous HTML tags reach every viewer's DOM (execution closed only by browser/framework, not by ODD)."
+  dedup_status: already_tracked
+  tracked_as: "DOC-GAP-096 (CLOSED — entity-description doc page now documents rehype-raw/no-rehype-sanitize) + REFACTOR-218 (the rehype-sanitize fix scope)"
+  recommended_log_as: "covered by closed DOC-GAP-096; the residual defence-by-browser-not-by-design nuance (H-007) is the live caveat"
+- hypothesis_id: H-007
+  one_line: "XSS execution is closed today only by Chromium HTML-parser policy + React attribute filtering (external to ODD); SVG-onload / CSS-expression / href-javascript vectors are unmeasured; any render-pipeline change re-opens the surface invisibly."
+  dedup_status: already_tracked
+  tracked_as: "REFACTOR-218 (rehype-sanitize defence-in-depth fix) + DOC-GAP-096 (doc surface)"
+  recommended_log_as: "fix tracked by REFACTOR-218; broadening the P-009 payload corpus (OWASP filter-evasion) is the slice-7 probe candidate already noted in F-004.yaml observed_vs_expected facet[2]"
+- hypothesis_id: H-005
+  one_line: "PUT description on a non-existent entity id returns 200 OK with empty body (silent UPDATE no-op), not 404; the activity feed also shows nothing — operator and auditor both blind to wrong-id writes."
+  dedup_status: already_tracked
+  tracked_as: "DOC-GAP-097 (silent-200-on-missing-id) + F-004 drift_class silent_write_on_missing_anchor"
+  recommended_log_as: "doc-gap tracked (DOC-GAP-097); maintainer triages documented-idempotent-contract vs 404-fix"
+- hypothesis_id: H-002
+  one_line: "PUT description response echoes the request payload, not the post-write DB value; submitting whitespace echoes the whitespace while the column stores NULL (response decoupled from storage)."
+  dedup_status: net_new
+  distinct_from: "DOC-GAP-097 — that tracks the silent-200-on-missing-id; THIS is the orthogonal response-echoes-request / empty→NULL decoupling on the EXISTING-entity happy path (drift_class response_decoupled_from_storage, observed in F-004.yaml facet but not separately doc-tracked)."
+  recommended_log_as: "caveat in the entity-description doc page (note that empty/whitespace clears to NULL and the API echo reflects the request, not the stored value)"
+- hypothesis_id: H-004
+  one_line: "A single description edit that adds/removes a [[ns:term]] mention emits TWO activity-feed rows (DESCRIPTION_UPDATED + TERM_ASSIGNMENT_UPDATED) at the same timestamp; the docs list both event types but don't explain one edit emits both."
+  dedup_status: already_tracked
+  tracked_as: "F-004 shoebox facet description_edit_auto_links_terms_dual_activity_events (SHB-017)"
+  recommended_log_as: "doc clarification on the activity-feed event-types page (one description-edit-with-mention = two rows)"
+- hypothesis_id: H-008
+  one_line: "Concurrent description edits are last-writer-wins with silent loss; no optimistic locking, and both activity events capture the same oldState baseline, hiding the lost update."
+  dedup_status: net_new
+  recommended_log_as: "caveat in the entity-description doc page (no concurrent-edit conflict detection; last save wins) — not previously doc-tracked"
+- hypothesis_id: H-010
+  one_line: "The UI term-mention regex (requires non-empty groups) diverges from the backend regex (allows empty groups); [[:foo]] is invisible to the UI parser but parsed by the backend — silent cross-layer grammar drift."
+  dedup_status: net_new
+  recommended_log_as: "low-severity caveat / code-quality note (UI-backend regex parity); cross-link F-002 (term lifecycle owns the backend regex)"
+- hypothesis_id: H-011
+  one_line: "Cancel discards in-flight description edits silently — no autosave, no draft preservation, no warn-on-navigate, no confirm prompt; an accidental Cancel loses long-form work irrecoverably."
+  dedup_status: net_new
+  recommended_log_as: "UX caveat / backlog candidate (confirm-discard prompt on the description editor) — a senior-product-owner UX gap not previously tracked"
+- hypothesis_id: H-012
+  one_line: "No application-level length cap on the description body; only the implicit 256 KB WebFlux codec limit (generic 413/500, not a validation 400); large descriptions bloat the full-entity FTS rebuild and double-store in the activity table per edit."
+  dedup_status: net_new
+  recommended_log_as: "performance/operational caveat in the entity-description doc page (no length cap; activity-table growth on frequent edits of large descriptions)"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# Confirmed-but-untested promises (H-006, H-009) belong HERE, not silently dropped to routes_to_finding: none.
+- use_case_id: F-004-UC-002
+  hypothesis_id: H-002
+  kind: edit-reconcile
+  promise: "Submitting empty/whitespace clears the description to NULL; a reload shows it cleared (and the API echo reflects the request, not the stored NULL)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-002"
+  proposed_test: "@WebFluxTest: PUT {internal_description:'   '} on an existing entity; assert 200 + echo=='   '; then GET and assert description is null/empty; (repo-level) assert column == NULL."
+- use_case_id: F-004-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "A caller with only DATA_ENTITY_DESCRIPTION_UPDATE that writes [[ns:term]] auto-links the term (ADD_TERM bypassed) — the regression guard for the fix."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-295 (ALREADY MINTED — missing-security, HIGH; test_files_existing: []). Map this demand to TEST-GAP-295; do NOT mint a duplicate."
+  proposed_test: "@WebFluxTest with caller granted DATA_ENTITY_DESCRIPTION_UPDATE only; PUT description containing [[ns:term]]; assert data_entity_to_term row appears with is_description_link=true (and after fix: assert it does NOT)."
+- use_case_id: F-004-UC-004
+  hypothesis_id: H-004
+  kind: edit-reconcile
+  promise: "One description-edit-with-mention emits exactly TWO activity events (DESCRIPTION_UPDATED + TERM_ASSIGNMENT_UPDATED) at one timestamp."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-004"
+  proposed_test: "Integration: edit a description from plain prose to prose-with-[[ns:term]]; assert two activity rows of the two event types share the edit timestamp."
+- use_case_id: F-004-UC-005
+  hypothesis_id: H-005
+  kind: empty/no-match
+  promise: "PUT description on a missing entity id returns 200 with empty body (current contract) — pin it so a 404-fix is a deliberate, caught change."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-005 (characterization pin per the pin-known-bugs protocol)"
+  proposed_test: "@WebFluxTest: PUT /api/dataentities/9999999/description; assert status==200 AND body empty (GREEN now; flips RED when a NotFoundException guard is added — the flip-on-fix signal)."
+- use_case_id: F-004-UC-006
+  hypothesis_id: H-006
+  kind: render
+  promise: "A DATA_ENTITY_VIEW-only viewer sees rendered description content but NO Edit affordance."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-006 — THE LSN-030 FIX: a confirmed promise with no guard."
+  proposed_test: "Vitest @testing-library: mount InternalDescription with mocked usePermissions returning view-only; assert <Markdown> renders content AND the Edit button is absent."
+- use_case_id: F-004-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "XSS execution is closed across the FULL vector envelope (incl. SVG-onload, CSS-expression, href-javascript), not just the common subset."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-security, use_case_id: F-004-UC-007 (broaden P-009 payload corpus — slice-7)"
+  proposed_test: "Extend P-009 with OWASP XSS filter-evasion catalog entries (SVG onload, CSS expression, href javascript:); assert no execution surface across the wider corpus."
+- use_case_id: F-004-UC-008
+  hypothesis_id: H-008
+  kind: edit-reconcile
+  promise: "Concurrent description edits are last-writer-wins (current behaviour) — pin the no-conflict-detection contract."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-008"
+  proposed_test: "Integration: two concurrent PUTs with different bodies on the same id; assert the later write wins and both activity events carry the same oldState (characterization of the lost-update)."
+- use_case_id: F-004-UC-009
+  hypothesis_id: H-009
+  kind: happy-path
+  promise: "A [[Namespace:Term]] mention of an existing term renders as a clickable link with the term definition on hover."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-009 — THE LSN-030 FIX: a confirmed happy-path promise with no guard. (Suspected odd-team Playwright IT may cover e2e; not verifiable in odd-platform.)"
+  proposed_test: "Backend: PUT description with [[ns:ExistingTerm]]; assert data_entity_to_term row + GET returns the linked term. UI (Vitest): assert transformDescriptionToMarkdown emits [name](termPath \"definition\") and TermLink renders a tooltip anchor."
+- use_case_id: F-004-UC-010
+  hypothesis_id: H-010
+  kind: grammar
+  promise: "UI and backend agree on what counts as a valid [[ns:term]] mention (regex parity)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-010"
+  proposed_test: "Parameterized test over [[:foo]], [[foo:]], [[a:b:c]], [[a:[b]]]: assert UI TERM_PATTERN and backend regex classify each mention identically (this test will RED today, documenting the drift)."
+- use_case_id: F-004-UC-011
+  hypothesis_id: H-011
+  kind: edit-reconcile
+  promise: "Cancelling an in-flight description edit discards it (current behaviour) — pin it so a future draft-preservation feature is a deliberate change."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-011"
+  proposed_test: "Vitest: enter edit mode, type, Cancel, re-enter edit mode; assert the editor shows the last-saved value (characterization of the discard)."
+- use_case_id: F-004-UC-012
+  hypothesis_id: H-012
+  kind: empty/no-match
+  promise: "A description body has a bounded, validation-shaped size limit; oversize is rejected cleanly."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id: F-004-UC-012"
+  proposed_test: "@WebFluxTest: PUT a >256 KB body; assert the failure mode (currently a generic 413/500, not a 400) — documents the implicit-limit behaviour."
+- use_case_id: F-004-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "An embedded-HTML description is stored verbatim and the tags reach every viewer's DOM (the XSS storage+render fingerprint)."
+  verdict: confirmed
+  coverage: verified
+  test_ref: "probe P-007 + P-009 (security, pinning-bug, PASS on ede5d277)"
+  recommended_log_as: "none — VERIFIED by the probe layer (the only confirmed promise this reflection does NOT route to a test demand, because a real regression guard already exists)."
+  proposed_test: "(already covered by P-007 + P-009)"
+
+### probes_emitted
+[]   # no probe-needed verdicts this reflection — the XSS surface is already probe-pinned (P-007 + P-009); all other verdicts resolved from the chain.
+
+### validation_gaps
+- sidecar: "(none — all hypotheses resolved from the read sidecars + the feature-flow facets + a live Grep of the repo test tree)"
+  field_insufficient: "N/A"
+  proposed_refresh: |
+    STALE-COVERAGE NOTE (not a validation gap in the verdicts, but a substrate-refresh flag): the
+    DataEntityServiceImpl, TermServiceImpl, and DataEntityDescription sidecars all record
+    tests_coverage_semantic as 'verified absent' / 'zero coverage' as of commit ede5d277, but a live Grep of
+    odd-platform-api/src/test at the reflection commit (a50f2fff) shows NEW tests have since landed:
+    TermServiceImplTest.java (5 tests — incl. delete_termMentionedInDescription_errorsBadRequest,
+    updateTerm_nonExistent_errorsNotFound), DatasetFieldInternalInformationServiceImplTest.java
+    (updateDescription_nonExistentField_errorsNotFound — pins the dataset-field 404), and
+    ReactiveDatasetFieldRepositoryImplTest.java (updateDescription). NONE of these covers the DATA-ENTITY
+    description promises (verbatim storage, silent-200, dual-event, auto-link side-channel). The sidecars
+    should be re-enriched at the current commit so their tests_coverage_semantic reflects the new tests; the
+    coverage verdicts in THIS reflection were derived from the live Grep, not the stale sidecar fields.
+
+### doc_drift_findings
+[]   # No doc-vs-code contradiction surfaced. The live entity-description doc page (per doc-gaps.md cross-ref)
+     # was authored 2026-05-30 from this same code and CORRECTLY documents the rehype-raw/no-rehype-sanitize
+     # surface (closed DOC-GAP-096) and the [[Namespace:Term]] auto-link convention (closed DOC-GAP-100). The
+     # residual doc gaps (DOC-GAP-097 silent-200; DOC-GAP-100 residual exact-syntax-only-in-figures; the H-002
+     # response-echo / H-008 concurrency / H-012 length-cap caveats not yet on the page) are doc-gap candidates
+     # routed via caveat_candidates above, not code-vs-doc CONTRADICTIONS.
+
+## maintainer_notes
+
+(none — preserved across refreshes; only the maintainer hand-edits this block.)

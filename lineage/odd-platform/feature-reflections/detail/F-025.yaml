@@ -1,0 +1,664 @@
+---
+feature_id: F-025
+pillar_anchored_id: P-02:F-001
+pillar: P-02 Data Modelling
+feature_name: "Query Examples (CRUD + Faceted Search)"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+  - odd-platform__ts__react-component__component__DataModelling.md
+  - odd-platform__ts__routes__route__queryExamples.md
+  - odd-platform__ts__routes__route__dataModelling.md
+source_reads_for_validation:
+  # Rule 8 exception — these components are referenced by the chain's sidecars but NOT enriched
+  # as standalone sidecars; one direct read each, recorded so the next file-analyser refresh fills the gap.
+  - "odd-platform-ui/src/components/DataModelling/QueryExampleForm/QueryExampleForm.tsx:77-126 — the modal authoring form field labels + validation rules (settles the doc 'Name field' claim)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/QueryExampleServiceImplTest.java:1-75 — a NEW @validates F-025 service test the controller sidecar did not capture (update-404 + duplicate-relation guard)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The live page has ADVANCED since the contributing sidecars fetched it (2026-05-26).
+      It now explicitly documents the read-collaborative posture ("All read, search, and
+      listing endpoints for Query Examples are open to every authenticated user"), the
+      Markdown stored-XSS risk, AND the audit-silence ("There is no platform-side audit
+      trail for Query Example changes today") — i.e. the doc-gaps DOC-183 was minted to
+      close have SHIPPED. The one residual doc drift: the page still says snippets have a
+      "name, description, and the query body" while the form has exactly two fields,
+      "Definition" and "Query" (no Name field) — see H-011.
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 5
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-005
+    severity: HIGH
+    one_line: "Deleting a query example permanently destroys its dataset + term links (hard DELETE) while only tombstoning the snippet — a 'mistaken delete' is unrecoverable at the link level even if the snippet row could be restored."
+related_feature_flows: [F-025, F-037, F-004, F-002, F-006, F-014, F-017]
+related_concepts:
+  - "Query Example"
+  - "Query Example Search Session"
+  - "Markdown Rendering Pipeline"
+  - "Read-collaborative Catalog Posture"
+  - "Audit-log Presence Asymmetry"
+related_drift_classes:
+  - markdown_render_no_sanitisation_xss_surface_extension_f_004_4th
+  - audit_silence_no_activity_log_on_any_query_example_mutation
+  - ten_of_thirteen_endpoints_no_security_rule_authenticated_only
+  - query_example_partial_rbac_grid_split_across_three_controllers
+  - delete_link_rows_hard_delete_vs_example_soft_delete_asymmetry
+  - broken_pagination_has_next_hardcoded_false_by_dataset_term_endpoints
+  - spec_says_201_impl_returns_200_create_and_update_drift
+  - with_permissions_provider_context_only_not_route_gate_doc_overstates_restriction
+  - use_query_examples_route_params_no_isnan_guard_nan_propagates_to_indefinite_app_loading_page
+new_drift_classes_proposed:
+  - query_example_form_modal_two_fields_definition_query_doc_claims_name_description_field_fiction
+---
+
+# Query Examples (CRUD + Faceted Search) — product-owner reflection
+
+## product_owner_narrative
+
+Query Examples is the Data Modelling pillar's way of letting a team write down *how a dataset is meant to be queried* and pin that knowledge next to the data itself. A data engineer who knows the canonical join, the right partition filter, or the one Spark snippet that produces the monthly rollup authors it once as a Query Example — a short `definition` (a human, prompt-style description of what the snippet does) plus a `query` body (the executable SQL / KQL / Spark code) — and attaches it to the datasets and glossary terms it concerns (per `QueryExampleController` sidecar understanding; `system-mission.md:108-123`). The next analyst who lands on that dataset's detail page, or browses the central Query Examples catalog, finds vetted query knowledge instead of reinventing it. The audience is broad: authors are data engineers and stewards; readers are analysts, BI engineers, and anyone exploring the catalog (per controller sidecar `concepts.audiences`).
+
+A user reaches the feature two ways. The global "Data Modelling" toolbar tab deep-links straight to `/data-modelling/query-examples` — the catalog list, which is the pillar's canonical landing surface (there is no separate pillar-overview screen; per `DataModelling` component sidecar `stress_findings.name_behavior_pairs`). From the list they search the catalog with a faceted-search session (POST `/queryexample/search` issues a `searchId` UUID; subsequent GET/PUT operate against that session — per controller `operations.queryExamplesSearch`), open any snippet's detail page at `/data-modelling/query-examples/{id}`, and — if they hold the right permission — open a modal dialog to author or edit. The same snippets also surface in-context: a "Query Examples" tab on every dataset detail page (via `getQueryExampleByDatasetId`) and on every glossary term page (via `getQueryExampleByTermId`) (per controller `dependencies_semantic.requires-feature`, cross-pillar to P-01 + P-06).
+
+The working parts a product owner would demo: **authoring** (a two-field modal — "Definition" as a single-line input, "Query" as a live Markdown editor — opened by an "Add query example" button on the list, per `QueryExampleForm.tsx:77-126` read directly); **faceted search** (FTS-ranked, with a Terms facet and a Datasets facet, per controller `docs_link_semantic` + `ReactiveQueryExampleRepositoryImpl`); **reverse lookup** (find every snippet attached to this dataset / this term); **edit and delete** (gated by `QUERY_EXAMPLE_UPDATE` / `QUERY_EXAMPLE_DELETE` action buttons on the detail page, per `queryExamples` route `audiences`); and **a seven-permission RBAC grid** the docs enumerate (`QUERY_EXAMPLE_CREATE/_UPDATE/_DELETE/_DATASET_CREATE/_DATASET_DELETE/_TERM_CREATE/_TERM_DELETE`, per WebFetch 2026-06-03 status 200).
+
+The feature sits at a busy crossroads. It *feeds* P-01 Data Discovery (a snippet is part of a dataset's detail page) and P-06 Data Glossary (a snippet attaches to a term); the dataset-link write side actually lives on `DataEntityController` and the term-link write side on `TermController`, so the seven-permission grid is split across three controllers (per controller understanding + `system-mission.md` P-02 cross-pillar). It shares the platform-wide read-collaborative posture with the F-014 / F-015 / F-017 family — every authenticated user reads every snippet across every namespace — and it shares the faceted-search-session-by-UUID pattern with F-017 / F-024 / F-026. It is the fourth member of the F-004 stored-XSS family because both text fields render through `@uiw/react-md-editor`'s Markdown pipeline.
+
+In a demo the product owner would highlight the edge cases honestly: an empty catalog with no search-id on the URL renders a placeholder for a tick; deleting a snippet is *irreversible at the link level* (the dataset/term associations are hard-deleted while the snippet row is only soft-deleted); none of these mutations appear on the Activity Feed, so "who created this snippet, and when" is unanswerable from the platform's own audit surface; and the feature has zero HTTP-layer, UI-layer, and integration-layer automated tests — every endpoint's status code, every permission gate, and every screen behaviour is verified only by a human clicking (per controller `tests_coverage_semantic.gaps` + the directory-wide zero-coverage Grep in the `DataModelling` component sidecar).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user with the QUERY_EXAMPLE_CREATE permission fills the Add-query-example modal (a Definition and a Query) and submits, a new snippet is created and the user is taken to its details page."
+  derivation: "Endpoint shape (POST /api/queryexample takes QueryExampleFormData{definition, query}) + the form's onSubmit navigates to queryExamplesPath(qe.id) on success."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The modal (`QueryExampleForm.tsx`) submits `{definition, query}` to `useCreateQueryExample`
+      → `POST /api/queryexample` → `QueryExampleController.createQueryExamples` (gated by
+      QUERY_EXAMPLE_CREATE per SecurityConstants.java:112-113) → `QueryExampleServiceImpl.createQueryExample`
+      (@ReactiveTransactional) → INSERT INTO query_example + INSERT INTO query_example_search_entrypoint.
+      On the returned QueryExampleDetails the form calls `navigate(queryExamplesPath(qe.id))`
+      (QueryExampleForm.tsx:63-66), landing the user on `/data-modelling/query-examples/{id}`.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: operations.createQueryExamples + downstream_side_effects
+        cite: "QueryExampleController.java:26-32 + QueryExampleServiceImpl.java:40,166-167"
+        note: "create path + search-vector materialisation; gated by QUERY_EXAMPLE_CREATE"
+      - sidecar: odd-platform__ts__routes__route__queryExamples
+        section: upstream_callers (post-submit redirect)
+        cite: "QueryExampleForm.tsx:54-66"
+        note: "navigate(queryExamplesPath(qe.id)) on mutation success"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "QueryExampleServiceTest.createNewQueryExample (lines 134-152, @DisplayName 'Creates new queryExample')"
+    coverage_note: |-
+      The SERVICE happy-path (create returns the mapped QueryExampleDetails) is verified by
+      QueryExampleServiceTest. The HTTP-layer wiring (200 status, QUERY_EXAMPLE_CREATE gate)
+      and the UI post-submit navigation are NOT tested. coverage: verified is recorded against
+      the service behaviour; the controller + UI legs remain a functional-test demand (H-009).
+
+- id: H-002
+  hypothesis: "When a user without the QUERY_EXAMPLE_CREATE permission navigates to /data-modelling/query-examples, they can still browse and search the catalog — they just cannot see the Add button."
+  derivation: "UI label + view-mode — the list route is wrapped in WithPermissionsProvider(QUERY_EXAMPLE_CREATE); a product owner expects either page-level gating or affordance-level gating, and the read-collaborative posture implies the latter."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      `WithPermissionsProvider` at DataModellingRoutes.tsx:19-25 only SEEDS a React permission
+      context — it renders its child unconditionally (it is NOT a route gate; verified at
+      WithPermissionsProvider.tsx:11-49 + PermissionProvider.tsx:12-46 per the DataModelling
+      component sidecar). The actual gate is the separate `<WithPermissions permissionTo=QUERY_EXAMPLE_CREATE>`
+      wrapping the Add button at QueryExamples.tsx:36-46 — that one returns null when the
+      permission is absent. So a user without CREATE sees the full list + search + every snippet's
+      detail, and loses only the Add button. The 10 read/search backend endpoints are ungated
+      (fall through to authenticated()), so the data calls succeed.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataModelling
+        section: stress_findings.name_behavior_pairs.[DataModellingRoutes] + bugs_limitations_corner_cases
+        cite: "DataModellingRoutes.tsx:19-25 + WithPermissionsProvider.tsx:11-49 + QueryExamples.tsx:36-46"
+        note: "WithPermissionsProvider seeds context, does not block; WithPermissions gates the button"
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: security.authorization_assertions
+        cite: "SecurityConstants.java:98-355 (10 endpoints absent) + QueryExampleController.java:52,73,82"
+        note: "read + search endpoints fall through to authenticated()"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: "No UI test renders the list under a no-CREATE permission profile and asserts list-visible + Add-button-hidden. Highest-leverage UI regression guard for the permission posture."
+
+- id: H-003
+  hypothesis: "When a user holding QUERY_EXAMPLE_UPDATE but NOT QUERY_EXAMPLE_DELETE opens a snippet's detail page, they see an Edit button but no Delete button (and vice-versa for DELETE-only)."
+  derivation: "Endpoint shape — the details route is wrapped in WithPermissionsProvider([QUERY_EXAMPLE_UPDATE, QUERY_EXAMPLE_DELETE]); a product owner expects per-action affordances, not all-or-nothing."
+  seed_source: view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The per-button outcome IS correct: the Edit button is gated by WithPermissions(UPDATE) and
+      the Delete button by WithPermissions(DELETE) separately (QueryExampleDetailsContainerActions.tsx:40,53),
+      and PermissionProvider.getHasAccessTo checks the specific permission — so an UPDATE-only user
+      gets Edit-only, a DELETE-only user gets Delete-only. BUT the route-level
+      WithPermissionsProvider uses `allowedPermissions.every(...)` AND-semantics (PermissionProvider.tsx:19-31),
+      so the context-level `isAllowedTo` is true only when the user holds BOTH — any descendant that
+      consumed the context-level boolean (rather than getHasAccessTo for a specific permission) would
+      mis-gate. The detail page itself ALSO renders fully for a user holding NEITHER permission (the
+      page never 403s — read-collaborative). So the hypothesis holds for the two action buttons but
+      the underlying every()-AND context is a latent mis-gating shape, and the page-level read is
+      ungated.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__queryExamples
+        section: stress_findings.auth_gates.[DETAILS sub-route]
+        cite: "DataModellingRoutes.tsx:31-37 + PermissionProvider.tsx:19-31 + QueryExampleDetailsContainerActions.tsx:40,53"
+        note: "every()-AND at route context; per-button getHasAccessTo at action layer"
+    operator_visible_failure: |-
+      Today the two action buttons gate correctly because they call getHasAccessTo(specificPermission),
+      so the operator-visible outcome matches the hypothesis. The latent failure is for a FUTURE
+      descendant component that reads the context-level `isAllowedTo` boolean: a user with UPDATE-only
+      would be told "not allowed" (every() needs both) and an affordance keyed off that boolean would
+      vanish even though the user can legitimately edit. Additionally, a user with neither permission
+      still loads the full detail page (definition, query, linked entities/terms) — expected under the
+      read-collaborative posture but surprising to an operator who configured a read-restricted role.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: "No UI test exercises the three permission profiles (UPDATE-only / DELETE-only / neither) against the detail page button set. The every()-AND latent mis-gate is untested."
+
+- id: H-004
+  hypothesis: "When a user runs a faceted search on the Query Examples catalog, soft-deleted snippets do not appear in the results."
+  derivation: "Negative-space — delete soft-deletes the snippet (deleted_at set); a search that returned tombstoned snippets would be a correctness bug."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The faceted-search query filters `QUERY_EXAMPLE.DELETED_AT IS NULL`
+      (ReactiveQueryExampleRepositoryImpl.java:80, 99 per controller sidecar invariants), so
+      soft-deleted snippets are excluded from search results. NOTE the related leak: the
+      `query_example_search_entrypoint` FTS row is NOT cleaned up on delete (the delete chain
+      touches link rows + the snippet but not the entrypoint), so the tsvector persists — it is
+      filtered out only because the JOIN to query_example applies the deleted_at predicate. A
+      future search endpoint that forgot that predicate would surface tombstoned snippets.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: invariants + bugs_limitations_corner_cases.[search-entrypoint leak]
+        cite: "ReactiveQueryExampleRepositoryImpl.java:80,99 + QueryExampleServiceImpl.java:84-92,166-167"
+        note: "deleted_at filter present in search; entrypoint row not cleaned on delete"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    coverage_note: |-
+      No test asserts a soft-deleted snippet is absent from faceted-search results (the
+      deleted_at-filter contract), nor that the entrypoint row leaks. The JOOQ
+      QueryExampleRepositoryTest exists but the sidecar did not confirm it covers the
+      deleted_at-vs-search behaviour; treated as unverified for this promise.
+
+- id: H-005
+  hypothesis: "When a user deletes a query example by mistake, the snippet and its dataset/term associations can be recovered (delete is reversible, consistent with the platform's soft-delete model)."
+  derivation: "Negative-space + pillar mission — operators curate snippets over time; a product owner expects a 'deleted' artefact to be restorable, matching the platform-wide soft-delete posture."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Delete is ASYMMETRIC: `QueryExampleServiceImpl.deleteQueryExample` (lines 84-92) HARD-deletes
+      the link rows in `data_entity_to_query_example` AND `query_example_to_term` (DELETE SQL), then
+      SOFT-deletes only the snippet itself (UPDATE query_example SET deleted_at=NOW(), is_deleted=TRUE
+      via the soft-delete CRUD base). The join tables have NO deleted_at column and no ON DELETE CASCADE
+      (V0_0_84:18-22) — the associations are gone permanently. Even if a maintainer added an undelete
+      affordance for the snippet row, every dataset and term association would be lost. The platform
+      exposes no restore affordance today, so the practical effect is: delete is irreversible at the
+      link level, and the snippet's FTS entrypoint row leaks (never cleaned up).
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: implicit_adrs.[hard-delete-of-links] + invariants + downstream_side_effects
+        cite: "QueryExampleServiceImpl.java:84-92 + V0_0_84__create_query_example.sql:18-22"
+        note: "hard DELETE of link rows + soft delete of snippet; no cascade column"
+    operator_visible_failure: |-
+      (1) An operator who deletes a snippet to "clean up the catalog" and then realises it was the
+      canonical join for a critical dataset cannot restore the dataset/term linkages — they must
+      re-author the snippet AND re-attach every dataset and term by hand. (2) The user gets no
+      warning at delete time that the action destroys associations irreversibly (the docs are also
+      silent on delete-cascade per the controller sidecar doc_drift_findings). (3) Each delete leaks
+      a `query_example_search_entrypoint` row (slow unbounded storage growth, invisible until an
+      operator monitors PG table sizes). The asymmetry also means a future "restore" feature would
+      silently return a snippet with NULL associations.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    coverage_note: "deleteQueryExample happy-path is service-tested (QueryExampleServiceTest line 208) but no test pins the hard-vs-soft asymmetry or the entrypoint leak; no UI warning exists to test."
+
+- id: H-006
+  hypothesis: "When an operator audits 'who created/changed this query example, and when', they can find the answer on the Activity Feed (global page or the dataset's Activity tab)."
+  derivation: "Pillar mission + cross-pillar — P-07 Activity Feed is the platform's audit surface; a steward expects mutations to a curated artefact to be auditable, like term-linkage changes are."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `QueryExampleServiceImpl` carries ZERO @ActivityLog annotations (verified across the full
+      service file per the controller sidecar). Create / update / delete / dataset-link / term-link
+      operations emit NOTHING to the Activity Feed or the per-entity Activity tab. Compare
+      TermServiceImpl, which DOES emit TERM_ASSIGNMENT_UPDATED on term linkage. This is the
+      audit-log-presence-asymmetry pattern (system-mission.md:386-395), shared with the Lookup
+      Tables rename-audit-silence (PLT-057) and DQ severity (F-057).
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: dependencies_semantic.requires-runtime + downstream_side_effects.activity-feed-emission + bugs_limitations_corner_cases
+        cite: "QueryExampleServiceImpl.java:1-169 (no @ActivityLog)"
+        note: "no Activity emission on any mutation"
+    operator_visible_failure: |-
+      An operator investigating a dataset whose canonical query suddenly produces wrong results asks
+      "who changed the snippet and when" — the Activity Feed shows term and description changes but
+      NOTHING for query examples. There is no platform-side audit trail; the operator must fall back
+      to PostgreSQL-level auditing or git-of-the-database they do not have. For a Data Modelling
+      artefact that downstream pipelines may copy verbatim, the accountability gap is real. The live
+      doc now documents this honestly (WebFetch 2026-06-03), so it is a documented limitation, not a
+      silent one — but it is still a behaviour gap a product owner would want closed.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    coverage_note: "No regression-pin asserts the current audit-silence contract (so a future @ActivityLog addition doesn't silently break audit-export expectations). Tracked as a test-gap; the fix is tracked in PLT-018."
+
+- id: H-007
+  hypothesis: "When a user pastes Markdown or HTML (e.g. a link, bold text, or a script tag) into the Definition or Query field, it is displayed as the literal text they typed, not rendered/executed."
+  derivation: "Response shape + negative-space — the fields are labelled for SQL/prose; a user pasting SQL containing characters like < or a Markdown link does not expect it interpreted; the F-004 family flags this surface."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Both `definition` and `query` are stored verbatim (text NOT NULL, no sanitisation at HTTP or
+      service layer) and RENDERED through `@uiw/react-md-editor`'s MDEditor.Markdown at two read
+      sites (QueryExampleDetailsOverview.tsx:19,25 + QueryExamplesListItem.tsx:45,52) and authored
+      through the same library's editor mode in the form (QueryExampleForm.tsx:105-110, read directly).
+      Markdown IS interpreted: `**bold**` renders bold, `[x](javascript:...)` renders a link. This is
+      the 4th member of the F-004 stored-XSS family; the upstream library applies a default
+      rehype-sanitize schema but the shared Markdown.tsx adds no extra sanitiser, so the partial-
+      mitigation envelope from F-004 applies (target-attr / data-attr vectors remain; full inline
+      onerror is filtered by the upstream default).
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: security.known_security_gaps + bugs_limitations_corner_cases.[Markdown XSS]
+        cite: "QueryExampleDetailsOverview.tsx:19,25 + QueryExamplesListItem.tsx:45,52 + Markdown.tsx:1-127"
+        note: "verbatim store + MDEditor.Markdown render at two sites; F-004 4th surface"
+      - sidecar: odd-platform__ts__routes__route__queryExamples
+        section: (form authoring surface, source-read)
+        cite: "QueryExampleForm.tsx:105-110 (Markdown editor=true on the query field)"
+        note: "authoring uses the same MD pipeline; no client allowlist or length cap"
+    operator_visible_failure: |-
+      (1) An author pasting a SQL comment that happens to contain Markdown syntax sees it reflowed/
+      rendered, not shown verbatim — confusing for a 'query body'. (2) The security failure: an author
+      with QUERY_EXAMPLE_CREATE can plant a payload (link with javascript: href, target-attr injection)
+      that renders to every authenticated reader of the snippet (read-collaborative → broad blast
+      radius). (3) There is no length cap (text up to 1GB; WebFlux 256KB default request cap), so a
+      multi-megabyte body is accepted. The live doc now warns about this (WebFetch 2026-06-03 +
+      DOC-183 shipped); the code fix is tracked in PLT-018.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: "No stored-XSS regression-pin protects this surface (POST a payload, assert verbatim storage + the render contract). Listed as a security-class test-gap; covered by the F-004-family demand."
+
+- id: H-008
+  hypothesis: "When a user opens a dataset's 'Query Examples' tab that has many attached snippets, the UI paginates and the 'load more' affordance reflects whether more rows exist."
+  derivation: "Endpoint shape + performance — getQueryExampleByDatasetId returns a QueryExampleList with a hasNext field; a product owner expects pagination to work for popular datasets."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The by-dataset and by-term endpoints return a QueryExampleList whose `hasNext` is
+      HARD-CODED false (QueryExampleMapper.mapListToQueryExampleList lines 72-74), and the
+      endpoints apply NO pagination — they return ALL snippets attached to the entity in one
+      response (controller `performance.scaling_characteristics`). So the data is complete (the
+      user sees every snippet — the happy path works for small counts), but the `hasNext=false`
+      contract means a paginated UI can never show a correct "Next" affordance, and a dataset
+      that accumulates dozens/hundreds of snippets returns an O(N) unbounded payload with degrading
+      latency.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: concepts.QueryExampleList + performance.known_performance_gaps
+        cite: "QueryExampleMapper.java:72-74 + QueryExampleController.java:52-56,59-63"
+        note: "hasNext hard-coded false; no pagination on by-dataset / by-term"
+    operator_visible_failure: |-
+      For a normal dataset with a handful of snippets the tab works fine. For a heavily-curated
+      dataset, the tab loads slowly (whole-list fetch, no page size) and any "load more" UI is
+      dead — the user cannot tell whether they are seeing all snippets. Same broken-pagination
+      shape as F-002 TermServiceImpl.listByTerm. SDK consumers reading hasNext to drive pagination
+      get a permanently-false signal.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    coverage_note: "No test pins hasNext=false (the current broken contract) nor the whole-list-no-pagination behaviour for the by-dataset/by-term endpoints."
+
+- id: H-009
+  hypothesis: "When a client (UI or SDK) creates a query example, the HTTP response status is 201 Created (as the OpenAPI spec declares), so a 201-branching client enters its success path."
+  derivation: "Doc-claim / spec seed — OpenAPI declares 201 for create and update; a generated-SDK consumer branches on the declared code."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `createQueryExamples` and `updateQueryExample` both return 200 (.map(ResponseEntity::ok),
+      controller lines 31, 41) while the OpenAPI declares 201 for both (openapi.yaml:2118, 2156).
+      The controller is the ground truth: clients receive 200. Same class-wide drift as
+      F-002 TermController, F-019 Owner, F-013 metadata-field create.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: operations + bugs_limitations_corner_cases.[status-code drift]
+        cite: "QueryExampleController.java:31,41 + openapi.yaml:2118,2156"
+        note: "impl 200 vs spec 201 on create + update"
+    operator_visible_failure: |-
+      A strict generated SDK that treats 201 as the sole success code for create/update would never
+      enter its success branch (or would surface an 'unexpected status' error) — the UI tolerates it
+      (axios resolves 2xx), but a third-party Java/Python SDK consumer following the spec is exposed.
+      Cosmetic for the UI, real for the documented API contract.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: grammar
+    coverage: unverified
+    coverage_note: "No @WebFluxTest pins the 200-vs-201 drift on create/update. The single highest-value controller-tier pin alongside the auth-gate pin (H-010)."
+
+- id: H-010
+  hypothesis: "When a user WITHOUT the QUERY_EXAMPLE_CREATE permission calls POST /api/queryexample directly (bypassing the hidden UI button), the server rejects it with 403 Forbidden."
+  derivation: "Pillar mission (P-09) + negative-space — the UI hides the Add button, but a product owner expects the server perimeter (not just the UI affordance) to enforce the permission."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The create endpoint DOES have a server-side SecurityRule: SecurityConstants.java:112-113 binds
+      POST /api/queryexample → QUERY_EXAMPLE_CREATE (NO_CONTEXT). Update and delete are likewise gated
+      (312-317). So a caller lacking the permission is rejected at the Spring Security perimeter
+      regardless of the UI. CAVEAT 1 (auth.type=DISABLED): all gates fall through to permitAll, so an
+      anonymous caller succeeds — documented posture, not a bug. CAVEAT 2 (S2S): an X-API-Key caller
+      is granted ADMIN and passes the gate. CAVEAT 3: the permission is role-scoped, NOT owner-scoped —
+      a holder of QUERY_EXAMPLE_UPDATE via any Role on any Owner can edit ANY snippet, even ones whose
+      linked entities belong to another team (controller security.owner_scoping). So the gate exists
+      and fires, but is coarse-grained.
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: security.authorization_assertions + security.owner_scoping
+        cite: "SecurityConstants.java:112-113,312-317 + QueryExamplePermissionExtractor.java:38-48"
+        note: "3 write endpoints gated; no per-owner scoping on the grant"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    coverage_note: |-
+      No security-class test asserts 403 for a no-permission caller on create/update/delete (the
+      regression-pin that would catch an accidental SecurityRule removal). The DOC-183/PLT-018 work
+      documents the coarse owner-scoping; the 403-enforcement pin itself is an untested functional
+      promise. Highest-value security regression-pin for this feature.
+
+- id: H-011
+  hypothesis: "When a user authors a query example, they name it (the docs say a snippet has a 'name, a description, and a query body'), so the catalog shows the snippet by its name."
+  derivation: "Doc-claim seed — the live doc page states snippets have a 'name, description, and the query body'."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The authoring modal (`QueryExampleForm.tsx:77-126`, read directly) has EXACTLY TWO fields:
+      "Definition" (a single-line <Input>) and "Query" (a Markdown editor). There is NO "Name" field
+      and NO "Description" field. The DB schema and OpenAPI carry only `definition` + `query` (no name
+      column — V0_0_84:4-5, components.yaml:2799-2808). The detail page titles the snippet
+      "Query Example #{id}" (the integer id is the only identifier per the controller doc_drift_findings).
+      The live doc's "name, description, and the query body" is fiction: there is no name; what the doc
+      calls "description" the form labels "Definition".
+    evidence:
+      - sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+        section: docs_link_semantic.doc_drift_findings.[Name vs definition]
+        cite: "components.yaml:2799-2808 + V0_0_84__create_query_example.sql:4-5"
+        note: "only definition + query columns; no name"
+      - sidecar: odd-platform__ts__routes__route__queryExamples
+        section: (form authoring surface, source-read)
+        cite: "QueryExampleForm.tsx:86 (label t('Definition')) + :103 (label t('Query'))"
+        note: "two fields labelled Definition + Query; no Name/Description field"
+    operator_visible_failure: |-
+      An operator reading the docs expects to give each snippet a friendly name and to find/sort the
+      catalog by name. In the product there is no name: snippets are identified by integer id and by
+      the free-text Definition. A user asks "how do I rename this query example?" and the answer is
+      "you can't — there is no name; edit the Definition." The doc's three-field framing ("name,
+      description, query body") sets a false expectation about the authoring surface. This is the one
+      doc drift NOT yet closed by the DOC-183 caveats work (which covered RBAC/XSS/audit, not the
+      field model). Route as a doc-gap candidate.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    coverage_note: "Doc-vs-code drift; no test applies. The fix is a doc edit (correct the field list to Definition + Query)."
+
+- id: H-012
+  hypothesis: "When a user opens a shared/bookmarked link to a specific query example whose URL segment is non-numeric or malformed (e.g. /data-modelling/query-examples/abc), the UI shows a clear not-found / error state."
+  derivation: "Negative-space + UI device behaviour — links get shared in chat and edited by hand; a product owner expects graceful degradation, not a hang."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Static trace: `useQueryExamplesRouteParams` casts the route param as a string and runs
+      parseInt; a non-numeric segment yields NaN (queryExamplesRoutes.ts:19-27). The only consumer,
+      QueryExampleDetailsContainer.tsx:19, passes NaN as exampleId into useGetQueryExampleDetails →
+      GET /api/queryexample/NaN. The sidecar's STATIC inference is that the page hangs on
+      AppLoadingPage (QueryExampleDetailsContainer.tsx:97) until the backend 400/404 returns, with no
+      graceful fallback — but the EXACT user-visible outcome (does axios serialise NaN such that the
+      request 400s fast and surface an error boundary, or does the page truly hang) requires running
+      the SPA against a live backend to confirm. Recorded as a graceful-degradation gap, not a
+      name-vs-impl drift.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__queryExamples
+        section: bugs_limitations_corner_cases.[NaN propagation] + stress_findings.request_inputs
+        cite: "queryExamplesRoutes.ts:19-27 + QueryExampleDetailsContainer.tsx:18-29,97"
+        note: "NaN propagates to a doomed GET; AppLoadingPage with no fallback (static inference)"
+    operator_visible_failure: |-
+      If the static inference holds, a user who clicks a typo'd or stale shared link lands on an
+      indefinitely-spinning page with no "not found" message and no way to recover except editing the
+      URL — a poor experience for a link-shared artefact. Bounded DoS surface (each bad segment fires a
+      backend call). Needs a runtime probe to confirm the precise outcome (hang vs error boundary).
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-025-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    coverage_note: "No test exercises a malformed details URL. Probe + then an integration test pinning the user-visible error state."
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "Query Example definition + query render through MDEditor.Markdown with no extra sanitiser — 4th (substrate calls it 4th/5th) member of the F-004 stored-XSS family; verbatim store + broad read-collaborative blast radius."
+  dedup_status: already_tracked
+  tracked_as: PLT-018
+  recommended_log_as: null
+  proposed_fix_anchor: "Markdown.tsx:113-124 — add rehype-sanitize to the shared renderer config (closes both QueryExample render sites + the wider F-004 family in one change), per PLT-018 Defect 1."
+- hypothesis_id: H-009
+  severity: LOW
+  one_line: "createQueryExamples + updateQueryExample return HTTP 200 while OpenAPI declares 201 — class-wide spec/impl drift; strict 201-branching SDK consumers never enter success."
+  dedup_status: net_new
+  distinct_from: PLT-018
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "Spec-side alignment to the de-facto 200 (platform convention) at openapi.yaml:2118,2156 OR controller returns 201; not covered by PLT-018 (which scopes XSS/RBAC/audit, not status codes). Cross-class with F-002/F-013/F-019 same drift — candidate for a single cross-feature spec-alignment issue."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Deleting a query example hard-deletes its dataset/term associations (irreversible) while only soft-deleting the snippet; no delete-time warning; FTS entrypoint row leaks."
+  dedup_status: net_new
+  distinct_from: PLT-018
+  recommended_log_as: "DOC-GAP-NNN (pending mint) — extend the Query Examples caveats section (DOC-183 shipped RBAC/XSS/audit; the delete-cascade-asymmetry facet is NOT among the four DOC-183 caveats). Also a candidate REFACTOR/PLT facet for the entrypoint-row cleanup on delete."
+  proposed_fix_anchor: "Doc: add a delete-irreversibility caveat to the Query Examples page. Code (separate): add searchEntrypointRepository.deleteByQueryExampleId(id) to QueryExampleServiceImpl.java:84-92, or a housekeeping job (F-010 pattern)."
+- hypothesis_id: H-006
+  one_line: "No @ActivityLog on any Query Example mutation — create/update/delete/link are invisible on the Activity Feed; 'who changed this snippet when' is unanswerable from the platform."
+  dedup_status: already_tracked
+  tracked_as: DOC-183
+  recommended_log_as: null
+  proposed_fix_anchor: "Doc caveat already SHIPPED (DOC-183 Caveat 4, live as of WebFetch 2026-06-03). Code fix tracked in PLT-018 (add @ActivityLog to the 4 mutation handlers, subject to the activity-feed schema constraint). Reflection independently re-derived the finding — convergent validation."
+- hypothesis_id: H-003
+  one_line: "Detail-route WithPermissionsProvider uses every()-AND semantics — a UPDATE-only user gets context isAllowedTo=false; latent mis-gate for any descendant reading the context boolean (action buttons currently use getHasAccessTo and are correct)."
+  dedup_status: net_new
+  recommended_log_as: "caveat in the WithPermissionsProvider component doc / a REFACTOR scope — the every()-vs-some() AND-of-permissions subtlety; doc-silent per the queryExamples route sidecar doc_drift."
+  proposed_fix_anchor: "Document the every()-AND contract at WithPermissionsProvider; or split the details route into two single-permission contexts. Cross-link to the batch-ZI facet permissions_provider_every_not_some_and_not_or_doc_silent."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the promise layer. Every UNVERIFIED user-facing promise (confirmed, partial,
+# contradicted, AND probe-needed) becomes a missing-functional TEST-GAP candidate. These are NOT
+# tracked by DOC-183 (docs) or PLT-018 (code fixes) — the existing F-025 related_test_gaps are all
+# "TEST-GAP-NNN deferred" placeholders with NO functional/happy-path category. This block is the
+# fix for the confirmed-but-untested hole.
+- use_case_id: F-025-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A user with QUERY_EXAMPLE_CREATE authors {definition, query} in the modal and is taken to the new snippet's details page."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-001) — service create happy-path IS covered (QueryExampleServiceTest); the @WebFluxTest 200-status + QUERY_EXAMPLE_CREATE-gate leg and the UI post-submit-navigation leg are the gap."
+  proposed_test: "@WebFluxTest: POST /api/queryexample as a CREATE-permitted user → assert 200 + body has id; + an integration/e2e test driving the modal → assert redirect to /data-modelling/query-examples/{id}."
+- use_case_id: F-025-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "A user without QUERY_EXAMPLE_CREATE still sees and searches the Query Examples list; only the Add button is hidden."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-002)"
+  proposed_test: "UI test: render QueryExamples list with a permission context lacking QUERY_EXAMPLE_CREATE → assert list + search visible AND Add button absent (WithPermissions returns null)."
+- use_case_id: F-025-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "On the detail page, Edit is shown only to UPDATE-holders and Delete only to DELETE-holders (per-action affordance)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-003)"
+  proposed_test: "UI test: render QueryExampleDetailsContainerActions under three profiles (UPDATE-only / DELETE-only / neither) → assert exactly the matching button set; add a unit test pinning every()-AND vs getHasAccessTo divergence."
+- use_case_id: F-025-UC-004
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "Soft-deleted snippets are excluded from faceted-search results."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-004)"
+  proposed_test: "Repository/integration test: create a snippet, search and find it, soft-delete it, search again → assert absent (pins the DELETED_AT IS NULL search filter)."
+- use_case_id: F-025-UC-005
+  hypothesis_id: H-005
+  kind: teardown
+  promise: "(CONTRADICTED) Deleting a snippet should be recoverable; it is NOT — links are hard-deleted, snippet soft-deleted, entrypoint leaks."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-005) — regression-pin the CURRENT asymmetric behaviour (characterization) so a future restore feature surfaces the link-loss; + the entrypoint-leak pin."
+  proposed_test: "Service test: delete a snippet with dataset+term links → assert link rows DELETED (hard), snippet deleted_at set (soft); + assert the query_example_search_entrypoint row still present (pins the leak, RED when cleanup is added)."
+- use_case_id: F-025-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "(CONTRADICTED) Query Example mutations should be auditable; they are NOT — zero @ActivityLog."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-006) — regression-pin the audit-silence contract (assert zero QUERY_EXAMPLE_* activity events after all four mutation verbs) so adding @ActivityLog (PLT-018) is a deliberate, test-flipping change."
+  proposed_test: "Integration test: exercise create/update/delete/dataset-link/term-link → GET /api/activity → assert zero query-example-related events (characterization of the current gap)."
+- use_case_id: F-025-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "(CONTRADICTED) definition/query should display verbatim; they are Markdown-rendered (XSS surface)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-007) — F-004-family stored-XSS regression-pin; the code fix is PLT-018 but the guarding test is a distinct demand."
+  proposed_test: "Security test: POST a snippet with definition='<details open><summary>x</summary>raw</details>' and query='[click](javascript:alert(1))' → assert verbatim storage + assert the rendered DOM neutralises the active vector (pins the post-rehype-sanitize contract once PLT-018 lands)."
+- use_case_id: F-025-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "(PARTIAL) The by-dataset/by-term tab paginates correctly; hasNext is hard-coded false + no pagination."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-008)"
+  proposed_test: "Integration test: attach >1 snippet to a dataset → GET /api/queryexample/dataset/{id} → assert all returned AND hasNext=false regardless of count (pins the broken-pagination contract)."
+- use_case_id: F-025-UC-009
+  hypothesis_id: H-009
+  kind: grammar
+  promise: "(CONTRADICTED) create/update return 201 per spec; they return 200."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-009)"
+  proposed_test: "@WebFluxTest: POST + PUT /api/queryexample → assert HTTP 200 (pins the de-facto contract; RED if a refactor aligns to 201 without updating the spec)."
+- use_case_id: F-025-UC-010
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "A caller without QUERY_EXAMPLE_CREATE/_UPDATE/_DELETE is rejected 403 at the server perimeter (UI affordance is not the only defence)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-010) — the single highest-value security regression-pin; catches accidental SecurityRule removal."
+  proposed_test: "@WebFluxTest with mock users: POST/PUT/DELETE without the relevant permission → assert 403; + a DISABLED-mode pin asserting anonymous reach (documents the posture)."
+- use_case_id: F-025-UC-011
+  hypothesis_id: H-011
+  kind: grammar
+  promise: "(CONTRADICTED — doc) Snippets have a name/description/query; the form has only Definition + Query."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "n/a (doc-gap, not a test demand) — routed to doc_drift_findings below."
+  proposed_test: "n/a — the fix is a doc correction; no code test."
+- use_case_id: F-025-UC-012
+  hypothesis_id: H-012
+  kind: resolve-later
+  promise: "A malformed details URL shows a clear not-found state, not an indefinite hang."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id: F-025-UC-012) — pending the probe (PENDING-F-025-1) confirming the user-visible outcome."
+  proposed_test: "Probe first (navigate to /data-modelling/query-examples/abc), then an integration test asserting the resolved error state once a NaN-guard is added."
+
+### probes_emitted
+- probe_id: PENDING-F-025-1
+  hypothesis_id: H-012
+  probe_path: "(parallel-safe mode — no P-NNN file created; orchestrator/maintainer to mint)"
+  hypothesis_text: |-
+    When a user navigates to /data-modelling/query-examples/abc (non-numeric segment),
+    useQueryExamplesRouteParams returns {queryExampleId: NaN}; the static inference (queryExamplesRoutes.ts:19-27
+    + QueryExampleDetailsContainer.tsx:97) is that GET /api/queryexample/NaN fires and the page hangs on
+    AppLoadingPage with no graceful fallback. PROBE: run the SPA against a live backend, navigate to the
+    malformed URL, observe whether the page hangs indefinitely or surfaces an error boundary, and capture
+    the backend response code for the NaN id. Local-only: docker-compose ODD + Postgres + Playwright headless
+    navigation. local_execution_blocked: false.
+
+### validation_gaps
+- sidecar: "(missing) odd-platform ts react-component:QueryExampleForm"
+  field_insufficient: "understanding / stress_findings / tests_coverage_semantic — the modal authoring form (the primary user-interaction surface for create+edit) is referenced by the chain but has NO standalone sidecar; the field labels, validation rules, and Markdown-editor mode were read directly under the Rule 8 exception."
+  proposed_refresh: "Enrich QueryExampleForm.tsx as a first-class react-component sidecar: capture the two-field model (Definition Input + Query Markdown editor), the required+non-empty validation, the no-length-cap/no-allowlist authoring-time XSS entry, the DialogWrapper modal shell, and the post-submit navigation."
+- sidecar: "(missing) odd-platform ts react-component:QueryExamples"
+  field_insufficient: "understanding — the list page (the canonical landing surface) is referenced everywhere (Add-button gate, search-session creation, EmptyContentPlaceholder, the silent-empty deep-link race per feature-flow batch-ZM) but has NO standalone sidecar; the search-session-creation race and the empty-state behaviour are described only second-hand."
+  proposed_refresh: "Enrich QueryExamples.tsx: the useCreateQueryExampleSearch session bootstrap, the querySearchId URL-write, the enabled:!!searchId race that renders EmptyContentPlaceholder before the URL updates, the InfiniteScroll loader contract."
+- sidecar: "(missing) odd-platform ts react-component:QueryExampleDetailsContainer / Overview / Actions / QueryExamplesListItem"
+  field_insufficient: "understanding — the detail page, its overview (the two MDEditor.Markdown render sites), the actions container (Edit/Delete WithPermissions gates + the inner resource-permission WithPermissionsProvider re-wrap), and the list-row renderer are all referenced by the chain but have NO standalone sidecars; the F-004 render sites and the double-WithPermissionsProvider resource-tier asymmetry are described only via cross-reference in the controller + route sidecars."
+  proposed_refresh: "Enrich the QueryExampleDetails subtree as first-class react-component sidecars so the two XSS render sites, the AppLoadingPage NaN-hang surface, and the resource-tier permission re-wrap have primary-source coverage (feature is flagged ui-incomplete at the interaction layer)."
+
+### doc_drift_findings
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+  doc_says: "Snippets have 'a name, a description, and the query body' (and the 'description doubles as a prompt-style explanation')."
+  code_does: "The authoring modal has exactly two fields, 'Definition' (Input) and 'Query' (Markdown editor); the schema has only definition + query columns; there is no name. Snippets are identified by integer id (title 'Query Example #{id}')."
+  recommended_log_as: "DOC-GAP-NNN (pending mint) — correct the field model on the Query Examples page to 'Definition' + 'Query' (no Name); note that snippets are identified by id. NOT among the four DOC-183 caveats (which closed RBAC/XSS/audit/posture); this is a distinct field-model drift."
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/query-examples"
+  doc_says: "(silent on delete-cascade) — the page does not describe what happens to dataset/term links when a snippet is deleted."
+  code_does: "Delete hard-deletes dataset/term link rows (irreversible) and soft-deletes the snippet; no delete-time warning; FTS entrypoint row leaks."
+  recommended_log_as: "DOC-GAP-NNN (pending mint) — add a delete-irreversibility caveat (extends the DOC-183 caveats section, which does not cover delete-cascade)."
+
+## maintainer_notes
+
+(intentionally left empty — no prior reflection existed; this is the first F-025 reflection)

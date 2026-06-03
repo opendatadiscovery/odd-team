@@ -1,0 +1,1064 @@
+---
+feature_id: F-088
+pillar_anchored_id: "P-09:F-009"
+pillar: "P-09 Security & Access Control"
+feature_name: |-
+  S2S API Key — Global Admin Grant Surface (auth.s2s.enabled): a single
+  X-API-Key shared secret grants synthetic ADMIN authority across ALL
+  /** paths under LOGIN_FORM / OAUTH2 / LDAP — far broader than the
+  "S2S" name suggests, with cross-mode collision against any operator-
+  named user "ADMIN"
+reflected_at: 2026-06-03T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  # NONE EXIST. Every chain hop in feature-flows/detail/F-088.yaml is
+  # `sidecar: unresolved` — F-088 was SHB-seeded (SHB-109) and composed
+  # directly from shoebox evidence, not from enriched sidecars. Glob
+  # confirmed zero sidecars for S2sAuthenticationFilter / the four
+  # *SecurityConfiguration beans / AuthIdentityProviderImpl /
+  # ReactiveUserOwnerMappingRepositoryImpl. This is a Rule-8 +
+  # validation_gap situation (see cross_references.validation_gaps): the
+  # chain's load-bearing claims live in F-088.yaml's own per-hop
+  # `evidence` blocks + `observed_vs_expected.facets` (each with file:line),
+  # supplemented by the Rule-8-exception single-line confirmation reads
+  # below (recorded source_read_for_validation: true on each verdict).
+  - "(none — chain hops unresolved; traced via F-088.yaml facets + Rule-8 source reads)"
+source_reads_for_validation:
+  # Rule 8 exception — single-line confirmations the unresolved sidecars omitted.
+  # Each is recorded so the next file-analyser pass on these nodes fills the gap.
+  - file: "S2sAuthenticationFilter.java:20,27-28,31-34,36-39"
+    confirmed: |
+      X_API_KEY_HEADER="X-API-Key"; isValidToken gate at :27; line 28
+      falls through (chain.filter) on invalid/absent token; lines 31-34
+      build User.withUsername("ADMIN").password("").roles("ADMIN"); line
+      36 ALWAYS proceeds with chain.filter(exchange) AND contextWrites the
+      synthetic ADMIN authentication onto the SAME continuation.
+  - file: "S2sTokenProvider.java:10,15-21,23-28"
+    confirmed: |
+      @Value("${auth.s2s.token:#{null}}") single string; isValidToken does
+      `s2sToken.equals(token)` (plain String.equals — NOT MessageDigest.isEqual,
+      so not constant-time); @PostConstruct validate() throws only if
+      enabled && token blank. No rotation, no per-caller token, no scopes.
+  - file: "OAuthSecurityConfiguration.java:90,108-109 / LDAPSecurityConfiguration.java:140,149-150 / LoginFormSecurityConfiguration.java:42,49-51,55-57,61-63"
+    confirmed: |
+      All three non-DISABLED configs: @Value("${auth.s2s.enabled:false}")
+      gate; `if (s2sEnabled) sec.addFilterAt(s2sAuthenticationFilter,
+      SecurityWebFiltersOrder.HTTP_BASIC)`. LOGIN_FORM permittedPaths =
+      {/actuator/health,/favicon.ico,/ingestion/entities,/ingestion/datasources,
+      /api/slack/events}; everything else `.pathMatchers("/**").authenticated()`.
+      The S2S filter sits ABOVE that rule (HTTP_BASIC order) so a valid key
+      satisfies `.authenticated()` for ALL /** paths.
+  - file: "DisabledAuthSecurityConfiguration.java:10-18"
+    confirmed: |
+      @ConditionalOnProperty(auth.type=DISABLED); securityWebFilterChainDisabled
+      does anyExchange().permitAll(); NO s2sEnabled parameter, NO
+      addFilterAt(s2sAuthenticationFilter) — the property is accepted but
+      no S2S filter is wired. (Moot for access since DISABLED is already
+      permitAll, but the synthetic ADMIN principal is NOT created here.)
+  - file: "S2sPrincipalKnownBugTest.java:24-46"
+    confirmed: |
+      A KNOWN-BUG structural pin (@pins PLT-072): asserts the SOURCE contains
+      User.withUsername("ADMIN") + .roles("ADMIN"). It pins the WRONG
+      behaviour (the ADMIN collision) as a tripwire — it does NOT verify any
+      user-facing PROMISE of the feature (valid-key-authenticates, falls-through,
+      admin-scope). So no promise of F-088 is behaviourally `verified`.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s"
+    last_verified_at: "2026-06-03T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      WebFetched live this invocation (200). The page has IMPROVED materially
+      since the F-088 facet's 2026-05-10 snapshot (likely DOC-302 / DOC-311
+      batch work). It NOW discloses verbatim: "Requests carrying a valid token
+      run with the built-in ADMIN user and ADMIN role, so they can call any
+      endpoint that admins can call — including the ingestion API, management
+      APIs, and entity mutations"; "The token is a single static string compared
+      for equality — it is not rotated, expired, or scoped"; "Rotating it
+      requires restarting the platform"; "auth.s2s.enabled: true has no effect
+      under auth.type: DISABLED"; "the filter falls through and the normal auth
+      chain handles the request"; "synthetic principal as the literal uppercase
+      string ADMIN". STILL SILENT on: (a) that there is literally NO path scope
+      (the "S2S" name + the ingestion-shaped examples still read as
+      ingestion-only to an operator skimming for "how do I auth my collector
+      script"); (b) the X-API-Key-vs-session-cookie precedence ordering;
+      (c) the ADMIN-uppercase-username collision footgun with an operator-named
+      user; (d) constant-time-comparison / timing posture.
+hypothesis_summary:
+  total: 12
+  confirmed: 5
+  contradicted: 4
+  partial: 3
+  probe_needed: 0
+  probes_emitted_count: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |
+      A request bearing X-API-Key=<auth.s2s.token> is authenticated as
+      ADMIN for EVERY /** path (POST /api/policies, /api/owners, /api/users,
+      DELETE /api/policies/{id}, internal-name edits, ...) — not the
+      ingestion-shaped scope the "S2S" name and the docs' ingestion examples
+      lead an operator to assume; an exfiltrated thin-client ingestion key
+      is full platform admin.
+related_feature_flows:
+  - F-008   # P-10 Batch Ingestion (S2S /ingestion side) — F-008 anchors /ingestion/entities; F-088 is the cross-cutting /** surface that the SAME key also opens
+  - F-011   # P-09 Principal-to-Owner resolution — F-011 H-002 carries the S2S 'ADMIN'-collision at the SQL chokepoint (provider=null); F-088 is its filter-tier origin
+  - F-085   # P-09 Identity Probe & DISABLED synthetic admin — whoami via X-API-Key returns uppercase 'ADMIN' vs the DISABLED lowercase 'admin' dummyOwner; two distinguishable-by-case surfaces
+  - F-020   # P-10 Collector Lifecycle — the operator workflow that mints the secrets an automation caller presents
+related_concepts:
+  - "Server-to-Server (S2S) Authentication"
+  - "cross_mode_bleed_via_provider_null_principal_compound_key"
+  - "Auth Mode"
+  - "Principal-to-Owner Resolution"
+  - "USER_OWNER_MAPPING"
+related_drift_classes:
+  # Confirmed by this reflection from F-088's observed_vs_expected.facets:
+  - s2s_filter_scope_is_global_not_ingestion_only_name_misleading
+  - ADMIN_uppercase_username_collision_with_operator_named_user
+  - s2s_silently_ignored_under_disabled_property_accepted_no_filter
+  - api_key_at_http_basic_overrides_session_cookie_under_login_form
+  - token_not_constant_time_compared_timing_oracle_low_severity
+  - token_singleton_no_rotation_no_per_caller_no_audit_trail
+  - whoami_via_x_api_key_returns_username_ADMIN_uppercase
+new_drift_classes_proposed:
+  # NEW from H-001 — the LEGITIMATE promise the feature DOES deliver, framed as
+  # the operator's intended happy path (machine callers authenticate without a
+  # browser session). The drift catalogue had no entry for "what does this
+  # correctly do for its real audience" — only the misuse facets.
+  - s2s_key_authenticates_browserless_machine_callers_as_admin_the_intended_capability
+  # NEW from H-011 — the operator's only comprehension surface for this feature
+  # is the auth.s2s.* YAML keys + the docs page; there is NO UI affordance, by
+  # design. The naming drift is therefore a CONFIG+DOCS ergonomics problem, not
+  # a screen problem — and the property NAME is the load-bearing signpost.
+  - s2s_no_ui_surface_operator_comprehension_rests_entirely_on_property_name_and_docs_page
+---
+
+# S2S API Key — Global Admin Grant Surface — product-owner reflection
+
+## product_owner_narrative
+
+The S2S (server-to-server) API key is ODD Platform's answer to a real, legitimate need: *"my automation has no browser and no human at the keyboard — how does my collector script, my CI job, my curl-based integration authenticate to the platform?"* A product owner introduces it like this: "Set `auth.s2s.enabled: true` and a secret `auth.s2s.token`, then have your automation send that secret in the `X-API-Key` HTTP header on every request. The platform recognises the header and runs the request as a built-in administrator — no login page, no session cookie, no OAuth dance." The audience is the **platform-operator** (who sets the two config keys) and the **odd-api-consumer / odd-collector-runtime** (the machine caller that presents the header) — per `system-mission.md:249-266` (P-09) + `:334-337`. This is the standard "machine principal" pattern every catalog/SaaS platform ships, and the capability it delivers — browserless admin-authenticated API access — is genuinely valuable and works (confirmed below at H-001).
+
+A user interacts with this feature **entirely without a screen** — and that is the first thing a senior product owner notices. There is no UI control, no settings toggle, no combo-box that feeds the `X-API-Key` value: the key is a string an operator pastes into a Helm value / env var and an automation author pastes into an HTTP-client header (per `S2sTokenProvider.java:10` `@Value("${auth.s2s.token:#{null}}")` + `S2sAuthenticationFilter.java:20,43-47` reading the literal header). So the operator's *entire comprehension surface* for this feature is two things: the **property name** (`auth.s2s.enabled` — "S2S", server-to-server) and the **docs page** (`/authentication/s2s`). Rule 9's "reflect from the screen" therefore resolves to "reflect from the config key + the docs page," because that IS the operator's interface. This is not a missing-UI gap to flag as incomplete — it is the correct shape for a machine-to-machine credential — but it makes the *naming* load-bearing in a way a UI label would not be (H-002, H-011).
+
+The working parts, as a product owner would demo them, traced through the chain (`F-088.yaml` hops 1-4, confirmed by Rule-8 source reads). **Wiring** (`auth.type` dispatch): under LOGIN_FORM / OAUTH2 / LDAP, `if (s2sEnabled) sec.addFilterAt(s2sAuthenticationFilter, SecurityWebFiltersOrder.HTTP_BASIC)` installs the filter at the highest-priority pre-authentication slot (`OAuthSecurityConfiguration.java:108-109`, `LDAPSecurityConfiguration.java:149-150`, `LoginFormSecurityConfiguration.java:61-63`). Under DISABLED the property is read by nobody in the security config — `DisabledAuthSecurityConfiguration.java:10-18` wires no filter (everything is already `permitAll`). **Recognition**: `S2sTokenProvider.isValidToken` does `s2sToken.equals(token)` (`S2sTokenProvider.java:20`). **Identity**: on a match, the filter forces `User.withUsername("ADMIN").roles("ADMIN")` and `contextWrite`s it (`S2sAuthenticationFilter.java:31-39`); on a miss it falls through (`:28`). **Scope**: because the filter sits ABOVE the `.pathMatchers("/**").authenticated()` rule, a valid key satisfies that rule for *every* path — not just `/ingestion/**`.
+
+The integration story (per `system-mission.md` cross-pillar graph + F-088 `related_features`): this feature is the **filter-tier origin** of the synthetic `ADMIN` principal that F-011 (Principal-to-Owner resolution) consumes at the SQL chokepoint — `AuthIdentityProviderImpl.java:32` collapses the `UsernamePasswordAuthenticationToken` (not an OAuth2 token) to `provider=null`, so any owner-scoped read by the S2S caller looks up `WHERE OIDC_USERNAME='ADMIN' AND PROVIDER IS NULL` (`F-088.yaml` hops 3-4). It is the SAME credential the F-008 Batch-Ingestion surface uses for `/ingestion/entities`, but F-088 is the cross-cutting `/**` reality that the ingestion framing hides. And it surfaces in F-085's `whoami` as the uppercase `ADMIN` (vs the DISABLED-mode lowercase `admin` dummyOwner) — two undocumented identity surfaces distinguishable only by case.
+
+A product owner would flag five edge cases in a demo. (a) **The name oversells nothing and undersells the blast radius** — "S2S" + the docs' ingestion examples read as "ingestion-only," but the key is full admin across `/api/policies`, `/api/owners`, `/api/users`, every mutation; an operator who hands an ingestion script this key has handed it root (H-002). (b) **An operator who names a human user `ADMIN` silently donates that human's Owner-scoped data to every S2S caller** (H-005, cross-link F-011 H-002 / PLT-072). (c) **Under LOGIN_FORM, a request that carries BOTH a session cookie AND the key is the ADMIN, not the logged-in human** — the key wins, reversing operator intuition that "my session is primary, the key is a fallback" (H-006). (d) **`DISABLED + auth.s2s.enabled=true` is silently inert** — the property is accepted with no boot warning, so an operator who believes they have "added S2S on top of open mode" has changed nothing (H-007). (e) **The single static token never rotates without a platform restart and leaves no per-caller audit trail** — if it leaks, every automation consumer must be re-coordinated and the platform bounced, and no log says which script used it when (H-009, H-010).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When a browserless machine caller (a collector script, a CI job, a curl
+    command) sends `X-API-Key: <auth.s2s.token>` to a platform running under
+    OAUTH2/LDAP/LOGIN_FORM with auth.s2s.enabled=true, the request is
+    authenticated WITHOUT any interactive login / session cookie / OAuth
+    redirect — the intended "my automation has no human" capability works.
+  derivation: |
+    Pillar-mission — P-09's primary user action "enable S2S for non-UI
+    programmatic callers (X-API-Key header)" (system-mission.md:252,263). This
+    is the LEGITIMATE promise the feature exists to deliver; a reflection that
+    only catalogues misuse would miss what the feature correctly does.
+  seed_source: pillar-mission
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      S2sAuthenticationFilter sits at SecurityWebFiltersOrder.HTTP_BASIC — the
+      highest-priority pre-authentication slot — ahead of the form-login / OAuth2
+      / LDAP entry points. On a valid token (S2sTokenProvider.isValidToken,
+      s2sToken.equals(token)) the filter contextWrites a fully-authorized
+      UsernamePasswordAuthenticationToken (S2sAuthenticationFilter.java:31-39),
+      satisfying the `.pathMatchers("/**").authenticated()` rule with no session,
+      no cookie, no redirect. A machine caller authenticates on the FIRST request
+      with only the header. The capability is real and correctly delivered.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml hop-1 + hop-2 evidence)"
+        section: "chain hops 1-2"
+        cite: "S2sAuthenticationFilter.java:31-39 + OAuthSecurityConfiguration.java:108-109"
+        note: "Synthetic authorized principal contextWritten at HTTP_BASIC order; no interactive step."
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "S2sTokenProvider.java:15-21"
+        note: "isValidToken returns true on s2sToken.equals(token); the only gate is the shared secret."
+    source_read_for_validation: true
+    confidence: HIGH
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-002
+  hypothesis: |
+    When an operator enables S2S to let an ingestion/automation client call the
+    platform, the X-API-Key grants the ingestion-shaped scope the "S2S" name and
+    the docs' ingestion examples imply — i.e. it is NOT silently a full-admin
+    credential able to create policies, owners, and users and delete RBAC rows.
+  derivation: |
+    Endpoint/property-name shape — the property is `auth.s2s.enabled`, the docs
+    page is `/authentication/s2s`, and "S2S" + server-to-server ingestion is the
+    operator's mental model (F-088 notes). Category-F naming alignment: does the
+    implementation's scope match the name's promise?
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The filter is wired at HTTP_BASIC order ABOVE `.pathMatchers("/**")
+      .authenticated()` (LoginFormSecurityConfiguration.java:55-57,61-63 +
+      OAuth/LDAP siblings), and the synthetic principal carries roles("ADMIN")
+      with getAuthorities(true). So a valid X-API-Key authenticates as ADMIN for
+      EVERY path: POST /api/policies, POST /api/owners, POST /api/users, PUT
+      /api/data-entities/{id}/internal-name, DELETE /api/policies/{id}, and every
+      other mutation an admin operator can perform (F-088 terminal_side_effect +
+      facet s2s_filter_scope_is_global_not_ingestion_only_name_misleading). There
+      is NO path restriction to /ingestion/**. The live docs (WebFetched
+      2026-06-03) DO now state "any endpoint that admins can call" — but the name
+      and the ingestion-shaped examples still lead an operator skimming for "how
+      do I auth my collector" to under-read the blast radius.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml facet)"
+        section: "observed_vs_expected.facets[0]"
+        cite: "S2sAuthenticationFilter.java:31-39 + OAuthSecurityConfiguration.java:108-110"
+        note: "roles('ADMIN') + getAuthorities(true); filter scope is /**, not /ingestion/**."
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "LoginFormSecurityConfiguration.java:49-57,61-63"
+        note: "permittedPaths is a 5-entry allowlist; everything else `.authenticated()`; S2S filter sits above it."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) An operator writes a thin ingestion script, generates an S2S token, and
+          embeds it in the script's config — believing (from the name + ingestion
+          examples) that the worst a leak can do is push bad metadata. In fact the
+          leaked key is full platform admin: an attacker creates a Policy granting
+          themselves everything, mints owners/users, deletes RBAC rows, and edits
+          any entity — across the entire catalog.
+      (b) The blast radius is invisible at the point of decision: the config key
+          and the docs page are the only signposts, and the key name says "S2S,"
+          not "global admin." There is no UI, no scope picker, no per-token
+          permission set to make the breadth visible.
+      (c) Defence-in-depth is absent: there is no way to scope the key to
+          /ingestion/** even when that IS the operator's only intent
+          (REFACTOR-108 proposes exactly this path-scoping).
+    severity: HIGH
+    confidence: HIGH
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-003
+  hypothesis: |
+    When an automation client presents an INVALID or absent X-API-Key (a typo'd
+    secret, an expired-and-rotated value, no header at all), the platform falls
+    through to the normal interactive auth chain rather than authenticating the
+    request or hard-failing it — so a wrong key degrades to "unauthenticated,"
+    not to "ADMIN" or to a 500.
+  derivation: |
+    Endpoint-shape (the X-API-Key input) + negative-space — a senior reviewer
+    expects a credential check to fail CLOSED (treat-as-anonymous), not to leak
+    authority or crash, on a bad value.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      S2sAuthenticationFilter.java:27-28 — `if (!isValidToken(...)) return
+      chain.filter(exchange)` — on an invalid/blank/absent token the filter
+      simply continues the chain WITHOUT writing the ADMIN context, so the normal
+      interactive auth applies (the request is anonymous/unauthenticated unless a
+      session cookie or OAuth identity is present). isValidToken returns false on
+      a blank token (S2sTokenProvider.java:16-18) and on any non-equal string
+      (:20). No exception is thrown on mismatch. The live docs confirm "the filter
+      falls through and the normal auth chain handles the request."
+    evidence:
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "S2sAuthenticationFilter.java:27-28 + S2sTokenProvider.java:15-21"
+        note: "Fail-closed: invalid/absent key → chain.filter without ADMIN context; no throw."
+    source_read_for_validation: true
+    confidence: HIGH
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-004
+  hypothesis: |
+    When an operator sets auth.s2s.enabled=true but FORGETS to set
+    auth.s2s.token (or leaves it blank), the platform refuses to boot (or warns
+    loudly) rather than silently coming up with an unusable / wide-open S2S
+    config.
+  derivation: |
+    Negative-space + pillar-mission — a senior operator expects a security knob
+    that is half-configured to fail-fast at boot, consistent with secure-default
+    discipline (LSN-001/LSN-002 class).
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      S2sTokenProvider.validate() (@PostConstruct, S2sTokenProvider.java:23-28)
+      throws IllegalStateException("Long Term Token is not defined") when
+      s2sEnabled && StringUtils.isBlank(s2sToken). So "enabled with no token"
+      fail-fasts at boot — the one secure-default behaviour this feature gets
+      right. (Contrast H-007: enabled UNDER DISABLED is NOT caught, because the
+      token is non-blank — it is the WIRING that is absent, not the token.)
+    evidence:
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "S2sTokenProvider.java:23-28"
+        note: "@PostConstruct fail-fast on enabled+blank-token — boot-time guard present."
+    source_read_for_validation: true
+    confidence: HIGH
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+- id: H-005
+  hypothesis: |
+    When an S2S API-key client performs an owner-scoped operation (reads "my"
+    data, or any endpoint that filters by the caller's Owner), it resolves to a
+    dedicated machine identity or to no Owner — it does NOT silently act as some
+    human operator's account.
+  derivation: |
+    Negative-space + cross-pillar (F-011) — a senior security reviewer expects a
+    machine principal to be isolated from human principals; an API key inheriting
+    a person's owner-scoped data is a boundary failure.
+  seed_source: negative-space + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The synthetic principal's username is the literal uppercase "ADMIN"
+      (S2sAuthenticationFilter.java:31-34). Because it is a
+      UsernamePasswordAuthenticationToken (not an OAuth2 token),
+      AuthIdentityProviderImpl.java:32 collapses it to provider=null, and
+      ReactiveUserOwnerMappingRepositoryImpl.java:116-127 builds `WHERE
+      OIDC_USERNAME='ADMIN' AND PROVIDER IS NULL AND DELETED_AT IS NULL` using a
+      case-SENSITIVE eq (not equalsIgnoreCase). If an operator has named a real
+      LOGIN_FORM / LDAP user `ADMIN` (exact case), the S2S caller INHERITS that
+      human's USER_OWNER_MAPPING row and their owner-scoped reads/mutations
+      (F-088 facet ADMIN_uppercase_username_collision_with_operator_named_user;
+      F-011 H-002 carries the SQL-chokepoint primary source). There is no
+      system-Owner and no no-owner sentinel for S2S.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml facet + F-011 H-002)"
+        section: "observed_vs_expected.facets[1]"
+        cite: "S2sAuthenticationFilter.java:34 + ReactiveUserOwnerMappingRepositoryImpl.java:116-127"
+        note: "Literal 'ADMIN' (uppercase), provider=null, case-sensitive eq → collides with operator-named user."
+    operator_visible_failure: |
+      (a) An S2S key (intended for collector/programmatic access) silently gains a
+          specific human user's owner-scoped data access whenever an operator has
+          created an Owner/mapping for a user literally named 'ADMIN' — the key
+          holder sees and can mutate that user's owned entities.
+      (b) The collision is naming-dependent and case-sensitive, so it is
+          intermittent across deployments — fine until someone names a user
+          'ADMIN', then the S2S blast radius silently changes with no signal.
+    severity: HIGH
+    confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: |
+    When a request under LOGIN_FORM carries BOTH a valid session cookie (a
+    logged-in human) AND an X-API-Key, the logged-in human's identity is used —
+    the operator's intuition is "my interactive session is primary, the API key
+    is a machine fallback."
+  derivation: |
+    Negative-space + view-mode — a senior product owner reasons about the
+    combined-credential case; the conventional expectation is that an explicit
+    interactive session takes precedence over a shared machine secret.
+  seed_source: negative-space + view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The S2S filter is at SecurityWebFiltersOrder.HTTP_BASIC — a HIGHER priority
+      than the form-login/session filters. On a valid key it ALWAYS contextWrites
+      the synthetic ADMIN authentication (S2sAuthenticationFilter.java:36-39 calls
+      chain.filter unconditionally with the ADMIN context), and the
+      session-cookie authentication runs LATER in the chain, so the S2S ADMIN
+      identity wins and the session identity is discarded (F-088 facet
+      api_key_at_http_basic_overrides_session_cookie_under_login_form +
+      LoginFormSecurityConfiguration.java:61-63). This is the REVERSE of the
+      "session primary, key fallback" intuition.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml facet)"
+        section: "observed_vs_expected.facets[3]"
+        cite: "LoginFormSecurityConfiguration.java:61-63 + S2sAuthenticationFilter.java:36-39"
+        note: "Filter at HTTP_BASIC (above session auth); ADMIN context written unconditionally on valid key."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) A human operator who is logged in via the form AND whose client (e.g. a
+          shared browser extension, a proxy, a misconfigured tool) also injects
+          the X-API-Key silently performs every action as the synthetic ADMIN, not
+          as themselves — so the per-user audit trail (already thin) attributes
+          their actions to 'ADMIN', and any owner-scoped view shows the ADMIN
+          collision target's data rather than their own.
+      (b) The precedence is invisible and undocumented (the live S2S page is silent
+          on cookie-vs-key ordering), so an operator cannot predict which identity
+          a dual-credential request will assume.
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-007
+  hypothesis: |
+    When an operator sets auth.type=DISABLED together with auth.s2s.enabled=true
+    (intending "open mode but also accept my API key"), the combination behaves
+    as configured — or the platform tells the operator the combination is
+    meaningless.
+  derivation: |
+    Endpoint-shape (the two interacting config keys) + negative-space — a senior
+    operator expects a config combination to either do what it says or fail-fast
+    with a clear explanation, not to be silently inert.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      DisabledAuthSecurityConfiguration.java:10-18 wires anyExchange().permitAll()
+      and reads NO auth.s2s.enabled property and installs NO s2sAuthenticationFilter
+      — so under DISABLED the S2S property is accepted but the filter is never
+      wired (F-088 facet s2s_silently_ignored_under_disabled_property_accepted_no_filter).
+      The PARTIAL: functionally the OUTCOME is harmless — under DISABLED every path
+      is ALREADY permitAll, so "no S2S filter" changes no access decision; BUT
+      (a) the synthetic uppercase-'ADMIN' principal is NOT created (whoami returns
+      the DISABLED lowercase 'admin' dummyOwner instead — F-085 cross-link), so an
+      automation written against the uppercase-ADMIN identity behaves differently
+      than under enabled modes, and (b) there is NO boot warning that
+      `enabled=true` is a no-op here. The operator's intent silently does nothing.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml facet)"
+        section: "observed_vs_expected.facets[2]"
+        cite: "DisabledAuthSecurityConfiguration.java:10-18"
+        note: "No s2sEnabled read, no addFilterAt; property accepted, filter absent; no boot warning."
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "DisabledAuthSecurityConfiguration.java:13-17"
+        note: "anyExchange().permitAll() — access is already open, so the missing filter is access-neutral."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) An operator who reasons "I'll run DISABLED for the demo but keep my S2S
+          key working so my automation keeps running" ships a platform where the
+          automation's identity silently differs (lowercase dummy 'admin', no
+          provider) — any owner-scoped behaviour or whoami-based logic in the
+          automation diverges from how it behaves under enabled modes.
+      (b) No boot log says "auth.s2s.enabled=true has no effect under DISABLED,"
+          so the no-op is undetectable short of reading the source. (The live docs
+          DO now state this — but the platform itself is silent.)
+    severity: LOW
+    confidence: HIGH
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-008
+  hypothesis: |
+    When an attacker on the same low-latency network probes the X-API-Key
+    endpoint with guessed tokens, the token comparison does not leak match-prefix
+    length through response-timing — i.e. the secret is compared in constant time.
+  derivation: |
+    Negative-space + a platform-wide security-pattern seed — a senior security
+    reviewer checks every secret comparison for constant-time discipline; the
+    sibling IngestionDataEntitiesFilter has the same pattern (F-088 facet).
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      S2sTokenProvider.isValidToken does `s2sToken.equals(token)`
+      (S2sTokenProvider.java:20) — Java String.equals short-circuits on the first
+      unequal char, so comparison time correlates with the matching-prefix length.
+      There is NO MessageDigest.isEqual / constant-time comparator (F-088 facet
+      token_not_constant_time_compared_timing_oracle_low_severity). On a realistic
+      deployment topology (network jitter >> per-char timing delta) this is
+      LOW-severity, but the pattern is platform-wide (shared with the ingestion
+      filter) so it is worth a single shared fix.
+    evidence:
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "S2sTokenProvider.java:20"
+        note: "s2sToken.equals(token) — non-constant-time; no MessageDigest.isEqual."
+    source_read_for_validation: true
+    operator_visible_failure: |
+      (a) On a low-latency / co-located network (an attacker container in the same
+          cluster), repeated timing measurements could in principle narrow the
+          token character-by-character — a theoretical secret-recovery path with no
+          rate-limit or lockout to slow it (there is none on this filter).
+      (b) The risk compounds with token-singleton-no-rotation (H-009): a recovered
+          token cannot be quietly revoked — rotation needs a platform restart.
+    severity: LOW
+    confidence: HIGH
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: |
+    When an operator needs to rotate the S2S secret (routine hygiene, or an
+    incident response after a suspected leak), they can do so without downtime and
+    can issue distinct per-caller tokens so a single leak does not compromise
+    every automation.
+  derivation: |
+    Pillar-mission (operator credential lifecycle) + negative-space — a senior
+    operator of a security credential expects rotation-without-downtime and
+    per-caller scoping as table stakes for incident response.
+  seed_source: pillar-mission + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      auth.s2s.token is a SINGLE static string read once via
+      @Value("${auth.s2s.token:#{null}}") at startup (S2sTokenProvider.java:10);
+      isValidToken compares against that one value (:20). There is no per-caller
+      token, no token list, no scope, no expiry, and no live-reload — rotating
+      requires editing the config and RESTARTING the platform (F-088 facet
+      token_singleton_no_rotation_no_per_caller_no_audit_trail; the live docs
+      confirm "Rotating it requires restarting the platform"). Every automation
+      consumer shares the one secret.
+    evidence:
+      - sidecar: "(source_read_for_validation)"
+        section: "Rule-8 confirmation read"
+        cite: "S2sTokenProvider.java:10,15-21"
+        note: "Single @Value-bound static string; equality compare; no list/scope/expiry/reload."
+    operator_visible_failure: |
+      (a) After a suspected leak, the operator must (i) generate a new token, (ii)
+          update EVERY automation consumer that holds the old one, and (iii)
+          restart the platform — a coordinated-downtime event, during which the old
+          token still works until the restart lands.
+      (b) Because the token is shared, the operator cannot revoke ONE compromised
+          caller without breaking all of them; per-caller-tier rotation (which the
+          docs suggest as a practice) is not enforceable by the platform.
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: |
+    When an S2S key performs a mutation (creates a policy, edits an entity, deletes
+    an owner), the platform records WHICH automation / caller did it and when — so
+    an operator auditing "what did my machine accounts change" has a trail.
+  derivation: |
+    Pillar-mission (audit posture, P-09) + negative-space — a senior operator
+    expects privileged machine actions to be attributable; an unattributed admin
+    credential is an audit blind spot.
+  seed_source: pillar-mission + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Every S2S caller is the SAME principal `ADMIN` (S2sAuthenticationFilter.java:31)
+      — there is no per-caller identity to attribute to, so even where an action is
+      audited it is recorded as 'ADMIN' with no way to distinguish caller A from
+      caller B (F-088 facet token_singleton..._no_audit_trail). PARTIAL because
+      ODD's audit story is itself 2-tier (per concepts.yaml + F-006/F-011): DataEntity
+      MUTATIONS do emit activity events (attributed to the actor string 'ADMIN'),
+      but RBAC mutations (policy/role/owner create/edit/delete) emit NO audit log at
+      all (F-006 headline) — so an S2S key creating a Policy is recorded NOWHERE,
+      while an S2S key editing an entity is recorded as the undifferentiated 'ADMIN'.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml facet + F-006 audit-silence + F-011)"
+        section: "observed_vs_expected.facets[5]"
+        cite: "S2sAuthenticationFilter.java:31 (single 'ADMIN' actor) + F-006 (RBAC audit silence)"
+        note: "No per-caller identity; RBAC mutations unaudited; entity mutations attributed to undifferentiated 'ADMIN'."
+    operator_visible_failure: |
+      (a) An operator auditing machine activity cannot tell which automation made a
+          change — every S2S action is 'ADMIN'. After a leak, forensics cannot
+          attribute the attacker's actions to a specific stolen caller.
+      (b) For the highest-privilege actions (RBAC mutations) there is no record at
+          ALL — an S2S key that grants itself a root policy leaves no audit trace
+          (the F-006 schema+enum gap; not fixable by attribution alone).
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: |
+    When an operator turns S2S on, the interface they configure it through makes
+    the feature's true scope understandable — a senior operator can tell from what
+    they touch (the property name, the docs page) that they are granting global
+    admin, not ingestion-only access.
+  derivation: |
+    Senior-product-owner UX seed ("does the user understand how to use this from
+    what is in front of them; is it consistent with how the same task is done
+    elsewhere") applied to a feature whose ONLY interface is the config key + docs
+    page (Rule 9 — the operator's "screen" here is the YAML key and the doc).
+  seed_source: ui-label + pillar-mission + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      This feature has NO UI surface by design — the X-API-Key is an HTTP header a
+      machine sets, fed by no on-screen control (S2sTokenProvider.java:10 reads it
+      from config; S2sAuthenticationFilter.java:20,43-47 reads it from the header).
+      So the operator's whole comprehension surface is (a) the property NAME
+      `auth.s2s.enabled` / `auth.s2s.token` and (b) the docs page `/authentication/s2s`.
+      PARTIAL: the docs page (WebFetched 2026-06-03) NOW does the heavy lifting —
+      it states plainly "any endpoint that admins can call — including ... management
+      APIs, and entity mutations," so an operator who READS THE PAGE is correctly
+      informed. BUT the property NAME and the page's ingestion-shaped examples still
+      signal "ingestion / server-to-server," so an operator who configures from the
+      key name + a skim (the common path) under-reads the scope; and there is no
+      in-product signpost (no boot log, no config-validation message, no scope
+      picker) reinforcing the breadth. The comprehension rests entirely on the
+      operator reading one prose sentence on one page.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml facet[0] + docs WebFetch)"
+        section: "observed_vs_expected.facets[0] + docs_cross_referenced"
+        cite: "auth.s2s.enabled property name + live /authentication/s2s page"
+        note: "No UI; comprehension = property name + docs page; name reads ingestion-shaped, scope is global admin."
+    operator_visible_failure: |
+      (a) The operator's only signpost at configuration time is the word "S2S" in
+          the key name — which reads as "server-to-server ingestion," not "global
+          admin." The accurate scope lives in one sentence on the docs page; an
+          operator who configures from the Helm value without reading that sentence
+          mis-scopes their risk.
+      (b) There is no in-product reinforcement (no boot warning naming the global
+          scope, no scoped-token option to make breadth a choice) — inconsistent
+          with how the platform gates other privileged surfaces (Management is
+          permission-gated; this credential is all-or-nothing with a misleading name).
+    severity: MEDIUM
+    confidence: HIGH
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: caveat-candidate
+    sme_consultation_recommended: true
+    sme_consultation_question: |
+      Do operators of comparable data-catalog / metadata platforms (DataHub /
+      Amundsen / OpenMetadata) expect a "service-to-server" / "system" API key to
+      be ingestion-scoped by default, or do they expect it to be full-admin? This
+      determines whether the auth.s2s naming is an industry-conventional label
+      (acceptable with a docs caveat) or a genuine misnomer warranting a rename /
+      scoped-token feature (REFACTOR-108).
+    sme_consultation_archetype: comparative
+
+- id: H-012
+  hypothesis: |
+    When an operator queries GET /api/identity/whoami with a valid X-API-Key, the
+    identity returned unambiguously identifies the caller as the S2S machine
+    principal — distinct from the DISABLED-mode anonymous admin surface.
+  derivation: |
+    Response-shape (whoami identity payload) + cross-pillar (F-085) — a senior
+    operator expects the identity endpoint to disambiguate which auth surface
+    produced the principal.
+  seed_source: response-shape + cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Under auth.s2s.enabled=true, a whoami call carrying X-API-Key resolves the
+      synthetic principal whose username is the literal uppercase 'ADMIN'
+      (S2sAuthenticationFilter.java:31-34), as opposed to the DISABLED-mode
+      IdentityController dummyOwner whose username is the lowercase 'admin' (F-088
+      facet whoami_via_x_api_key_returns_username_ADMIN_uppercase + F-085). So the
+      two surfaces ARE distinguishable — but ONLY by case ('ADMIN' vs 'admin'),
+      which is a fragile disambiguator. The hypothesis ("unambiguously identifies
+      the caller") holds in the narrow sense that the value differs; it is confirmed
+      that whoami returns uppercase 'ADMIN' for S2S.
+    evidence:
+      - sidecar: "(unresolved — F-088.yaml facet + F-085)"
+        section: "observed_vs_expected.facets[6]"
+        cite: "S2sAuthenticationFilter.java:34 + IdentityController.java:32 (lowercase 'admin')"
+        note: "S2S whoami → 'ADMIN' (uppercase); DISABLED whoami → 'admin' (lowercase); distinguishable by case only."
+    confidence: HIGH
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |
+    S2S synthetic principal is the literal uppercase 'ADMIN' (provider=null);
+    when an operator has named a human user 'ADMIN' (case-sensitive eq), the S2S
+    caller silently inherits that human's Owner-scoped data — machine/human
+    identity isolation is broken.
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  proposed_fix_anchor: |
+    PLT-072 Defect 3 already covers the admin/ADMIN literal collision
+    (S2sAuthenticationFilter.java:31-34 uppercase 'ADMIN' + IdentityController.java:32
+    lowercase 'admin'; shared SystemUsers constants + reserved-username doc admonition).
+    The deeper fix (resolve S2S to a dedicated system-Owner / no-owner sentinel)
+    is the F-011 H-002 framing, also tracked under PLT-072. Convergent re-derivation
+    from the F-088 product-owner lens — corroboration, NOT a new filing. The
+    structural pin S2sPrincipalKnownBugTest.java already guards this exact bug
+    (@pins PLT-072).
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: |
+    A valid X-API-Key authenticates as ADMIN across ALL /** paths (policies,
+    owners, users, every mutation) — NOT the ingestion-shaped scope the 'S2S'
+    name implies; an exfiltrated ingestion-script key is full platform admin.
+  dedup_status: already_tracked
+  tracked_as: DOC-302
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s
+  note: |
+    The live S2S page ALREADY states "any endpoint that admins can call —
+    including ... management APIs, and entity mutations" (WebFetched 2026-06-03,
+    likely a DOC-302/DOC-311 outcome), so the SCOPE prose is present. The residual
+    net-new ask is small (an explicit "there is NO path scoping; this is not an
+    ingestion-only key; scope it at the network layer or see REFACTOR-108" hint
+    next to the ingestion examples) — folds into the DOC-302 out-of-box-insecure
+    cluster rather than a fresh DOC item. The code-side path-scoping option is
+    REFACTOR-108.
+
+- hypothesis_id: H-006
+  one_line: |
+    Under LOGIN_FORM a request carrying BOTH a session cookie AND the X-API-Key is
+    authenticated as the synthetic ADMIN (filter at HTTP_BASIC wins) — the reverse
+    of the 'session primary, key fallback' operator intuition; undocumented.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s
+  note: |
+    The live S2S page is SILENT on cookie-vs-key precedence (verified 2026-06-03).
+    Net-new doc caveat; could fold into the DOC-302 cluster as a one-line precedence
+    note. No PLT — the precedence is arguably correct for a pre-auth filter; the
+    gap is purely documentation of the ordering.
+
+- hypothesis_id: H-007
+  one_line: |
+    auth.s2s.enabled=true under auth.type=DISABLED is silently inert (no filter
+    wired, no boot warning); the synthetic uppercase-'ADMIN' principal is not
+    created, so automation behaves differently than under enabled modes.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s
+  note: |
+    The live S2S page DOES state "auth.s2s.enabled: true has no effect under
+    auth.type: DISABLED" (verified 2026-06-03) — so the DOC half is covered. The
+    NET-NEW residual is a CODE ergonomics gap: NO boot warning logs the no-op.
+    Could fold into PLT-072's DISABLED-hardening thread (it already adds a
+    DISABLED-mode fail-fast/ack) as a one-line warn when s2sEnabled under DISABLED.
+    Routed as caveat (the code change is minor and adjacent to PLT-072 Thread A).
+
+- hypothesis_id: H-008
+  one_line: |
+    S2S token compared with String.equals (non-constant-time) — a theoretical
+    timing oracle on a co-located network; LOW severity but a platform-wide pattern
+    shared with the ingestion filter.
+  dedup_status: net_new
+  recommended_log_as: REFACTOR candidate — shared constant-time secret comparator (MessageDigest.isEqual) across S2sTokenProvider + IngestionDataEntitiesFilter
+  note: |
+    LOW severity on realistic topology; the value is the SHARED-fix framing (one
+    constant-time comparator for both the S2S token and the ingestion token). Not
+    tracked by any existing PLT/REFACTOR — a small net-new refactoring scope, not
+    a doc gap.
+
+- hypothesis_id: H-009
+  one_line: |
+    auth.s2s.token is a single static shared secret — no per-caller token, no
+    scope, no expiry, no live-reload; rotation requires a platform restart and
+    re-coordinating every consumer; one leak compromises all callers.
+  dedup_status: net_new
+  distinct_from: PLT-072
+  recommended_log_as: REFACTOR candidate (per-caller / rotatable S2S tokens) + the rotation-without-downtime limitation is a doc caveat on the s2s page
+  note: |
+    DISTINCT from PLT-072 (which is DISABLED-hardening + the ADMIN literal
+    collision, NOT the token-lifecycle model). The live docs already state
+    "restart required to rotate," so the rotation LIMITATION is doc-disclosed; the
+    net-new ask is the CODE enhancement (per-caller/rotatable tokens) — a
+    REFACTOR candidate, not yet tracked. Cross-link REFACTOR-108 (scoping) and
+    F-020 (Collector token rotation, the sibling credential).
+
+- hypothesis_id: H-010
+  one_line: |
+    Every S2S caller is the same undifferentiated 'ADMIN' actor — no per-caller
+    audit attribution; and S2S RBAC mutations (policy/role/owner) are unaudited
+    entirely (F-006 schema+enum gap).
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s
+  note: |
+    The unaudited-RBAC-mutation half is the F-006 headline (schema activity.data_entity_id
+    NOT NULL + ActivityEventTypeDto has no POLICY/ROLE/OWNER values) — a separate
+    structural gap, not re-filed here. The no-per-caller-attribution half is inherent
+    to the single 'ADMIN' principal that PLT-072 (Thread C, SystemUsers) touches.
+    Corroboration from the F-088 lens; the per-caller-identity enhancement overlaps
+    H-009's per-caller-token REFACTOR.
+
+- hypothesis_id: H-011
+  one_line: |
+    The feature has no UI; the operator's only comprehension surface is the
+    'auth.s2s' property name + the docs page. The name reads ingestion-shaped while
+    the scope is global admin, and there is no in-product reinforcement of the breadth.
+  dedup_status: already_tracked
+  tracked_as: DOC-302
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s (the comprehension-gap is the DOC-302 out-of-box-insecure framing) + REFACTOR-108 (scoped token makes breadth a deliberate choice)
+  note: |
+    Convergent with H-002 — the comprehension gap and the scope gap are two faces
+    of the same naming drift. SME consultation recommended (comparative: do peer
+    catalogs ship ingestion-scoped vs full-admin system keys) before deciding
+    rename vs caveat. Corroboration of the DOC-302 cluster from the UX lens.
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the promise layer. EVERY hypothesis (confirmed, partial,
+# contradicted) is an unverified user-facing promise: the ONLY S2S test in the
+# repo (S2sPrincipalKnownBugTest) is a STRUCTURAL @pins of the WRONG behaviour
+# (the ADMIN collision) and verifies ZERO promises. So use_case_coverage = 0/12.
+# These are the highest-value tests to mint — they guard what the feature is
+# supposed to deliver to an operator.
+- use_case_id: F-088-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A valid X-API-Key authenticates a browserless machine caller as ADMIN with no interactive login under OAUTH2/LDAP/LOGIN_FORM."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-1)"
+  proposed_test: |
+    @WebFluxTest/integration under auth.type=OAUTH2 + auth.s2s.enabled=true:
+    GET /api/policies with header X-API-Key=<token> and NO session → expect 2xx +
+    full payload; assert the SecurityContext principal username == 'ADMIN' and
+    authorities contain ROLE_ADMIN. (The intended capability — the happy path that
+    has no guard today.)
+- use_case_id: F-088-UC-2
+  hypothesis_id: H-002
+  kind: grammar
+  promise: "A valid X-API-Key is admin-scoped across ALL /** paths (NOT ingestion-only) — pin the actual global scope so a future path-scoping (REFACTOR-108) is a deliberate, test-visible change."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-2)"
+  proposed_test: |
+    Integration: with X-API-Key, assert POST /api/policies returns 2xx (admin
+    mutation succeeds) AND DELETE /api/policies/{id} returns 2xx — pins the global
+    /** admin scope. If REFACTOR-108 path-scopes the key, this test goes RED at the
+    non-ingestion paths, making the scope reduction explicit. Pairs with a
+    characterization framing (current behaviour is the global scope).
+- use_case_id: F-088-UC-3
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "An invalid or absent X-API-Key fails CLOSED — the request degrades to unauthenticated, not to ADMIN and not to a 500."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-3)"
+  proposed_test: |
+    Integration under OAUTH2 + s2s enabled: GET /api/policies with a WRONG
+    X-API-Key (and no session) → expect 401/redirect (NOT 2xx, NOT 500); same with
+    NO X-API-Key header. Asserts the fail-closed fall-through at
+    S2sAuthenticationFilter.java:27-28.
+- use_case_id: F-088-UC-4
+  hypothesis_id: H-004
+  kind: teardown-constraint
+  promise: "auth.s2s.enabled=true with a blank auth.s2s.token fails fast at boot (IllegalStateException) rather than coming up half-configured."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-4)"
+  proposed_test: |
+    Unit/context test: instantiate S2sTokenProvider with s2sEnabled=true + blank
+    token, invoke validate() → assert IllegalStateException('Long Term Token is
+    not defined'). Guards the one secure-default behaviour the feature gets right.
+- use_case_id: F-088-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "An S2S caller does NOT inherit a human user's Owner-scoped data (machine/human identity isolation)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-5; regression-guard for PLT-072)"
+  proposed_test: |
+    Integration: create a USER_OWNER_MAPPING for a LOGIN_FORM user named 'ADMIN'
+    with owned entities; then call an owner-scoped endpoint (e.g. /api/owners 'my'
+    surface) with X-API-Key → assert the S2S caller does NOT see that human's
+    owned rows. RED today (bug present); becomes the regression guard when PLT-072
+    gives S2S a distinct principal. Complements the existing structural @pins.
+- use_case_id: F-088-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Document/define the precedence when a request carries BOTH a session cookie and X-API-Key (today the key/ADMIN wins)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-6)"
+  proposed_test: |
+    Integration under LOGIN_FORM: authenticate a form session for user 'bob', then
+    send a request with BOTH bob's session cookie AND X-API-Key → assert the
+    resolved principal is 'ADMIN' (pins the current HTTP_BASIC-wins ordering). A
+    deliberate change to "session primary" would flip this RED.
+- use_case_id: F-088-UC-7
+  hypothesis_id: H-007
+  kind: teardown-constraint
+  promise: "auth.s2s.enabled under auth.type=DISABLED is a no-op (no filter wired); the behaviour is defined and (ideally) warned."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-7)"
+  proposed_test: |
+    Context test: load DisabledAuthSecurityConfiguration with auth.s2s.enabled=true
+    → assert no S2sAuthenticationFilter bean is added to the DISABLED chain; assert
+    whoami returns lowercase 'admin' (dummy), not uppercase 'ADMIN'. Pins the inert
+    behaviour; would catch a future change that wires S2S under DISABLED.
+- use_case_id: F-088-UC-8
+  hypothesis_id: H-008
+  kind: grammar
+  promise: "The S2S token comparison is constant-time (no timing oracle)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-8; pairs with the shared-comparator REFACTOR)"
+  proposed_test: |
+    Unit test asserting isValidToken uses a constant-time comparator — RED today
+    (String.equals). Mint alongside the shared-constant-time-comparator REFACTOR so
+    the fix lands with its guard. (Characterization: pin String.equals today if the
+    refactor is deferred.)
+- use_case_id: F-088-UC-9
+  hypothesis_id: H-009
+  kind: teardown
+  promise: "S2S secret rotation / per-caller scoping is supported (or its absence is a defined, tested limitation)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-9; pairs with the per-caller-token REFACTOR)"
+  proposed_test: |
+    When the per-caller/rotatable-token REFACTOR lands: integration test that a
+    rotated token invalidates the old value without restart and that revoking one
+    caller's token leaves others working. Today: characterization test pinning the
+    single-static-token model (one value, restart-to-rotate).
+- use_case_id: F-088-UC-10
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "Privileged S2S mutations are attributable (per-caller and recorded in the audit trail)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-10; overlaps F-006 audit-gap)"
+  proposed_test: |
+    Integration: an S2S mutation of a DataEntity emits an activity event with actor
+    'ADMIN' (pins current attribution); an S2S RBAC mutation (create Policy) emits
+    NO activity event (pins the F-006 audit silence). Both RED-on-fix when
+    per-caller attribution / RBAC audit lands.
+- use_case_id: F-088-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "The operator can correctly understand the S2S key's global-admin scope from the property name + docs page."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-11; doc-render Gate-8 assertion, not a code unit test)"
+  proposed_test: |
+    Doc Gate-8 / live-site assertion (not a JUnit test): the live /authentication/s2s
+    page contains an explicit 'this is NOT an ingestion-only key — it grants global
+    admin' statement adjacent to the ingestion examples. (The comprehension promise
+    is verified by doc-render, per Rule 6 local-execution: curl -sL the page.)
+- use_case_id: F-088-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "whoami with X-API-Key returns an identity (uppercase 'ADMIN') that distinguishes the S2S surface from the DISABLED dummy 'admin'."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-088-UC-12)"
+  proposed_test: |
+    Integration under s2s enabled: GET /api/identity/whoami with X-API-Key →
+    assert username == 'ADMIN' (uppercase) and permissions == admin set; contrast a
+    DISABLED-mode whoami returning 'admin' (lowercase). Pins the case-only
+    disambiguation (cross-link F-085 / PLT-072 Thread C SystemUsers).
+
+### probes_emitted
+- probe_id: "PENDING-F-088-1"
+  hypothesis_id: H-002
+  note: |
+    CONFIRMATORY probe (not a probe-needed verdict — H-002 is CONTRADICTED with
+    HIGH confidence from the primary-source trace + Rule-8 reads). Per APPROACH
+    Rule 6, a security-boundary takeover is the highest-leverage case to raise from
+    code-trace to end-to-end-observed. PARALLEL-SAFE: recorded here as PENDING, NOT
+    written to probes/ (id-collision risk across concurrent reflectors).
+  probe_skeleton: |
+    name: "S2S X-API-Key global admin scope — empirical confirmation"
+    emitted_by: feature-reflector
+    status: pending-reflection-verification
+    local_execution: docker-compose (Rule 6 — local-only)
+    setup: |
+      docker-compose up odd-platform + postgres with env:
+        AUTH_TYPE=OAUTH2 (or any non-DISABLED), AUTH_S2S_ENABLED=true,
+        AUTH_S2S_TOKEN=test-secret-123
+    steps:
+      - "curl -H 'X-API-Key: test-secret-123' GET /api/policies  → expect 2xx + full policy list (no session)"
+      - "curl -H 'X-API-Key: test-secret-123' -d '<policy-json>' POST /api/policies → expect 2xx (admin mutation succeeds)"
+      - "curl -H 'X-API-Key: test-secret-123' POST /api/owners -d '<owner-json>' → expect 2xx (non-ingestion admin path)"
+      - "curl -H 'X-API-Key: wrong' GET /api/policies → expect 401/redirect (fail-closed, H-003)"
+      - "curl -H 'X-API-Key: test-secret-123' GET /api/identity/whoami → expect username='ADMIN' uppercase (H-012)"
+    expected_outcome: |
+      "When X-API-Key=<auth.s2s.token> is passed under a non-DISABLED auth mode,
+      the request is authenticated as ADMIN for EVERY /** path including
+      /api/policies CREATE and /api/owners CREATE — not the ingestion-shaped scope
+      the 'S2S' name implies." (H-002 verbatim.)
+
+### validation_gaps
+- sidecar: "ALL F-088 contributing nodes (S2sAuthenticationFilter, the four *SecurityConfiguration beans, AuthIdentityProviderImpl, ReactiveUserOwnerMappingRepositoryImpl)"
+  field_insufficient: |
+    NONE of the F-088 chain's contributing nodes have an enriched sidecar — every
+    chain hop is `sidecar: unresolved`, and Glob confirmed zero sidecar files for
+    any of them. F-088 was SHB-seeded (SHB-109) and composed directly from shoebox
+    evidence; the load-bearing claims live in F-088.yaml's own per-hop `evidence`
+    blocks + `observed_vs_expected.facets` (each carrying file:line). This
+    reflection validated every hypothesis against those transcribed facets PLUS
+    Rule-8-exception single-line source reads (recorded in source_reads_for_validation
+    + source_read_for_validation: true on each verdict). The reflection is therefore
+    grounded in primary source, but it is NOT backed by the per-node Stress-Protocol
+    enrichment a sidecar would provide — e.g. the auth_gates matrix (every endpoint
+    × 4 auth modes × unauthenticated × wrong-role), the request_inputs Category-F
+    block, and the per-node tests_coverage_semantic are all absent.
+  proposed_refresh: |
+    Run file-analyser (Layer 2, Stress Protocol incl. Category F) on the seven F-088
+    nodes — at minimum S2sAuthenticationFilter + S2sTokenProvider + the four
+    *SecurityConfiguration beans — so the chain hops resolve to real sidecars, the
+    auth_gates matrix is enumerated per node, and the F-011/F-088 cross-references
+    become per-node-cited rather than facet-aggregated. This is a security-tier
+    chain (P-09) with a HIGH-severity contradiction (H-002) and zero enriched nodes
+    — it is a priority enrichment target. Until then, downstream consumers should
+    treat F-088's chain as facet-grounded, not sidecar-grounded.
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s"
+  doc_says: |
+    "Requests carrying a valid token run with the built-in ADMIN user and ADMIN
+    role, so they can call any endpoint that admins can call — including the
+    ingestion API, management APIs, and entity mutations." (live, 2026-06-03)
+  code_does: |
+    The code MATCHES this — the scope IS global admin. The drift is NOT doc-vs-code
+    (the doc is now accurate, an improvement over the F-088 facet's 2026-05-10
+    snapshot) but NAME-vs-doc-vs-code: the property name 'auth.s2s' and the page's
+    ingestion-shaped examples still signal 'ingestion-only' to a skimming operator,
+    so the accurate scope sentence can be under-read.
+  recommended_log_as: |
+    NOT a new doc-gap — the scope is doc-disclosed. Folds into DOC-302 (out-of-box
+    insecure) as a one-line 'NO path scoping; not ingestion-only' hint adjacent to
+    the examples. Code-side option is REFACTOR-108 (path-scope the key).
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s"
+  doc_says: "(silent on session-cookie vs X-API-Key precedence — verified 2026-06-03)"
+  code_does: |
+    A request carrying BOTH a session cookie and a valid X-API-Key is authenticated
+    as the synthetic ADMIN (the filter at HTTP_BASIC order wins; the session auth
+    runs later and is discarded).
+  recommended_log_as: doc-gap-NNN (net-new precedence caveat on the s2s page; folds into the DOC-302 cluster)
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s"
+  doc_says: "auth.s2s.enabled: true has no effect under auth.type: DISABLED (live, 2026-06-03)"
+  code_does: |
+    Confirmed inert (DisabledAuthSecurityConfiguration wires no filter). The DOC is
+    accurate; the residual gap is CODE-side (no boot warning logging the no-op).
+  recommended_log_as: |
+    NOT a doc-gap (doc is accurate). Code-side: fold a one-line boot WARN into
+    PLT-072's DISABLED-hardening thread.
+
+## maintainer_notes
+
+(Reserved for hand-curated notes that survive future enrichment passes.)
+
+NOTE for the maintainer (F-088 is the FIRST v0.3.0 reflection run): this feature
+had ZERO enriched sidecars and the genuinely-new shape vs F-011/F-008 is the
+GLOBAL /** scope reality of the 'S2S'-named key (H-002, severity HIGH) + the
+no-UI/comprehension-rests-on-the-name finding (H-011). Most security FACETS dedup
+to PLT-072 / DOC-302 / REFACTOR-108 (convergent corroboration, not new filings) —
+but the v0.3.0 promise layer surfaces what the bug-catalogue never did: the
+feature's 12 user-facing PROMISES (incl. the LEGITIMATE happy path H-001, the
+fail-closed H-003, the boot fail-fast H-004) have ZERO behavioural test coverage
+(use_case_coverage 0/12). The one S2S test in the repo is a structural @pins of the
+WRONG behaviour. The highest-value tests to mint are F-088-UC-1 (the happy path
+that has no guard) and F-088-UC-5 (the PLT-072 regression guard).

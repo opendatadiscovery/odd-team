@@ -180,6 +180,24 @@ export async function clearEntityMetadata(): Promise<void> {
   });
 }
 
+// IT-018 — F-177 class/type badges on the detail header: set the entity's type_id +
+// entity_class_ids so the header renders the (transformed) class short-label + type badge.
+// Verified image schema: data_entity.type_id (int) + data_entity.entity_class_ids (int[]).
+// Class ids per DataEntityClassDto: DATA_SET=1, DATA_TRANSFORMER=2, DATA_QUALITY_TEST=4, …
+// Type ids per DataEntityTypeDto: TABLE=1, JOB=5, MICROSERVICE=13, … The header renders the
+// class SHORT label (DATA_SET→'DS' via DataEntityClassLabelMap) + the type name via
+// stringFormatted (TABLE→'TABLE'). Pass classIds=[] for an unclassified entity (no class badge).
+export async function seedEntityClassType(typeId: number, classIds: number[]): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('UPDATE data_entity SET type_id = $2, entity_class_ids = $3 WHERE id = $1', [
+      ENTITY_ID,
+      typeId,
+      classIds,
+    ]);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // IT-003 — search tsquery poisoning (PLT-090 catalog / PLT-127 dictionary).
 //

@@ -32,7 +32,7 @@ runs (no `owner.is_deleted`; `ownership.role_id` doesn't exist; missing UNIQUE c
 **inspect the running image's `information_schema.columns` before writing a relation seed**, and use
 constraint-independent SELECT-then-INSERT / DELETE-then-INSERT (don't rely on ON CONFLICT unique
 targets). Verified image schema (odd-minimal, 2026-06-03) for the common seed tables:
-- `data_entity`(id, oddrn, external_name, internal_name, internal_description, data_source_id, type_id, view_count, …) · `data_source`(id, oddrn, name, …)
+- `data_entity`(id, oddrn, external_name, internal_name, internal_description, data_source_id, type_id, **entity_class_ids int[]**, view_count, …) · `data_source`(id, oddrn, name, …). The header CLASS badges come from `entity_class_ids` (int[], NOT auto-derived from type_id on a raw insert — set it explicitly; DataEntityClassDto DATA_SET=1/DATA_TRANSFORMER=2/DATA_QUALITY_TEST=4/…); the TYPE badge from `type_id` (DataEntityTypeDto TABLE=1/JOB=5/MICROSERVICE=13/…).
 - `owner`(id, name, created_at, updated_at, **deleted_at**) · `title`(id, name, …, deleted_at) · `role`(id, name, …, deleted_at)
 - `ownership`(id, data_entity_id, owner_id, **title_id**)  ← the owner's role is a TITLE (title_id), NOT role_id
 - `tag`(id, name, important?) · `tag_to_data_entity`(tag_id, data_entity_id, external)
@@ -94,6 +94,17 @@ matching the wrong (untransformed) string.
   gated, 0 orphan, 12 known-bug pins); graph-build w/ embeddings 6769 nodes / 8961 edges / 7720 vectors;
   alignment 🟡 PILOT-READY, ledger [D] still RED, ready-now lists F-024. **Next re-ingest at ~IT-022.**
   Next IT target: F-177 type/class badge or F-024 term search (dictionary route).
+
+- 2026-06-03 — IT-018 (F-177 Class/Type badges on the detail header) — e2e:entity-class-type-badge.spec.ts.
+  Success (TABLE entity with entity_class_ids={1} → header renders class badge "DS" + type badge "TABLE")
+  + negative (entity_class_ids={} → no class badge, type badge remains — pins documented drift
+  `class_array_empty_renders_no_badge`). **GREEN first-try (2 passed 9.2s)** — KEY LESSON 2 ground-truth
+  FIRST paid off: pre-verified the transformed badge text (DS/TABLE) + the empty-class no-badge via a live
+  header DOM dump BEFORE authoring assertions, so zero failed runs. Discovered data_entity.entity_class_ids
+  (int[]) is the seedable class projection (NOT auto-derived from type_id on raw insert). Added helper
+  seedEntityClassType(typeId, classIds) (verified schema; class ids DataEntityClassDto DATA_SET=1…, type
+  ids DataEntityTypeDto TABLE=1/JOB=5…). feature-complete + ui-e2e. Count: **18 ITs total (6 new this
+  session: IT-013..018)**. Next: F-024 term search (dictionary route), F-005/F-008/other ready-now surfaces.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

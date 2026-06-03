@@ -187,6 +187,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 7 (behavioral service): DataEntityGroupServiceImplTest (2, only-manually-created-groups-editable + NotFound, validates F-012) GREEN. odd-platform 23794cfb. Phase-2 total: 31 methods / 7 services. Re-ingest due ~38-40. Next: DataEntityStatistics/Tag/Policy/Directory services + mappers.
 
+- 2026-06-03 — PHASE 2 iter 8 + RE-INGEST: PolicyServiceImplTest (5, Administrator-policy protection + cascade + not-found, validates F-006; c32f8e9c) GREEN. Re-ingest: 115 test nodes, VALIDATES 76→80, FULL SUITE 374 GREEN. Phase-2 total: 36 behavioral methods / 8 services + validators. Next: DataEntityStatistics/Tag/Directory/DatasetField/Lineage/DataQuality services + mappers.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

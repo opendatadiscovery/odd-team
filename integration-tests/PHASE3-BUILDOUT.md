@@ -241,6 +241,16 @@ graph/canvas labels.
   clearEntityLineage. feature-complete + ui-e2e. Count: **29 ITs total (17 new this session)**. Next:
   data-quality, metrics, global alerts (F-126), facets, more config lists. RE-INGEST at IT-032 (next).
 
+- 2026-06-03 — IT-030 (F-126 Global Alerts List Page) — e2e:global-alerts-list.spec.ts. Success (seed an
+  OPEN alert → the global /alerts "All" tab lists it: entity it002_table + type "Backwards incompatible
+  schema") + negative (no open alert → absent, visible-scoped). **GREEN (2 passed 8.4s)** — REUSED the
+  IT-027 seedEntityAlert/clearEntityAlerts helpers (no new helper). Distinct from IT-027 (per-entity tab)
+  — F-126 is the platform-wide page. feature-complete + ui-e2e. Count: **30 ITs total (18 new this
+  session)**. DEFERRED this iter: data-quality (F-022) — GET /api/datasets/{id}/dataqatests 500s
+  (mapDataQualityTest NPE on null dqDto.datasetList(); the QT entity needs rich specific_attributes DQ
+  JSON, reverse-engineering needed; likely ingestion-only-reachable like deserializeStats — see Discovered
+  findings). RE-INGEST at IT-032 (next). Next: metrics, facets, roles/policies/collectors config, activity.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at
@@ -252,6 +262,12 @@ graph/canvas labels.
   `JSONB.data()`), NOT a live operator-facing bug → deliberately NOT pinned (a known-bug pin must
   reproduce an operator-reachable defect). Worth a low-priority upstream hardening note only. The IT-023
   seed sets stats='{}' to avoid it.
+- **mapDataQualityTest NPE → HTTP 500 on null dqDto.datasetList()** (found IT-030). `GET /api/datasets/{id}/dataqatests`
+  500s with NPE at `DataEntityMapperImpl.mapDataQualityTest:367/379` when a QUALITY_TEST entity lacks its
+  DQ-detail attributes (datasetList/suiteName from specific_attributes). Same class as deserializeStats:
+  ingestion always supplies these, so likely NOT operator-reachable via a real ingest — a defensive-hardening
+  gap. NOT pinned. Blocks a raw-seed DQ e2e (F-022 per-dataset DQ test reports) — that IT needs the QT entity's
+  specific_attributes DQ JSON reverse-engineered, OR an ingestion-API-driven seed. Deferred.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

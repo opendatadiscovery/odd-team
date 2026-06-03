@@ -79,7 +79,9 @@ ground-truth probes) EXCLUDES hidden text, so the probe and the locator disagree
 locator. FIX: scope visible-only — `page.getByText(X,{exact:true}).filter({ visible: true })`
 (Playwright ≥1.51). Use it for BOTH the present-badge assertion and the absent-badge negative
 whenever the surface has an edit dropdown/select listing the same vocabulary (status, type, role,
-namespace, any enum picker).
+namespace, any enum picker). ALSO applies to SVG `<title>` elements (react-flow lineage nodes put the
+node name in a hidden `<title>` AND a visible label — IT-029) — always `.filter({visible:true})` for
+graph/canvas labels.
 
 ## Progress log (one line per new IT)
 - 2026-06-03 — PHASE 3 kickoff + pipeline VALIDATED (smoke green; harness operational; 6 stacks; Docker 29.5.2). Existing baseline: 12 ITs (IT-001..012). Next: author the first NEW IT for a high-criticality uncovered core-platform feature on odd-minimal (success + negative).
@@ -228,6 +230,16 @@ namespace, any enum picker).
   Distinct surface from IT-015 (entity-owner display) under F-019. Helper seedOwner. feature-complete +
   ui-e2e. Count: **28 ITs total (16 new this session)**. Next: data-quality, lineage, metrics, global
   alerts (F-126), or more config lists. Re-ingest ~IT-032.
+
+- 2026-06-03 — IT-029 (F-005 Lineage Graph Traversal) — e2e:entity-lineage-display.spec.ts. FLAGSHIP
+  feature. Success (seed an upstream lineage relation → the Lineage tab react-flow graph renders the
+  upstream node label) + negative (no lineage → related node absent, visible-scoped). **GREEN (2 passed
+  32.4s)** after ONE fix → KEY LESSON 4 extension: react-flow puts the node name in a HIDDEN SVG <title>
+  AND a visible label; getByText('X').first() matched the <title> (hidden) → toBeVisible failed; scoped
+  to .filter({visible:true}). Verified schema: lineage(parent_oddrn, child_oddrn, establisher_oddrn,
+  is_deleted) — parent→child by ODDRN; node labels queryable text. Helpers seedEntityLineage/
+  clearEntityLineage. feature-complete + ui-e2e. Count: **29 ITs total (17 new this session)**. Next:
+  data-quality, metrics, global alerts (F-126), facets, more config lists. RE-INGEST at IT-032 (next).
 
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`

@@ -319,6 +319,39 @@ export async function seedOwner(name: string): Promise<void> {
   });
 }
 
+// IT-029 — F-005 lineage graph: seed an UPSTREAM entity linked to entity 2001 so the Lineage tab
+// renders it. Verified schema: lineage(parent_oddrn, child_oddrn, establisher_oddrn, is_deleted) —
+// parent→child by ODDRN. The Lineage tab (react-flow) renders node labels as queryable text (verified
+// live). The parent is a real data_entity (class DATA_SET) so it resolves as a node.
+export async function seedEntityLineage(parentName: string): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query(`UPDATE data_entity SET entity_class_ids = '{1}' WHERE id = $1`, [ENTITY_ID]);
+    const parentOddrn = `//e2e-source-IT-002/db/tables/${parentName}`;
+    await c.query(
+      `INSERT INTO data_entity
+         (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, view_count,
+          source_created_at, source_updated_at)
+       VALUES (2029, $1, $2, $3, 1, '{1}', 0, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET external_name = EXCLUDED.external_name, oddrn = EXCLUDED.oddrn, entity_class_ids = '{1}'`,
+      [parentOddrn, parentName, SOURCE_ID],
+    );
+    await c.query('DELETE FROM lineage WHERE child_oddrn = $1', [DATASET_ODDRN]);
+    await c.query(
+      'INSERT INTO lineage (parent_oddrn, child_oddrn, establisher_oddrn, is_deleted) VALUES ($1, $2, $1, false)',
+      [parentOddrn, DATASET_ODDRN],
+    );
+  });
+}
+
+// Negative-path helper: entity 2001 exists but has NO lineage relations.
+export async function clearEntityLineage(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM lineage WHERE child_oddrn = $1 OR parent_oddrn = $1', [DATASET_ODDRN]);
+  });
+}
+
 // IT-026 — F-031 data source management: seed a named data source so the management list
 // (/management/datasources → GET /api/datasources) renders it. The list shows the source name
 // verbatim (verified live). Distinct id so it never collides with the entity-seed source 2001.

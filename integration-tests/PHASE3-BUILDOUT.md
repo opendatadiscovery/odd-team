@@ -188,6 +188,16 @@ namespace, any enum picker).
   seedEntityGroupMembership/clearEntityGroupMembership. feature-complete + ui-e2e. Count: **24 ITs total
   (12 new this session: IT-013..024)**. Next: IT-025 (MILESTONE PING). Then linked URLs, data-quality, metrics.
 
+- 2026-06-03 — IT-025 (F-028 Namespace display) — e2e:entity-namespace-display.spec.ts. Success (entity's
+  data_source given a namespace → Overview "Namespace" field renders the name verbatim) + negative
+  (data_source.namespace_id=NULL → namespace absent, visible-scoped). **GREEN (2 passed 17.8s)** —
+  render confirmed in source (OverviewGeneral renders dataSource.namespace.name verbatim) + API
+  ground-truth (browser ad-hoc probe was flaky this iter; the run-suite harness ran clean). Verified
+  schema: data_source.namespace_id → namespace(id,name). Helpers seedEntityNamespace/clearEntityNamespace.
+  feature-complete + ui-e2e. Count: **25 ITs total (13 new this session: IT-013..025)** 🎯 MILESTONE.
+  Next re-ingest ~IT-027. Next surfaces: data-quality happy-path, metrics, alerts, linked-URLs (DQ-test),
+  or ready-now features; collector-integration features remain stack-blocked.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

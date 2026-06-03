@@ -286,6 +286,29 @@ export async function clearEntityGroupMembership(): Promise<void> {
   });
 }
 
+// IT-025 — F-028 namespace display: the entity Overview shows its namespace (sourced from the
+// data source). Verified schema: data_source.namespace_id → namespace(id, name). OverviewGeneral
+// renders dataSource.namespace.name VERBATIM (no transform — confirmed in source). SELECT-then-INSERT
+// the namespace, UPDATE the data_source; idempotent.
+export async function seedEntityNamespace(namespaceName: string): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    const sel = await c.query('SELECT id FROM namespace WHERE name = $1 LIMIT 1', [namespaceName]);
+    const nsId = sel.rows[0]
+      ? Number(sel.rows[0].id)
+      : Number((await c.query('INSERT INTO namespace (name) VALUES ($1) RETURNING id', [namespaceName])).rows[0].id);
+    await c.query('UPDATE data_source SET namespace_id = $2 WHERE id = $1', [SOURCE_ID, nsId]);
+  });
+}
+
+// Negative-path helper: entity 2001 exists but its data source has NO namespace.
+export async function clearEntityNamespace(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('UPDATE data_source SET namespace_id = NULL WHERE id = $1', [SOURCE_ID]);
+  });
+}
+
 // IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
 // Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
 // external). The tag NAME renders verbatim on the Overview (no transform — verified live).

@@ -332,8 +332,46 @@ or untracked-id); all are integration candidates.
   controllers via @WebFluxTest. PLATEAU-PING re-armed: if even the happy-path business-logic climb stalls
   (<~0.5%/iter over ~3 re-measures) short of 70%, STOP + PushNotification WITH THE FULL ANALYSIS (maintainer
   wants the analysis delivered in the ping, not a headline — memory feedback_ping_at_plateaus_with_analysis).
-
-## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
+- 2026-06-03 — PHASE 2 iter 19 (HAPPY-PATH coverage, post-trim): SlackMessageGeneratorTest (3, validates
+  F-009 + F-038) — a fat PURE class (521 missed/0%, only dep = platform base URL). Covered generateAlertMessage
+  (created + resolved incl. resolved-by + downstream) + generateMessage (one #0080f0 attachment) against the
+  REAL Slack-SDK rendering. GREEN + checkstyle-clean. odd-platform 920a14af. Phase-2 total: 86 methods.
+  Happy-path pure classes yield FAR better than guard pins (~+0.7% est. for this one). KEY: AlertNotification-
+  MessageTranslator (588, 0%) is DB-coupled (DSLContext jOOQ) → integration, NOT unit (logged in Skipped).
+  Re-measure due next iter (after ~1 more). Next pure-ish targets: DataEntityHighlightConverter (1036, needs
+  DataEntityDetailsDto scaffolding), MrkdwnUtils, other notification formatters — but watch for DSLContext
+  coupling (→ integration).
+- 2026-06-03 — RE-MEASURE after iter 19: business-logic coverage 46.01% → **47.24%** (24453/51766), i.e.
+  SlackMessageGenerator alone = **+1.23 pts** (happy-path of a fat pure class FAR outyields guard pins).
+  Trajectory across re-measures: 44.30 (repos-in) → trim → 46.01 → 47.24. Gap to 70% = 22.8 pts / +11,783
+  instr. NOT a plateau yet — rate on a good (happy-path) iter is ~+1.2%, and clean targets remain:
+  DataEntityHighlightConverter (1036, PURE — mappers only, no DSLContext; biggest remaining clean win, needs
+  a DataEntityDetailsDto+DatasetStructureDto round-trip), controllers via @WebFluxTest (~13-26%, a whole
+  category), and happy-path EXTENSIONS of existing service tests (DataEntityServiceImpl 63%, ReferenceData
+  17%, AlertService 56%, OwnerAssociationRequest 12%). CONTINUE. Plateau will arrive when these clean targets
+  exhaust (then only heavy-scaffold-for-diminishing-returns + DB-coupled remain: SecurityConstants 1094
+  [constants holder, skip], AlertNotificationMessageTranslator/DataEntityHousekeepingJob/JooqSessionRepository
+  /PostgresWALMessageDecoder [DSLContext/integration]). Next: DataEntityHighlightConverter round-trip.
+- 2026-06-03 — PHASE 2 iter 21 (HAPPY-PATH, biggest pure class): DataEntityHighlightConverterTest (2,
+  validates F-017 — SearchServiceImpl's highlight collaborator, 1036 missed/~1%). convert() concatenates the
+  searchable fields (entity names/descs, source, namespace, tags) + parseHighlightedString() round-trips a
+  non-highlighted string to an empty highlight (covers BOTH public methods + field helpers, no mapper stubs
+  since the highlighted branch isn't hit). GREEN + checkstyle-clean. odd-platform 508dedfa. Phase-2: 88
+  methods. NEW CHECKSTYLE LESSON: a literal `<b>` (or any HTML-like tag) in a /** javadoc */ trips the
+  Javadoc HTML parser ("Missed HTML close tag 'b'") → reword or use {@code}; `//` line comments are exempt.
+  Re-measure due ~iter 23. Next: another pure/coverable target (or @WebFluxTest controller / service happy-
+  path extension) — watch the rate; plateau when clean targets exhaust.
+- 2026-06-03 — RE-MEASURE after iter 21: business-logic coverage 47.24% → **47.91%** (24803/51766), i.e.
+  DataEntityHighlightConverter = +0.67 (bounded round-trip covered ~half — convert + parse's non-highlighted
+  paths). Trajectory: 46.01(trim) → 47.24(iter19 Slack +1.23) → 47.91(iter21 Highlight +0.67). Gap to 70% =
+  22.1 pts / +11,433 instr. NOT a plateau (good-iter rate still >0.5%; targets remain). But the CLEAN PURE
+  high-yield classes are now EXHAUSTED — remaining levers are: (a) TermServiceImpl happy-path (1131, biggest,
+  but HEAVY private-chain mocking: namespaceService.getOrCreate + create()/update() internals + search
+  vectors + unhandled mentions); (b) service-test EXTENSIONS (DataEntityServiceImpl 63%, ReferenceData/Alert/
+  Owner — moderate yield, thin methods); (c) @WebFluxTest controllers (UNTRIED vein, ~13-26%, thin → modest
+  yield, security-slice setup risk). Realistic: 70% is ~20-30 moderate iters away. Continuing per "drive to
+  70%"; will plateau-ping if the rate drops <0.5% over the next ~3 re-measures. Next: TermServiceImpl
+  delete/link happy + try @WebFluxTest on one controller to gauge the vein.
 - DateTimeUtil (service/ingestion/util — UTC/epoch conversion, UNtested, pure + high-value: mapUTCDateTime
   both directions + mapEpochSeconds, all null-safe). Genuinely worth pinning (timezone correctness is a
   classic silent-bug class) BUT it is cross-cutting infrastructure with NO feature gate and NO UTC-norm ADR

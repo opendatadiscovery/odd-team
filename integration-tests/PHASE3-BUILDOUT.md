@@ -180,14 +180,25 @@ namespace, any enum picker).
   IT-013..023)**. Surface variety now: overview annotations + header badges/status + 2 searches + dataset
   schema. Next: linked URLs, DEG (F-012), data-quality happy-path, metrics, namespaces. MILESTONE PING at IT-025.
 
+- 2026-06-03 — IT-024 (F-012 Data Entity Group membership) — e2e:entity-groups-display.spec.ts. Success
+  (entity 2001 made a member of a DEG → Overview "Data entity groups" renders the group name verbatim)
+  + negative (no membership → group absent, visible-scoped). **GREEN first-try (2 passed 9.3s)** —
+  ground-truth-first. Verified schema: group_entity_relations(group_oddrn, data_entity_oddrn, is_deleted)
+  — membership by ODDRN; the DEG is itself a data_entity (class DATA_ENTITY_GROUP=8, type DAG=17). Helpers
+  seedEntityGroupMembership/clearEntityGroupMembership. feature-complete + ui-e2e. Count: **24 ITs total
+  (12 new this session: IT-013..024)**. Next: IT-025 (MILESTONE PING). Then linked URLs, data-quality, metrics.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at
   `DatasetFieldApiMapper.deserializeStats` (DatasetVersionMapperImpl.mapDatasetStructure). `dataset_field.stats`
-  is nullable in the DDL (is_nullable=YES), so a field ingested without column stats makes the ENTIRE
-  Structure tab unrenderable (500). Collectors normally send stats, so latent — but a single statless field
-  takes down the whole dataset's schema view. Missing null-guard in the mapper. Candidate PLT-NNN / upstream
-  issue + a future known-bug pin IT (seed a field with NULL stats → assert 500). Not pinned yet.
+  is nullable in the DDL (is_nullable=YES). **Reachability (checked IT-024): NOT operator-reachable via
+  ingestion** — `DatasetFieldIngestionMapper.mapStat` does `serializeIntoJSONB(stat)`, so an omitted stat
+  becomes JSONB `'null'` (a json-null value), NOT SQL NULL; `deserializeStats` only NPEs on SQL NULL, which
+  requires a direct DB write. So this is a DEFENSIVE-HARDENING gap (the read mapper should null-guard
+  `JSONB.data()`), NOT a live operator-facing bug → deliberately NOT pinned (a known-bug pin must
+  reproduce an operator-reachable defect). Worth a low-priority upstream hardening note only. The IT-023
+  seed sets stats='{}' to avoid it.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

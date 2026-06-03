@@ -251,6 +251,41 @@ export async function seedDatasetColumn(columnName: string): Promise<void> {
   });
 }
 
+// IT-024 — F-012 data entity group membership: seed entity 2001 as a member of a DEG so the Overview
+// "Data entity groups" section renders the group name (verbatim — verified live). Verified schema:
+// group_entity_relations(group_oddrn, data_entity_oddrn, is_deleted) — membership is by ODDRN. The DEG
+// is itself a data_entity (class DATA_ENTITY_GROUP=8, type DAG=17). DELETE-then-INSERT; idempotent.
+export async function seedEntityGroupMembership(groupName: string): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    const groupOddrn = `//e2e-source-IT-002/db/groups/${groupName}`;
+    await c.query(
+      `INSERT INTO data_entity
+         (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, view_count,
+          source_created_at, source_updated_at)
+       VALUES (2024, $1, $2, $3, 17, '{8}', 0, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET external_name = EXCLUDED.external_name, oddrn = EXCLUDED.oddrn, entity_class_ids = '{8}'`,
+      [groupOddrn, groupName, SOURCE_ID],
+    );
+    await c.query('DELETE FROM group_entity_relations WHERE group_oddrn = $1 AND data_entity_oddrn = $2', [
+      groupOddrn,
+      DATASET_ODDRN,
+    ]);
+    await c.query(
+      'INSERT INTO group_entity_relations (group_oddrn, data_entity_oddrn, is_deleted) VALUES ($1, $2, false)',
+      [groupOddrn, DATASET_ODDRN],
+    );
+  });
+}
+
+// Negative-path helper: entity 2001 exists but belongs to NO group.
+export async function clearEntityGroupMembership(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM group_entity_relations WHERE data_entity_oddrn = $1', [DATASET_ODDRN]);
+  });
+}
+
 // IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
 // Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
 // external). The tag NAME renders verbatim on the Overview (no transform — verified live).

@@ -372,6 +372,31 @@ or untracked-id); all are integration candidates.
   yield, security-slice setup risk). Realistic: 70% is ~20-30 moderate iters away. Continuing per "drive to
   70%"; will plateau-ping if the rate drops <0.5% over the next ~3 re-measures. Next: TermServiceImpl
   delete/link happy + try @WebFluxTest on one controller to gauge the vein.
+- 2026-06-03 — ⛔ PLATEAU REACHED (iter 23) — PINGED MAINTAINER, LOOP STOPPED. Business-logic coverage
+  **47.91%** (24803/51766); gap to 70% = 22.1 pts / +11,433 instr. The clean high-yield UNIT veins are now
+  exhausted — gauged ALL remaining options:
+  • Pure high-yield classes: DONE (SlackMessageGenerator +1.23, DataEntityHighlightConverter +0.67 — the
+    only two; trajectory 46.01→47.24→47.91).
+  • @WebFluxTest controllers (~13-26%, e.g. DataEntityController 349): NOT unit-viable here — the codebase
+    has NO sliced @WebFluxTest pattern; the lone WebTestClient test (HealthAPITest) extends
+    BaseIntegrationTest (full Docker context) AND is disabled ("fails in github"). Controllers are
+    integration-tested by convention + DataEntityController has 9 service deps. → integration, not unit.
+  • DB-coupled non-repo classes (AlertNotificationMessageTranslator 588, DataEntityHousekeepingJob 728,
+    JooqSessionRepository 368, PostgresWALMessageDecoder 379): DSLContext / PGConnection / binary WAL →
+    integration/Testcontainers, not unit.
+  • TermServiceImpl createTerm/updateTerm (~1131): heavy private-chain mocking (namespaceService.getOrCreate
+    + create()/update() internals + search-vector + 2 unhandled-mention repos) → rabbit-hole, brittle.
+  • SecurityConstants 1094: static-data/constants holder → test-theatre.
+  • Thin service-method extensions (delete/link/getById happy): cleanly coverable but LOW yield
+    (~+0.1-0.3%/iter) → ~80-100 iters for the 22-pt gap. Not resource-efficient.
+  CONCLUSION: a clean UNIT path to 70% does not exist; the remaining 22 pts live in integration-territory
+  (DB-coupled + controllers) + a rabbit-hole + a thin grind. LEVERS handed back to the maintainer:
+  (1) **lower the overall gate to ~current (≈48-50%)** + keep the 98% changed-files ratchet — gate goes
+  GREEN now, no-regression locked, ALL new code stays tested, coverage ratchets up organically [RECOMMENDED
+  for a solo unfunded maintainer]; (2) integration-test pass (Testcontainers) for the DB-coupled classes +
+  controllers — the only path to a true 70%, biggest effort, Docker-bound; (3) keep grinding thin unit
+  extensions (~80-100 iters). Loop RESUMES on the maintainer's choice. odd-platform tests through 508dedfa;
+  Phase-2 at 88 methods; full suite GREEN; coverage gate live (red at 47.91% vs 70%).
 - DateTimeUtil (service/ingestion/util — UTC/epoch conversion, UNtested, pure + high-value: mapUTCDateTime
   both directions + mapEpochSeconds, all null-safe). Genuinely worth pinning (timezone correctness is a
   classic silent-bug class) BUT it is cross-cutting infrastructure with NO feature gate and NO UTC-norm ADR

@@ -65,7 +65,7 @@ The workspace is being reorganised into a layered architecture so the framework 
 | Pillar | Path | Status |
 |---|---|---|
 | documentation | `pillars/documentation/pillar.md` | active (currently in pillar-extraction migration) |
-| tests | — | not yet activated |
+| tests | `pillars/tests/pillar.md` | active — two-bucket taxonomy (unit→odd-platform/CI · integration→odd-team IT-NNN); closure unit = the promise (`feature-flows/detail` `use_cases.coverage`); traceability ledger = `test-gates.yaml`; dashboard = alignment-scorecard + `promise-test-worklist.md` |
 | features | — | not yet activated |
 | code-quality | — | not yet activated |
 | adr | `pillars/adr/pillar.md` | active — implicit-adrs → backlog `ADR-NNNN` → published ADR-log (docs Developer Guides) → ontology (`PROMOTED_TO`/`REALISES`); pilot ADR-0001 shipped |

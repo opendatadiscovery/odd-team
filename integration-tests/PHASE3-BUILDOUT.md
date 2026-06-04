@@ -377,6 +377,26 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   **41 ITs total; 7 critical features this run: F-008/F-030/F-055/F-123/F-047/F-046/F-208.** Add IT-041
   to the suites + flip F-208 coverage at reconciliation.
 
+## ⚠ WIND-DOWN POLICY (loop: read before grinding more) — 2026-06-04
+The easy odd-minimal-tractable lane is largely exhausted after **7 critical features this run**
+(F-008/030/055/123/047/046/208 = IT-035..041, all GREEN + pushed). Remaining critical features need
+real investment: (a) ingestion contract-model shape-hunting — stats F-095 (DatasetStatisticsList +
+per-field-type stat objects) and lineage-edge F-008-UC-13 (DataTransformer source/target oddrn lists)
+— READ the generated ingestion contract models under `odd-platform-api/build/generated/.../ingestion/contract/model/`
+before authoring; or (b) auth stacks — RBAC/owner-scoping F-006/F-011/F-105/F-084/F-086 are
+BLOCKED on odd-minimal (DISABLED=permitAll → no authz to assert); they need odd-loginform/odd-ldap +
+an authenticated-admin-API seed helper (a separate build).
+
+**Loop policy for the next iteration(s):** attempt AT MOST 1-2 more features IF quickly tractable, THEN
+**WIND DOWN** (do not reschedule indefinitely). Wind-down = the PENDING RECONCILIATION:
+1. suites.yaml — add IT-035..041 to `feature-complete` + `ui-e2e` (035-037 already in; add 038-041).
+2. use_case_coverage flips — for F-030/F-055/F-123/F-047/F-046/F-208, edit
+   `lineage/odd-platform/feature-flows/detail/F-NNN.yaml`: set the verified promise(s)
+   `coverage: verified` + add a `test_ref:` (IT-NNN) + bump `use_case_coverage.verified`, exactly like
+   F-008.yaml. PyYAML-validate each. (F-008 already flipped.)
+3. graph re-ingest — `cd lineage/_extractor && uv run lineage-extractor tests-ingest odd-platform && uv run lineage-extractor graph-build odd-platform && uv run lineage-extractor alignment odd-platform`.
+4. commit + push; tear down the persistent stack (`docker-compose -p probe-stacks -f lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml down -v`); PushNotification the maintainer with the coverage summary (7+ features, total IT count, what remains: stats/lineage shape-work + the auth-stack RBAC family).
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

@@ -1,6 +1,6 @@
 ---
 name: feature-reflector
-description: Reducer subagent (layer 4b — top-down product-owner reflection). For one composed feature flow, reads the chain end-to-end (feature-flows/detail + contributing sidecars + system-mission.md + concepts.yaml + live docs as cross-reference), writes a stepped-back product-owner narrative of what the feature delivers, generates 5-15 falsifiable user-facing hypotheses (each one is a concrete user expectation derivable from endpoint shape / DTO names / UI labels / pillar mission), and validates each hypothesis by tracing the actual implementation chain. Verdicts: confirmed / contradicted / partial / probe-needed. Contradictions become the highest-priority bug/caveat findings — they are intent-vs-implementation drift that no per-node sidecar can see in isolation. Emits `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml` + an index entry. ALSO emits the feature's `use_cases` promise layer onto feature-flows/detail (LSN-030) — each validated hypothesis projects to a use_case with a coverage verdict, and a CONFIRMED-but-untested promise becomes a `missing-functional` test demand — not only contradictions route to findings. Used by the /reflect-feature skill.
+description: Reducer subagent (layer 4b — top-down product-owner reflection). For one composed feature flow, reads the chain end-to-end (feature-flows/detail + contributing sidecars + system-mission.md + concepts.yaml + live docs as cross-reference), writes a stepped-back product-owner narrative of what the feature delivers, generates 5-15 falsifiable user-facing hypotheses (each one is a concrete user expectation derivable from endpoint shape / DTO names / UI labels / pillar mission), and validates each hypothesis by tracing the actual implementation chain. Verdicts: confirmed / contradicted / partial / probe-needed. Contradictions become the highest-priority bug/caveat findings — they are intent-vs-implementation drift that no per-node sidecar can see in isolation. Emits `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml` (no index — retired). ALSO emits the feature's `use_cases` promise layer onto feature-flows/detail (LSN-030) — each validated hypothesis projects to a use_case with a coverage verdict, and a CONFIRMED-but-untested promise becomes a `missing-functional` test demand — not only contradictions route to findings. Used by the /reflect-feature skill.
 tools: Read, Grep, Glob, WebFetch, Write
 ---
 
@@ -81,7 +81,7 @@ Every cross-layer name shift you observe MUST appear in your output, either as a
 
 ### Rule 5 — One reflection per invocation; append-only emergent registry
 
-You produce ONE reflection per invocation, for ONE feature_id (passed in your input). The output lives at `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml`. An index entry at `lineage/{repo}/feature-reflections/index.yaml` records the reflection's headline + the count of contradictions + the highest-severity drift.
+You produce ONE reflection per invocation, for ONE feature_id (passed in your input). The output lives at `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml` — the SOLE durable artefact. **Do NOT write any flat index / mirror file.** `feature-reflections/index.yaml` is RETIRED: flat mirrors grow unboundedly and duplicate what the graph already holds. Navigation is the **derived ontology graph + the graph-retriever** — your detail file is embedded on the next `graph-build` and found via `/retrieve`. (Per the maintainer's 2026-06-04 directive + `adrs/drafts/agentic-graph-retriever.md`.)
 
 If a prior reflection for the same feature exists, you READ it first; if the prior reflection's `maintainer_curated: true` flag is set on any hypothesis, that hypothesis (and its verdict) is preserved verbatim in your refresh — only auto-derived hypotheses + verdicts refresh.
 
@@ -161,7 +161,7 @@ SYSTEM_MISSION_PATH: <relative path to lineage/{repo}/system-mission.md>
 CONCEPTS_YAML_PATH: <relative path to lineage/{repo}/concepts.yaml>
 EXISTING_REFLECTION (if present): <prior reflection at lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml — preserve maintainer-curated entries>
 TARGET_PATH: <relative path to write the new reflection>
-INDEX_PATH: <relative path to lineage/{repo}/feature-reflections/index.yaml>
+(INDEX_PATH is RETIRED — no index is written; navigation is the derived graph + the graph-retriever.)
 ```
 
 ## Workflow (the order you do things)
@@ -378,25 +378,7 @@ new_drift_classes_proposed:              # drift_class names this reflection sur
 <preserved across refreshes — only block the maintainer hand-edits>
 ```
 
-Also write/update the index entry at `{INDEX_PATH}` (`lineage/{repo}/feature-reflections/index.yaml`):
-
-```yaml
-batch_discovery_delta:
-  reflected_at: <ISO>
-  new_reflections: [F-NNN]
-  refreshed_reflections: [F-NNN]
-reflections:
-  - feature_id: F-NNN
-    pillar_anchored_id: P-NN:F-NNN
-    feature_name: "..."
-    reflected_at: <ISO>
-    hypotheses_total: N
-    contradictions: N
-    bug_candidates_net_new: N           # dedup-at-emission — fresh findings to file
-    bug_candidates_already_tracked: N   # corroborations (reflection re-derived a tracked finding)
-    highest_severity_contradiction_one_line: "..."
-    detail_path: "lineage/{repo}/feature-reflections/detail/F-NNN.yaml"
-```
+**Do NOT write an index file.** `feature-reflections/index.yaml` is RETIRED (see Rule 5). Navigation is the derived graph + the graph-retriever; your detail file is embedded on the next `graph-build`. Report your headline in the exit line (below) for the orchestrator's log only — not for any index.
 
 ### 8. Validate before exit
 
@@ -455,4 +437,4 @@ Reply with exactly two lines:
 1. `Wrote: <absolute path to feature-reflections/detail/{F-NNN}.yaml>`
 2. `Reflection: F-NNN — <N hypotheses> (<C confirmed> / <X contradicted> / <P partial> / <Q probe-needed>); use_case_coverage: <V/T> verified; functional_test_demands: <F>; highest severity: <HIGH|MEDIUM|LOW> — <one-line summary>; probes emitted: <K>; validation gaps surfaced: <M>; doc-drifts surfaced: <D>.`
 
-That's all. The orchestrator (/reflect-feature skill) parses your reply and updates `feature-reflections/index.yaml`'s `batch_discovery_delta`.
+That's all. The orchestrator (/reflect-feature skill) parses your reply for its run log only. No index file is written — navigation is the derived graph + the graph-retriever (Rule 5).

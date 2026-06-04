@@ -405,6 +405,31 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   not POST status (a wrong key / bad value still 201s). Next unverified: F-095 UC-6/7/12 (tag-auth,
   tag-preserve, DoS), F-125 token lifecycle, F-008 UC-12 audit-on-ingest, lookup features (F-059/F-058).
 
+## ✅ RUN SUMMARY — 2026-06-04 autonomous integration grind (WOUND DOWN)
+**13 new ITs (IT-035..047), 47 total. Stack torn down.** All GREEN + pushed to odd-team main.
+- **F-008 Batch Ingestion (the #1 risk): 4/14 → 9/14** — UC-02 (ingestion-filter coverage gap / PLT-003, unit),
+  UC-03/04/05/08 (datasource pins, prior), UC-06 (duplicate-ODDRN atomicity), UC-13 (entity non-destruction
+  + lineage-edge replace), UC-01 (anon write), UC-10 (anon collector/token mint). [IT-035/043/046]
+- **F-095 Statistics Ingestion: 2/12 → 7/12** — round-trip (IT-044); 3 input-validation gaps (PLT-142:
+  500-on-empty-body, silent-accept-of-unknown-field, out-of-range-stored); tag handling (anon mint +
+  re-push silent-drop). [IT-044/045/047]
+- F-030 metrics (IT-036) · F-055 lineage-depth + unset-NPE pin (IT-037, 2/11) · F-123 deletion-recreate
+  (IT-038, 1/11) · F-047 dataset structure via ingest (IT-039) · F-046 metadata catalogue (IT-040) ·
+  F-208 staleness (IT-041, 1/12) · F-005 lineage via ingestion (IT-043) · F-097 Swagger discovery (IT-042, 1/11).
+- **Swagger recovery:** corrected a false "no Swagger" claim; recovered the orphaned API-Reference doc page
+  (live-verified 200) + documented the known-issue; PLT-141 (springdoc 2.2.0 × Spring 6.2 spec-hang).
+- **Engine:** ingestion-API seed helper (broke the raw-seed plateau) + persistent-stack (~1-2s/IT).
+- **2 upstream bug drafts:** PLT-141 (Swagger spec-hang, high) · PLT-142 (stats no-validation, medium).
+- **Honesty:** ~+14 promise verifications across 6 features; IT-043/044 upgraded probe→durable-IT (no
+  double-count). The read-the-config discipline turned 2 wrong "not tractable" dismissals into landed tests.
+
+**LEFT (maintainer-scoped, not faked):** RBAC/owner-scoping/OAuth (F-006/011/105/084/086) — auth-stack-blocked
+on odd-minimal (DISABLED=permitAll); needs odd-loginform/odd-ldap + an authenticated-admin-API seed helper.
+Lookup tables (F-059/F-058) + F-008-UC-10 UI half (PLT-103) — need Playwright/browser flows. F-008-UC-11
+(cluster session-bridge), F-095-UC-8/12 (concurrency/DoS) — probe/multi-node. DEFERRED: graph re-ingest +
+worklist/scorecard regen → do post-merge of the unit-test branch (substrate scan is behind HEAD; odd-team
+ITs aren't graph-ingested). Promise-frontier flips are committed in the SoT (feature-flows/detail).
+
 ## ⚠ WIND-DOWN POLICY (loop: read before grinding more) — 2026-06-04
 The easy odd-minimal-tractable lane is largely exhausted after **7 critical features this run**
 (F-008/030/055/123/047/046/208 = IT-035..041, all GREEN + pushed). Remaining critical features need

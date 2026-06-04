@@ -356,6 +356,21 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   (POST /ingestion/entities/datasets/stats→201, needs DataSetField + DatasetStatisticsList shapes),
   F-008 UC-13 lineage-edge half (transformer payload), F-047 column annotation, F-096 batch atomicity.
 
+- 2026-06-04 (wakeup-loop iter 2) — IT-039 (F-047 Dataset Field structure via REAL ingest) +
+  IT-040 (F-046 Custom Metadata Catalogue). IT-039: ingest TABLE w/ dataset.field_list → GET
+  /api/datasets/{id}/structure shows the column; re-ingest w/ an added column surfaces it (schema
+  evolution). Real ingest avoids the IT-023 raw-seed deserializeStats NPE. GREEN (2 passed 1.2s).
+  IT-040: seed INTERNAL metadata field → GET /api/metadata/fields?query= returns it; non-match
+  excluded. GREEN (2 passed 743ms). DataSetField ingest shape = {oddrn,name,type:{type:TYPE_STRING,
+  logical_type,is_nullable}}. ⚠ list endpoints (/api/datasources, /api/tags, /api/namespaces,
+  /api/owners) 500 WITHOUT page/size params (add ?page=1&size=N); /api/metadata/fields is paramless-OK.
+- **40 ITs total. 6 critical features this run: F-008, F-030, F-055, F-123, F-047, F-046.** Couldn't
+  quickly find clean ingest shapes for transformer-lineage (F-008 UC-13 edge-half) or stats (F-095) —
+  no sample/contract field-names located; needs the DataTransformer + DatasetStatisticsList contract
+  models read directly (next iter). RBAC/auth family (F-006/F-011/F-105) is auth-stack-blocked on
+  odd-minimal (DISABLED=permitAll). PENDING RECONCILIATION still open (suites feature-complete/ui-e2e
+  add for 038-040; use_case_coverage flips for F-030/F-055/F-123/F-047/F-046; graph re-ingest).
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

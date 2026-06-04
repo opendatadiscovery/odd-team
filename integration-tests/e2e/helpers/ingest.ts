@@ -62,3 +62,42 @@ export async function ingestEntities(dataSourceOddrn: string, items: IngestEntit
 export function tableEntity(oddrn: string, name: string, extra: Partial<IngestEntity> = {}): IngestEntity {
   return { oddrn, name, type: 'TABLE', metadata: [], dataset: { field_list: [] }, ...extra };
 }
+
+// ---- F-030 metrics ingestion (POST /ingestion/metrics) ----
+// MetricSetList = { items: [ { oddrn, metric_families } ] } (per MetricsIngestionTest.createMetrics).
+export interface MetricFamily {
+  name: string;
+  type: string; // GAUGE | COUNTER | HISTOGRAM | SUMMARY
+  unit?: string;
+  metrics: unknown[];
+}
+
+// Ingest metric families against an already-ingested entity (by oddrn). Returns the HTTP status
+// (201 on success — metrics are a distinct ingestion endpoint from /ingestion/entities).
+export async function ingestMetrics(entityOddrn: string, metricFamilies: MetricFamily[]): Promise<number> {
+  const res = await fetch(`${BASE}/ingestion/metrics`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ items: [{ oddrn: entityOddrn, metric_families: metricFamilies }] }),
+  });
+  await res.text().catch(() => undefined);
+  return res.status;
+}
+
+// A minimal single-point GAUGE family (the simplest valid metric — mirrors metrics/gauge_and_count.json).
+export function gaugeFamily(name: string, value: number, unit = 'count'): MetricFamily {
+  return {
+    name,
+    type: 'GAUGE',
+    unit,
+    metrics: [{ labels: [], metric_points: [{ timestamp: 1700000000, gauge_value: { value } }] }],
+  };
+}
+
+// Read an entity's metrics back (GET /api/dataentities/{id}/metrics → MetricSet, snake_case wire).
+// Returns the raw body so a spec can assert a family name / value is present (or absent on the
+// negative path). id comes from a DB oddrn lookup (entityByOddrn in helpers/db.ts).
+export async function getEntityMetricsBody(id: number): Promise<{ status: number; body: string }> {
+  const res = await fetch(`${BASE}/api/dataentities/${id}/metrics`);
+  return { status: res.status, body: await res.text() };
+}

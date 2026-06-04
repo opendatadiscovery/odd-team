@@ -329,6 +329,22 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   total.** Next critical via the helper: F-030 metrics (ingestMetrics → GET /api/dataentities/{id}/metrics),
   F-022 DQ (specific_attributes via real ingest — retry the NPE-blocked surface), more F-008 (UC-12 audit,
   the UC-13 lineage-edge half). RE-INGEST due ~IT-037.
+- 2026-06-04 — **PERSISTENT-STACK GRIND** (efficiency unlock): bring odd-minimal up ONCE
+  (`docker-compose -p probe-stacks -f probe-stacks/odd-minimal.docker-compose.yml up -d`) + run each IT
+  with `ODD_STACK_EXTERNAL=1 run-suite.sh IT-NNN` → **~1-2s per IT** (vs ~28s with churn). Probed
+  feature-gating: metrics ENABLED (POST /ingestion/metrics→201), stats ENABLED (→201), lineage real
+  (json). ⚠ NEW KEY LESSON 5: a GET to ANY unmatched path returns **200 text/html (the SPA index.html
+  fallback)** — so /v3/api-docs + /swagger-ui "200" are FALSE (no runtime spec/swagger shipped →
+  F-097/F-029 NOT runtime-testable). Always check `content_type` (application/json = real API) on GET probes.
+- 2026-06-04 — IT-036 (F-030 Metrics Ingestion) — e2e:metrics-ingestion.spec.ts. Collector ingests a GAUGE
+  family (POST /ingestion/metrics→201) → GET /api/dataentities/{id}/metrics serves it back; no-metrics
+  entity → no family. **GREEN (2 passed 1.8s).** Helper ingest.ts +ingestMetrics/gaugeFamily/getEntityMetricsBody.
+- 2026-06-04 — IT-037 (F-055 Lineage Depth Boundary) — e2e:lineage-depth-boundary.spec.ts. explicit
+  lineage_depth=1 → 200 (green lock); UNSET depth → **500 NPE** (GREEN characterization pin of the broken
+  "unset returns default" contract, DOC-GAP-089/TEST-GAP-279; flip when fixed). **GREEN (2 passed 973ms).**
+- Count: **37 ITs total** (IT-035/036/037 ingestion-family via the helper). NOTE: use_case_coverage flips
+  for F-030/F-055 are BATCHED (pending a reconciliation pass) — per-IT traceability is in the protocol
+  `gates.validates`. Next tractable: F-095 stats, F-123 deletion-recreate, F-008 UC-13 lineage-edge half.
 
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`

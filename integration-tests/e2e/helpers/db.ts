@@ -794,3 +794,16 @@ export async function setEntityLastIngestedDaysAgo(entityId: number, days: numbe
     ]);
   });
 }
+
+// IT-043 — F-008 UC-13 / F-005 lineage via ingestion: does a directed lineage edge exist (live)?
+// Verified schema: lineage(parent_oddrn, child_oddrn, establisher_oddrn, is_deleted). A re-ingest that
+// drops a transformer output should remove the omitted edge (replaceLineagePaths) -> returns false.
+export async function lineageEdgeExists(parentOddrn: string, childOddrn: string): Promise<boolean> {
+  return withClient(async (c) => {
+    const r = await c.query(
+      'SELECT 1 FROM lineage WHERE parent_oddrn = $1 AND child_oddrn = $2 AND (is_deleted IS NULL OR is_deleted = false) LIMIT 1',
+      [parentOddrn, childOddrn],
+    );
+    return r.rows.length > 0;
+  });
+}

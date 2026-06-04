@@ -63,6 +63,19 @@ export function tableEntity(oddrn: string, name: string, extra: Partial<IngestEn
   return { oddrn, name, type: 'TABLE', metadata: [], dataset: { field_list: [] }, ...extra };
 }
 
+// A JOB (DATA_TRANSFORMER) entity carrying lineage. Verified shape (ingestion/samples/01_airflow):
+// data_transformer = { source_code_url, sql, inputs[], outputs[] } where inputs/outputs are ODDRN arrays.
+// Ingesting it creates lineage edges: each input -> job -> each output.
+export function transformerEntity(oddrn: string, name: string, inputs: string[], outputs: string[]): IngestEntity {
+  return {
+    oddrn,
+    name,
+    type: 'JOB',
+    metadata: [],
+    data_transformer: { source_code_url: null, sql: null, inputs, outputs },
+  };
+}
+
 // ---- F-030 metrics ingestion (POST /ingestion/metrics) ----
 // MetricSetList = { items: [ { oddrn, metric_families } ] } (per MetricsIngestionTest.createMetrics).
 export interface MetricFamily {

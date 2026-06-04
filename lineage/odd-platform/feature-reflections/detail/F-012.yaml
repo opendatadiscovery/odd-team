@@ -1,0 +1,895 @@
+---
+feature_id: F-012
+pillar_anchored_id: P-01:F-003
+pillar: Data Discovery
+feature_name: |-
+  Data Entity Group membership add/delete — write-collaborative DEG with no
+  DEG-side authorization (per-entity POST/DELETE surface + the DEG-owner-side
+  DataEntityGroupForm bulk-replace surface)
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+  - odd-platform__java__service__service__DataEntityServiceImpl.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/groups-domains"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The DEG sidecar WebFetched this page 2026-05-19 (status 200): it describes
+      the DEG concept (manual vs ingested, the Domain flag, Catalog Overview tile
+      visibility) but was permission/audit/security-SILENT on membership writes.
+      That doc GAP has since been CLOSED by DOC-188 (status done, commit b937d32,
+      live-verified 2026-05-28): groups-domains.md now carries a "Managing DEG
+      Membership" H2 with admonitions for the write-collaborative posture, forensic
+      silence, idempotence asymmetry, and empty-DEG persistence. So the doc-side of
+      every drift this reflection re-derives is already documented; the code-side
+      remains tracked as PLT-024 (draft).
+hypothesis_summary:
+  total: 12
+  confirmed: 3
+  contradicted: 6
+  partial: 3
+  probe_needed: 0
+  note: |-
+    H-009 (contradicted, statically) ALSO carries a confirmatory probe (PENDING-F-012-1)
+    that pins the live reproduction of the soft-delete-blocks-re-add error for the bug
+    report + regression-test seeding — it is recorded under probes_emitted, not as a
+    probe-needed VERDICT (the verdict is settled from primary-source schema + code).
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: |-
+      A caller holding DATA_ENTITY_ADD_TO_GROUP on entity X can place X into ANY
+      manually-created DEG in the catalog — including a "Finance Domain" owned by an
+      unrelated team — because the only authorization check is on the CHILD entity in
+      the URL path, never on the target DEG; the DEG owner has no veto on drive-by
+      membership writes and (forensic silence) no activity-feed record of who did it.
+related_feature_flows: [F-005, F-021, F-006]
+related_concepts:
+  - Data Entity Group (DEG)
+  - Domain (DEG flag)
+  - Permission (Authorization)
+  - Activity Feed
+related_drift_classes:
+  - write_collaborative_no_deg_side_authorization
+  - forensic_silence_on_membership_writes
+  - add_delete_permission_asymmetry
+  - silent_204_on_no_op_delete_vs_400_on_duplicate_add
+  - soft_deleted_membership_blocks_re_add_misleading_error
+  - hard_delete_vs_soft_delete_cascade_semantic_gap
+  - conflated_error_message_on_deg_type_check
+  - optional_data_entity_group_id_yields_null_error
+  - empty_deg_valid_persistent_state
+  - disabled_mode_bypass
+  - dead_enum_data_entity_relation_updated
+new_drift_classes_proposed:
+  - add_to_group_combobox_prefilters_to_manually_created_degs_so_conflated_400_and_null_id_drifts_are_ui_unreachable_api_only
+  - group_item_delete_chip_fires_immediately_no_confirm_and_shows_success_toast_even_on_silent_204_no_op
+  - deg_membership_add_no_bulk_endpoint_ui_fires_n_sequential_calls_vs_deg_form_bulk_replace_put
+---
+
+# Data Entity Group membership add/delete — product-owner reflection
+
+## product_owner_narrative
+
+The **Data Entity Group (DEG) membership** surface is how a catalog user files a data
+entity into a group — a Domain, an ML Experiment, a DAG, or any other manually-created
+`DATA_ENTITY_GROUP`-class container — so that the grouping shows up on the Catalog
+Overview's Domain tiles and on the entity's own detail page (per the F-012 feature-flow
+description + `addDataEntityDataEntityGroup`:understanding). It belongs to the Data
+Discovery pillar's "group entities into DEGs; flag DEGs as Domains" primary action
+(per system-mission P-01). A data engineer or steward uses it to say "this dataset is
+part of the Finance domain"; a data scientist uses it to attach runs to an ML Experiment.
+
+A user reaches it from a data entity's Overview page, in the **"Data entity groups"**
+panel (`OverviewGroups.tsx`:31). Pressing **"Add to group"** opens a dialog whose only
+control is a search-autocomplete picker; the user types a group name, picks one, and
+presses **"Add"** (`AddDataEntityToGroupForm.tsx`:65-99). That fires
+`POST /api/dataentities/{data_entity_id}/data_entity_group` with body
+`{data_entity_group_id}` (the `addDataEntityToGroup` thunk, `dataentities.thunks.ts:219-236`),
+a six-line reactive proxy into `DataEntityServiceImpl.addDataEntityToDEG`
+(`DataEntityServiceImpl.java:387-408`). Each already-attached group shows as a row with a
+close (X) icon; pressing it fires `DELETE /.../data_entity_group/{group_id}` immediately
+(`GroupItem.tsx`:21-26 → `deleteDataEntityFromDEG`, `DataEntityServiceImpl.java:411-438`).
+Crucially, the picker is pre-filtered to `entityClassId=DATA_ENTITY_GROUP, manuallyCreated:true`
+(`AddDataEntityToGroupForm.tsx`:80-83) and the X icon only renders when
+`group.manuallyCreated` (`GroupItem.tsx`:38) — so the UI funnels the user onto exactly the
+constrained set the backend predicate `isManuallyCreatedDEG` accepts.
+
+The working parts the product owner would demo: a single-entity **ADD** (returns the parent
+DEG's ref, toggles the entity's `CUSTOM_GROUP` filled-flag), a single-entity **DELETE** (a
+HARD delete of the join row, conditionally clears the filled-flag when no manual group
+remains), a permission gate on **each direction independently** (`DATA_ENTITY_ADD_TO_GROUP`
+for POST, `DATA_ENTITY_DELETE_FROM_GROUP` for DELETE — `SecurityConstants.java:228-236`),
+and a SECOND, owner-side write path — the **DataEntityGroupForm** create/edit dialog
+(batch-K extension) where the DEG owner picks the full member set at once and the PUT
+`/api/dataentitygroups/{id}` bulk-REPLACES membership (`DataEntityGroupForm.tsx`:85-99).
+The two write paths have DIFFERENT authorization scopes: the per-entity POST is gated on
+the CHILD entity; the DEG-PUT is gated on the DEG itself (`DATA_ENTITY_GROUP_UPDATE`).
+
+The integration story is cross-pillar: a successful membership write is immediately visible
+to every authenticated user on the DEG's items list, on the child's `parentGroups`, and in
+Group lineage (P-05) — the read-collaborative posture (`addDataEntityDataEntityGroup`:downstream_side_effects).
+But it does NOT write the activity feed (P-07): neither add nor delete carries `@ActivityLog`,
+even though `ActivityEventTypeDto.DATA_ENTITY_RELATION_UPDATED` exists as a dead enum value
+(`ActivityEventTypeDto.java:12`) and every sibling write on the controller emits activity.
+
+Edge cases a senior product owner would flag in a demo: removing the last child leaves an
+**empty DEG** that still litters search and the Domain tiles; a double-click on "Add"
+yields a `400 "already in this DEG"` while a double-click on the X yields a cheerful
+"successfully deleted from group" toast even though nothing was deleted (the silent-204);
+an entity that was soft-deleted by an ingestion cascade and restored cannot be re-added
+(the join row is still there with `is_deleted=true`, so the ADD collides and reports
+"already in this DEG" while the user sees no membership); and under `auth.type=DISABLED`
+the whole surface is reachable anonymously. None of these is visible on the activity feed.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user opens a data entity's Overview, presses "Add to group", picks a
+    manually-created DEG, and presses "Add", that entity becomes a member of the chosen
+    DEG and the membership immediately shows as a chip in the "Data entity groups" panel.
+  derivation: |-
+    UI label "Add to group" + endpoint POST /api/dataentities/{id}/data_entity_group; pillar
+    P-01 primary action "group entities into DEGs".
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      AddDataEntityToGroupForm submit dispatches addDataEntityToGroup → dataEntityApi
+      .addDataEntityDataEntityGroup({dataEntityId, {dataEntityGroupId}}). The controller proxies
+      into addDataEntityToDEG: it loads the child + the target DEG (filtered by isManuallyCreatedDEG),
+      INSERTs the (group_oddrn, data_entity_oddrn) row via createRelationsReturning
+      (onDuplicateKeyIgnore + RETURNING), marks the child CUSTOM_GROUP-filled, and returns the
+      parent DEG's DataEntityRef. The UI shows the chip via the entity's parentGroups (GroupItem).
+      The happy path is NOT exercised by any test through this controller path — the only
+      DEG-creation-with-members coverage is the SIBLING POST /api/dataentitygroups path
+      (DataEntityDomainsTest.createDEG), which routes through DataEntityGroupServiceImpl.createRelations,
+      a different repository method.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+        section: understanding + concepts.operations
+        cite: "DataEntityServiceImpl.java:387-408 + ReactiveGroupEntityRelationRepositoryImpl.java:67-90"
+        note: "two GETs + INSERT(onDuplicateKeyIgnore) + markEntityFilled; returns parent DEG ref."
+      - sidecar: "(Rule-8 source read — UI sidecar absent)"
+        section: AddDataEntityToGroupForm.tsx:52-63,90-99
+        cite: "odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/AddDataEntityToGroupForm/AddDataEntityToGroupForm.tsx:52-63"
+        note: "handleFormSubmit → addDataEntityToGroup thunk → addDataEntityDataEntityGroup API. source_read_for_validation: true."
+      - sidecar: "(odd-platform test tree)"
+        section: DataEntityDomainsTest.java:105-114 (createDEG helper)
+        cite: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/DataEntityDomainsTest.java:105-114"
+        note: "members attached via the SIBLING /api/dataentitygroups bulk path — NOT this per-entity POST; ADD path is uncovered."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_ref: ""
+
+- id: H-002
+  hypothesis: |-
+    When a user presses the X (close) icon on a group chip, that entity is removed from
+    that group and the chip disappears.
+  derivation: |-
+    UI close affordance on GroupItem + endpoint DELETE /api/dataentities/{id}/data_entity_group/{group_id};
+    pillar P-01 membership curation.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      GroupItem.handleDelete dispatches deleteDataEntityFromGroup → DELETE endpoint →
+      deleteDataEntityFromDEG: after the manually-created pre-check it HARD-deletes the
+      (groupOddrn, entityOddrn) row via deleteRelationsReturning (DSL.deleteFrom) and returns 204.
+      DataEntityDomainsTest.testDomainsInfo COVERS this: it creates two DOMAIN DEGs with two
+      children each, then unAssignEntityFromDeg(child, deg) (DELETE, asserts 204) for both
+      children of the first domain, and asserts the domains-info children count drops accordingly.
+      So the DELETE happy path is VERIFIED at the integration level (via the service-integration
+      WebTestClient), though the assertion is on the domains-info aggregate rather than on the
+      per-chip UI state.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+        section: understanding + concepts.operations
+        cite: "DataEntityServiceImpl.java:411-438 + ReactiveGroupEntityRelationRepositoryImpl.java:57-65"
+        note: "HARD DELETE via DSL.deleteFrom; conditional markEntityUnfilled; 204."
+      - sidecar: "(odd-platform test tree)"
+        section: DataEntityDomainsTest.java:80-93,116-124
+        cite: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/DataEntityDomainsTest.java:116-124"
+        note: "unAssignEntityFromDeg DELETEs and asserts 204; domains-info count drops post-delete. The DELETE happy path is covered."
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: teardown
+    coverage: verified
+    test_ref: "DataEntityDomainsTest.testDomainsInfo (odd-platform-api .../service/integration/DataEntityDomainsTest.java:80-93 — unAssignEntityFromDeg DELETE → 204 + domains-info count)"
+
+- id: H-003
+  hypothesis: |-
+    When a user tries to add an entity to a DEG it is already in (e.g. a double-click on
+    "Add"), the system tells them it is already a member rather than silently succeeding twice.
+  derivation: |-
+    Idempotence/negative-space of the ADD path; the duplicate-membership 400 at
+    DataEntityServiceImpl.java:402.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      On a duplicate, createRelationsReturning's onDuplicateKeyIgnore returns an empty Flux;
+      addDataEntityToDEG's .switchIfEmpty raises BadUserRequestException("Data entity is already
+      in this DEG") → HTTP 400. The behaviour is real and deliberate, but it is UNTESTED (zero-match
+      grep on the ADD service/controller in src/test) AND it is asymmetric with DELETE (H-007). The
+      UI surfaces the raw error message; the add success toast otherwise reads "Data entity
+      successfully added to group." (dataentities.thunks.ts:234).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+        section: concepts.invariants[2] + bugs_limitations_corner_cases
+        cite: "DataEntityServiceImpl.java:401-403 + ReactiveGroupEntityRelationRepositoryImpl.java:87-88"
+        note: "empty-Flux-on-conflict → switchIfEmpty → 400 'already in this DEG'."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: ""
+
+- id: H-004
+  hypothesis: |-
+    When a user adds an entity to a DEG, the platform only lets them add it to DEGs they are
+    entitled to curate — a steward cannot drop entities into another team's "Finance Domain"
+    they have no permission over.
+  derivation: |-
+    The endpoint operates on a DEG (data_entity_group_id) named in the request; the operator
+    mental model of "managing a domain's membership" implies the permission is checked against
+    the DEG being curated. Pillar P-09 (security gates every mutation).
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The only authorization check is on the CHILD entity. SecurityConstants.java:228-231 registers
+      POST /api/dataentities/{data_entity_id}/data_entity_group with AuthorizationManagerType.DATA_ENTITY,
+      and URLResourceExtractor pulls data_entity_id (the child) from the PATH; the target
+      data_entity_group_id is in the BODY and has NO authorization check. PolicyPermissionDto.java:22-23
+      confirms DATA_ENTITY_ADD_TO_GROUP / DELETE_FROM_GROUP are DATA_ENTITY-scoped — there is no
+      DEG-side enum. A caller with DATA_ENTITY_ADD_TO_GROUP on entity X (commonly granted to every owner
+      of X via an "is: dataEntity:owner" Policy) can place X into ANY manually-created DEG in the catalog.
+      This is the write_collaborative_no_deg_side_authorization headline; it is the operator-visible twin
+      of the read-collaborative posture. (Already tracked: PLT-024 Defect 1 / DOC-188 Facet 2.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+        section: security.known_security_gaps[0] + bugs_limitations_corner_cases[1]
+        cite: "SecurityConstants.java:228-231 + PolicyPermissionDto.java:22"
+        note: "rule binds the CHILD path-var; DEG id in body is unchecked; permission is DATA_ENTITY-scoped."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+        section: dependencies_semantic (authorization)
+        cite: "SecurityConstants.java:232-236"
+        note: "DELETE rule is also child-side scoped; same no-DEG-side-gate posture."
+    operator_visible_failure: |-
+      (1) Cross-owner pollution: a steward of any entity can drop that entity into a "Finance Domain"
+      or "Critical Systems" DEG owned by an unrelated team; the DEG owner has no veto and cannot defend
+      the DEG short of revoking DATA_ENTITY_ADD_TO_GROUP from every owner of every entity. (2) The Catalog
+      Overview's Domain tiles can be polluted by drive-by writes from outside the domain's team. (3)
+      Combined with the forensic silence (H-005), the DEG owner cannot even discover WHO added the
+      unwanted entity or WHEN. (4) Under auth.type=DISABLED (H-011) the same surface is reachable
+      anonymously. Whether to fix (per-DEG scope) or document (write-collaborative by design) is the
+      maintainer call PLT-024 Thread A frames; DOC-188 has shipped the documented-behaviour caveat.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-005
+  hypothesis: |-
+    When an entity is added to (or removed from) a DEG, an operator auditing "who added this
+    entity to the Finance Domain, and when?" can find that event on the activity feed.
+  derivation: |-
+    Pillar P-07 Activity Feed is the documented audit surface for entity changes; every sibling
+    write on the controller (tags, business name, status, terms) emits activity; the
+    DATA_ENTITY_RELATION_UPDATED enum value exists.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Neither addDataEntityToDEG (DataEntityServiceImpl.java:387-408) nor deleteDataEntityFromDEG
+      (lines 411-438) carries @ActivityLog, while upsertTags (:358), upsertBusinessName (:239),
+      updateStatus (:198), addDataEntityTerm (:153) all do. ActivityEventTypeDto.DATA_ENTITY_RELATION_UPDATED
+      exists at enum line 12 but a grep across odd-platform-api/src/main/java returns ONLY the declaration —
+      it is dead. DEG membership flips produce NO activity row and NO log line. (Already tracked: PLT-024
+      Defect 2 / DOC-188 Facet 3, cross-linked to DOC-181's enum-coverage gap.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+        section: bugs_limitations_corner_cases[0] + security.known_security_gaps[1]
+        cite: "DataEntityServiceImpl.java:387-438 + ActivityEventTypeDto.java:12"
+        note: "no @ActivityLog on add or delete; dead DATA_ENTITY_RELATION_UPDATED enum value."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+        section: understanding (headline finding 3)
+        cite: "DataEntityServiceImpl.java:388-438"
+        note: "DEG membership flips unaudited vs TAG/TERM/OWNERSHIP/STATUS sibling events."
+    operator_visible_failure: |-
+      (1) A compliance auditor reconstructing "who placed dataset D into the Finance Domain on date Z"
+      via GET /api/dataentities/{id}/activity or the global activity feed finds NOTHING — the membership
+      change is invisible. (2) The DEG owner who discovers an unwanted entity in their domain (per H-004)
+      cannot find the actor or timestamp. (3) The dead enum value is a forensic signal that the emission
+      was once planned and never wired — a maintainer reading the enum would reasonably assume the event
+      fires. (4) The silence is symmetric on add AND delete, so neither direction of the curation is auditable.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-006
+  hypothesis: |-
+    An operator granted the capability to "manage DEG membership" can both add and remove
+    entities from groups.
+  derivation: |-
+    The operator mental model of a single "curate membership" capability; the two permissions
+    DATA_ENTITY_ADD_TO_GROUP / DATA_ENTITY_DELETE_FROM_GROUP at PolicyPermissionDto.java:22-23.
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      There is no single "manage membership" capability — add and remove are TWO independently-grantable
+      permissions. SecurityConstants.java:228-236 registers DATA_ENTITY_ADD_TO_GROUP for POST and
+      DATA_ENTITY_DELETE_FROM_GROUP for DELETE as separate rules; PolicyPermissionDto.java:22-23 declares
+      both as distinct DATA_ENTITY-scoped enum values. A Policy granting only ADD lets the holder add but
+      not remove; only DELETE, the reverse. The UI reflects this: the "Add to group" button is gated on
+      DATA_ENTITY_ADD_TO_GROUP (OverviewGroups.tsx:32,91) and the X chip on DATA_ENTITY_DELETE_FROM_GROUP
+      (GroupItem.tsx:37). The hypothesis is TRUE only when the operator was granted BOTH; the live
+      permissions doc does not flag "manage DEG membership" as a compound capability. (Already tracked:
+      PLT-024 / DOC-188; the permissions-page cross-link is a DOC-188 acceptance criterion, done.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+        section: understanding (headline finding 1) + tests_coverage_semantic.uncovered_behaviours
+        cite: "SecurityConstants.java:228-236 + PolicyPermissionDto.java:22-23"
+        note: "two independent permissions; a Policy with only ADD cannot DELETE and vice versa."
+    operator_visible_failure: |-
+      An operator who intends to delegate "let this steward curate the Finance Domain's membership" and
+      grants only one of the two permissions creates a half-capability: the steward can add but is blocked
+      on remove (403) or vice versa, with no up-front signal of why. The asymmetry is operator-surprising
+      and is not surfaced as a compound capability in the permissions UI. Low severity (UX/policy-authoring),
+      not a data-integrity defect.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-007
+  hypothesis: |-
+    When a user removes an entity that is not actually in the group (e.g. a double-click on the
+    X, or a stale UI), the platform responds consistently with how it handles the duplicate-add
+    case — the user gets a coherent signal about whether anything changed.
+  derivation: |-
+    Idempotence symmetry between ADD and DELETE; ADD raises 400 on duplicate (H-003), so the
+    symmetric expectation is a coherent DELETE-no-op signal.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      DELETE is silently idempotent while ADD is not. deleteDataEntityFromDEG issues
+      deleteRelationsReturning(...).collectList() with NO .switchIfEmpty — an empty result flows
+      through ignoreElements().thenReturn(noContent()) returning 204 IDENTICAL to a real removal
+      (DataEntityServiceImpl.java:421-426). ADD raises 400 on duplicate (H-003). The UI compounds this:
+      GroupItem.handleDelete fires the DELETE with NO confirmation dialog and on success shows the toast
+      "Data entity successfully deleted from group." (dataentities.thunks.ts:253) — so a no-op DELETE shows
+      a SUCCESS message even though nothing was deleted. Combined with the forensic silence (H-005), neither
+      the HTTP response, the toast, nor the activity feed tells the caller whether anything actually changed.
+      (Already tracked: PLT-024 Defect 3 / DOC-188 Facet 4.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+        section: understanding (headline finding 2) + concepts.invariants[3]
+        cite: "DataEntityServiceImpl.java:421-426"
+        note: "no switchIfEmpty on DELETE; empty Flux → 204; ADD raises 400 on duplicate."
+      - sidecar: "(Rule-8 source read — UI sidecar absent)"
+        section: GroupItem.tsx:21-26 + dataentities.thunks.ts:251-254
+        cite: "odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/GroupItem/GroupItem.tsx:21-26"
+        note: "delete fires immediately, no confirm; success toast shows even on a 204 no-op. source_read_for_validation: true."
+    operator_visible_failure: |-
+      (1) A user double-clicking the X (or removing an already-removed chip in a stale tab) sees
+      "Data entity successfully deleted from group." for a no-op — a false-positive success. (2) A
+      reconciliation script that ADD-then-DELETEs faces two different idempotence contracts (400 vs 204)
+      for write-symmetric operations and must special-case them. (3) With no confirmation dialog on the X,
+      an accidental click silently HARD-deletes the membership (unrecoverable except by re-add — see H-009).
+      (4) The caller cannot distinguish "removed" from "was already absent" from HTTP, toast, or audit.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_ref: ""
+
+- id: H-008
+  hypothesis: |-
+    When a user tries to add an entity to a DEG that is invalid (an ingested DEG, a non-DEG entity,
+    or a deleted DEG), the platform gives them a clear, distinct message explaining what went wrong.
+  derivation: |-
+    Endpoint error-handling for the DEG-type pre-check; the conflated 400 at
+    DataEntityServiceImpl.java:416-420 (and the optional/null data_entity_group_id error).
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      At the API the three failure modes — (a) DEG id does not exist, (b) entity is not manually-created
+      (e.g. ingested DEG), (c) entity is not a DATA_ENTITY_GROUP — all collapse to the SAME 400 "Entity with
+      id %s is not manually created DEG" (DataEntityServiceImpl.java:416-420, mirrored on ADD at :393-397);
+      a body of {} or {"data_entity_group_id": null} yields the even-worse "Entity with id null is not manually
+      created DEG" (components.yaml:1087-1092 declares the field WITHOUT required). HOWEVER, from the normal
+      UI seat these are largely UNREACHABLE: the Add picker is pre-filtered to
+      {entityClassId=DATA_ENTITY_GROUP, manuallyCreated:true} (AddDataEntityToGroupForm.tsx:80-83) and the
+      group field is required:true (line 76) — so a UI user cannot pick an ingested DEG, a non-DEG entity,
+      or submit a null id. The conflated/null errors bite only DIRECT API/S2S callers. Hence "partial": the
+      drift is real at the API contract, masked at the UI. (Already tracked: PLT-024 Defect 6 + the optional-id
+      sub-facet / DOC-188.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+        section: concepts.invariants[2] (DEG-type pre-check) + understanding
+        cite: "DataEntityServiceImpl.java:416-420"
+        note: "three failure modes → one conflated 400 message."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+        section: bugs_limitations_corner_cases[3] (optional data_entity_group_id)
+        cite: "components.yaml:1087-1092 + DataEntityServiceImpl.java:393"
+        note: "no required clause → get(null) → 'id null' error message."
+      - sidecar: "(Rule-8 source read — UI sidecar absent)"
+        section: AddDataEntityToGroupForm.tsx:73-86
+        cite: "odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/AddDataEntityToGroupForm/AddDataEntityToGroupForm.tsx:80-83"
+        note: "picker constrained to manuallyCreated DEGs + required:true — conflated/null cases UI-unreachable. source_read_for_validation: true."
+    operator_visible_failure: |-
+      For a DIRECT API or S2S caller (not the UI): (1) a 400 "...is not manually created DEG" cannot
+      distinguish "I pointed at a deleted DEG" from "I pointed at the wrong entity" from "this DEG was
+      ingested, not manual" — three different remediations behind one message; (2) an omitted/null
+      data_entity_group_id produces a message mentioning "id null" rather than "data_entity_group_id is
+      required". For the UI user the picker pre-filter makes these unreachable, which is why this is partial
+      rather than a high-severity contradiction.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_ref: ""
+
+- id: H-009
+  hypothesis: |-
+    When an entity that was previously in a DEG and got soft-deleted (e.g. removed by an
+    ingestion-deletion cascade and then restored) is added back to that DEG, the re-add succeeds
+    and the membership reappears.
+  derivation: |-
+    Negative-space lifecycle: the (group_oddrn, data_entity_oddrn) PK excludes is_deleted; the cascade
+    soft-delete + restore path vs the ADD path.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The re-add FAILS with a misleading error. The PK (group_oddrn, data_entity_oddrn) does NOT include
+      is_deleted (V0_0_21:6 declared the PK; V0_0_79:14-15 added the column later). When the child entity is
+      soft-deleted via STATUS=DELETED cascade, softDeleteRelationsForDeletedDataEntities
+      (ReactiveGroupEntityRelationRepositoryImpl.java:92-101) flips is_deleted=true; the row REMAINS. On
+      re-add, createRelationsReturning's onDuplicateKeyIgnore skips the INSERT (PK collision), the Flux is
+      empty, and addDataEntityToDEG raises "Data entity is already in this DEG" — but getManuallyCreatedRelations
+      (filtered is_deleted=false, :127-137) reports ZERO memberships, so the user sees no chip. The only fix
+      path, restoreRelationsForDataEntities (:104-112), is NOT called from addDataEntityToDEG. (Already
+      tracked: covered by the DOC-188 admonition set; the code remediation is implicit in PLT-024 Thread A/F
+      scope though not separately enumerated — see distinct_from note in cross_references.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "ReactiveGroupEntityRelationRepositoryImpl.java:79-89,92-101,104-112,127-137 + V0_0_21:6 + V0_0_79:14-15"
+        note: "soft-deleted row blocks PK; onDuplicateKeyIgnore → 'already in this DEG'; restore not invoked on add."
+    operator_visible_failure: |-
+      (1) An operator who deletes then restores a data entity (a routine ingestion-lifecycle event) finds
+      they CANNOT re-file it into its former DEGs — every attempt returns "Data entity is already in this DEG"
+      while the entity visibly shows no group membership. (2) The error message is actively misleading: it
+      asserts a membership the user cannot see. (3) The only recovery is admin DB intervention
+      (restoreRelationsForDataEntities is not exposed on the add path), so a non-DBA operator is stuck. This
+      is the soft_deleted_membership_blocks_re_add_misleading_error drift and is one of the highest-leverage
+      catches because it surfaces only after a delete+restore cycle that the happy-path tests never exercise.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_ref: ""
+
+- id: H-010
+  hypothesis: |-
+    When a user removes an entity from a DEG by clicking the X chip, and later wants it back,
+    the restore behaves the same regardless of whether the original removal was a user click or an
+    ingestion-deletion cascade.
+  derivation: |-
+    Negative-space durability symmetry: user DELETE is a HARD delete; the cascade is a soft delete with
+    a restore path (hard_delete_vs_soft_delete_cascade_semantic_gap).
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The two removals have DIFFERENT durability. User-initiated DELETE HARD-deletes the row
+      (deleteRelationsReturning → DSL.deleteFrom, ReactiveGroupEntityRelationRepositoryImpl.java:57-65) — the
+      row is gone, so a later entity-restore has nothing to resurrect; the membership stays permanently
+      removed and must be manually re-added. The ingestion-deletion cascade SOFT-deletes (:92-101), and
+      restoreRelationsForDataEntities (:104-112) resurrects those memberships on entity restore. Same
+      operator-visible action ("entity removed from group"), different durability — and (forensic silence,
+      H-005) no audit trail records which kind of removal happened. (Already tracked: PLT-024 / DOC-188 cascade
+      admonition.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+        section: concepts.invariants[5] (HARD vs soft) + understanding
+        cite: "ReactiveGroupEntityRelationRepositoryImpl.java:57-65 (HARD) vs :92-112 (soft + restore)"
+        note: "user DELETE hard-deletes; cascade soft-deletes + restorable; different durability."
+    operator_visible_failure: |-
+      (1) An operator who removes an entity from a DEG by hand and later restores a (separately) deleted
+      entity is surprised that cascade-removed memberships come back but hand-removed ones do not — the same
+      "removed from group" action behaves differently depending on an invisible distinction. (2) There is no
+      "restore my removed memberships" affordance for user-initiated removals. (3) The asymmetry interacts
+      with H-009: a hand-DELETE leaves no row (re-add works cleanly), but a cascade-soft-delete leaves a row
+      that BLOCKS re-add — so the two removal kinds also differ in their re-add behaviour. Documented by DOC-188.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_ref: ""
+
+- id: H-011
+  hypothesis: |-
+    DEG membership writes are only available to authenticated, authorized callers — a deployment
+    does not let just anyone rewrite the Domain tile grid.
+  derivation: |-
+    Pillar P-09 (security gates mutations); the disabled_mode_bypass cross-batch pattern on
+    SecurityConstants-gated endpoints.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Under auth.type=DISABLED, DisabledAuthSecurityConfiguration's .anyExchange().permitAll() bypasses
+      SECURITY_RULES entirely; the SecurityRule entries for DATA_ENTITY_ADD_TO_GROUP / DELETE_FROM_GROUP are
+      registered but never applied. An anonymous caller can POST and DELETE against the membership endpoints
+      and pollute the Catalog Overview Domain tiles — with no audit trail (H-005). This is the same DISABLED
+      bypass shape catalogued across batches A/B/C/E/F/G/K. (Already tracked: PLT-024 Defect 5 / DOC-188
+      DISABLED caveat.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+        section: bugs_limitations_corner_cases[5] + security.known_security_gaps[2]
+        cite: "SecurityConstants.java:228-236 (rules not consulted under DISABLED)"
+        note: "DISABLED → permitAll bypasses the membership SecurityRules; anonymous writes."
+    operator_visible_failure: |-
+      (1) A DISABLED-mode deployment exposed on a network-reachable port (a demo left running, a misconfigured
+      prod) lets any anonymous caller add/remove DEG memberships, polluting Domain tiles mid-demo or in prod.
+      (2) Combined with forensic silence, there is no record of the anonymous writes. Severity is HIGH on a
+      network-reachable DISABLED deployment, LOW if DISABLED is honestly dev-only — the framing DOC-188 / the
+      LSN-002 dev-only posture supplies.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_ref: ""
+
+- id: H-012
+  hypothesis: |-
+    When a DEG owner opens the group's Edit dialog, removes one entity chip, and presses "Save
+    changes", only that one entity is removed — the other members are untouched.
+  derivation: |-
+    UI label "Edit Group" / "Save changes" on DataEntityGroupForm (batch-K extension); the
+    senior-PO consistency question — does the DEG-side edit behave like the per-entity X chip?
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The net effect is correct (the removed entity ends up out of the group), but the MECHANISM differs from
+      the per-entity flow in a way that matters. DataEntityGroupForm's entities field is a useFieldArray holding
+      the FULL membership set; the X chip on EntityItem calls useFieldArray.remove (DataEntityGroupForm.tsx:101)
+      — NO server call fires until Save. On Save, handleSubmitForm dispatches updateDataEntityGroup with the
+      COMPLETE entities[] array (DataEntityGroupForm.tsx:85-99) and the PUT /api/dataentitygroups/{id} bulk-REPLACES
+      the membership set. So a single-chip removal is implemented as a full-set replace, gated on a DIFFERENT
+      permission (DATA_ENTITY_GROUP_UPDATE, DEG-side — contrast the per-entity DELETE's child-side
+      DATA_ENTITY_DELETE_FROM_GROUP per H-004/H-006), and the membership delta is NOT surfaced as a per-member
+      event (at most a DEG-updated event). The form has confirmOnClose (line 200) but the entities field is only
+      required:true (line 78) — Save with a shorter list silently replaces. Hence "partial": the visible outcome
+      matches, the authorization/audit/semantics underneath do not.
+    evidence:
+      - sidecar: "(Rule-8 source read — UI sidecar absent; per F-012 batch-K extension)"
+        section: DataEntityGroupForm.tsx:75-101 (useFieldArray + handleSubmitForm) + EntityItem usage
+        cite: "odd-platform-ui/src/components/DataEntityDetails/DataEntityGroup/DataEntityGroupForm/DataEntityGroupForm.tsx:85-101"
+        note: "bulk-replace PUT on Save; chip-remove is client-side useFieldArray.remove; DEG-side permission. source_read_for_validation: true."
+      - sidecar: odd-platform__java__service__service__DataEntityServiceImpl.md
+        section: understanding (DataEntityGroupServiceImpl sibling write path)
+        cite: "(DataEntityGroupServiceImpl.updateDataEntityGroup — DEG-PUT bulk membership)"
+        note: "the PUT path replaces the membership set; distinct from the per-entity scalar POST/DELETE."
+      - sidecar: "(odd-platform test tree)"
+        section: DataEntityGroupServiceImplTest.java:55-68
+        cite: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataEntityGroupServiceImplTest.java:55-68"
+        note: "updateDataEntityGroup guards are tested (NotFound on missing, BadRequest on ingested) — the bulk-replace happy-path membership delta is NOT."
+    operator_visible_failure: |-
+      (1) An operator who uses the DEG Edit dialog (rather than the per-entity X) to remove one entity is
+      silently performing a full-set replace under a different permission — if a concurrent edit added a member
+      between open and Save, that member is dropped (last-write-wins on the whole set). (2) The membership change
+      shows in the activity feed (if at all) as "DEG updated", not "entity X removed from DEG Y" — so even the
+      DEG-side path's audit is coarse. (3) The two membership-edit surfaces (per-entity chip vs DEG Edit dialog)
+      behave inconsistently in authorization scope and audit granularity, which a senior PO would flag as a
+      cross-surface consistency defect. The visible single-removal outcome is correct, hence partial.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_ref: ""
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |-
+    Write-collaborative DEG: a caller with DATA_ENTITY_ADD_TO_GROUP on entity X can add X into ANY
+    manually-created DEG (incl. another team's Finance Domain) — the gate is on the CHILD path-var, the
+    target DEG id in the body is unchecked (SecurityConstants.java:228-231 + PolicyPermissionDto.java:22-23).
+  dedup_status: already_tracked
+  tracked_as: PLT-024
+  proposed_fix_anchor: "PLT-024 Thread A — introduce DATA_ENTITY_GROUP_MEMBERSHIP_MANAGE evaluated against the target DEG id, OR a strict-scope toggle. Convergent validation: this reflection independently re-derived PLT-024 Defect 1."
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    Forensic silence: neither addDataEntityToDEG nor deleteDataEntityFromDEG carries @ActivityLog; the
+    DATA_ENTITY_RELATION_UPDATED enum value (ActivityEventTypeDto.java:12) is dead — membership flips are
+    unauditable on the activity feed.
+  dedup_status: already_tracked
+  tracked_as: PLT-024
+  proposed_fix_anchor: "PLT-024 Thread B — add @ActivityLog(event=DATA_ENTITY_RELATION_UPDATED) to both methods (revives the dead enum). Convergent validation: re-derived PLT-024 Defect 2."
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: |-
+    Soft-deleted membership blocks re-add: after an entity is cascade-soft-deleted + restored, re-adding it
+    to its former DEG returns "Data entity is already in this DEG" while getManuallyCreatedRelations reports
+    zero membership; restoreRelationsForDataEntities is never called from the add path.
+  dedup_status: net_new
+  distinct_from: PLT-024
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: |-
+    addDataEntityToDEG should detect an existing soft-deleted (group_oddrn, data_entity_oddrn) row and call
+    restoreRelationsForDataEntities, OR a partial unique index (group_oddrn, data_entity_oddrn) WHERE
+    is_deleted=false should replace the PK. PLT-024 lists six defects but the soft-delete-blocks-re-add and
+    HARD-vs-soft cascade nuances are named in its preamble as "the soft-delete-blocks-re-add + HARD-vs-soft
+    cascade nuances from the substrate" yet NOT given a numbered Thread — this is the distinct, un-threaded
+    code fix. DOC-188 documents the behaviour; no code item threads the fix.
+
+### caveat_candidates
+- hypothesis_id: H-006
+  one_line: |-
+    ADD and DELETE are two independently-grantable permissions; "manage DEG membership" is a compound
+    capability requiring BOTH grants — not surfaced as such in the permissions UI.
+  dedup_status: already_tracked
+  tracked_as: DOC-188
+- hypothesis_id: H-007
+  one_line: |-
+    Idempotence asymmetry: ADD raises 400 on duplicate, DELETE silently returns 204 on no-op; the UI X chip
+    fires with no confirmation and shows a "successfully deleted" toast even for a 204 no-op.
+  dedup_status: already_tracked
+  tracked_as: DOC-188
+- hypothesis_id: H-008
+  one_line: |-
+    Conflated 400 on the DEG-type pre-check (3 failure modes → one message; null id → "id null" error) — but
+    UI-unreachable because the Add picker pre-filters to manuallyCreated DEGs + required:true; bites direct
+    API/S2S callers only.
+  dedup_status: already_tracked
+  tracked_as: DOC-188
+- hypothesis_id: H-010
+  one_line: |-
+    HARD-vs-soft delete cascade gap: user-initiated removal is a permanent HARD delete; ingestion-cascade
+    removal is a restorable soft delete — same "removed from group" action, different durability, no audit
+    trail to distinguish.
+  dedup_status: already_tracked
+  tracked_as: DOC-188
+- hypothesis_id: H-011
+  one_line: |-
+    DISABLED-mode bypass: under auth.type=DISABLED the membership endpoints are anonymously reachable; any
+    caller can pollute Domain tiles with no audit trail.
+  dedup_status: already_tracked
+  tracked_as: DOC-188
+- hypothesis_id: H-012
+  one_line: |-
+    The DataEntityGroupForm Edit dialog implements single-chip removal as a full-set bulk-replace PUT under a
+    DIFFERENT permission (DATA_ENTITY_GROUP_UPDATE, DEG-side) with coarse "DEG updated" audit — inconsistent
+    with the per-entity X chip's child-side DELETE; concurrent edits are last-write-wins on the whole set.
+  dedup_status: net_new
+  recommended_log_as: "caveat in features/data-discovery/groups-domains (note the two membership-edit surfaces differ in authorization scope + audit granularity + bulk-replace concurrency) OR DOC-GAP-NNN"
+
+### functional_test_demands
+# LSN-030 (Rule 11): every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# Confirmed-but-untested promises (H-001, H-003) belong HERE, not silently dropped to routes_to_finding: none.
+# The feature-flow test_matrix shows unit=GAP, integration=PARTIAL (DELETE only), performance=GAP, security=GAP —
+# 11 of 12 promises are unverified. This is the second coverage frontier and is itself the headline test finding.
+- use_case_id: F-012-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Add-to-group from the entity Overview makes the entity a member of the chosen manually-created DEG and shows the chip."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-1)"
+  proposed_test: |-
+    Integration (WebFluxTest/WebTestClient): create a manual DEG; POST /api/dataentities/{child}/data_entity_group
+    {data_entity_group_id}; assert 200 with the parent DEG's DataEntityRef; assert getDataEntityGroupsItems
+    reflects the child. THE highest-value gap — the per-entity ADD path has ZERO direct test coverage (the
+    sibling /api/dataentitygroups bulk path is the only thing exercised today).
+- use_case_id: F-012-UC-3
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "Adding an entity already in the DEG returns 400 'Data entity is already in this DEG'."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-3)"
+  proposed_test: |-
+    Integration: POST the same (child, DEG) twice; assert the second returns 400 with the duplicate message.
+    Pins the onDuplicateKeyIgnore→switchIfEmpty contract — a refactor to a plain INSERT would change the
+    exception class (USR003) and silently alter the message.
+- use_case_id: F-012-UC-4
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "DEG membership writes are gated against the DEG being curated (operator expectation) — currently gated only on the child."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-4)"
+  proposed_test: |-
+    Security integration: configure two unrelated Owners; grant user A DATA_ENTITY_ADD_TO_GROUP only on
+    entity X (owned by A); assert A CAN add X into a DEG owned by B (pins the current write-collaborative
+    posture, REFACTOR-style). When PLT-024 Thread A lands, this flips to assert A is FORBIDDEN — the
+    regression guard for the fix.
+- use_case_id: F-012-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "DEG membership add/delete is recorded on the activity feed (auditable)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-5)"
+  proposed_test: |-
+    Integration NEGATIVE assertion: POST a membership write; assert GET /api/dataentities/{id}/activity
+    returns NO DATA_ENTITY_RELATION_UPDATED row (pins the current forensic silence). When PLT-024 Thread B
+    lands, flip to assert the event IS emitted with before/after payload. Pins both directions of the change.
+- use_case_id: F-012-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "A caller with only DATA_ENTITY_ADD_TO_GROUP can add but not remove (and vice versa)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-6)"
+  proposed_test: |-
+    Security integration: caller with ONLY DATA_ENTITY_ADD_TO_GROUP → POST succeeds, DELETE returns 403;
+    caller with ONLY DATA_ENTITY_DELETE_FROM_GROUP → the reverse. Documents the implicit ADR that add/remove
+    are distinct policy capabilities.
+- use_case_id: F-012-UC-7
+  hypothesis_id: H-007
+  kind: edit-reconcile
+  promise: "DELETE on a non-existent membership behaves coherently with ADD's duplicate handling."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-7)"
+  proposed_test: |-
+    Integration: DELETE a (child, DEG) pair that has no membership; assert the CURRENT 204-silent behaviour
+    (vs ADD's 400). Pins the idempotence asymmetry so PLT-024 Thread C (harmonisation) cannot land green
+    without updating the test.
+- use_case_id: F-012-UC-8
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: "Invalid-DEG targets (ingested DEG / non-DEG / missing id / null body) produce clear distinct errors."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-8)"
+  proposed_test: |-
+    Integration: POST against (a) a non-existent id, (b) an ingested DEG, (c) a non-DEG entity, (d) body {} —
+    assert the current conflated 400 / 'id null' messages (pins behaviour for PLT-024 Thread F disambiguation).
+    UI-level e2e is NOT needed for (a)-(d) since the picker pre-filter makes them UI-unreachable.
+- use_case_id: F-012-UC-9
+  hypothesis_id: H-009
+  kind: resolve-later
+  promise: "An entity cascade-soft-deleted then restored can be re-added to its former DEG."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-9)"
+  proposed_test: |-
+    Integration: add child to DEG → STATUS=DELETED cascade (soft-delete) → restore entity → re-add same
+    (child, DEG); assert the CURRENT misleading 400 'already in this DEG' while getManuallyCreatedRelations
+    reports zero. The regression guard for the BUG-NNN fix (restore-on-add or partial unique index).
+- use_case_id: F-012-UC-10
+  hypothesis_id: H-010
+  kind: resolve-later
+  promise: "Restore behaves the same whether removal was a user click or an ingestion cascade."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-10)"
+  proposed_test: |-
+    Integration: (a) user-DELETE a membership then restore the entity → assert membership does NOT return
+    (HARD delete, no row); (b) cascade-soft-delete then restore → assert membership DOES return. Pins the
+    durability asymmetry; guards a refactor that changes user-DELETE to soft-delete.
+- use_case_id: F-012-UC-11
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: "Membership writes require an authenticated, authorized caller."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-11)"
+  proposed_test: |-
+    Security integration: assert anonymous POST/DELETE is 401 under LOGIN_FORM/OAUTH2/LDAP and reachable
+    under auth.type=DISABLED; assert a caller without the permission gets 403. Pins the DISABLED posture +
+    the permission gate (no permission-regression test exists for either direction today).
+- use_case_id: F-012-UC-12
+  hypothesis_id: H-012
+  kind: edit-reconcile
+  promise: "Removing one chip in the DEG Edit dialog removes only that entity."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-012-UC-12)"
+  proposed_test: |-
+    e2e (Playwright, odd-team IT): open a DEG with 3 members in Edit, remove one chip, Save; assert the DEG
+    has exactly the other 2 (pins the bulk-replace happy path — DataEntityGroupServiceImplTest covers only
+    the NotFound/ingested guards, not the membership delta). Also assert the per-entity X chip and the Edit
+    dialog produce the same membership outcome (cross-surface consistency).
+- use_case_id: F-012-UC-2
+  hypothesis_id: H-002
+  kind: teardown
+  promise: "Pressing the X chip removes the entity from the group."
+  verdict: confirmed
+  coverage: verified
+  recommended_log_as: "n/a — VERIFIED by DataEntityDomainsTest.testDomainsInfo (DELETE path + domains-info count)"
+  proposed_test: |-
+    Already covered at integration: DataEntityDomainsTest.testDomainsInfo (unAssignEntityFromDeg DELETE → 204
+    + domains-info children count drop). A UI-level e2e asserting the chip disappears would strengthen the
+    user-seat coverage but is not strictly required.
+
+### probes_emitted
+- probe_id: PENDING-F-012-1
+  hypothesis_id: H-009
+  full_hypothesis: |-
+    When an entity that was previously a DEG member is soft-deleted via the STATUS=DELETED ingestion-deletion
+    cascade and then RESTORED, re-adding it to that same DEG via POST /api/dataentities/{id}/data_entity_group
+    fails with "Data entity is already in this DEG" (the leftover is_deleted=true join row collides with the PK
+    under onDuplicateKeyIgnore) while getManuallyCreatedRelations reports zero memberships — i.e. the misleading
+    error is reproducible on a live instance, not just inferred from the schema/code.
+  expected_outcome: |-
+    The re-add returns HTTP 400 "Data entity is already in this DEG" AND the entity shows no group membership
+    in the UI / getDataEntityGroupsItems — confirming the soft_deleted_membership_blocks_re_add drift end-to-end.
+  local_execution: |-
+    Local-only per Rule 6: docker-compose ODD platform + Postgres; ingest entity X into manual DEG Y; flip X to
+    STATUS=DELETED (cascade soft-deletes the join row); restore X; POST X into Y again; assert the 400 + empty
+    membership. No remote infra. (The verdict is already 'contradicted' from static evidence — this probe pins
+    the live reproduction for the bug report / the regression test seeding.)
+  status: pending-reflection-verification
+  note: "Parallel-safe mode: recorded as PENDING id; no P-NNN file created (orchestrator/probe-runner mints)."
+
+### validation_gaps
+- sidecar: feature-flows/detail/F-012.yaml
+  field_insufficient: "contributing_nodes_added (batch-K) name DataEntityGroupForm + EntityItem but NO sidecars exist for them"
+  proposed_refresh: |-
+    The batch-K UI extension added `odd-platform ts react-component component:DataEntityGroupForm` and
+    `:EntityItem` as contributing nodes, AND the F-012-anchored per-entity write surface is driven by
+    OverviewGroups / AddDataEntityToGroupForm / GroupItem — but NONE of these five React components has an
+    enriched sidecar in understanding/ (verified by repeated glob). Per Rule 9 this reflection is therefore
+    PART-UI-ONLY: I read the .tsx sources directly under the Rule-8 single-line exception
+    (source_read_for_validation: true on H-001/H-007/H-008/H-012) to validate the UI-tier hypotheses, but the
+    user-facing surface that the entire feature exists to explain has no first-class ontology node. A
+    file-analyser pass should enrich AddDataEntityToGroupForm (the picker pre-filter to manuallyCreated DEGs +
+    required:true is load-bearing — it makes the conflated-400/null-id drifts UI-unreachable), GroupItem (the
+    no-confirm immediate delete + success-toast-on-204), and DataEntityGroupForm (the bulk-replace PUT semantics).
+- sidecar: odd-platform__java__service__service__DataEntityServiceImpl.md
+  field_insufficient: "tests_coverage_semantic — predates DataEntityGroupServiceImplTest"
+  proposed_refresh: |-
+    The DEG-membership sidecars assert (via zero-match grep at session 2026-05-19) that no test exercises the
+    add/delete service paths. As of the current tree a DataEntityGroupServiceImplTest.java EXISTS
+    (@validates F-012) covering the DEG-PUT update guards (NotFound on missing group, BadRequest on ingested) —
+    but NOT the per-entity addDataEntityToDEG/deleteDataEntityFromDEG paths and NOT the bulk-replace membership
+    delta. The next file-analyser refresh should record the new test class + that it covers only the PUT guards,
+    so the test_matrix integration cell is updated precisely (the DELETE path is covered by DataEntityDomainsTest;
+    the ADD path and the PUT membership-delta remain uncovered).
+
+### doc_drift_findings
+# NONE net-new this run. The groups-domains.md permission/audit/security silence the DEG sidecars flagged
+# (WebFetch 2026-05-19) was the basis for DOC-188, which is now DONE (commit b937d32, live-verified 2026-05-28):
+# the live page carries a "Managing DEG Membership" H2 documenting the write-collaborative posture, forensic
+# silence, idempotence asymmetry, and empty-DEG persistence, plus the permissions.md + activity-feed.md
+# cross-links. So every doc-side drift this reflection touches is already documented, and the doc claim now
+# MATCHES the code. doc_drift_findings: []
+
+## maintainer_notes
+
+(empty — fresh reflection; no prior version provided)

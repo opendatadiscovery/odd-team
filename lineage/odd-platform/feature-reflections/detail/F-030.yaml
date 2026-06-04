@@ -1,0 +1,874 @@
+---
+feature_id: F-030
+pillar_anchored_id: P-07:F-030
+pillar: Active Platform Features
+feature_name: |-
+  Metrics Ingestion — per-DataEntity OpenMetrics push via POST /ingestion/metrics with INTERNAL_POSTGRES default or PROMETHEUS remote-write
+reflected_at: "2026-06-04T00:00:00Z"
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+  - odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Documents the `metrics.storage` switch (INTERNAL_POSTGRES default / PROMETHEUS),
+      `metrics.prometheus-host`, the `odd.tenant-id` Prometheus label, and the
+      `--web.enable-remote-write-receiver` runtime requirement. Does NOT document the
+      POST /ingestion/metrics endpoint itself (payload shape, status, failure modes, auth).
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      States IngestionDataEntitiesFilter exact-matches /ingestion/entities POST only and
+      sibling ingestion endpoints "remain unprotected by this filter" — but does NOT
+      enumerate /ingestion/metrics explicitly. The principle applies (the path is in
+      SecurityConstants.WHITELIST_PATHS /ingestion/**).
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      As of the 2026-05-20 sidecar WebFetch the page enumerated 5 subsystems and did NOT
+      list Metrics Ingestion. DOC-196 has since minted active-platform-features/metrics-ingestion.md
+      (POST /ingestion/metrics + GET /api/dataentities/{id}/metrics) — the page now enumerates
+      six subsystems (per DOC-282/DOC-283 narrative-sync follow-ups). NOT re-fetched this
+      reflection (parallel-safe mode); the doc-silent-on-endpoint drift is treated as
+      already_tracked via DOC-196.
+hypothesis_summary:
+  total: 11
+  confirmed: 3
+  contradicted: 5
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      A user who hardens the deployment with OAUTH2 + S2S + auth.ingestion.filter.enabled
+      ALL ON still leaves POST /ingestion/metrics anonymously writable — no toggle fail-closes it.
+related_feature_flows:
+  - F-008   # Batch Ingestion — sibling /ingestion/entities endpoint, same unauthenticated-by-default + audit-silence pattern, DIFFERENT empty-payload contract
+  - F-018   # sibling /ingestion/entities/datasets/stats endpoint (PLT-106) — same whitelist + arbitrary-oddrn-write + unaudited shape
+  - F-029   # Platform Public API Contract — sibling ingestion-api spec declares no securitySchemes for /ingestion/metrics
+  - F-021   # Activity Feed — the audit-silence pattern this feature joins
+related_concepts:
+  - metrics-ingestion
+  - multi-tenant-configuration-odd-tenant-id
+  - external-prometheus-instance
+  - openapi-200-vs-201-status-code-drift
+  - audit-log-presence-asymmetry-2-tier-audit-story
+related_drift_classes:
+  - metrics_ingestion_unauthenticated_in_every_supported_deployment
+  - metrics_ingestion_tenant_isolation_nonexistent_on_default_internal_postgres
+  - metrics_ingestion_no_oddrn_existence_validation_arbitrary_metric_entity_minting
+  - metrics_ingestion_empty_payload_silent_201_no_op_asymmetric_with_post_data_entity_list
+  - metrics_ingestion_prometheus_write_outside_transaction_partial_state_on_failure
+  - metrics_ingestion_pii_label_propagation_verbatim_no_sanitization
+  - metrics_ingestion_storage_migration_one_way_internal_postgres_data_unreadable_after_prometheus_switch
+  - metrics_ingestion_doc_implies_oauth2_protects_path_actually_whitelisted
+new_drift_classes_proposed:
+  - metrics_ingestion_read_path_ui_surface_absent_from_feature_chain_reflection_api_only
+---
+
+# Metrics Ingestion — product-owner reflection
+
+## product_owner_narrative
+
+Metrics Ingestion is the data path behind the per-DataEntity **Metrics tab** that appears on entity-detail pages in the ODD Platform UI. The capability is two-sided: a **write side** that collectors (the odd-collector / odd-collector-sdk push clients) use to publish OpenMetrics-shaped time series for a data entity, and a **read side** that platform users open when they want to see those series rendered as charts on the entity's Metrics tab. The write side is what F-030's chain covers: a collector `POST`s a `MetricSetList` payload — a list of `MetricSet`, each carrying an entity ODDRN plus one or more `MetricFamily` records of OpenMetrics types `COUNTER | GAUGE | HISTOGRAM | GAUGE_HISTOGRAM | SUMMARY` — to `POST /ingestion/metrics`, and the platform stores it (per `ingestMetrics` sidecar `understanding`). The problem this feature solves for an operator is "I already emit Prometheus-shaped metrics for my datasets; let me surface them inside the catalog next to the entity they describe."
+
+A user interacts with the write side entirely machine-to-machine: there is no UI form for pushing metrics — the collector authors the `MetricSetList` and POSTs it. The single user-facing input that shapes the feature is a **deploy-time configuration choice**, `metrics.storage`, with two values: `INTERNAL_POSTGRES` (the default — `matchIfMissing=true` — which writes to the platform's own PostgreSQL `metric_series` / `metric_point` / `metric_entity` tables) and `PROMETHEUS` (which Snappy-compresses the batch into a Prometheus remote-write `WriteRequest` and POSTs it to `${metrics.prometheus-host}/api/v1/write`) (per `ingestMetrics` sidecar `dependencies_semantic.requires-config` + `CounterTimeSeriesExtractor` sidecar `understanding`). The dispatch is boot-time, not request-time: two mirrored `@ConditionalOnProperty` beans realise the `IngestionMetricsService` interface, exactly one wired per deployment (per `ingestMetrics` sidecar `concepts.invariants[1]`). The endpoint returns `201 Created` on success — on the spec-conformant side of the `openapi-200-vs-201` drift, unlike its sibling `postDataEntityList` (per `ingestMetrics` sidecar `implicit_adrs[1]`).
+
+The working parts a product owner would demo: you push a batch of metric families, the platform fans them out across per-`MetricType` extractors (4 beans on each storage side, 8 total, keyed by `canExtract(MetricType)`), and the series become queryable on the entity's Metrics tab via `GET /api/dataentities/{id}/metrics` (per `ingestMetrics` sidecar `dependencies_semantic.coupling.read_side`). On the PROMETHEUS path, the platform also appends a `tenant_id={value}` label drawn from `odd.tenant-id`, which the docs sell as the mechanism that "lets a single shared Prometheus instance serve metric data for multiple ODD Platform deployments" (per WebFetch of `configuration-and-deployment/odd-platform` 2026-05-20). Timestamp-monotonicity is the one correctness invariant the tests pin: re-ingesting the same series with an OLDER timestamp does not overwrite the stored value; a NEWER timestamp does (per `ingestMetrics` sidecar `tests_coverage_semantic.covered_behaviours[0]`).
+
+The integration story: Metrics Ingestion is the FIFTH P-07 Active Platform Features sub-feature alongside Alerting (F-007), Notification Delivery (F-009), Per-Entity Alert View (F-014), and Activity Feed (F-021), and it is one of THREE ingestion intake shapes sharing the `IngestionController` class and the `/ingestion/**` whitelist — alongside `POST /ingestion/entities` (F-008 Batch Ingestion) and `POST /ingestion/entities/datasets/stats` (the stats path, F-018) (per F-030 feature-flow `cross_pillar_relationships`). The three siblings have THREE distinct authentication postures, THREE distinct transactional shapes, and THREE distinct empty-payload contracts — and that asymmetry is itself the architectural finding (per F-030 feature-flow `cross_pillar_relationships[P-10]`). The storage backend choice also couples to the P-08 operator configuration surface: it is a one-way migration with no tooling.
+
+Edge cases a product owner must highlight in a demo, because each is a place where the user's reasonable expectation and the implementation diverge: the endpoint is **unauthenticated in every supported deployment posture** — there is no toggle that closes it (per `ingestMetrics` sidecar `bugs_limitations_corner_cases[0]`); tenant isolation, which the config option promises, **does not exist at all on the default INTERNAL_POSTGRES backend** — the `tenant_id` mechanism is PROMETHEUS-only (per `ingestMetrics` sidecar `security.known_security_gaps[3]`); an empty payload **silently returns 201** as if it wrote something (per `ingestMetrics` sidecar `implicit_adrs[2]`); a metric for a **non-existent ODDRN** is accepted and mints a `metric_entity` row with no foreign key (per `ingestMetrics` sidecar `bugs_limitations_corner_cases[1]`); and switching storage backends **silently strands all prior metric history** (per `ingestMetrics` sidecar `bugs_limitations_corner_cases[9]`). These are the load-bearing reflections below.
+
+## hypotheses
+
+- id: H-000-UI-GAP
+  hypothesis: |-
+    (Rule 9 mandatory first output — UI surface absence.) The user-facing object of this
+    feature is the per-DataEntity Metrics tab (the screen where a platform user OPENS an
+    entity, clicks "Metrics", and reads the ingested series as charts). That read-side UI
+    surface — the React component, GET /api/dataentities/{id}/metrics controller, and the
+    InternalMetricReader / ExternalMetricReader read path — is NOT a contributing node in
+    F-030's chain. The chain covers the WRITE half (collector → POST /ingestion/metrics →
+    storage) only.
+  derivation: |-
+    F-030.chain has exactly two enriched hops (IngestionController.ingestMetrics +
+    CounterTimeSeriesExtractor write-side extractor); the read controller and the React
+    Metrics tab are named as `coupling.read_side` / `audiences` but carry no sidecar in
+    the chain. Per APPROACH.md §0.3 + Rule 9, a user-facing feature whose UI surface is
+    unresolved cannot be confidently judged from its API alone (the F-031 / LSN-023 trap).
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      This reflection is WRITE-SIDE-ONLY. Every confirmed/contradicted verdict below
+      concerns what happens when a collector pushes metrics and how/whether they are
+      stored — NOT what the platform user sees on the Metrics tab. Hypotheses about
+      read-side rendering (does an empty series show "no data" vs a broken chart? does
+      the tenant_id read-filter asymmetry surface a co-tenant's series in MY chart? does
+      a NaN `*_created` sample render as a gap or a spike?) cannot be verdicted here
+      because the read components are not in the chain. The tenant read/write asymmetry
+      (H-005) and the NaN substitution (H-011) BOTH have read-side consequences that this
+      API-only reflection can only flag, not confirm.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: dependencies_semantic.coupling.read_side
+        cite: "BaseIngestionTest.java:104 (GET /api/dataentities/{id}/metrics) + InternalMetricReader.java / ExternalMetricReader.java"
+        note: "read path named as coupling but NOT enriched as a chain node"
+      - sidecar: odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+        section: concepts.audiences
+        cite: "ExternalMetricReader.java:107-115 (renders Data Entity → Metrics tab in the React UI)"
+        note: "the Metrics tab React component is the user-facing object; no UI sidecar exists for it"
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-001
+  hypothesis: |-
+    When a collector POSTs a valid MetricSetList (a gauge + counter series for a real
+    entity ODDRN) to POST /ingestion/metrics under the default INTERNAL_POSTGRES backend,
+    the platform stores it and returns 201 Created, and re-ingesting the same series with
+    a NEWER timestamp updates the stored value while an OLDER timestamp does not.
+  derivation: |-
+    Endpoint returns HttpStatus.CREATED (ingestMetrics sidecar); the timestamp-monotonicity
+    invariant is the metric-emission contract a collector pushing per-tick state expects.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      IngestionController.ingestMetrics flatMaps the payload into
+      ingestionMetricsService.ingestMetrics(...) and chains .thenReturn(201). The
+      INTERNAL_POSTGRES impl runs the full write pipeline inside @ReactiveTransactional;
+      the in-transaction dedup-by-timestamp logic (needToDeletePoint) updates on a newer
+      timestamp and no-ops on an older one. MetricsIngestionTest pins exactly this:
+      gauge+counter happy-path 201 plus the timestamp-monotonicity assertion.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: tests_coverage_semantic.covered_behaviours
+        cite: "MetricsIngestionTest.java:37-92 + BaseIngestionTest.java:90-96,102-142"
+        note: "happy-path 201 + timestamp-monotonicity asserted under INTERNAL_POSTGRES"
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: bugs_limitations_corner_cases
+        cite: "InternalIngestionMetricsServiceImpl.java:200-228 (in-transaction dedup-by-timestamp)"
+        note: "idempotency is timestamp-based at the metric_point layer"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "MetricsIngestionTest#gaugeAndCounterTest (MetricsIngestionTest.java:37-92)"
+    test_demand: none
+
+- id: H-002
+  hypothesis: |-
+    When an operator hardens the deployment — sets auth.type=OAUTH2 (or LDAP, or
+    LOGIN_FORM), AND auth.s2s.enabled=true, AND auth.ingestion.filter.enabled=true, all
+    simultaneously — POST /ingestion/metrics then requires a credential, and an
+    anonymous caller with only network reach is rejected (401/403).
+  derivation: |-
+    Endpoint-shape + pillar security-anchor (P-09 "two independent authentication
+    surfaces"); an operator who turns on every auth toggle reasonably expects the write
+    endpoint to be closed.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The endpoint is unauthenticated in EVERY supported deployment posture, including
+      when all auth toggles are ON. ingestMetrics has no @PreAuthorize (the @Override of
+      a contract-generated IngestionApi interface carrying no security annotations).
+      /ingestion/** is in SecurityConstants.WHITELIST_PATHS, exempting it from UI auth for
+      OAUTH2/LDAP (AuthorizationCustomizer) and LOGIN_FORM (permittedPaths), and
+      short-circuiting BEFORE the S2S filter chain. IngestionDataEntitiesFilter
+      exact-matches /ingestion/entities POST only; IngestionDataSourceFilter exact-matches
+      /ingestion/datasources POST only — NEITHER covers /ingestion/metrics, and there is
+      no IngestionMetricsFilter class. There is NO configuration that fail-closes the
+      endpoint; the only mitigation is network-level (firewall / reverse-proxy auth) or
+      patching in a new filter.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: security.known_security_gaps
+        cite: "IngestionController.java:89-95 + IngestionDataEntitiesFilter.java:28 + IngestionDataSourceFilter.java:20 + SecurityConstants.java:96 + AuthorizationCustomizer.java:22"
+        note: "no @PreAuthorize; whitelisted; covered by no filter — unauthenticated at every posture"
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: security.auth_mode_relevance
+        cite: "WebFetch configuration-and-deployment/enable-security 2026-05-20 status 200"
+        note: "live docs confirm only /ingestion/entities is filtered; metrics is a sibling"
+    operator_visible_failure: |-
+      (1) An operator who runs the full hardening checklist (OAUTH2 + S2S + ingestion
+      filter) and reasonably believes their write surface is closed has left an
+      anonymously-writable metrics endpoint open — a false sense of security that no UI
+      and no config surfaces. (2) Any caller with network reach to the HTTP port can push
+      a MetricSetList referencing any ODDRN with any labels under a "fully hardened"
+      deployment. (3) Because the gap is not toggleable, an operator cannot remediate
+      inside the platform — they must add perimeter controls they may not know they need.
+      (4) Combined with the no-audit-log gap (H-008), the unauthorized write leaves no
+      platform-side forensic trace.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a deployment sets odd.tenant-id=teamA and runs the DEFAULT INTERNAL_POSTGRES
+    backend, its metric writes are scoped/isolated to teamA — a second deployment writing
+    teamB metrics into the same platform DB does not see teamA's series and vice versa.
+  derivation: |-
+    The config key odd.tenant-id + the docs' multi-tenant claim ("serve metric data for
+    multiple ODD Platform deployments") promise tenant isolation; an operator on the
+    default backend reasonably assumes the option applies to them.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Tenant isolation is NONEXISTENT on INTERNAL_POSTGRES. odd.tenant-id is consumed only
+      at the extractor layer (CounterTimeSeriesExtractor @Value at bean construction) and
+      appended as a Prometheus label on the PROMETHEUS path. The INTERNAL_POSTGRES path
+      has NO tenant_id column on metric_series / metric_point (verified at the JOOQ POJO
+      level — MetricSeriesPojo / MetricPointPojo declare no tenant field). A deployment
+      configured with odd.tenant-id=teamA in INTERNAL_POSTGRES mode does NOT scope its
+      writes by tenant at all; all metrics land in one untyped namespace. The live config
+      doc lists odd.tenant-id as "Ignored when INTERNAL_POSTGRES" but does not warn that
+      this makes the default backend non-multi-tenant.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: security.known_security_gaps
+        cite: "InternalIngestionMetricsServiceImpl.java:1-295 (no tenant_id field in any JOOQ POJO) + CounterTimeSeriesExtractor.java:22-25 (PROMETHEUS-side only)"
+        note: "tenant mechanism is PROMETHEUS-only; default backend has no isolation"
+      - sidecar: odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+        section: dependencies_semantic.requires-config
+        cite: "application.yml:208-210 + AbstractTimeSeriesExtractor.java:22"
+        note: "tenant-id is an extractor-layer label, not a storage-layer scope"
+    operator_visible_failure: |-
+      (1) An operator who chose the default backend and set odd.tenant-id expecting
+      multi-tenant separation has NONE — two teams' metrics co-mingle in one Postgres
+      namespace, readable by anyone who can query either entity's Metrics tab. (2) The
+      config option appears to "work" (no error on boot, no warning) so the
+      misconfiguration is silent until a co-tenant's series surface where they should not.
+      (3) An operator planning a shared single-instance multi-tenant deployment on the
+      default backend has built on a guarantee that does not exist.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a caller pushes a MetricSet whose entity ODDRN does NOT correspond to any
+    registered data_entity, the platform rejects it (or skips that item with a
+    partial-success response) rather than minting storage for a phantom entity.
+  derivation: |-
+    A user pushing metrics for an entity expects the entity to exist; a catalog that
+    accepts metrics for arbitrary unknown ODDRNs pollutes its own namespace.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The controller passes the payload verbatim to the service. The INTERNAL_POSTGRES
+      impl calls metricEntityRepository.registerMetricEntityOddrns(request.metricRelatedOddrns())
+      which CREATES metric_entity rows BY ODDRN regardless of whether a data_entity row
+      with that ODDRN exists. There is no FK from metric_entity.entity_oddrn to
+      data_entity.oddrn (MetricEntityPojo is independent). The PROMETHEUS path writes the
+      arbitrary ODDRN string as a label. A caller can mint arbitrary metric_entity rows
+      (Postgres cardinality DoS) or arbitrary Prometheus series (Prometheus cardinality
+      DoS) for phantom ODDRNs, with no existence check and no rate-limit.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: bugs_limitations_corner_cases
+        cite: "InternalIngestionMetricsServiceImpl.java:86-88 (registerMetricEntityOddrns — no existence check) + IngestionController.java:90-95"
+        note: "metric_entity rows minted by ODDRN with zero validation"
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: security.known_security_gaps
+        cite: "InternalIngestionMetricsServiceImpl.java:86-88 — severity MEDIUM (ODDRN-by-payload)"
+        note: "combined with unauthenticated reach (H-002) → cardinality DoS surface"
+    operator_visible_failure: |-
+      (1) The metrics namespace (Postgres metric_entity table, or the operator's Prometheus
+      series space) can be flooded with phantom-ODDRN rows by any caller — orphaned data
+      no entity will ever read, growing unbounded. (2) On a shared Prometheus this balloons
+      storage cost for co-tenants. (3) A typo in a collector's ODDRN config silently
+      creates a parallel phantom series rather than erroring — the operator sees "no
+      metrics on my entity" with no signal that the writes went to a misspelled ODDRN.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When an operator leaves odd.tenant-id at its default (declared-but-empty in
+    application.yml) OR supplies it as an empty env value (ODD_TENANT_ID=), the
+    PROMETHEUS write side and the read side agree on tenant scoping — both treat empty as
+    "no tenant label / no tenant filter", so a tenant's reads return exactly that tenant's
+    series.
+  derivation: |-
+    Symmetry expectation: a user reasonably assumes the same config value drives write-side
+    labelling and read-side filtering consistently.
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      Symmetric ONLY when the value is null (YAML key declared empty → Spring binds null →
+      write side `if (tenantId != null)` skips the label AND read side
+      `StringUtils.isNotEmpty(tenantId)` skips the filter — both no-op, consistent). It is
+      ASYMMETRIC when the value is an EMPTY STRING (operator supplies ODD_TENANT_ID= via
+      env): the write side's `tenantId != null` PASSES for "" and writes a tenant_id=""
+      label on every series, but the read side's StringUtils.isNotEmpty("") FAILS and drops
+      the filter — so writes are tagged tenant_id="" while reads query across all tenants.
+    evidence:
+      - sidecar: odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+        section: bugs_limitations_corner_cases
+        cite: "AbstractTimeSeriesExtractor.java:60 (if tenantId != null) + ExternalMetricReader.java:111 (StringUtils.isNotEmpty) + application.yml:210"
+        note: "HIGH-severity read/write empty-string asymmetry"
+      - sidecar: odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+        section: docs_link_semantic.doc_drift_findings
+        cite: "doc_drift_findings[0] — doc describes empty as read-side-only, does not surface the asymmetry"
+        note: "null vs empty-string distinction is the load-bearing trap"
+    operator_visible_failure: |-
+      (1) On a shared Prometheus, a deployment whose operator set ODD_TENANT_ID= (empty,
+      not unset) buries its series under an unfilterable tenant_id="" label that co-tenants
+      do not carry, while its OWN reads query across all tenants — so its Metrics tab shows
+      co-tenants' series mixed with its own. (2) The null-vs-empty-string distinction is
+      invisible: declared-empty in YAML works; env-empty silently breaks isolation. (3)
+      The read-side consequence (wrong series on the Metrics tab) cannot be confirmed by
+      this reflection because the read UI is not in the chain (see H-000-UI-GAP).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When a collector POSTs an empty MetricSetList (items: []) to POST /ingestion/metrics,
+    the platform rejects it with 400 Bad Request — signalling a programming error — the
+    same way its sibling POST /ingestion/entities does.
+  derivation: |-
+    Endpoint-shape + cross-pillar (the three ingestion siblings share a controller); a
+    user reasonably expects consistent empty-payload handling across sibling endpoints.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      POST /ingestion/metrics with items: [] returns 201 Created. The controller has no
+      .filter()/.switchIfEmpty() guard; both impls short-circuit to Mono.empty() on
+      CollectionUtils.isEmpty(...) and the controller chains .thenReturn(201). This is
+      ASYMMETRIC with postDataEntityList, which 400s on empty items via
+      BadUserRequestException("Ingestion payload is empty"). No log line on the empty path.
+      The divergence is intentional per the inferred ADR (metric-emission is a per-tick
+      pattern where empty is normal) but is undocumented and unpinned.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: implicit_adrs
+        cite: "IngestionController.java:90-95 (no guard) + InternalIngestionMetricsServiceImpl.java:80-82 + ExternalIngestionMetricsServiceImpl.java:86-88 + IngestionController.java:40-42 (sibling guard)"
+        note: "intent inferred (MEDIUM confidence ADR); behaviour clear"
+    operator_visible_failure: |-
+      (1) An operator health-checking the endpoint with an empty POST sees 201 —
+      indistinguishable from a successful real write — and concludes ingestion works when
+      it has written nothing. (2) The asymmetry with the sibling entities endpoint means a
+      collector developer who learned the 400-on-empty contract on /ingestion/entities is
+      surprised by the silent 201 here. (3) No log line means an empty-payload probe (e.g.
+      an attacker enumerating the path) leaves no trace.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When the PROMETHEUS remote-write fails (Prometheus returns 5xx / is unreachable) for a
+    batch, the platform's ODD-side bookkeeping writes (external_metric_last_value upserts)
+    are rolled back, so the platform's record of "last value written" stays consistent
+    with what Prometheus actually holds.
+  derivation: |-
+    Response-shape / consistency expectation: an operator reasoning about storage
+    consistency assumes the bookkeeping and the remote write succeed or fail together.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The @ReactiveTransactional boundary wraps the ODD-side bookkeeping writes, but the
+      Prometheus remote-write is OUTSIDE the transaction — it is a chained .flatMap AFTER
+      savedMetricFamilies, the terminal WebClient step. A Prometheus failure does NOT roll
+      back the bookkeeping writes; a bookkeeping failure prevents the Prometheus write.
+      There is no retry, no backoff, no DLQ — onErrorMap rethrows PrometheusException and
+      the entire batch is lost. The two storage layers can diverge: ODD believes it wrote
+      a value Prometheus never received.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: dependencies_semantic.requires-feature
+        cite: "ExternalIngestionMetricsServiceImpl.java:84 (txn open) + :100 (Prometheus write outside txn) + :213-218 (onErrorMap, no retry)"
+        note: "bookkeeping txn does not span the Prometheus write"
+      - sidecar: odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+        section: performance.known_performance_gaps
+        cite: "ExternalIngestionMetricsServiceImpl.java:206-219 — no retry/backoff/DLQ — severity MEDIUM"
+        note: "transient Prometheus outage loses the batch with no replay"
+    operator_visible_failure: |-
+      (1) On a transient Prometheus outage (rolling restart, network blip), the collector's
+      batch is dropped with a 500 and no replay — metric history has a hole the operator
+      cannot recover without re-pushing from the collector side. (2) The bookkeeping table
+      can record a last-value the remote store never received, so a future delta-based
+      computation off external_metric_last_value is skewed. (3) Operators cannot reason
+      about cross-layer consistency from the docs (the split is undocumented).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a security reviewer asks "who pushed which metrics to which entity, and when?",
+    the platform's audit trail (Activity Feed, or an application audit log) can answer it.
+  derivation: |-
+    Pillar mission anchor (P-07 "audit metadata changes"); metric writes are mutations of
+    catalog-adjacent state, and a reviewer reasonably expects them auditable like other
+    P-07 mutations.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      There is NO audit log at any tier. ingestMetrics emits no log; the service impls and
+      extractors carry no @ActivityLog annotation; there is no Micrometer counter on
+      ingestion volume. Metric writes are not in Activity Feed scope (which covers
+      metadata mutations — descriptions, tags, ownership — per the
+      audit-log-presence-asymmetry concept). Combined with the unauthenticated-write
+      posture (H-002), "who pushed what metric when" is unanswerable from platform logs —
+      an operator must correlate with collector-side logs or the storage backend's own
+      audit log, if any.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: security.known_security_gaps
+        cite: "IngestionController.java:89-95 (no log) + InternalIngestionMetricsServiceImpl.java:1-295 (no activity_event wiring) — severity LOW"
+        note: "joins the cross-batch audit-silence pattern (10+ sidecars)"
+    operator_visible_failure: |-
+      (1) A metric-tampering incident (forged or poisoned series via the unauthenticated
+      endpoint) is undetectable from platform-side logs. (2) An operator cannot answer a
+      compliance question about metric data provenance. (3) The silence is consistent with
+      the platform's broader audit-asymmetry pattern, so a reviewer who trusts the Activity
+      Feed as "the audit surface" is unaware metric writes fall entirely outside it.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    When an operator who ran INTERNAL_POSTGRES for weeks switches metrics.storage to
+    PROMETHEUS (or back), the pre-switch metric history remains visible on entity Metrics
+    tabs after the switch.
+  derivation: |-
+    Negative-space + P-08 config-surface coupling; an operator changing a storage backend
+    reasonably expects historical data to migrate or at least remain readable, as a
+    database engine switch normally would.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The storage switch is one-way for historical data. After INTERNAL_POSTGRES →
+      PROMETHEUS, the PROMETHEUS-mode read path (ExternalMetricReader) queries Prometheus,
+      not Postgres — the pre-switch metric_series rows become UNREADABLE. The reverse
+      switch orphans the Prometheus labels. There is no migration tool (no odd-cli export,
+      no scheduled job) and no operator warning. Same shape as the LSN-001
+      attachment-storage migration data-loss-on-default class.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: bugs_limitations_corner_cases
+        cite: "InternalIngestionMetricsServiceImpl.java:78 (writes metric_series) vs ExternalIngestionMetricsServiceImpl.java:202-220 (writes Prometheus) + InternalMetricReader.java vs ExternalMetricReader.java:41-63 + no migration tooling"
+        note: "read path follows current backend; prior backend's data stranded"
+    operator_visible_failure: |-
+      (1) An operator switching backends to scale out silently loses access to ALL
+      pre-switch metric history on every entity's Metrics tab — the charts go blank for
+      the historical window with no warning. (2) There is no in-platform path to recover
+      it; the data still exists in the old store but is unreachable through the UI. (3)
+      An operator weighing the switch has no doc warning that it is effectively a
+      one-way, history-stranding migration.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When a collector pushes a payload that exceeds the platform's body-size limit, it
+    receives HTTP 413 Payload Too Large with a clear "reduce batch size" message it can
+    act on.
+  derivation: |-
+    Endpoint-shape; a client over a size cap expects the canonical 413 contract, not an
+    opaque 500.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      CONFIRMED that the hypothesis is FALSE in the user's favour's-opposite direction:
+      the implementation returns 500, not 413. Body is buffered to spring.codec.max-in-memory-size:
+      20MB; over-cap payloads throw DataBufferLimitException → HTTP 500 (grep for a
+      DataBufferLimitException @ExceptionHandler returns 0 matches). Compounded on the
+      PROMETHEUS path: a high-cardinality batch may serialise to <20MB inbound but fan out
+      to a >20MB Snappy-compressed WriteRequest that silently fails at the outbound codec
+      layer BEFORE the POST is sent. The verdict is confirmed-as-a-known-behaviour (the
+      500-not-413 mapping is real and pinned by the sidecar evidence); it is a contract
+      gap shared with the postDataEntityList sibling.
+    evidence:
+      - sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+        section: bugs_limitations_corner_cases
+        cite: "IngestionController.java:90 (Mono<MetricSetList>) + application.yml:14-15 + grep DataBufferLimitException handler = 0 matches"
+        note: "over-cap → 500 not 413; no custom handler"
+      - sidecar: odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+        section: performance.resource_allocation
+        cite: "ExternalIngestionMetricsServiceImpl.java:76 (no .codecs override) + application.yml:14-15"
+        note: "outbound Prometheus write also bounded by the 20MB codec; >20MB fails silently pre-POST"
+    operator_visible_failure: |-
+      (1) A collector exceeding 20MB gets an opaque 500 it cannot distinguish from a server
+      error, with no signal to reduce batch size. (2) On the PROMETHEUS path the failure is
+      WORSE: an inbound-OK / outbound->20MB batch fails silently at the codec layer before
+      the Prometheus POST — the collector may see success-shaped behaviour or an opaque
+      error with no indication that the write never left the platform. (3) No doc surfaces
+      the 20MB cap.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When a collector pushes the SAME counter metric (same value, same labels) to a
+    deployment, the value rendered on the entity's Metrics tab is IDENTICAL regardless of
+    whether the deployment runs INTERNAL_POSTGRES or PROMETHEUS — the storage backend is
+    an implementation detail invisible to the user reading the chart.
+  derivation: |-
+    Negative-space; an operator choosing a storage backend for ops reasons reasonably
+    assumes the two backends are behaviourally equivalent for the same input metric.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The two backends DIVERGE for at least the missing-`created`-timestamp case on a
+      COUNTER: the PROMETHEUS extractor substitutes Double.NaN for an absent
+      counterValue.getCreated() (CounterTimeSeriesExtractor.java:63-64), while the
+      INTERNAL_POSTGRES sibling stores null (CounterMetricsSeriesExtractor.java:60-61).
+      Prometheus accepts NaN as a valid sample; downstream PromQL rate()/increase() on a
+      *_created series produces NaN-tainted results that propagate into UI charts, whereas
+      the Postgres path stores null. Whether this renders as a chart GAP, a broken chart,
+      or a silently-wrong value on the Metrics tab CANNOT be determined statically — the
+      read UI is not in the chain (H-000-UI-GAP), and the rendering behaviour for NaN vs
+      null samples requires running both backends and opening the tab. PROBE.
+    evidence:
+      - sidecar: odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md
+        section: bugs_limitations_corner_cases
+        cite: "CounterTimeSeriesExtractor.java:63-64 (Double.NaN) vs CounterMetricsSeriesExtractor.java:60-61 (null)"
+        note: "divergent storage of the same input → divergent query behaviour between backends"
+    operator_visible_failure: |-
+      (Pending probe.) If NaN renders differently from null on the Metrics tab, the same
+      collector input produces a different chart depending on the operator's backend choice
+      — breaking the "storage is an invisible implementation detail" expectation. The
+      severity depends on the rendered outcome (a gap is benign; a spike or a broken axis
+      is operator-facing-wrong).
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-030-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-030-1"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    POST /ingestion/metrics mints metric_entity rows (and Prometheus series) for arbitrary
+    non-existent ODDRNs — no existence check, no FK on metric_entity.entity_oddrn, no
+    rate-limit; cardinality-DoS surface that compounds with the unauthenticated reach.
+  dedup_status: net_new
+  distinct_from: PLT-106
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    InternalIngestionMetricsServiceImpl.java:86-88 — add a payload-side existence filter
+    against data_entity.oddrn (skip+log unknown ODDRNs, partial-success shape) OR add an
+    FK metric_entity.entity_oddrn → data_entity.oddrn. (Distinct from PLT-106, which is the
+    field-stats path's parent-child validation on /ingestion/entities/datasets/stats; this
+    is the metrics path's entity-existence gap on /ingestion/metrics.)
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |-
+    Prometheus tenant_id read/write asymmetry on EMPTY STRING — write side (tenantId != null)
+    tags tenant_id="" while read side (StringUtils.isNotEmpty) drops the filter; an
+    ODD_TENANT_ID= env value silently breaks shared-Prometheus isolation.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    AbstractTimeSeriesExtractor.java:60 — align the write-side guard with the read-side
+    StringUtils.isNotEmpty(tenantId) so null and empty-string are treated identically on
+    both sides. (Surfaced HIGH in the CounterTimeSeriesExtractor sidecar's
+    bugs_limitations_corner_cases[0]; no existing issue/backlog item tracks the empty-string
+    tenant asymmetry specifically.)
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: |-
+    POST /ingestion/metrics is unauthenticated in EVERY supported posture (incl. all auth
+    toggles ON) with no fail-close toggle — the doc-side coverage matrix tracks this.
+  dedup_status: already_tracked
+  tracked_as: DOC-228
+  # DOC-228's 80-cell ingestion auth matrix (5 endpoints × 4 UI modes × 2 filter × 2 S2S)
+  # explicitly includes ingestMetrics (consumer-read VERIFIED IngestionController hosts it,
+  # DOC-228 Gate-4 note). Also corroborated by the feature-flow's DOC-GAP-038 and the
+  # F-030c scanner finding. Convergent validation, not a fresh filing.
+- hypothesis_id: H-003
+  one_line: |-
+    Tenant isolation NONEXISTENT on the DEFAULT INTERNAL_POSTGRES backend — odd.tenant-id is
+    a PROMETHEUS-only label; the default-backend deployment cannot be multi-tenant on one DB.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/active-platform-features/metrics-ingestion
+  # DOC-196 minted the metrics-ingestion page (POST /ingestion/metrics + GET .../metrics) but
+  # does NOT carry the INTERNAL_POSTGRES tenant-blindness caveat (no `tenant`/`INTERNAL_POSTGRES`
+  # match in DOC-196). The feature-flow's F-030b scanner finding is ontology-EXTENDED (the doc
+  # names the asymmetry as "Ignored when INTERNAL_POSTGRES" but does NOT warn it defeats
+  # multi-tenancy). The reflection-grade caveat (cannot multi-tenant the default backend) is
+  # net_new for the metrics-ingestion doc page.
+- hypothesis_id: H-006
+  one_line: |-
+    Empty MetricSetList returns 201 (silent no-op), asymmetric with the sibling
+    /ingestion/entities 400-on-empty contract; undocumented, no log line.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/active-platform-features/metrics-ingestion
+- hypothesis_id: H-007
+  one_line: |-
+    PROMETHEUS remote-write is OUTSIDE the @ReactiveTransactional boundary — partial state on
+    failure (bookkeeping committed, Prometheus write lost); no retry/backoff/DLQ.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/active-platform-features/metrics-ingestion
+- hypothesis_id: H-008
+  one_line: |-
+    No audit log at controller/service/extractor for metric writes — joins the cross-batch
+    audit-silence pattern; combined with unauthenticated reach, tampering is untraceable.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/active-platform-features/metrics-ingestion
+- hypothesis_id: H-009
+  one_line: |-
+    Storage-backend switch is one-way for historical data — pre-switch metric history becomes
+    unreadable on the Metrics tab after a switch; no migration tool, no doc warning (LSN-001 class).
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/active-platform-features/metrics-ingestion
+- hypothesis_id: H-010
+  one_line: |-
+    Over-cap payload returns 500 (DataBufferLimitException) not 413; PROMETHEUS path can fail
+    silently at the outbound codec for an inbound-OK / outbound->20MB batch.
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/active-platform-features/metrics-ingestion
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional test demand.
+# H-001 is the ONLY verified promise (MetricsIngestionTest pins it). All others below are
+# unverified — confirmed/contradicted/partial/probe ALL qualify per Rule 11.
+- use_case_id: F-030-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "POST /ingestion/metrics is reachable WITHOUT credentials under every auth mode + every filter toggle (the always-anonymous invariant)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test: POST /ingestion/metrics with NO credential under auth.type=OAUTH2 +
+    auth.s2s.enabled=true + auth.ingestion.filter.enabled=true; assert 201. Pins the
+    always-anonymous invariant so a future hardening that adds a filter is NOT silently
+    reverted. (Sidecar uncovered_behaviours[0] flags exactly this.)
+- use_case_id: F-030-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "odd.tenant-id has NO isolation effect under INTERNAL_POSTGRES — writes are not tenant-scoped on the default backend."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test: odd.tenant-id=teamA + metrics.storage=INTERNAL_POSTGRES; ingest a
+    series; assert no tenant_id column exists / two tenants' writes co-mingle. Pins the
+    documented gap so a future tenant-column add is caught.
+- use_case_id: F-030-UC-004
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "A metric for a non-existent ODDRN is accepted and mints a metric_entity row (no existence check)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test: ingest a MetricSet whose ODDRN has no data_entity row; assert a
+    metric_entity row IS created (pins the no-FK behaviour; flips RED if a future existence
+    check or FK lands as the H-004 fix).
+- use_case_id: F-030-UC-005
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "On PROMETHEUS, empty-string odd.tenant-id is handled consistently between write-side label and read-side filter."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Unit/integration test: tenantId="" → assert write side appends tenant_id="" AND read
+    side filters on tenant_id="" (the FIX target) — currently RED because the read side
+    drops the filter. The regression guard for the H-005 alignment fix.
+- use_case_id: F-030-UC-006
+  hypothesis_id: H-006
+  kind: empty/no-match
+  promise: "Empty MetricSetList (items: []) returns 201 silently (no-op)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test: POST items:[]; assert 201 (pins the silent no-op; flips RED if a
+    future fail-closed refactor returns 400 like the sibling). Sidecar uncovered_behaviours[1].
+- use_case_id: F-030-UC-007
+  hypothesis_id: H-007
+  kind: resolve-later
+  promise: "A PROMETHEUS write failure does NOT roll back the ODD-side bookkeeping (partial state) and is not retried."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test (Prometheus testcontainer returning 5xx): assert the collector sees an
+    error AND external_metric_last_value bookkeeping reflects the partial state (pins the
+    out-of-txn semantic). Sidecar uncovered_behaviours[3].
+- use_case_id: F-030-UC-008
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "Metric writes produce NO audit-trail entry at any tier."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test: ingest a batch; assert no activity_event row and no log line are
+    produced (pins the audit-silence; flips RED if a METRICS_INGESTED activity event lands).
+- use_case_id: F-030-UC-009
+  hypothesis_id: H-009
+  kind: teardown
+  promise: "After switching metrics.storage, pre-switch metric history is no longer readable via the read path."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test: write under INTERNAL_POSTGRES, flip to PROMETHEUS, read via the read
+    path; assert pre-switch data is absent (pins the one-way migration; the LSN-001-class
+    data-stranding guard). Sidecar uncovered_behaviours[7].
+- use_case_id: F-030-UC-010
+  hypothesis_id: H-010
+  kind: empty/no-match
+  promise: "An over-20MB payload returns 500 (DataBufferLimitException), not 413."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Integration test: POST a >20MB body; assert 500 (pins the 500-not-413 gap; flips RED if
+    a 413 @ExceptionHandler is added as the fix). Sidecar uncovered_behaviours[6].
+- use_case_id: F-030-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: "The same counter input renders identically on the Metrics tab regardless of storage backend (NaN vs null divergence)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: |-
+    Probe PENDING-F-030-1 first (run both backends, observe the rendered chart for an
+    absent-created counter); then a cross-backend equivalence test pinning NaN-vs-null
+    render behaviour. Sidecar CounterTimeSeriesExtractor uncovered_behaviours[2].
+
+### probes_emitted
+- probe_id: PENDING-F-030-1
+  hypothesis_id: H-011
+  full_hypothesis: |-
+    When a collector pushes the SAME counter metric (with an ABSENT created timestamp) to a
+    deployment, the value rendered on the entity's Metrics tab is identical regardless of
+    whether the deployment runs INTERNAL_POSTGRES or PROMETHEUS. EXPECTED to be FALSE: the
+    PROMETHEUS extractor writes Double.NaN for the absent created sample
+    (CounterTimeSeriesExtractor.java:63-64) while the INTERNAL_POSTGRES sibling writes null
+    (CounterMetricsSeriesExtractor.java:60-61). The probe must: (1) stand up odd-platform +
+    Postgres + prom/prometheus:v2.42.0 (--web.enable-remote-write-receiver) via local
+    docker-compose; (2) ingest the SAME absent-created counter under each metrics.storage
+    value; (3) open the entity Metrics tab (or call GET /api/dataentities/{id}/metrics) and
+    record the rendered/returned value for each backend; (4) verdict contradicted if the two
+    differ in a user-observable way (gap vs spike vs broken chart). local_execution: docker-compose,
+    fully local per Rule 6.
+  local_execution_blocked: false
+  note: |-
+    Parallel-safe mode — recorded here only; no P-NNN file created. The orchestrator /
+    probe-runner mints the P-NNN id and the lineage/odd-platform/probes/P-NNN.yaml skeleton
+    (emitted_by: feature-reflector, status: pending-reflection-verification).
+
+### validation_gaps
+- sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+  field_insufficient: |-
+    The read-side (GET /api/dataentities/{id}/metrics + InternalMetricReader /
+    ExternalMetricReader + the React Metrics tab component) is named only as `coupling.read_side`
+    and `audiences`; it has no enriched chain node. This reflection is therefore WRITE-SIDE
+    ONLY (Rule 9). The user-facing object of the feature — what a platform user sees when they
+    open the Metrics tab — cannot be reflected: empty-series rendering, the tenant read-filter
+    asymmetry's UI consequence (H-005), and the NaN-vs-null render divergence (H-011) are all
+    unverdictable from the chain as composed.
+  proposed_refresh: |-
+    Enrich the read path as chain nodes: (a) the GET /api/dataentities/{id}/metrics controller
+    method, (b) InternalMetricReader + ExternalMetricReader, (c) the React Metrics-tab component
+    (per the rev-12 / LSN-025 substrate-surface-coverage push — the ~530 unenriched React
+    components include this tab). Then re-fire feature-reflector to add read-side hypotheses
+    (chart rendering, tenant-scoped read correctness, NaN/null display).
+- sidecar: odd-platform__java__IngestionController__controller-method__ingestMetrics.md
+  field_insufficient: |-
+    The IngestionMetricsService interface (hop 2) is referenced inline from the ingestMetrics
+    sidecar rather than carrying its own sidecar — the two service impls
+    (InternalIngestionMetricsServiceImpl / ExternalIngestionMetricsServiceImpl) are cited at
+    file:line through the controller sidecar but are not enriched nodes. Adequate for THIS
+    reflection (the citations are precise) but a dedicated impl sidecar would let the
+    transaction-boundary verdict (H-007) and the empty-payload verdict (H-006) be traced
+    against a node rather than an inline reference.
+  proposed_refresh: |-
+    Mint sidecars for InternalIngestionMetricsServiceImpl and ExternalIngestionMetricsServiceImpl
+    as service-method nodes so hops 2's two impls are first-class chain nodes.
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+  doc_says: |-
+    IngestionDataEntitiesFilter exact-matches /ingestion/entities POST only; sibling endpoints
+    "fall back to UI authentication behavior determined by auth.type." Enumerates
+    /ingestion/alert/alertmanager, /ingestion/entities/degs/children,
+    /ingestion/entities/datasets/stats as the uncovered siblings — does NOT name /ingestion/metrics.
+  code_does: |-
+    /ingestion/** is in SecurityConstants.WHITELIST_PATHS, so UI auth does NOT fall through to
+    /ingestion/metrics under OAUTH2/LDAP — it is unauthenticated, not UI-auth-protected. The
+    "fall back to UI authentication" implication is wrong for the whitelisted namespace.
+  recommended_log_as: "already tracked — DOC-228 (80-cell ingestion auth matrix incl. ingestMetrics) + DOC-GAP-038"
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: |-
+    odd.tenant-id "Ignored when INTERNAL_POSTGRES"; the tenant_id label "lets a single shared
+    Prometheus instance serve metric data for multiple ODD Platform deployments."
+  code_does: |-
+    Correct that it is ignored on INTERNAL_POSTGRES — but the doc does NOT warn that this makes
+    the DEFAULT backend non-multi-tenant: an operator reading the multi-tenant claim may not
+    realise it applies ONLY to the PROMETHEUS path.
+  recommended_log_as: "doc-gap — add INTERNAL_POSTGRES-cannot-multi-tenant caveat to metrics-ingestion.md (extends F-030b; net_new caveat per H-003)"
+
+## maintainer_notes

@@ -3,9 +3,10 @@ feature_id: F-018
 pillar_anchored_id: P-01:F-006
 pillar: P-01 Data Discovery
 feature_name: "Manual Object Tagging — operator + ingestion-driven Tag directory with side-channel mint paths"
-reflected_at: 2026-06-01T00:00:00Z
-reflected_at_commit: 43d13eb
-prompt_version: feature-reflector/0.2.0
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+refresh_of: feature-reflector/0.2.0   # 2026-06-01 reflection; all 14 hypotheses + verdicts preserved verbatim, refreshed to the LSN-030 promise layer (use_case projection + coverage + functional_test_demands)
 contributing_sidecars_read:
   - odd-platform__java__TagController__controller-method__getPopularTagList.md
   - odd-platform__java__TagController__controller-method__createTag.md
@@ -17,6 +18,27 @@ contributing_sidecars_read:
   - odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md
   - odd-platform__openapi__tags__openapi-tag__tag.md
   - odd-platform__ts__react-component__component__PopularStrip.md  # read to CONFIRM it is the popular DATA-ENTITY strip, NOT the tag strip — the tag-strip UI surface (TopTagsList) has no standalone sidecar
+test_tree_greps_this_run:
+  # Rule 11 — coverage verified ONLY against a REAL test. Greps run 2026-06-04 against odd-platform.
+  - grep: "Tag*Test.java + testListMostPopular/testBulkCreate/... — odd-platform-api/src/test/java"
+    result: "ONLY TagRepositoryImplTest.java exists (repository tier). NO TagControllerTest.java (controller perimeter untested end-to-end). Confirms test_matrix integration GAP."
+  - grep: "odd-platform/tests/features/tags/*.spec.ts (Playwright e2e)"
+    result: |
+      THREE real e2e specs EXIST and PASS through the MANAGEMENT Tags page (/management/tags ->
+      POST /api/tags, PUT /api/tags/{id}, DELETE /api/tags/{id}): add-tag.spec.ts (Add new Tag /
+      Add new important tag / multi-tag create / popup input behaviours), change-tag.spec.ts
+      (Change tag name / Mark tag as important / Mark tag as unimportant), delete-tag.spec.ts
+      (Delete unimportant tag / Delete important tag). These verify the DIRECTORY-CRUD happy path
+      via the TAG_CREATE-gated management surface — NOT the per-entity side-channel, NOT ranking,
+      NOT case, NOT validation, NOT FTS cleanup, NOT audit. The v0.2.0 reflection judged coverage
+      from the repository test only and MISSED these — corrected this run (drives H-015 verified +
+      H-009's partial directory-delete coverage).
+  - grep: "TagRepositoryImplTest.testListMostPopular body (lines 237-267)"
+    result: |
+      Structurally blind to LSN-019: size = numberOfTestTags = 8, only 4 of 8 tags match the
+      name filter, so the inner LIMIT(8) never truncates the 4-match candidate pool — the
+      paginate-before-aggregate bug cannot fire. Asserts containsExactlyInAnyOrder (order-agnostic)
+      so it does NOT even assert count-DESC ranking. Does NOT verify H-001's promise.
 docs_cross_referenced:
   - url: "https://docs.opendatadiscovery.org/features/data-discovery/tagging"
     last_verified_at: "2026-05-21T00:00:00Z"
@@ -41,8 +63,8 @@ docs_cross_referenced:
       document that GET /api/tags has no RBAC gate beyond authenticated(). DOC-190's AC
       links the four tag-permission rows to the new tagging.md caveats.
 hypothesis_summary:
-  total: 14
-  confirmed: 1
+  total: 15
+  confirmed: 2
   contradicted: 10
   partial: 2
   probe_needed: 1
@@ -54,6 +76,20 @@ hypothesis_summary:
       per-surface tag-assign permission (DATA_ENTITY / TERM / DATASET_FIELD _TAGS_UPDATE),
       or the unauthenticated ingestion path, mints arbitrary global Tag-directory rows
       visible to every user; getOrCreateTagsByName never consults TAG_CREATE.
+use_case_coverage_headline:
+  # LSN-030 — the SECOND coverage frontier (verified promises / total promises). The full block
+  # lives on the feature-flow detail (use_case_coverage). Echoed here for the index headline.
+  verified: 2
+  total: 15
+  note: |
+    2 of 15 user-facing promises are guarded by a real test, and BOTH are the directory-CRUD
+    happy path through the management Tags page (H-015 create/rename/important/delete-appears;
+    H-009's directory-delete-removes-from-list arm). EVERY contradicted / partial / probe-needed
+    promise — the ranking lie, the side-channel mint, case-fracture, no-validation, the open read,
+    the delete debris (orphans + FTS staleness), the incomplete external guard, the audit
+    asymmetry, the response-shape gap — is UNVERIFIED. And the ONE fully-confirmed guardrail
+    (H-014: side-channel mints important=false; UI cannot wipe EXTERNAL relations) has NO
+    regression test — a hand-proven invariant with no guard, the canonical LSN-030 functional demand.
 related_feature_flows:
   - F-017   # Search Filter Facets — the Tag facet is the catalog-wide enumeration surface that side-channel-minted tags pollute (F-018 batch-ZA + H-008 here)
   - F-001   # Popular Entities Ranking — sibling discovery surface with the SAME paginate-before-aggregate structural class (PopularStrip), and the row-click view_count loop
@@ -86,6 +122,7 @@ related_drift_classes:
 new_drift_classes_proposed:
   - tag_assign_ui_no_signpost_that_a_novel_name_mints_a_global_directory_row_seen_by_every_user
   - tag_directory_ui_surface_not_enriched_reflection_judges_tag_strip_and_autocomplete_from_inline_batch_notes_only
+  - directory_crud_happy_path_e2e_tested_but_every_contradicted_promise_unguarded   # LSN-030 — the verified/total gap is itself the finding
 ---
 
 # Manual Object Tagging — product-owner reflection
@@ -120,14 +157,18 @@ is **flat, global, and namespace-free** — the `tag` table has no `owner_id` co
 tag any user mints is immediately visible to every other user (per `TagServiceImpl.md`:
 invariants; `getPopularTagList.md`:security.owner_scoping `N/A`).
 
-The working parts a product owner would demo: you can **search the tag list** by substring
-(`query`, case-insensitive), **filter by tag id** (`ids`), and **paginate** (`page`/`size`);
-you can **rename** a tag or toggle its **Important** flag (which floats it in some views);
-you can **delete** a tag; and Collector-pushed (`external`) tags are **protected from UI
-overwrite** — a tag the ingestion pipeline owns cannot be renamed or deleted from the UI
-(per `updateTag.md` + `deleteTag.md`:invariants — the `!external` guard, a genuine positive
-invariant). Tag *assignment* is a **SET, not an APPEND**: `PUT .../tags` replaces the tag
-set on the target, and submitting `[]` clears it (per `createTermTagsRelations.md` +
+The working parts a product owner would demo: there is a **dedicated management surface** at
+`/management/tags` where stewards create, rename, important-flag and delete tags — and this
+is the ONE part of the feature that has real end-to-end test coverage (the Playwright suite
+`tests/features/tags/{add,change,delete}-tag.spec.ts` drives this page through the modals,
+confirmed this run). You can **search the tag list** by substring (`query`,
+case-insensitive), **filter by tag id** (`ids`), and **paginate** (`page`/`size`); you can
+**rename** a tag or toggle its **Important** flag (which floats it in some views); you can
+**delete** a tag; and Collector-pushed (`external`) tags are **protected from UI overwrite** —
+a tag the ingestion pipeline owns cannot be renamed or deleted from the UI (per `updateTag.md`
++ `deleteTag.md`:invariants — the `!external` guard, a genuine positive invariant). Tag
+*assignment* is a **SET, not an APPEND**: `PUT .../tags` replaces the tag set on the target,
+and submitting `[]` clears it (per `createTermTagsRelations.md` +
 `updateDatasetFieldTags.md`:invariants — replace-all / delete-then-recreate).
 
 The integration story: tagging **feeds Search** (F-017) — every tag becomes a top-level
@@ -142,12 +183,19 @@ actually show the most-popular tags once the directory grows past one page (it s
 OLDEST); the four side paths quietly grant directory-mint power to anyone who can assign a
 tag; deleting a tag leaves orphan dataset-field relations and a stale search index; and the
 UI surface that does the minting (the tag-assign autocomplete) gives no hint that typing a
-new name adds it to a global vocabulary everyone sees. Critically, **the tag-directory UI
-surfaces — the Top Tags strip (TopTagsList), the tag chip (TagItem), the per-entity tag
-editor (OverviewTags / TagsEditForm / TagsEditFormAutocomplete) — are NOT enriched as
-standalone sidecars** in this chain (the `PopularStrip.md` sidecar that exists is the popular
-*data-entity* strip, confirmed by reading it). The UI evidence used below comes from the
-feature-flow's `batch_extensions` inline primary-source walks (TopTagsList.tsx:13-46,
+new name adds it to a global vocabulary everyone sees. **The decisive product-quality fact
+this refresh surfaces (LSN-030): the e2e suite that DOES exist guards only the directory-CRUD
+happy path through the management Tags page — create-and-it-appears, rename-and-it-changes,
+delete-and-it-disappears-from-the-list — and NONE of the ten contradicted promises, the two
+partials, or the probe-needed path is guarded by any test at all.** Two of fifteen
+user-facing promises are verified; the most behaviourally dangerous behaviours (the ranking
+lie, the silent global-mint side-channel, the open read, the incomplete Collector guard) ship
+unguarded, and even the one fully-confirmed guardrail (H-014) has no regression test. Finally,
+the tag-directory UI surfaces — the Top Tags strip (TopTagsList), the tag chip (TagItem), the
+per-entity tag editor (OverviewTags / TagsEditForm / TagsEditFormAutocomplete) — are NOT
+enriched as standalone sidecars in this chain (the `PopularStrip.md` sidecar that exists is the
+popular *data-entity* strip, confirmed by reading it). The UI evidence used below comes from
+the feature-flow's `batch_extensions` inline primary-source walks (TopTagsList.tsx:13-46,
 TagItem.tsx:1-60, OverviewTags.tsx:43-68, TagsEditFormAutocomplete.tsx) — substantial, with
 file:line citations, but not the same as enriched, stress-protocol'd sidecars. This caps the
 confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9).
@@ -178,7 +226,10 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
       (LSN-019:23-32, 2026-05-20): 35 equally-popular tags, size=30 -> the 30 oldest returned,
       the 5 youngest absent. The TopTagsList UI then re-sorts the (already-wrong) 30 rows
       client-side by usedCount DESC (TopTagsList.tsx:24-33) — a silent workaround that MASKS
-      the backend error so operators never see the ranking is wrong.
+      the backend error so operators never see the ranking is wrong. The repository unit test
+      testListMostPopular (TagRepositoryImplTest:237-267) is structurally blind: size=8 with
+      only 4 matching tags so the LIMIT never fires, and it asserts containsExactlyInAnyOrder
+      (order-agnostic) — it cannot catch the drift.
     evidence:
       - sidecar: odd-platform__java__TagController__controller-method__getPopularTagList
         section: stress_findings.name_behavior_pairs[0] + invariants
@@ -192,9 +243,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
         section: invariants
         cite: "openapi.yaml:345"
         note: "the spec description 'sorted by popularity' is the false contract claim"
-      - source_read_for_validation: false
-        cite: "retrospectives/LSN-019:23-32"
-        note: "maintainer empirical reproduction against demo.oddp.io 2026-05-20"
+      - source_read_for_validation: true
+        cite: "TagRepositoryImplTest.java:237-267 (read this run) + retrospectives/LSN-019:23-32"
+        note: "the only listMostPopular test is structurally blind (size=8, 4 matches, order-agnostic assert); maintainer empirical reproduction against demo.oddp.io 2026-05-20"
     operator_visible_failure: |
       The "Top Tags" tile and the Tag-facet seed render OLD-and-possibly-unused tags as the
       catalog's headline vocabulary on any deployment with >30 tags. A freshly-minted, heavily-
@@ -205,6 +256,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: HIGH
     confidence: HIGH
     routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
 
 - id: H-002
   hypothesis: |
@@ -247,6 +301,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
 
 - id: H-003
   hypothesis: |
@@ -288,6 +345,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
 
 - id: H-004
   hypothesis: |
@@ -325,6 +385,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     confidence: LOW
     probe_id: P-030
     routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: P-030 (the unset-origin INSERT probe — resolve first; the integration test that pins origin=INTERNAL is the regression guard once green)
 
 - id: H-005
   hypothesis: |
@@ -379,8 +442,11 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
       model is silently false.
     severity: HIGH
     confidence: HIGH
-    probe_id: P-330
+    probe_id: PENDING-F-018-1
     routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
 
 - id: H-006
   hypothesis: |
@@ -423,6 +489,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
 
 - id: H-007
   hypothesis: |
@@ -444,7 +513,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
       characters, or whitespace-only; [' tag ', 'tag'] mints two distinct rows. This gap is shared
       verbatim across createTag, createTermTagsRelations, and updateDatasetFieldTags (all reach the
       same getOrCreateTagsByName / bulkCreate with no trim / normalise). getPopularTagList returns
-      these to every user — the popular-tags surface is polluteable with garbage.
+      these to every user — the popular-tags surface is polluteable with garbage. (The e2e
+      add-tag.spec.ts "Cleanup input" test asserts the create button DISABLES on empty input — a
+      thin CLIENT-side guard only; the server accepts whatever reaches it.)
     evidence:
       - sidecar: odd-platform__java__TagController__controller-method__createTag
         section: bugs_limitations_corner_cases
@@ -463,6 +534,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
 
 - id: H-008
   hypothesis: |
@@ -502,6 +576,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: MEDIUM
     routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
 
 - id: H-009
   hypothesis: |
@@ -527,7 +604,11 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
       one term-side refresh it does run executes AFTER the tag_to_term rows are already deleted, so
       its discovery CTE (SELECT term_id FROM tag_to_term WHERE tag_id=?) finds nothing and re-indexes
       zero terms — a no-op. The deleted tag name therefore stays searchable on both the entity and
-      term surfaces until an unrelated write happens to refresh each row.
+      term surfaces until an unrelated write happens to refresh each row. NOTE: the e2e
+      delete-tag.spec.ts ("Delete unimportant/important tag") DOES verify the tag disappears from
+      the management Tags LIST after delete — but that is only the directory-row soft-delete +
+      list-refresh arm; it asserts NOTHING about the orphan dataset-field rows or the lingering
+      search-index token, so the "clean" half of the promise is unguarded.
     evidence:
       - sidecar: odd-platform__java__TagController__controller-method__deleteTag
         section: invariants + bugs_limitations_corner_cases + operations
@@ -537,6 +618,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
         section: bugs_limitations_corner_cases
         cite: "TagServiceImpl.java:68-69 (delete refreshes only term vector) + :161-167 (update refreshes all three)"
         note: "asymmetric FTS refresh + too-late ordering (P-033 H1/H2)"
+      - source_read_for_validation: false
+        cite: "odd-platform/tests/features/tags/delete-tag.spec.ts:16-49 (read this run)"
+        note: "the delete e2e verifies only list-disappearance; the orphan + FTS arms are untested"
     operator_visible_failure: |
       After a delete: (1) orphan tag_to_dataset_field rows accumulate silently in the DB,
       consuming space and risking confusion if the soft-deleted tag id is ever reused; (2) a
@@ -548,6 +632,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     confidence: HIGH
     probe_id: P-033
     routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified   # the directory-soft-delete arm IS e2e-tested (-> H-015); the CLEAN-teardown promise (orphans + FTS) is NOT
+    test_demand: functional
 
 - id: H-010
   hypothesis: |
@@ -591,6 +678,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
 
 - id: H-011
   hypothesis: |
@@ -633,6 +723,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
 
 - id: H-012
   hypothesis: |
@@ -667,6 +760,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: LOW
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
 
 - id: H-013
   hypothesis: |
@@ -714,6 +810,9 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
 
 - id: H-014
   hypothesis: |
@@ -750,7 +849,56 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
         note: "the UI cannot create EXTERNAL relations or remove Collector-set ones"
     severity: LOW
     confidence: HIGH
+    # LSN-030: a fully-CONFIRMED guardrail with NO regression test does NOT route to none — it is
+    # the canonical "hand-proven invariant, no guard" functional demand. v0.2.0 routed this to
+    # none; that is the exact regression this prompt version forbids.
+    routes_to_finding: functional-test-demand
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-015
+  hypothesis: |
+    "When a steward uses the Management > Tags page to create a tag (optionally Important), rename
+    it, toggle its Important flag, or delete it, the change takes effect and is reflected on the
+    Tags list — the core vocabulary-curation flow works end-to-end from the screen."
+  derivation: |
+    NEW this refresh (v0.3.0). The directory-CRUD happy path through /management/tags is the
+    primary user-facing promise of the TAG_CREATE/TAG_UPDATE/TAG_DELETE permissions, and it is
+    the ONE part of the feature with real e2e coverage — surfacing it as a promise lets the
+    use_case_coverage frontier reflect what is genuinely guarded. Seed: pillar (the three TAG_*
+    permissions' literal happy path) + the existing e2e suite.
+  seed_source: pillar + endpoint-shape (the verified happy path)
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The management Tags page (/management/tags, page object tests/ui/pages/management/tags-page.ts)
+      drives the TAG_CREATE-gated POST /api/tags (createTag), PUT /api/tags/{id} (updateTag rename +
+      important toggle), and DELETE /api/tags/{id} (deleteTag) through the addTag / editTag /
+      deleteTag modals. The Playwright suite asserts the user-visible outcomes: a created tag (and
+      a created important tag, with the "important" mark visible) appears on the list; multi-tag
+      create lands all rows; rename shows the new name; mark/unmark important toggles the important
+      mark; delete removes the row from the list. This is genuine UI->backend->DB e2e coverage of
+      the directory-CRUD happy path (NOT the per-entity side-channel, which add/change/delete-tag
+      never exercise). The flow works as promised for this surface.
+    evidence:
+      - source_read_for_validation: false
+        cite: "odd-platform/tests/features/tags/add-tag.spec.ts:22-50 (Add new Tag / Add new important tag)"
+        note: "create-and-it-appears, important flag rendered — verified e2e"
+      - source_read_for_validation: false
+        cite: "odd-platform/tests/features/tags/change-tag.spec.ts:16-76 (Change tag name / Mark important / Mark unimportant)"
+        note: "rename + important toggle reflected on the list — verified e2e"
+      - source_read_for_validation: false
+        cite: "odd-platform/tests/features/tags/delete-tag.spec.ts:16-49 (Delete unimportant/important tag) + tests/ui/pages/management/tags-page.ts:53-78"
+        note: "delete removes the row from the management list — verified e2e (the directory-soft-delete + list-refresh arm of H-009)"
+    severity: LOW
+    confidence: HIGH
+    # The happy path is verified — so this promise routes to none (it has a guard). This is the
+    # ONE legitimate `none` route in the reflection: a confirmed promise WITH a real test.
     routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "tests/features/tags/{add-tag,change-tag,delete-tag}.spec.ts (Playwright e2e via /management/tags)"
 
 ## cross_references
 
@@ -788,7 +936,7 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     mint global Tag-directory rows without TAG_CREATE; getOrCreateTagsByName never consults it.
   dedup_status: already_tracked
   tracked_as: PLT-026
-  proposed_fix_anchor: "lift TAG_CREATE consultation into TagServiceImpl.getOrCreateTagsByName :80-86 (PLT-026 Thread B); P-330 regression-pins the cross-user journey"
+  proposed_fix_anchor: "lift TAG_CREATE consultation into TagServiceImpl.getOrCreateTagsByName :80-86 (PLT-026 Thread B); PENDING-F-018-1 regression-pins the cross-user journey"
 - hypothesis_id: H-007
   severity: MEDIUM
   one_line: |
@@ -860,16 +1008,131 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
   tracked_as: PLT-026
   recommended_log_as: "doc + code — PLT-026 Thread C harmonises emission; DOC-190 Caveat 3 documents the asymmetry (status=done)"
 
-### probes_emitted
-- probe_id: P-330
+### functional_test_demands
+# LSN-030 / Rule 11 — the bridge the v0.2.0 confirmed-hypothesis path was missing. EVERY unverified
+# promise (use_case) becomes a missing-functional TEST-GAP candidate, including the CONFIRMED-but-
+# untested guardrail (H-014) and the unmet arms of the partials (H-002, H-010). The contradicted
+# items ALSO carry a regression-guard functional demand on top of their bug/caveat routing above.
+- use_case_id: F-018-UC-014
+  hypothesis_id: H-014
+  kind: teardown-constraint
+  promise: "A side-channel mint creates important=false ALWAYS; a UI dataset-field tag replace-all NEVER removes EXTERNAL / EXTERNAL_STATISTICS (Collector-owned) relations."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-014"
+  proposed_test: "Integration: assign a novel tag via PUT /api/dataentities/{id}/tags -> assert the new tag row has important=false; seed an EXTERNAL_STATISTICS tag_to_dataset_field relation -> PUT /api/datasetfields/{id}/tags with a different INTERNAL set -> assert the EXTERNAL_STATISTICS relation survives. THE HIGHEST-VALUE GUARD: it pins the positive invariant the platform's Collector-ownership model rests on."
+- use_case_id: F-018-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "GET /api/tags / the Top Tags strip returns the MOST-USED tags, not the oldest, when the directory exceeds one page."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-001 (= the existing TEST-GAP-LSN019-listMostPopular-ranking, mint/cross-link)"
+  proposed_test: "Integration: 35 equally-used tags, size=30, assert the response is NOT the 30 lowest tag.ids; varying-count case (youngest most-used) asserts the youngest appear. Pins P-010 / LSN-019 at the REST boundary (the regression guard for PLT-026 Thread A)."
+- use_case_id: F-018-UC-005
   hypothesis_id: H-005
-  probe_path: "lineage/odd-platform/probes/P-330.yaml"
+  kind: cross-actor
+  promise: "Only a TAG_CREATE holder mints catalog vocabulary; a per-surface tag-assign permission does not, and the unauthenticated ingestion path does not."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-005 (security regression-pin; PENDING-F-018-1 probe is the cross-user journey)"
+  proposed_test: "Security e2e (two seeded principals): principal A holds only DATASET_FIELD_TAGS_UPDATE, mints a novel tag via PUT /api/datasetfields/{id}/tags; principal B with NO TAG_* permission sees it in GET /api/tags. Pins the current (broken) behaviour so the PLT-026 Thread B fix is gated by an explicit test edit."
+- use_case_id: F-018-UC-009
+  hypothesis_id: H-009
+  kind: teardown
+  promise: "Deleting a tag removes its dataset-field relations AND stops the tag name surfacing in full-text search."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-009"
+  proposed_test: "Integration: tag a dataset field + a term + an entity, delete the tag, assert (a) no tag_to_dataset_field orphan remains, (b) a search for the tag name returns neither the entity nor the term. Pins P-032 + P-033 (the regression guard for the cascade + FTS fix)."
+- use_case_id: F-018-UC-007
+  hypothesis_id: H-007
+  kind: grammar
+  promise: "Tag names are validated server-side (length cap, charset, trim, no whitespace-only)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-007"
+  proposed_test: "Integration: POST /api/tags with a whitespace-only name, a control-character name, a 10K-char name, and ' tag '/'tag' — pin the current accept-all behaviour so the validation fix is gated by an explicit test edit (DoS-surface guard)."
+- use_case_id: F-018-UC-003
+  hypothesis_id: H-003
+  kind: grammar
+  promise: "Tag-name search and tag creation agree on case (one coherent vocabulary)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-003"
+  proposed_test: "Integration: create 'Finance', then assign 'finance' via the side-channel; assert the CURRENT behaviour (two distinct rows) so the normalisation fix flips the test; assert query=finance returns both (read case-insensitive)."
+- use_case_id: F-018-UC-006
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Listing the tag vocabulary requires at least one TAG_* permission (or is a documented open-read)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-006"
+  proposed_test: "Security: a principal holding NO TAG_* permission GETs /api/tags and receives 200 + the full directory (pin the open-read posture); under DISABLED an anonymous caller sees the directory."
+- use_case_id: F-018-UC-010
+  hypothesis_id: H-010
+  kind: teardown-constraint
+  promise: "A Collector-owned tag cannot be renamed or deleted from the UI — on EITHER the data-entity OR the dataset-field side."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-010 (the UNMET dataset-field arm)"
+  proposed_test: "Security: tag with an external=true data-entity relation -> updateTag/deleteTag rejected (the working arm — pin it); tag whose ONLY external origin is a dataset-field EXTERNAL row -> updateTag/deleteTag CURRENTLY SUCCEEDS (pin the gap so the guard-extension fix flips it)."
+- use_case_id: F-018-UC-013
+  hypothesis_id: H-013
+  kind: cross-actor
+  promise: "A tag change on any object (entity / dataset field / term) is recorded in the Activity Feed."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-013"
+  proposed_test: "Integration: change tags on a term via PUT /api/terms/{id}/tags -> assert the CURRENT behaviour (no Activity event) so harmonising the emission flips the test; data-entity path emits param-only; dataset-field path emits full before/after."
+- use_case_id: F-018-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "GET /api/tags?ids=[...] filters by tag id (and the spec describes ids correctly)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-002"
+  proposed_test: "Integration: GET /api/tags?ids=[t1,t2] returns exactly tags t1,t2 (the working arm); a contract test asserts the rendered IdsParam description is tag-scoped once fixed."
+- use_case_id: F-018-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: "The OpenAPI tag contract is legible for auth + error modes (security block, 4xx, correct success status, description)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-011 (spec-contract test; aligns with F-029)"
+  proposed_test: "Controller/contract: createTag/updateTag return 200 (pin the current status vs the 201 the spec declares); a no-permission caller gets 403, a missing tag gets 404, a duplicate gets 400 — assert the live status codes so the spec can be corrected to match."
+- use_case_id: F-018-UC-012
+  hypothesis_id: H-012
+  kind: edit-reconcile
+  promise: "PUT /api/tags/{id} returns the tag's full state (external + usedCount) for re-render."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-012"
+  proposed_test: "Controller: PUT /api/tags/{id} response asserts external/usedCount are populated (CURRENTLY null — pin the gap; the re-read-TagDto fix flips it)."
+- use_case_id: F-018-UC-004
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "PUT /api/datasetfields/{id}/tags with a non-empty tag list succeeds and persists origin=INTERNAL."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-018-UC-004 (resolve P-030 first)"
+  proposed_test: "Integration: PUT /api/datasetfields/{id}/tags with a non-empty payload -> assert the relation persists with origin=INTERNAL and the call returns success (resolves whether the endpoint is structurally dead; the CRITICAL guard)."
+
+### probes_emitted
+- probe_id: PENDING-F-018-1
+  hypothesis_id: H-005
+  status: pending-reflection-verification
   note: |
-    NEW reflection-emitted probe — the REFACTOR-223 side-channel headline as a cross-user,
-    cross-surface USER JOURNEY (principal A with only DATASET_FIELD_TAGS_UPDATE mints a novel tag;
-    principal B with no TAG_* permission sees it in GET /api/tags). No existing probe captures the
-    cross-user directory-visibility consequence as a single assertion (P-026 = atomicity, P-030 =
-    unset-origin). LOCAL-ONLY; requires LOGIN_FORM + two seeded principals.
+    PARALLEL-SAFE MODE — recorded here as PENDING-F-018-1 (NOT written as a P-NNN file this run;
+    the orchestrator mints it). This is the v0.2.0 P-330 carry-forward: the REFACTOR-223 /
+    PLT-026 side-channel headline as a cross-user, cross-surface USER JOURNEY.
+  hypothesis_text: |
+    Principal A, granted ONLY DATASET_FIELD_TAGS_UPDATE on their own dataset's fields (no
+    TAG_CREATE), submits PUT /api/datasetfields/{id}/tags with a NOVEL tag name; a global `tag`
+    directory row is minted. Principal B, an authenticated user holding NO TAG_* permission,
+    then calls GET /api/tags and SEES the newly-minted tag in the directory. Expected (if the
+    governance promise held): A cannot mint without TAG_CREATE. Actual (predicted): A mints, B
+    sees it. LOCAL-ONLY — requires LOGIN_FORM + two seeded principals + a dataset entity.
 
 ### probes_referenced
 # Existing file-analyser probes that already pin reflection verdicts — referenced, NOT re-emitted
@@ -908,7 +1171,11 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
     surface is not in the chain as enriched nodes, so H-008 (autocomplete no-signpost), the
     TagItem important-style-only / nested-click / system-tag-icon-only facets, and the OverviewTags
     slice-before-sort defect are reflected from inline notes at MEDIUM confidence rather than HIGH.
-    Until then, the UI-facing verdicts (H-008 especially) carry confidence: MEDIUM by Rule 9.
+    Until then, the UI-facing verdicts (H-008 especially) carry confidence: MEDIUM by Rule 9. NOTE
+    (v0.3.0): the management Tags-page UI (tags-page.ts + the add/edit/delete modals) IS exercised
+    end-to-end by the Playwright suite, so H-015's happy path is verified despite no enriched
+    sidecar — but the per-entity tag-assign autocomplete (the H-008 side-channel surface) is NOT
+    covered by any test.
 - sidecar: "odd-platform java DataEntityController controller-method:setDataEntityTags"
   field_insufficient: "the primary UI write entry point (POST /api/dataentities/{id}/tags, feature-flow hop 1) is marked unresolved/not-yet-enriched; its behaviour is inferred from TagServiceImpl.updateRelationsWithDataEntity + the DataEntityServiceImpl.upsertTags @ActivityLog citation in sibling sidecars"
   proposed_refresh: "enrich setDataEntityTags / DataEntityServiceImpl.upsertTags so the data-entity audit (param-only TAG_ASSIGNMENT_UPDATED) and the empty-set-clears-all destruction are pinned at primary source rather than cross-cited."
@@ -933,4 +1200,6 @@ confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9
 ## maintainer_notes
 
 (none yet — auto-derived reflection. Maintainer-curated hypotheses, if added, are preserved
-verbatim across refreshes per Rule 5.)
+verbatim across refreshes per Rule 5. v0.3.0 refresh 2026-06-04: all 14 v0.2.0 hypotheses
+preserved verbatim in substance + projected to use_cases; H-015 added for the e2e-verified
+directory-CRUD happy path; H-014 re-routed from `none` to functional-test-demand per LSN-030.)

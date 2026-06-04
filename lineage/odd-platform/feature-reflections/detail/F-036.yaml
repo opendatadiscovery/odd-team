@@ -1,0 +1,658 @@
+---
+feature_id: F-036
+pillar_anchored_id: P-08:F-036
+pillar: P-08 Management & Administration
+feature_name: "Owner-Relationship Title Directory"
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__TitleController__controller-class__TitleController.md
+  - odd-platform__java__service__service__OwnershipServiceImpl.md
+  - odd-platform__java__DataEntityController__controller-method__createOwnership.md (cross-referenced via concepts.yaml + REFACTOR-206/624; not re-read in full)
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/policies"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      UPDATED since the sidecar's 2026-05-25 fetch. The live page now carries a
+      "Title vocabulary caveat for :owner:title conditions" section that explicitly
+      documents free-text auto-create, case-sensitivity, and that any caller with
+      DATA_ENTITY_OWNERSHIP_CREATE / TERM_OWNERSHIP_CREATE can mint a Title.
+      This PARTIALLY CLOSES the no_canonical_doc_for_title_concept drift facet and
+      DOC-GAP-289 (Policy-condition consumer is now warned). The directory-curation
+      gap (no Titles management surface, no inspection view) remains open.
+hypothesis_summary:
+  total: 12
+  confirmed: 2
+  contradicted: 6
+  partial: 3
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-004
+    severity: HIGH
+    one_line: "Typing a never-seen title into the ownership form silently mints a new authorization-vocabulary row with no TITLE_CREATE permission, no allowlist, and no audit event — the user believes they labelled an ownership; they amended the Policy vocabulary."
+related_feature_flows: [F-019, F-018, F-006, F-074, F-161]
+related_concepts:
+  - "Title (owner-relationship label)"
+  - "Ownership"
+  - "Policy condition field (dataEntity:owner:title / term:owner:title)"
+  - "Owner directory"
+  - "Permission (absent TITLE_CREATE)"
+related_drift_classes:
+  - free_text_auto_create_no_normalisation_silent_policy_leak
+  - dimension_table_admits_duplicates_under_case_whitespace_drift
+  - read_then_insert_race_no_on_conflict_handler
+  - unbounded_pagination_request_param_amplification
+  - server_side_id_asc_window_clipping_invisible_to_client_filter
+  - doc_silent_on_load_bearing_authorization_dimension
+new_drift_classes_proposed:
+  - title_directory_authorization_mutation_disguised_as_label_entry
+---
+
+# Owner-Relationship Title Directory — product-owner reflection
+
+## product_owner_narrative
+
+The **Title directory** is the platform's vocabulary of *owner-relationship labels* — the short strings such as "Data Steward", "DBA", "Maintainer", "Reviewer" that an operator attaches when they grant a person (an Owner) ownership of a Data Entity or a Term (per `TitleController.md:understanding` + `OwnershipServiceImpl.md:invariants[2]`). It is not a feature an operator navigates *to*: there is no "Titles" tab in Management (the UI walk in `feature-flow F-036:ui_review_2026_05_26` confirms `ManagementTabs.tsx:19-50` enumerates 9 tabs and none is Titles), no create/edit/delete screen, and no curation surface. The directory exists only at the two seams where a user touches a title string: the **ownership-grant form** (where they pick or type one) and the **Data Quality runs filter** (where they filter test runs by an owner's title).
+
+A user interacts with it in three concrete ways (per `TitleController.md:audiences` + `:upstream_callers`). First, on a Data Entity or Term detail page, the **Owners section** opens an ownership form whose `OwnerTitleAutocomplete` control fetches `GET /api/titles?page=1&size=30&query=<typed>` on focus and on each 500ms-debounced keystroke, presenting matching titles in a dropdown that also accepts a brand-new free-text value (MUI `freeSolo`, `OwnerTitleAutocomplete.tsx:43-48,149`). Second, on the `/data-quality/runs` page, the **TitleFilter** populates `titleIds` / `deTitleIds` query parameters from the same `GET /api/titles` list to scope the runs table. Third, any authenticated API client can paginate the directory directly via `GET /api/titles`.
+
+The working parts are deliberately thin (per `TitleController.md:concepts.invariants` + `:stress_findings`). The read endpoint returns titles filtered by a **case-insensitive substring** on `name`, ordered by **`id` ASC (insertion order)** — not alphabetical, not by usage, not by relevance — with **no server-side cap on `size`** and no validation of `page`. The write path is *implicit*: there is no write endpoint on `TitleController` at all. A title row is created only as a **side effect** of `OwnershipServiceImpl.create/update`, which calls `titleService.getOrCreate(formData.getTitleName())` and silently inserts the typed string when no exact-byte match exists (`OwnershipServiceImpl.md:invariants[2]` + `TitleServiceImpl.java:19-22`). There is no `TITLE_CREATE` permission anywhere in the codebase (grep returns zero matches, per `REFACTOR-206`), no allowlist, no `@Pattern`/`@Size`, and no normalisation (case-fold, trim, dedupe).
+
+The integration story is what makes this feature load-bearing rather than cosmetic (per `system-mission.md` P-09 + the live Policies doc + `REFACTOR-624`). The Title is consumed by the **authorization model**: Policy conditions `dataEntity:owner:title == 'X'` and `term:owner:title == 'X'` gate access by an owner's title, matched as case-sensitive string equality. So the same free-text string that one user types into a label autocomplete becomes the vocabulary another operator references in a security Policy — a label-entry surface feeding an authorization surface, with no schema, no curation, and (until recently) no documentation joining the two. The feature also feeds Discovery (the FTS vector refresh on ownership write) and the Activity Feed (the `OWNERSHIP_*` events on the *parent* grant only).
+
+In a demo a product owner would highlight the edge cases that bite operators (per `REFACTOR-624` + `TitleController.md:performance` + `:stress_findings.resource_boundaries`): a directory that grows monotonically and never tombstones in production (the soft-delete machinery is provisioned but has no caller); an autocomplete that, once the directory exceeds 30 rows, makes the 31st-oldest-and-later titles invisible regardless of relevance to what the user typed (the 30-row id-ASC server window clips before the client-side MUI filter ever sees them); and a concurrent-grant race on a brand-new title name that surfaces to one of the two users as a hard HTTP 400 with no explanation of why their ownership grant failed.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user types a substring into the title autocomplete on an ownership form, the dropdown shows every existing title whose name contains that substring, case-insensitively."
+  derivation: "GET /api/titles `query` parameter (SearchParam, 'Search text') + the case-insensitive containment filter in the inherited CRUD list."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `query` flows to `ReactiveAbstractCRUDRepository.listCondition` which emits
+      `nameField.containsIgnoreCase(nameQuery)` → `LOWER(name) LIKE LOWER('%query%')`.
+      Empty/null query returns all non-deleted titles. Substring containment, not
+      prefix-match, not FTS. The match is honoured for what is fetched from the
+      server — see H-008 for the window-clipping caveat that limits which rows are
+      eligible to match in the first place.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: stress_findings.request_inputs[query]
+        cite: "ReactiveAbstractCRUDRepository.java:240-249"
+        note: "containsIgnoreCase on the name column; isNotEmpty guard returns all on empty query"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When a user opens the title autocomplete, the dropdown shows the most relevant or most commonly-used titles first."
+  derivation: "Negative-space: a user picking a label from a long list reasonably expects the list ordered by usefulness (relevance to typed text, or popularity), the way most autocompletes behave platform-wide."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The list is ordered by `id ASC` (insertion / chronological order), hardcoded
+      in the generic CRUD paginate-wrapper — not by relevance, not alphabetical, not
+      by usage count. The OLDEST titles appear first. The client-side MUI
+      createFilterOptions then re-filters within the fetched window but does NOT
+      re-sort by relevance. A user typing "steward" who has 40 titles in the
+      directory may not see the cleanly-spelled "Data Steward" at all if it was
+      created after the 30 oldest rows (see H-008), and will see oldest-matching
+      first among those that do appear.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: stress_findings.orderings
+        cite: "ReactiveAbstractCRUDRepository.java:90-91 + JooqQueryHelper.paginate:63-80"
+        note: "OrderByField(idField, SortOrder.ASC) hardcoded; id is bigserial PK = insertion order"
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: stress_findings.orderings
+        cite: "OwnerTitleAutocomplete.tsx:38-89"
+        note: "MUI createFilterOptions re-filters but does not re-rank by relevance"
+    operator_visible_failure: |
+      For a deployment with a small directory (the common case, tens of rows) the
+      effect is mild: the dropdown is unsorted-by-relevance but everything fits.
+      For a directory grown past 30 rows the failure is acute — clean entries
+      created recently are pushed out of the fetched window entirely (H-008), so
+      typing the exact title returns nothing and the user re-types it as free text,
+      minting yet another duplicate (compounding H-004/H-005). Even within the
+      window, an operator scanning for the right label scrolls past historical
+      typos and language variants before reaching the canonical one.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user selects an existing title from the autocomplete and grants ownership, the ownership row is bound to that exact title and no new title row is created."
+  derivation: "OwnershipServiceImpl.create resolves the title via getOrCreate; selecting an existing name should hit the getByName branch, not the create branch."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `titleService.getOrCreate(name)` = `getByName(name).switchIfEmpty(create(...))`.
+      An exact-byte match on an existing name resolves via getByName and binds its
+      id to the ownership row; the create branch is not taken. This is the intended
+      select-existing path of a select-or-create combobox (Rule 9: a getOrCreate
+      backend behind a freeSolo control is the intended pattern, not a defect).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnershipServiceImpl.md
+        section: invariants[2]
+        cite: "TitleServiceImpl.java:19-22"
+        note: "getByName(name).switchIfEmpty(repository.create(...)) — existing name binds via getByName"
+      - sidecar: odd-platform__java__service__service__OwnershipServiceImpl.md
+        section: tests_coverage_semantic.covered_behaviours
+        cite: "OwnershipServiceImplTest.java:74-117"
+        note: "testCreateOwnership asserts titleService.getOrCreate called once and its id bound — but MOCKS getOrCreate, so the getByName-vs-create branch is NOT exercised"
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a user types a brand-new title string into the ownership form and submits, they are simply labelling this one ownership — they are not creating a permanent platform-wide vocabulary entry, and certainly not one they lack permission to create."
+  derivation: "UI-label seed: the control is labelled as a title field on an ownership form (a per-grant attribute), not as a 'create directory entry' action. A senior PO asks whether the user understands the consequence of typing a new value."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Typing a never-seen string mints a permanent `title` row via
+      `OwnershipServiceImpl.create → titleService.getOrCreate(titleName)` at line 53.
+      There is NO `TITLE_CREATE` permission in the codebase at all (grep zero
+      matches); the only gate is the per-data-entity DATA_ENTITY_OWNERSHIP_CREATE
+      that authorises the GRANT, not directory growth. There is no allowlist, no
+      pattern, no length cap beyond the varchar(128) column, no normalisation, and
+      NO @ActivityLog on the directory mutation itself (only the parent OWNERSHIP_*
+      event fires). The user believes they labelled one ownership; they amended the
+      platform-wide authorization vocabulary that Policy conditions reference.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnershipServiceImpl.md
+        section: invariants[2]
+        cite: "OwnershipServiceImpl.java:53 + TitleServiceImpl.java:19-22"
+        note: "auto-create on miss, no permission consulted"
+      - sidecar: odd-platform__java__service__service__OwnershipServiceImpl.md
+        section: invariants[3]
+        cite: "SecurityConstants.java:143 (OWNER_CREATE bound only to /api/owners POST)"
+        note: "no TITLE_CREATE equivalent exists; REFACTOR-206 verified grep zero matches"
+    operator_visible_failure: |
+      (1) Vocabulary sprawl: every distinct string typed becomes a permanent row; the
+      directory never tombstones in production (no UI/API delete caller). (2) Silent
+      authorization surface mutation: the typed string is now selectable in Policy
+      conditions, so a low-privilege ownership-granter shapes the vocabulary a
+      security admin will later reference — without holding any directory-management
+      permission and without an audit trail of the mint. (3) No undo: an operator who
+      mistypes "Data Stewrd" cannot remove it through any UI; it lingers in every
+      future autocomplete. (4) Cross-feature leak (F-074): because GET /api/titles is
+      ungated, an attacker can enumerate the full vocabulary an admin's Policies rely
+      on.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+    sme_consultation_recommended: true
+    sme_consultation_question: "In peer data catalogs (DataHub ownership types, Amundsen, OpenMetadata), is the owner-relationship 'title/type' vocabulary an admin-curated controlled list or a free-text per-grant attribute, and is it gated by a distinct permission from the grant itself?"
+    sme_consultation_archetype: comparative
+
+- id: H-005
+  hypothesis: "When a user writes a Policy `dataEntity:owner:title == 'Data Steward'`, every owner whom operators intended as a data steward receives the granted permission."
+  derivation: "Pillar P-09 primary action ('author Policies that gate by an owner's title') + the cross-pillar promise that the title vocabulary is coherent enough to match against."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Policy title matching is case-sensitive exact string equality. Because
+      getOrCreate stores the typed string verbatim with no normalisation, the
+      directory accumulates 'Data Steward', 'data steward', 'DATA STEWARD',
+      ' Data Steward ', 'data-steward' as DISTINCT rows with distinct ids. A Policy
+      on 'Data Steward' matches ONLY the exactly-cased variant; every owner bound to
+      a different-cased row silently lacks the permission. The operator intended
+      "all data stewards"; the outcome is "only the exactly-cased ones".
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: bugs_limitations_corner_cases[4]
+        cite: "V0_0_3__add_ownership.sql:4 + TitleServiceImpl.java:19-22"
+        note: "varchar(128), no CHECK; getOrCreate stores verbatim, no case-fold/trim"
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: dependencies_semantic.requires-feature[Policies]
+        cite: "REFACTOR-624 + live Policies page (2026-06-04, status 200)"
+        note: "owner:title is a case-sensitive Policy condition field"
+    operator_visible_failure: |
+      Silent permission DENIAL (not escalation): an owner the operator believed
+      covered by the Policy is denied access with no error, no log, and no
+      operator-visible signal of the miss. The blast radius scales with how many
+      cased/whitespace variants have accumulated. The admin assumes everyone has
+      access; the affected user just silently cannot do the thing. This is the
+      REFACTOR-624 silent-policy-leak class observed in real deployments.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When a user has finished using the platform, they (or an admin) can review the list of titles and clean up typos or merge duplicates."
+  derivation: "Pillar P-08 ('Management is the operator-facing surface where an operator adds, edits, or removes catalog configuration') — a curated dimension should have a curation surface."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no Titles management surface. ManagementTabs.tsx enumerates 9 tabs;
+      none is Titles. managementRoutes declares no titles route. There is no
+      write/update/delete endpoint on TitleController; the soft-delete machinery
+      (ReactiveAbstractSoftDeleteCRUDRepository) is provisioned but has zero
+      production callers (delete is reachable only from test code). The only
+      operator-visible Title surface is the read-only TitleFilter in
+      /data-quality/runs. An operator cannot inspect, rename, merge, or delete a
+      title through any UI affordance.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: implicit_adrs[2]
+        cite: "ReactiveTitleRepositoryImpl.java:14 + grep titleRepository.delete( -> only test code"
+        note: "soft-delete provisioned, no production caller"
+      - sidecar: "(feature-flow F-036 ui_review_2026_05_26)"
+        section: ui_review_2026_05_26
+        cite: "ManagementTabs.tsx:19-50 + managementRoutes.ts (9 tabs, NO Titles)"
+        note: "UI primary source: no Titles management tab exists"
+        source_read_for_validation: false
+    operator_visible_failure: |
+      The directory is write-only-by-accumulation: it grows every time a new string
+      is typed and can never shrink. Typos (H-004) and case-variants (H-005) are
+      permanent and un-fixable in-product. An operator who recognises the
+      silent-policy-leak has no remediation path short of direct SQL against the
+      title table — which is outside any documented or supported surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a user calls GET /api/titles with a large size (e.g. size=100000), the platform protects itself with a server-side cap on how many rows it will return in one response."
+  derivation: "Endpoint-shape: the `size` parameter promises page size; a senior PO/engineer expects a defensive maximum on a caller-controlled limit."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `Integer size` flows verbatim to `paginate(...).limit(size)` → Postgres LIMIT.
+      There is no Math.min(size, MAX), no @Max annotation, no controller-level
+      validator, and the OpenAPI SizeParam declares no maximum. A caller can request
+      size=100000 and the JVM materialises the entire filtered directory plus the
+      count CTE in one response. The exact JVM/Postgres behaviour at extreme N is
+      PROBE-NEEDED (H-012); the ABSENCE of a cap is statically confirmed.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "TitleController.java:18-22 + ReactiveAbstractCRUDRepository.java:91 + components.yaml:4222-4229"
+        note: "no Math.min, no @Max, no maximum keyword on the size param"
+    operator_visible_failure: |
+      For the Title directory specifically the blast radius is bounded by directory
+      cardinality (typically tens of rows), so the practical risk is LOW for this
+      feature in isolation. But the same uncapped-size pattern is replicated across
+      every list-CRUD controller, so the class is a HIGH-aggregate resource-exhaustion
+      vector. For Titles, the more user-visible consequence is the interaction with
+      the UI's hardcoded size=30 (H-008), not exhaustion.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a deployment has more than 30 titles, a user typing into the autocomplete can still find and select any title in the directory that matches what they typed."
+  derivation: "Negative-space + UI-label: an autocomplete promises 'find the matching item'; the user does not know the fetch is capped at 30 server-side rows."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The autocomplete is reachable for any title in the FIRST 30 id-ASC rows that
+      match the query (the common small-directory case works fully). But the UI
+      hardcodes size=30 (OwnerTitleAutocomplete.tsx:43) against a server that orders
+      by id ASC, so for a directory > 30 rows the server returns only the 30 OLDEST
+      matching rows and the client-side MUI filter re-filters WITHIN that fixed
+      window. Titles newer than the 30-row window are invisible to autocomplete
+      regardless of relevance to the typed query. The hypothesis holds for small
+      directories and fails for large ones.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: performance.scaling_characteristics
+        cite: "OwnerTitleAutocomplete.tsx:43 (size=30) + ReactiveAbstractCRUDRepository.java:91 (ORDER BY id ASC)"
+        note: "30-row id-ASC server window clips before the client filter sees later rows"
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: stress_findings.orderings
+        cite: "OwnerTitleAutocomplete.tsx:38-89"
+        note: "createFilterOptions operates only on the fetched 30-row window; no server-side query echo beyond 30"
+    operator_visible_failure: |
+      In a large directory the clean recently-created title is unreachable: the user
+      types its exact name, sees nothing, and re-enters it as free text — minting a
+      duplicate (feeding H-004/H-005). The directory's monotonic growth (H-006, no
+      delete) makes this progressively worse over a deployment's lifetime. The 30
+      oldest rows — disproportionately historical typos and experiments — are the
+      only ones ever shown.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When two users concurrently grant ownership using the same brand-new title name, both grants succeed (the title is created once and reused)."
+  derivation: "Negative-space: a getOrCreate dimension should converge under concurrency; a user should not be punished for a directory race they cannot see."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      getOrCreate is read-then-insert with NO ON CONFLICT handler. Two parallel
+      OwnershipServiceImpl.create calls naming the same unseen title both observe
+      getByName empty, both attempt create; one wins, the other hits the
+      TITLE_NAME_UNIQUE constraint → UniqueConstraintException → HTTP 400 USR003.
+      Because the @ReactiveTransactional boundary wraps the whole grant, the losing
+      side's ENTIRE ownership grant rolls back, not just the title insert. The
+      losing user's grant fails with a generic 400.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: stress_findings.resource_boundaries
+        cite: "TitleServiceImpl.java:19-22 + ExceptionUtils.java:22-23,72-74"
+        note: "read-then-insert, no ON CONFLICT; UNIQUE violation -> 400 USR003"
+      - sidecar: odd-platform__java__service__service__OwnershipServiceImpl.md
+        section: invariants[4]
+        cite: "ControllerAdvice.java:36-40 + @ReactiveTransactional at OwnershipServiceImpl.java:49"
+        note: "losing side's whole grant rolls back atomically"
+    operator_visible_failure: |
+      A transient, retry-resolvable HTTP 400 USR003 with a message about a uniqueness
+      violation that does not explain the race — the user did not knowingly create a
+      duplicate title; they were granting ownership. The window is narrow (two grants
+      of the same NEW string within the same instant) so it is LOW frequency, but the
+      error shape is opaque and the failure is the whole grant, not a recoverable
+      partial. A retry succeeds because the row now exists.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When an operator reads the live documentation, they can learn what a Title is, where the vocabulary comes from, and that case matters for Policy conditions."
+  derivation: "Doc-claim seed: the no_canonical_doc_for_title_concept facet asserted the docs were silent; a refresh must re-verify against the live page (doc is cross-reference, code is truth)."
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      As of 2026-06-04 the live Policies page NOW carries a "Title vocabulary caveat
+      for :owner:title conditions" section that explicitly documents: titles are a
+      free-text vocabulary populated at ownership-grant time (not a curated
+      allowlist); TitleService.getOrCreate accepts any string with no case-fold /
+      trim / dedupe; title strings are case-sensitive exact-match; and any caller
+      with DATA_ENTITY_OWNERSHIP_CREATE / TERM_OWNERSHIP_CREATE can mint a new Title.
+      This CLOSES the doc-gap for the Policy-condition consumer (the highest-leverage
+      reader). What remains undocumented: the absence of any Titles management/curation
+      surface (an operator is told the hazard but offered no in-product remediation),
+      and GET /api/titles for API consumers (no description, no size-cap warning).
+    evidence:
+      - sidecar: "(WebFetch — live Policies page)"
+        section: WebFetch
+        cite: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/policies (2026-06-04, status 200)"
+        note: "live page now documents free-text, case-sensitivity, and side-channel mint"
+        source_read_for_validation: false
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: docs_link_semantic.doc_drift_findings
+        cite: "WebFetch 2026-05-25 (sidecar's earlier fetch, now stale)"
+        note: "sidecar + DOC-GAP-289/146 predate the doc update; refresh supersedes the doc half"
+    operator_visible_failure: |
+      The remaining gap is the absence of a documented remediation: the page warns
+      operators to normalise titles before writing Policies but cannot point at a
+      curation surface (none exists, H-006). An operator who reads the caveat,
+      recognises a leak, and goes looking for the "Titles" tab to fix it finds
+      nothing — the doc warns of a hazard the product gives no tool to fix.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: none-doc-verdict
+
+- id: H-011
+  hypothesis: "When an entity's ownership title is changed and the entity is a Data Entity Group, the title change cascades to children — and each child's ownership change is recorded in the Activity Feed."
+  derivation: "Cross-pillar (P-07 Activity Feed): the DEG-propagation feature re-titles child ownerships; an auditor expects the audit trail to reflect each affected entity."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      DEG-propagation does cascade the new title to children via createOrUpdate with
+      onConflict doUpdate set(TITLE_ID, EXCLUDED.TITLE_ID), so the title change DOES
+      reach child rows. But @ActivityLog(OWNERSHIP_*) annotates only the three
+      top-level service methods; the cascade at lines 121-149 inserts/updates N child
+      rows with NO per-child activity emission. An auditor querying the Activity Feed
+      for "who became/retitled an owner of this child entity" sees only the parent DEG
+      event and must infer the cascade.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnershipServiceImpl.md
+        section: invariants[6]
+        cite: "OwnershipServiceImpl.java:48,77,100 (@ActivityLog top-level only) + :121-149 (cascade, no per-child event)"
+        note: "parent-only audit; children's ownership changes invisible at activity layer"
+    operator_visible_failure: |
+      Audit incompleteness on DEG-cascaded ownership: a security/compliance auditor
+      reconstructing ownership history for a child entity of a DEG cannot see the
+      cascaded title change as a discrete event — only the parent's event exists.
+      This compounds the F-006 audit-silence pattern. Scope is limited to DEG members
+      with propagate=true, so MEDIUM, not HIGH.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When a user calls GET /api/titles?page=0 (or a negative/overflowing page), they receive a clear client error (400), not a server error or unpredictable rows."
+  derivation: "Endpoint-shape: page is 1-based; a senior engineer expects boundary validation rather than a leaked 500 or silent integer-overflow offset."
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      page has no @Min(1); offset is computed (page-1)*size with int arithmetic. At
+      page=0 the offset is -size (Postgres rejects negative offset). At page=INT_MAX
+      the (page-1)*size multiplication can overflow silently to a small/negative
+      offset → unpredictable rows. Static analysis confirms the ABSENCE of validation
+      and the overflow surface; the exact wire outcome (driver error class, 500 vs
+      something else, overflow row-set) requires running the endpoint against a real
+      Postgres — pinned by P-129.
+    evidence:
+      - sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+        section: stress_findings.tunables[page]
+        cite: "TitleController.java:18 + ReactiveAbstractCRUDRepository.java:91 + P-129"
+        note: "no @Min(1); (page-1)*size int overflow at INT_MAX; negative offset at page=0"
+    operator_visible_failure: |
+      Degraded UX rather than a security/correctness breach: a malformed page yields
+      an opaque 500 (page=0) or unpredictable rows (overflow) instead of a 400 with a
+      clear message. LOW severity; surfaced primarily because the same uncapped/raw
+      Integer pattern recurs platform-wide.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-036-1
+    routes_to_finding: validation-gap
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: PENDING-F-036-1
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Free-text title auto-create via ownership form mints a permanent authorization-vocabulary row with no TITLE_CREATE permission, no allowlist, and no audit event."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-206
+  distinct_from: null
+  proposed_fix_anchor: "OwnershipServiceImpl.java:53 / TitleServiceImpl.java:19-22 — gate getOrCreate behind a TITLE_CREATE permission OR an allowlist; sibling shape to REFACTOR-199 (Owner). Also SHB-084 (three service-tier side-doors) + DOC-GAP-146."
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "Case-sensitive title matching + verbatim auto-create produces a silent Policy permission-denial when cased/whitespace variants accumulate."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-624
+  distinct_from: null
+  proposed_fix_anchor: "Normalise on write (name_normalized generated column + unique index) AND case-insensitive Policy match; TitleServiceImpl.java:19-22 + Policy evaluator. Couples with REFACTOR-206."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "Title autocomplete is ordered id-ASC (oldest first), not by relevance or usage."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-206
+- hypothesis_id: H-006
+  one_line: "No Titles management/curation surface — directory grows monotonically and cannot be cleaned in-product (soft-delete provisioned, no caller)."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-146
+- hypothesis_id: H-007
+  one_line: "GET /api/titles size has no server-side cap (bounded by directory cardinality for this feature; HIGH-aggregate across all list-CRUD controllers)."
+  dedup_status: already_tracked
+  tracked_as: P-129
+- hypothesis_id: H-008
+  one_line: "UI size=30 against id-ASC server order makes titles past the 30-row window unreachable by autocomplete in large directories."
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: "REFACTOR-624 frames the case-variant policy-leak; this is the autocomplete-window-clipping MECHANISM that FEEDS duplicate creation — drift_class server_side_id_asc_window_clipping_invisible_to_client_filter, already recorded as a facet on F-036 (facet autocomplete_30_row_window_invisibility_for_titles_past_position_30). Routed to the F-036 caveat, not a fresh item."
+  recommended_log_as: caveat in the Titles/Policies docs (couple with REFACTOR-624 fix — server-side query echo for windows > 30)
+- hypothesis_id: H-009
+  one_line: "Concurrent grant of the same new title name fails one side with opaque HTTP 400 USR003 (whole grant rolls back)."
+  dedup_status: already_tracked
+  tracked_as: P-129
+- hypothesis_id: H-011
+  one_line: "DEG-propagated child ownership title changes emit no per-child Activity event (parent-only audit)."
+  dedup_status: net_new
+  tracked_as: null
+  distinct_from: "F-006 audit-silence is about RBAC mutations not being audited at all; this is entity-ownership cascade audit incompleteness — same audit_log_presence_asymmetry class, distinct locus (OwnershipServiceImpl.java:121-149)"
+  recommended_log_as: caveat in the Activity Feed / ownership docs + cross-ref F-006
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# The Title directory has ZERO wire/UI/e2e coverage (only TitlesRepositoryImplTest repo-CRUD +
+# OwnershipServiceImplTest 2 mocked happy-paths). Every confirmed/partial/contradicted promise below
+# is therefore unverified and routes here — NOT to none. (H-010 is a doc verdict, not a runtime
+# promise, so it routes to a doc-gap, not a functional test; H-012 routes to the probe.)
+- use_case_id: F-036-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Typing a substring filters the title list case-insensitively (LOWER(name) LIKE LOWER('%q%'))."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-001)"
+  proposed_test: "@WebFluxTest(TitleController) — GET /api/titles?query=ata returns titles containing 'ata' case-insensitively; empty query returns all non-deleted."
+- use_case_id: F-036-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "[CONTRADICTED] Title autocomplete is ordered by relevance/usage."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-002)"
+  proposed_test: "@WebFluxTest — seed titles out of alpha order; assert GET /api/titles returns them id-ASC (characterization of the ordering contract; RED if a relevance/usage sort lands)."
+- use_case_id: F-036-UC-003
+  hypothesis_id: H-003
+  kind: resolve-later
+  promise: "Selecting an existing title binds its id to the ownership row and does not create a duplicate."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-003)"
+  proposed_test: "Integration (real DB) — create ownership with an existing title_name; assert title row count unchanged and ownership.title_id == existing id (getByName branch, not create)."
+- use_case_id: F-036-UC-004
+  hypothesis_id: H-004
+  kind: resolve-later
+  promise: "[GUARD for fix] Minting a Title via the ownership side-channel requires authorization / an allowlist."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-004; regression guard for REFACTOR-206 fix)"
+  proposed_test: "Integration — pin CURRENT behaviour (characterization): a caller with only DATA_ENTITY_OWNERSHIP_CREATE submitting a novel title_name creates a new title row; RED the instant a TITLE_CREATE/allowlist gate lands."
+- use_case_id: F-036-UC-005
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "[GUARD for fix] A Policy on owner:title grants the permission to all logically-equal title variants."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-005; regression guard for REFACTOR-624 fix)"
+  proposed_test: "Integration (LDAP auth + policy) — owner bound to 'data steward' against Policy 'Data Steward'; characterize CURRENT denial; RED when case-insensitive match lands."
+- use_case_id: F-036-UC-006
+  hypothesis_id: H-006
+  kind: teardown-constraint
+  promise: "An operator can inspect/curate the title directory."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-006)"
+  proposed_test: "e2e (Playwright) — assert no Titles tab in Management nav (characterization of admin-via-side-channel); flips when a curation surface is added."
+- use_case_id: F-036-UC-007
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "GET /api/titles caps response size defensively."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-007)"
+  proposed_test: "@WebFluxTest — GET /api/titles?size=100000 against a seeded directory; characterize that all rows return (no cap); RED when Math.min cap lands."
+- use_case_id: F-036-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "Autocomplete can reach any matching title regardless of directory size."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-008)"
+  proposed_test: "e2e (Playwright) — seed 35 titles incl. a recent 'ZZZ Steward'; open ownership autocomplete, type 'ZZZ'; characterize that it is NOT shown (window-clip); flips when server-side query echo beyond 30 lands."
+- use_case_id: F-036-UC-009
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "Concurrent grants of the same new title converge without punishing either user."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-009)"
+  proposed_test: "Integration — two parallel createOwnership with same novel title_name; characterize one fails USR003 + whole grant rolls back; RED when ON CONFLICT DO NOTHING lands."
+- use_case_id: F-036-UC-011
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: "DEG-cascaded child ownership title changes are individually audited."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-036-UC-011)"
+  proposed_test: "Integration — update ownership title on a DEG with propagate=true + children; characterize that only the parent OWNERSHIP_UPDATED activity event fires; RED when per-child events land."
+
+### probes_emitted
+- probe_id: PENDING-F-036-1
+  hypothesis_id: H-012
+  probe_path: "(parallel-safe mode — not written; record only)"
+  hypothesis_text: "When a user calls GET /api/titles?page=0 (or a negative/overflowing page), they receive a clear client error (400), not a server error or unpredictable rows. Pin the exact wire outcome at page=0 (negative offset) and page=INT_MAX (int-overflow offset) against a real Postgres. Extends existing P-129 (size/ordering/page-0) with the INT_MAX overflow assertion."
+  emitted_by: feature-reflector
+  status: pending-reflection-verification
+  local_execution_blocked: false
+
+### validation_gaps
+- sidecar: "(feature-flow F-036 chain — UI nodes)"
+  field_insufficient: "The three UI nodes in the chain (OwnerTitleAutocomplete.tsx, TitleFilter.tsx, OwnershipForm.tsx) are all unresolved:true — there is NO dedicated enriched UI sidecar. The user-facing surface is single-sourced SECONDHAND through TitleController.md's audiences/upstream_callers/orderings blocks (which did walk the .tsx files). Per Rule 9 this reflection's UI verdicts (H-002, H-004, H-006, H-008) rest on a backend sidecar's transcription of the React components, not on independent UI enrichment. The feature is flagged ui_unverified:false and ui-complete (ui_review_2026_05_26 walked ManagementTabs/managementRoutes), so this is NOT an API-only reflection — but the autocomplete's actual rendered behaviour (does freeSolo truly mint on blur vs on submit; does the 30-row clip manifest as the sidecar predicts) is not enriched at the component level."
+  proposed_refresh: "Enrich OwnerTitleAutocomplete.tsx + TitleFilter.tsx as first-class UI sidecars (per Rev-12 Rule 20 / Failure F — these are 2 of the ~530 React components with no substrate node); re-verdict H-004/H-008 against the component primary source."
+- sidecar: "(feature-flow F-036 header)"
+  field_insufficient: "pillar_anchored_id is 'P-08:F-010' but feature_id is F-036 and the feature is the Title directory (F-010 is a different feature). The two-tier ID is internally inconsistent — the local-namespace suffix (F-010) does not match the global feature_id (F-036)."
+  proposed_refresh: "feature-flow-builder: reconcile pillar_anchored_id to P-08:F-036 (done in this reflection's header) and correct the source feature-flow detail."
+- sidecar: "(pillar assignment)"
+  field_insufficient: "F-036 is anchored to P-08 Management, but REFACTOR-624 lists the affected pillars as [P-05 Ownership, P-09 Security]. The directory's load-bearing consumer is the P-09 authorization model (Policy conditions), not Management. The Management anchor reflects WHERE an operator would expect to curate it (a tab that does not exist), while the actual cross-pillar weight is P-09. Worth a maintainer note on whether the pillar anchor should be P-09 with a P-08 relationship-edge."
+  proposed_refresh: "domain-extractor / feature-flow-builder: confirm primary pillar anchor; record the P-09 authorization-dimension relationship explicitly."
+
+### doc_drift_findings
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/policies"
+  doc_says: "(as of 2026-06-04) Titles are a free-text vocabulary populated at ownership-grant time, not a curated allowlist; case-sensitive exact-match; any caller with DATA_ENTITY_OWNERSHIP_CREATE / TERM_OWNERSHIP_CREATE can mint a Title. ('Title vocabulary caveat for :owner:title conditions' section.)"
+  code_does: "Matches — TitleService.getOrCreate stores verbatim, no normalisation; no TITLE_CREATE permission; case-sensitive Policy equality. The doc is now ACCURATE for the Policy-condition consumer."
+  recommended_log_as: "Doc-half of DOC-GAP-289 + DOC-GAP-146 is CLOSED (verify-and-resolve). RESIDUAL doc gap: no documentation of a Titles curation/remediation surface (none exists) and no GET /api/titles API-reference description / size-cap warning — keep DOC-GAP-146 open for the curation-surface-absence + API-reference dimension only."
+
+## maintainer_notes
+
+<!-- Preserved across refreshes — only block the maintainer hand-edits. -->

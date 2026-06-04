@@ -671,6 +671,139 @@ observed_vs_expected:
   - 'GenAIController: odd-platform__java__GenAIController__controller-class__GenAIController.md (batch ZG)'
   - 'GenAIController (earlier alias): odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md (earlier batch)'
   - 'GenAIProperties: odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties.md (earlier batch — referenced)'
+use_cases:                                 # LSN-030 promise layer — added by feature-reflector/0.3.0 (reflection F-039). uc_id = hypothesis id. Full hypothesis + validation lives in feature-reflections/detail/F-039.yaml.
+- uc_id: H-001
+  kind: cross-actor
+  promise: "A least-privilege authenticated user is GATED from invoking GenAI (only a privileged/metered subset may spend the operator's LLM budget)."
+  actor: "least-privilege authenticated user (any role, no GENAI permission); anonymous under auth.type=DISABLED"
+  trace: "GenAIController.java:13-24 (no @PreAuthorize) -> SecurityConstants (no /api/genai/** rule) -> AuthorizationCustomizer.java:29-30 (.authenticated() fallthrough)"
+  verdict: contradicted
+  coverage: unverified
+  test_ref: "SecurityRulesAuthzGapsKnownBugsTest.genaiEndpointHasNoDedicatedAuthorizationRule_knownBug_PLT020 (characterization pin of the BROKEN state — guards the bug, NOT the promise)"
+  test_demand: "missing-functional — the gated-happy-path (the PLT-020 fix regression guard)"
+  tracked_as: PLT-020
+- uc_id: H-002
+  kind: teardown-constraint
+  promise: "Enabling GenAI with genai.url / genai.request_timeout unset FAILS FAST (boot error or clear first-request config error), not a silent boot + misleading runtime failure."
+  actor: platform-operator
+  trace: "GenAIProperties.java:8-12 (no @Validated/@NotBlank/@URL/@Min(1)) -> WebClientConfiguration.java:22-29 (baseUrl(null) + Duration.ofMinutes(0) legal at boot) -> GenAIServiceImpl.java:48-51 ('Gen AI request take longer that 0 min')"
+  verdict: contradicted
+  coverage: unverified
+  test_ref: "FeatureGatingDefaultsTest.genai_shipsInert_noEndpointInYaml + genaiProperties_javaDefaults_areInert (pin the inert-default PRECONDITION, NOT the fail-fast)"
+  test_demand: "missing-functional — the boot-fail-fast / first-request-misconfig behaviour"
+  tracked_as: PLT-008
+- uc_id: H-003
+  kind: empty/no-match
+  promise: "genai.enabled=false (the shipped default) -> POST /api/genai/ask returns HTTP 400 'Gen AI is disabled' and fires ZERO outbound calls."
+  actor: any caller
+  trace: "GenAIServiceImpl.java:37-39 (isEnabled gate) -> ControllerAdvice.java:24-28 (BadUserRequest -> 400); outbound cardinality 0 on disabled path"
+  verdict: confirmed
+  coverage: verified
+  test_ref: "FeatureGatingDefaultsTest.offByDefaultFamily_shipsDisabled (genai.enabled=false default) + AdrControllerAdviceMappingScanTest.exceptionHierarchyMapsToStatus (BadUserRequest->400)"
+  test_demand: "missing-functional — residual: the request-path 400 + zero-outbound end-to-end (the structural pins verify the default + the mapping, not the request-path behaviour)"
+- uc_id: H-004
+  kind: cross-actor
+  promise: "Disabled GenAI behaves consistently with sibling feature-flagged endpoints (HTTP 404 like DataCollaboration's @ConditionalOnDataCollaboration)."
+  actor: odd-api-consumer / SDK developer
+  trace: "GenAIController.java:13-24 (no @ConditionalOnProperty; gate at service tier -> 400) vs EventApiController.java:15 (@ConditionalOnDataCollaboration -> 404)"
+  verdict: contradicted
+  coverage: unverified
+  test_demand: "missing-functional — pin the deliberate 400-vs-404 convention divergence"
+- uc_id: H-005
+  kind: cross-actor
+  promise: "Each GenAI call leaves an audit record (principal + question + timestamp) reconstructable by the operator."
+  actor: platform-operator (forensics / cost-attribution)
+  trace: "GenAIServiceImpl.java:35-52 (@Slf4j log field unreferenced; zero log.* calls) + GenAIController.java:19-23 (ServerWebExchange Principal declared, never read)"
+  verdict: contradicted
+  coverage: unverified
+  test_demand: "missing-functional — assert an audit record/log line per call (PLT-020 PR-3 regression guard)"
+  tracked_as: PLT-020
+- uc_id: H-006
+  kind: cross-actor
+  promise: "Question text reaches the external LLM verbatim — no PII redaction (the documented thin-proxy stance)."
+  actor: any authenticated user
+  trace: "GenAIServiceImpl.java:41-43 (Map.of('question', body), no scrubber) + WebClientConfiguration.java:26-29"
+  verdict: contradicted
+  coverage: unverified
+  test_demand: "missing-functional — characterization pin of verbatim-forward / no-redaction (DOC-184 documented stance)"
+  tracked_as: DOC-184
+- uc_id: H-007
+  kind: cross-actor
+  promise: "A jailbreak/injection payload is forwarded verbatim AND leaves no platform-side trace (deliberate thin-proxy stance)."
+  actor: any authenticated user (potential abuser)
+  trace: "GenAIController.java:19-23 + GenAIServiceImpl.java:36-52 (verbatim forward; no filter; no log)"
+  verdict: confirmed
+  coverage: unverified
+  test_ref: "(probe P-158 verifies dynamically; no committed test)"
+  test_demand: "missing-functional — CONFIRMED-but-untested: characterization pin of the no-filter+no-trace COMBINATION (committed form of P-158)"
+- uc_id: H-008
+  kind: cross-actor
+  promise: "A multi-MB question is bounded by a sensible per-request size cap protecting the operator from context-window/cost blowout."
+  actor: any authenticated user
+  trace: "components.yaml:4200-4204 (no maxLength) + GenAIController.java:19-23 (no @Valid/@Size) + application.yml:14-15 (only the global 20MB ceiling)"
+  verdict: partial
+  coverage: unverified
+  test_demand: "missing-functional — pin the 'only the 20MB global ceiling' partial; post-PLT-020-PR-4 a >16KB body rejected"
+  tracked_as: DOC-184
+- uc_id: H-009
+  kind: render
+  promise: "A structured-JSON external response (e.g. {\"answer\":\"text\"}) yields a clean, readable answer to the user."
+  actor: odd-platform-ui-end-user / api-consumer
+  trace: "GenAIServiceImpl.java:45-47 (CharMatcher.trimFrom + StringEscapeUtils.unescapeJava — assumes a bare JSON-quoted string)"
+  verdict: probe-needed
+  coverage: unverified
+  test_ref: "verified by probe PENDING-F-039-1 (response-unwrap shape matrix)"
+  test_demand: "missing-functional — bare-quoted-string vs structured-object unwrap matrix (characterization of the leaked-literal-JSON output)"
+- uc_id: H-010
+  kind: render
+  promise: "A long-form answer up to the documented 20MB ceiling is delivered to the user in full."
+  actor: odd-platform-ui-end-user / api-consumer
+  trace: "WebClientConfiguration.java:26-29 (no .codecs override -> 256KB WebFlux default outbound, NOT the 20MB app-wide value) -> DataBufferLimitException -> GenAIException -> HTTP 500"
+  verdict: probe-needed
+  coverage: unverified
+  test_ref: "verified by probe PENDING-F-039-2 (response-size boundary at 256KB)"
+  test_demand: "missing-functional — 257KB response -> HTTP 500 (pins the 256KB outbound ceiling + the doc-vs-code 80x gap)"
+- uc_id: H-011
+  kind: cross-actor
+  promise: "A tight request loop from one user is throttled (per-user or global rate limit) so one client cannot monopolise the external service or run up unbounded cost."
+  actor: any authenticated user (cost-injection)
+  trace: "GenAIServiceImpl.java:41 + WebClientConfiguration.java:20-30 (no Bucket4j/Resilience4j/ExchangeFilterFunction) + grep zero rate-limit primitives"
+  verdict: contradicted
+  coverage: unverified
+  test_demand: "missing-functional — load characterization (50 rapid POSTs from one principal all reach the stub); flips when PLT-020 PR-2 limiter lands"
+  tracked_as: DOC-184
+- uc_id: H-012
+  kind: render
+  promise: "No hand-written UI component imports the generated GenaiApi — API-only-today is intentional and a future affordance is a conscious, reviewed edit."
+  actor: odd-platform-ui-end-user (future); maintainer (review gate)
+  trace: "grep odd-platform-ui/src for GenaiApi|genAiQuestion|/genai/ (zero non-generated-source matches at commit 4ec2b20)"
+  verdict: partial
+  coverage: unverified
+  test_demand: "missing-functional — structural guard (LSN-029 idiom): assert zero non-generated-source imports of GenaiApi so the latent->live flip trips a reviewed edit"
+- uc_id: H-013
+  kind: render
+  promise: "An operator reading the live GenAI feature page learns the full risk surface (any-authenticated reach, no rate-limit, no audit, no PII redaction, no body-cap)."
+  actor: platform-operator
+  trace: "live features/active-platform-features/genai (WebFetch 2026-06-01) now discloses all platform-to-user gaps — the DOC-184 landing"
+  verdict: confirmed
+  coverage: n/a
+  test_demand: none
+  note: "Doc-state verdict (not a code promise) — supersedes the feature-flow's live_doc_acknowledges... drift_class via DOC-184. The one use_case legitimately exempt from a functional test."
+use_case_coverage:
+  verified: 1
+  total: 13
+  note: |-
+    SECOND COVERAGE FRONTIER (verified user-facing promises / total promises), distinct from
+    test_matrix's per-type cells. Only 1 of 13 promises (H-003 disabled-default) is guarded by a real
+    test — and even that is two STRUCTURAL pins (the genai.enabled=false default via
+    FeatureGatingDefaultsTest + the BadUserRequest->400 mapping via AdrControllerAdviceMappingScanTest),
+    NOT a request-path behavioural test. The cost-bearing security promises (H-001/H-005/H-006/H-008/H-011)
+    and the misconfiguration promise (H-002) have only CHARACTERIZATION pins of their BROKEN state
+    (SecurityRulesAuthzGapsKnownBugsTest @pins PLT-020; FeatureGatingDefaultsTest pins the inert-default
+    precondition) — those guard against silent regression of the bug, NOT delivery of the promise. 12/13
+    promises are unguarded by a happy-path/behavioural test -> 12 missing-functional test demands routed
+    through feature-reflections/detail/F-039.yaml cross_references.functional_test_demands. A user-facing
+    cost-bearing feature sitting at 1/13 verified promises is itself the headline coverage finding (LSN-030).
 test_matrix:
   unit:
     state: GAP

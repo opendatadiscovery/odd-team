@@ -1723,6 +1723,137 @@ observed_vs_expected:
       (structural). The fix has broader leverage than originally scoped
       — it solves audit-silence across F-006 + F-002 + F-019 + F-020 in
       ONE coordinated remediation.
+use_cases:
+  # LSN-030 promise layer — projection of the F-006 feature-reflection (feature-reflector/0.3.0,
+  # reflected 2026-06-04). Each use_case = one falsifiable user-facing promise (uc_id = hypothesis id).
+  # Full hypothesis + validation lives in feature-reflections/detail/F-006.yaml; this is the compact
+  # projection the test-coverage-mapper Step 2b reads. coverage:verified ONLY where a REAL test exists.
+  - uc_id: H-001
+    kind: render
+    promise: "An operator/auditor can see who created/edited/deleted an RBAC policy/role/owner, and when, on an operator-readable audit surface."
+    actor: platform-operator
+    trace: "PolicyServiceImpl/RoleServiceImpl/OwnerServiceImpl (no @ActivityLog) + ActivityEventTypeDto.java:3-31 (no POLICY/ROLE/OWNER values) + V0_0_48__add_activity.sql:4,12 (data_entity_id NOT NULL FK)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — regression guard for the schema+enum+handler+annotation audit fix; tracked DOC-246 + DOC-181"
+  - uc_id: H-002
+    kind: teardown
+    promise: "A deleted (soft-deleted) policy stops granting permissions on every authorized request."
+    actor: platform-operator
+    trace: "PolicyServiceImpl.java:89-92 (cascade-block, UI delete defended) + ReactivePolicyRepositoryImpl.java:32-35 (getRolesPolicies no deleted_at filter — raw-API ghost-grant residual)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — the headline F-006 security pin; probe P-198; code fix PLT-110"
+  - uc_id: H-003
+    kind: render
+    promise: "A role's policy chip list renders only live (non-deleted) policies."
+    actor: platform-operator
+    trace: "ReactiveRoleRepositoryImpl.java:45-48,67-70,87-90 (role-dto JOIN no policy.deleted_at filter) + RoleItem.tsx:42-48"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — same JOIN-filter family as H-002 (PLT-110 role-side mirror)"
+  - uc_id: H-004
+    kind: render
+    promise: "A principal-filtered Role/Policy list is marked as filtered in the UI (non-admin sees a 'filtered by your access' affordance)."
+    actor: odd-platform-ui-end-user
+    trace: "RoleServiceImpl.java:40-47 + PolicyServiceImpl.java:52-60 (principal-aware fork) + RolesList.tsx:78-80 ('N overall', no filter signal)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — caveat-candidate; the UI affordance is the fix"
+  - uc_id: H-005
+    kind: teardown
+    promise: "Deleting an Owner hard-deletes its role bindings; the owner's roles no longer confer permissions to anyone."
+    actor: platform-operator
+    trace: "OwnerServiceImpl.java:97 + ReactiveOwnerToRoleRepositoryImpl.java:52-56 (DSL.delete — physical hard-delete of owner_to_role)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — CONFIRMED-but-untested; the HIGHEST-value F-006 test to mint (OwnerRoleStripKnownBugTest pins the adjacent PLT-066 PUT-strip bug, NOT this revocation)"
+  - uc_id: H-006
+    kind: empty/no-match
+    promise: "A malformed policy JSON body returns HTTP 400 with the validator detail (not 500)."
+    actor: odd-api-consumer
+    trace: "PolicyJSONValidator.java:28-32 (throws IllegalArgumentException) + ControllerAdvice.java:23-66 (no IllegalArgumentException handler -> 500 catch-all)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — @WebFluxTest 400-not-500; code fix PLT-076 (class-wide handler)"
+  - uc_id: H-007
+    kind: edit-reconcile
+    promise: "Concurrent edits to the same policy do not silently lose one writer's change."
+    actor: platform-operator
+    trace: "PolicyServiceImpl.java:71-81 (read-then-write, no @ReactiveTransactional) vs RoleServiceImpl.java:50,64,77 (transactional)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — two-parallel-PUT lost-update; net_new PLT (@ReactiveTransactional)"
+  - uc_id: H-008
+    kind: cross-actor
+    promise: "Under the default-shipped auth posture, a non-admin/anonymous caller cannot create or rebind RBAC policies and roles."
+    actor: platform-operator
+    trace: "DisabledAuthSecurityConfiguration.java:16 (anyExchange().permitAll(), as-shipped DISABLED) vs LoginFormSecurityConfiguration.java:57 (enforcing modes require auth)"
+    verdict: partial
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/auth-mode-boundary.spec.ts (IT-009 — enforces ADR-0074)"
+    test_demand: "none — enforcing-mode boundary IS verified by IT-009; the FALSE half (as-shipped DISABLED RBAC exposure) is a doc caveat, not a test gap"
+  - uc_id: H-009
+    kind: grammar
+    promise: "An operator cannot create a second policy/role named 'Administrator' (reserved name protected on create too)."
+    actor: platform-operator
+    trace: "PolicyServiceImpl.java:62-69 + RoleServiceImpl.java:51-61 (NO create-side name check) vs update/delete guards (test-pinned)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — create-side reserved-name pin; net_new PLT. Existing PolicyServiceImplTest/RoleServiceImplTest cover only update/delete."
+  - uc_id: H-010
+    kind: grammar
+    promise: "The predefined-name guard treats 'administrator' and 'Administrator' as the same reserved name across all CRUD verbs."
+    actor: platform-operator
+    trace: "RoleServiceImpl.java:68 (case-sensitive .equals on update) vs :82 (case-insensitive .equalsIgnoreCase on delete); create absent; UI === 'Administrator'"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — lowercase-administrator creatable+editable+undeletable; fold with H-009 fix"
+  - uc_id: H-011
+    kind: edit-reconcile
+    promise: "The cascade-delete check cannot be raced by a concurrent role-bind into a soft-deleted-but-bound state."
+    actor: platform-operator
+    trace: "PolicyServiceImpl.java:89 (isPolicyAttachedToRole) vs :93 (delete) — two non-transactional R2DBC calls"
+    verdict: probe-needed
+    coverage: unverified
+    test_demand: "probe P-197 (pending-reflection-verification) — concurrent cascade-check vs role-bind race under READ COMMITTED"
+  - uc_id: H-012
+    kind: render
+    promise: "The RBAC management row shows authorship (created_by / created_at)."
+    actor: platform-operator
+    trace: "PolicyList.tsx:118-120 (id+name only) + RolesList.tsx:126-128 (id+name+policies only) — no provenance column"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — UI half of H-001; depends on the audit surface existing first; tracked DOC-246"
+  - uc_id: H-013
+    kind: grammar
+    promise: "A dataset-field term-add POST is gated by DATASET_FIELD_ADD_TERM and alert-status PUT by an ALERT permission (wiring matches the documented permission)."
+    actor: platform-operator
+    trace: "SecurityConstants.java:297-299 (datasetfields/terms gated DATA_ENTITY_ADD_TERM) + :295-296 (alerts/status gated DATASET_FIELD_ADD_TERM copy-paste)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — @WebFluxTest permission-gate; code fix PLT-029 + catalogue DOC-193"
+  - uc_id: H-014
+    kind: grammar
+    promise: "auth.ldap.groups.admin-groups grants ADMIN only to members of the exact groups named (not substring matches)."
+    actor: platform-operator
+    trace: "ODDLDAPProperties.java:31 + LDAPSecurityConfiguration.java:96 (containsIgnoreCase = substring + case-insensitive)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (TEST-GAP pending) — admin-groups:['ops'] must not promote 'devops'; code fix PLT-081"
+  - uc_id: H-015
+    kind: happy-path
+    promise: "Under an enforcing auth mode, a non-admin lacking a permission is denied a SECURITY_RULES-gated mutation (RBAC enforces, no ADMIN bypass)."
+    actor: odd-platform-ui-end-user
+    trace: "SecurityConstants.java:143-147 (OWNER_DELETE rule) + ReactiveNonContextPermissionAuthorizationManager (no ADMIN bypass) + LDAPSecurityConfiguration.java:145"
+    verdict: confirmed
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/ldap-rbac-enforcement.spec.ts (IT-010 — enforces ADR-0002 + ADR-0003)"
+    test_demand: "none — confirmed AND a real test (IT-010) guards it"
+use_case_coverage:
+  verified: 2
+  total: 15
+  note: "Second coverage frontier (verified promises / total) = 2/15 (13%). Both verified promises are e2e-pinned: H-008 authentication boundary (IT-009) + H-015 RBAC enforcement (IT-010). The 13 unverified promises are the functional_test_demand backlog in feature-reflections/detail/F-006.yaml. H-005 (confirmed-but-untested owner-delete revocation) is the highest-value single test to mint; UC-02 (soft-delete-still-grants) + UC-09 (create-side reserved-name) are the behaviourally-richest security-load-bearing gaps. Projected from feature-reflector/0.3.0 reflection 2026-06-04."
 test_matrix:
   unit:
     state: GAP

@@ -659,8 +659,8 @@ observed_vs_expected:
       unverified at the HTTP boundary. The 404 path (data entity does
       not exist), 400 path (entity class is not transformer/quality-test),
       200-with-empty-list path, and the cross-mapper failure case (RUNNING
-      status row hitting `DataEntityRunStatus` enum) all need
-      controller-level WebFlux tests.
+      status row hitting `DataEntityRunStatus` enum) all need controller-level
+      WebFlux tests.
     expected: |-
       `@WebFluxTest(DataEntityRunController.class)` covering the 4
       operator-facing return codes (200 happy / 404 missing entity /
@@ -671,7 +671,12 @@ observed_vs_expected:
       tests_coverage_semantic.uncovered_behaviours[0]. Evidence: grep
       over `<odd-platform>/odd-platform-api/src/test` for
       `DataEntityRunController` returns zero matches at commit 4ec2b20.
-      Severity: MEDIUM.
+      Severity: MEDIUM. UPDATE 2026-06-04 (feature-reflector F-040): the
+      controller @WebFluxTest is STILL absent, but two NEW behavioural unit
+      tests were added since 4ec2b20 — DataEntityRunServiceImplTest (404 +
+      400 paths) and DataEntityRunMapperImplTest (empty-page PageInfo), both
+      @validates F-040. The service + mapper tiers are now PARTIALLY covered;
+      the controller HTTP boundary is the residual gap (see reflection H-013).
   - facet: |-
       The runs-history endpoint is UNDOCUMENTED on docs.opendatadiscovery.org
     observed: |-
@@ -679,8 +684,8 @@ observed_vs_expected:
       docs_link_semantic.doc_drift_findings[0]: WebFetch of
       `/features/data-quality` (2026-05-25 status 200) returned no content
       covering the runs UI / endpoint / pagination / status filter; WebFetch
-      of `/features/data-quality/test-results` returned 404; WebFetch of
-      `/features/data-quality/test-results-import` (status 200) documents
+      of `/features/data-quality/test-results` returned 404; WebFetch
+      of `/features/data-quality/test-results-import` (status 200) documents
       the INGESTION side but not the runs-history READ side. Operator
       opening the `/history` tab on a DQ-test details page has no
       documentation to refer to: the size=100 page-size, the end_time-DESC
@@ -697,7 +702,16 @@ observed_vs_expected:
       docs_link_semantic.doc_drift_findings[0]. Evidence: WebFetch
       2026-05-25 of three candidate URLs returning zero coverage.
       Severity: HIGH (the doc-gap is the actionable finding;
-      doc-gap-finder owns the follow-up).
+      doc-gap-finder owns the follow-up). UPDATE 2026-06-04 (feature-reflector
+      F-040): this facet is now STALE/RESOLVED. WebFetch 2026-06-04 of
+      https://docs.opendatadiscovery.org/features/data-quality/test-run-history
+      returns a dedicated, comprehensive, ACCURATE page documenting the
+      endpoint, the 7-vs-6 enum asymmetry, the HTTP 500 during RUNNING, the
+      in-flight-at-top ordering, end_time DESC, the page sizes, AND the
+      cross-owner read + status_reason PII caveat. The doc layer is now AHEAD
+      of the code — the actionable item flipped from "write the doc" to "fix
+      the code the doc warns about". doc-gap-finder should retire the stale
+      DOC-GAP candidates in related_doc_gaps.
   - facet: |-
       Six-value wire enum DataEntityRunStatus is undocumented at the
       data-quality doc page
@@ -719,9 +733,153 @@ observed_vs_expected:
       docs_link_semantic.doc_drift_findings[1]. Evidence: WebFetch
       `/features/data-quality` 2026-05-25 + components.yaml:1407-1415 +
       cross-reference with F-032's breakdown_3_vs_6_status doc drift.
-      Severity: MEDIUM.
+      Severity: MEDIUM. UPDATE 2026-06-04 (feature-reflector F-040): the
+      dedicated test-run-history doc page now lists all SEVEN DB-side values
+      (SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|RUNNING|UNKNOWN) and explains the
+      6-value wire subset — this facet is RESOLVED at the live site.
   surfaced_by:
   - 'DataEntityRunController: odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController.md (batch ZG)'
+use_cases:
+# LSN-030 / Rule 11 — the PROMISE LAYER projected from feature-reflections/detail/F-040.yaml
+# (feature-reflector/0.3.0, 2026-06-04). uc_id == reflection hypothesis id. Full hypothesis +
+# validation live in the reflection; this is the compact projection the test-coverage-mapper
+# Step 2b reads. coverage=verified ONLY where a REAL test exists (sidecar covered_behaviours +
+# Grep of the odd-platform test tree). reflected_at_commit c406614 (odd-team), substrate 4ec2b20.
+- uc_id: F-040-UC-1
+  kind: happy-path
+  promise: "Opening a DQ test's History tab shows a paginated, most-recent-first timeline of past completed runs, each with status, start time, end time, and status_reason."
+  actor: data-quality-engineer
+  trace: "ReactiveDataEntityTaskRunRepositoryImpl.java:160-191 (ORDER BY end_time DESC, paginated) + DataEntityRunMapper.java:12-25 + DataEntityRunRepositoryImplTest.java:34-93"
+  coverage: verified
+  test_ref: "DataEntityRunRepositoryImplTest (ordering+pagination, lines 34-79)"
+  test_demand: none
+- uc_id: F-040-UC-2
+  kind: render
+  promise: "While a run is in flight (RUNNING), the history shows that run — it does not 500 the whole page."
+  actor: data-quality-engineer
+  trace: "IngestionTaskRun.java:28-36 (7-value DB enum) vs components.yaml:1407-1415 (6-value wire enum); DataEntityRunMapper.java:13-14 strict Enum.valueOf; DataEntityRunController.java:24-26 no onErrorResume"
+  coverage: unverified
+  test_demand: functional
+  verdict: contradicted
+  note: "HTTP 500 for the whole list when any RUNNING row is present (mapper IllegalArgumentException). Bug-candidate + PENDING-F-040-1. Doc page documents the 500 verbatim."
+- uc_id: F-040-UC-3
+  kind: cross-actor
+  promise: "A non-owner cannot read another team's DQ-test run history + verbatim status_reason diagnostic text."
+  actor: any-authenticated-user
+  trace: "SecurityConstants.java:98-355 (no /runs rule); AuthorizationCustomizer.java:29-30 (catch-all .authenticated()); ReactiveDataEntityTaskRunRepositoryImpl.java:161-191 (no ownership join)"
+  coverage: unverified
+  test_demand: functional
+  verdict: contradicted
+  note: "Cross-owner read; status_reason rendered verbatim (PII risk). REFACTOR-024 5th site + P-152. Doc page now carries the caveat."
+- uc_id: F-040-UC-4
+  kind: empty/no-match
+  promise: "An operator can list only the in-flight (RUNNING) runs of a test."
+  actor: data-quality-engineer
+  trace: "components.yaml:1407-1415 (wire enum has no RUNNING); ReactiveDataEntityTaskRunRepositoryImpl.java:166-168"
+  coverage: unverified
+  test_demand: functional
+  verdict: contradicted
+  note: "status=RUNNING is unfilterable (not a wire value); the omit-filter workaround triggers UC-2's 500."
+- uc_id: F-040-UC-5
+  kind: teardown-constraint
+  promise: "Page size is bounded server-side; a hostile large size is rejected or clamped."
+  actor: any-authenticated-user
+  trace: "components.yaml:4222-4229 (SizeParam no max); DataEntityRunController.java:19-26; ReactiveDataEntityTaskRunRepositoryImpl.java:180-181 (verbatim LIMIT)"
+  coverage: unverified
+  test_demand: functional
+  verdict: contradicted
+  note: "Unbounded size — single-request DoS surface. Bug-candidate (@Max / service clamp)."
+- uc_id: F-040-UC-6
+  kind: empty/no-match
+  promise: "A runs-capable test that has never run returns 200 with an empty list, not an error."
+  actor: data-quality-engineer
+  trace: "DataEntityRunServiceImpl.java:35-44 (gate on class, not count); JooqQueryHelper.java:92-105; DataEntityRunMapperImplTest.java:28-34"
+  coverage: verified
+  test_ref: "DataEntityRunMapperImplTest.mapDataEntityRuns_emptyPage_propagatesPageInfoWithEmptyItems"
+  test_demand: none
+  note: "Empty-page PageInfo propagation now unit-tested (test NOT listed in the sidecar's stale coverage block)."
+- uc_id: F-040-UC-7
+  kind: empty/no-match
+  promise: "The wrong-class 400 error names the supported classes / parent-job hint so the operator can self-correct."
+  actor: data-engineer-analyst
+  trace: "DataEntityRunServiceImpl.java:42-45 (generic message); DataEntityRunServiceImplTest.java:51-58 (400 pinned, message text NOT asserted)"
+  coverage: unverified
+  test_demand: functional
+  verdict: partial
+  note: "Rejection is correct + now unit-tested; the message quality is the unmet part."
+- uc_id: F-040-UC-8
+  kind: teardown
+  promise: "A soft-deleted DQ test's run history stays viewable for forensics (consistent with the sibling per-dataset surface F-022)."
+  actor: data-quality-engineer
+  trace: "DataEntityRunServiceImpl.java:32 (bare get excludes soft-deleted) vs DataQualityServiceImpl.java:55-58 (existsIncludingSoftDeleted)"
+  coverage: unverified
+  test_demand: functional
+  verdict: partial
+  note: "Diverges from F-022's deliberate forensic preservation — DELETED test → 404 here."
+- uc_id: F-040-UC-9
+  kind: render
+  promise: "The runs list reads in the order of the column the operator sees (start time), or the start-vs-completion-order mismatch is labelled."
+  actor: data-quality-engineer
+  trace: "TestRunsHistory.tsx:75-77 + TestRunItem.tsx:30 (start_time column) vs ReactiveDataEntityTaskRunRepositoryImpl.java:178 (ORDER BY end_time)"
+  coverage: unverified
+  test_demand: functional
+  verdict: partial
+  note: "Display key (start_time) != sort key (end_time); long-running tests look mis-sorted."
+- uc_id: F-040-UC-10
+  kind: render
+  promise: "Sharing a filtered History URL reproduces the status filter for the recipient."
+  actor: data-quality-engineer
+  trace: "TestRunsHistory.tsx:29-31 (alertStatus in local useState, not URL)"
+  coverage: unverified
+  test_demand: functional
+  verdict: contradicted
+  note: "Filter not in URL — shared/refreshed links lose it. Inconsistent with sibling Activity tab (useQueryParams)."
+- uc_id: F-040-UC-11
+  kind: render
+  promise: "The test-report preview signals when more than 10 runs exist (a +N more / see-all affordance)."
+  actor: data-engineer-analyst
+  trace: "TestReportDetailsHistory.tsx:30-32 (hardcoded size=10, no pagination, no '+N more')"
+  coverage: unverified
+  test_demand: functional
+  verdict: contradicted
+  note: "Silent truncation; discoverability of the full History tab relies on prior knowledge."
+- uc_id: F-040-UC-12
+  kind: render
+  promise: "Infinite-scroll over runs with tied end_times shows each run exactly once (no duplicate, no skip)."
+  actor: data-quality-engineer
+  trace: "ReactiveDataEntityTaskRunRepositoryImpl.java:176-182 (no tie-breaker); TestRunsHistory.tsx:88-113 (accumulates independent fetches)"
+  coverage: unverified
+  test_demand: probe
+  verdict: probe-needed
+  note: "Gated on PENDING-F-040-2 / P-150 tie-breaker arm — non-deterministic heap order on tied end_times."
+- uc_id: F-040-UC-13
+  kind: happy-path
+  promise: "The HTTP contract (200 / 404 missing / 400 wrong-class / 500-on-RUNNING) holds at the wire, not just in the service."
+  actor: third-party-api-consumer
+  trace: "DataEntityRunController.java:13-28; DataEntityRunServiceImplTest.java:44-58 (404 + 400 at service tier only) — no @WebFluxTest"
+  coverage: unverified
+  test_demand: functional
+  verdict: partial
+  note: "Service-tier logic verified (new unit test); the controller HTTP boundary has no @WebFluxTest guard."
+use_case_coverage:
+  verified: 2
+  total: 13
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises), distinct from
+    test_matrix's per-type cells. 2/13 verified: UC-1 (happy-path read, repository
+    integration test) + UC-6 (empty-list, new mapper unit test). 11/13 unverified.
+    Of those 11: 6 contradicted (UC-2 HTTP 500 on RUNNING [HIGH], UC-3 cross-owner
+    status_reason leak [HIGH], UC-4 RUNNING unfilterable, UC-5 size-unbounded DoS,
+    UC-10 filter-not-in-URL, UC-11 preview silent-truncation), 4 partial (UC-7
+    error-message quality, UC-8 soft-delete forensic divergence, UC-9 sort-vs-display
+    key, UC-13 HTTP-boundary contract), 1 probe-needed (UC-12 tie-break dup/skip).
+    A user-facing feature at 2/13 verified promises is itself a finding: the
+    operator-facing happy path is guarded only at the SQL layer, and every
+    failure-mode promise (in-flight visibility, cross-team confidentiality, share-a-
+    filter, see-all-runs) is unguarded. NOTE: the two verified promises rely on tests
+    the sidecar's tests_coverage_semantic block does NOT list (DataEntityRunServiceImplTest
+    + DataEntityRunMapperImplTest, added since 4ec2b20) — that block is stale (see
+    reflection validation_gaps).
 test_matrix:
   unit:
     state: GAP
@@ -825,10 +983,14 @@ related_test_gaps:
 - TEST-GAP-NNN (no test exercises size=very-large DoS surface)
 - TEST-GAP-NNN (no test exercises page=0 negative-offset edge case)
 - TEST-GAP-NNN (no test exercises soft-delete-NON-inclusive divergence with sibling DataQualityController)
+# LSN-030 / Rule 11 (feature-reflector F-040, 2026-06-04) — the use_cases block above is the
+# canonical promise layer; its functional_test_demands (F-040-UC-2/3/4/5/7/8/9/10/11/12/13)
+# are the missing-functional TEST-GAP candidates the test-coverage-mapper mints. The legacy
+# TEST-GAP-NNN lines above are subsumed by / overlap the use_case demands (UC-13/UC-2/UC-12/UC-3).
 related_doc_gaps:
-- DOC-GAP-NNN (the runs-history endpoint is undocumented at docs.opendatadiscovery.org — no /features/data-quality/test-results page)
-- DOC-GAP-NNN (six-value wire enum DataEntityRunStatus is undocumented at the data-quality doc page — same incompleteness as F-032's breakdown_3_vs_6_status finding)
-- DOC-GAP-NNN (cross-owner read posture + status_reason free-form text emission undocumented; PII risk silent)
+- DOC-GAP-NNN (the runs-history endpoint is undocumented at docs.opendatadiscovery.org — no /features/data-quality/test-results page)  # RESOLVED 2026-06-04 — dedicated /features/data-quality/test-run-history page now exists (feature-reflector F-040)
+- DOC-GAP-NNN (six-value wire enum DataEntityRunStatus is undocumented at the data-quality doc page — same incompleteness as F-032's breakdown_3_vs_6_status finding)  # RESOLVED 2026-06-04 — test-run-history page now lists all 7 DB values + the 6-value wire subset
+- DOC-GAP-NNN (cross-owner read posture + status_reason free-form text emission undocumented; PII risk silent)  # RESOLVED 2026-06-04 — doc page now carries the cross-owner + PII caveat verbatim
 - DOC-GAP-082  # META — auth.type=DISABLED bypasses the Authorization framework; /runs is a further ungated surface
 - DOC-GAP-NNN (soft-delete-NON-inclusive existence check divergence with sibling DataQualityController is undocumented)
 related_concepts:
@@ -842,6 +1004,7 @@ related_retrospectives:
 - LSN-017  # cross-layer effects — the controller + service + repository + mapper compose the runs-history feature; per-node scan cannot see the wire-enum-asymmetry 500 hypothesis (which requires reading the DB-side enum + the wire-side enum + the mapper together)
 - LSN-020  # input-name-vs-implementation drift — not directly instantiated here, but the data-shape of status_reason is operator-misleading at scale (the field name says "reason" but it carries arbitrary diagnostic text)
 - LSN-001  # permissive defaults hide operator error — size-unbounded + page=0-undefined are LSN-001-pattern permissive defaults
+- LSN-030  # promise layer — feature-reflector F-040 projects 13 use_cases; 2/13 verified promises is the second coverage frontier (this feature-flow now carries use_cases + use_case_coverage)
 related_features:
 - F-022  # Per-Dataset DQ Test Reports & SLA (P-04:F-001) — sibling P-04 read surface, per-dataset granularity (F-022 lists tests for a dataset; F-040 lists runs for a test)
 - F-032  # Quality Dashboard (P-04:F-002) — sibling P-04 read surface, catalog-wide aggregate (F-032 aggregates runs across all tests; F-040 lists runs for ONE test)

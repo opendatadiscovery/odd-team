@@ -1,0 +1,845 @@
+---
+feature_id: F-035
+pillar_anchored_id: P-08:F-009
+pillar: P-08 — Management & Administration
+feature_name: Operator-Configured Additional Links
+reflected_at: '2026-06-04T00:00:00Z'
+reflected_at_commit: c40661401b5b17aa95b1fdeaa75f44597e1deed9
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__LinksController__controller-class__LinksController.md
+  - odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+  - odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Live page section "Additional navigation links (odd.links)" has been UPDATED since the
+      contributing sidecars were enriched (2026-05-25/26). DOC-257 (status: done) shipped the three
+      operator-trust caveats verbatim — the doc now documents (1) no-validation-at-load-time +
+      accepted malformed/javascript:/data:/file:/vbscript: schemes, (2) the missing
+      rel='noopener noreferrer' reverse-tabnabbing surface, (3) the keyboard/touch inaccessibility.
+      Consequence for this reflection: the three doc-DRIFT findings recorded in all three sidecars'
+      docs_link_semantic blocks are now STALE (the doc no longer omits the caveats). The remaining
+      drift is CODE-vs-PROMISE (the code still ships the un-hardened behaviour the doc now warns
+      about), NOT doc-vs-code. No new doc-gaps are raised for those three caveats.
+hypothesis_summary:
+  total: 13
+  confirmed: 4
+  contradicted: 6
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: |-
+      "Open the App Info menu" is impossible for keyboard-only and touch-device users — the icon
+      button wires onMouseEnter ONLY (no onClick/onKeyDown/onFocus) while declaring
+      aria-haspopup='true', so every link in the menu (Documentation, Slack, version, operator
+      links) is unreachable for AT users and on every phone/tablet (WCAG 2.1 SC 2.1.1 violation).
+related_feature_flows: [F-009, F-041, F-043, F-034]
+related_concepts: ["AdditionalLink", "Link", "App Info menu", "Auth Mode", "Locale Bundle"]
+related_drift_classes:
+  - ui_security_default_missing_against_operator_configured_external_url
+  - input_passthrough_no_schema_allowlist
+  - boot_immutable_drift_no_actuator_refresh_path
+  - disabled_mode_bypass
+  - wcag_2_1_sc_2_1_1_keyboard_accessibility_violation_aria_lies
+  - react_query_keepmounted_combined_with_no_staletime_silent_staleness_amplifier
+  - react_key_collision_on_duplicate_url
+  - ui_hardcoded_english_labels_bypass_i18n_layer
+new_drift_classes_proposed:
+  - additional_links_no_per_role_visibility_global_list_to_every_authenticated_user
+  - additional_links_no_runtime_admin_ui_operator_only_yaml_env_no_in_product_management
+  - app_info_menu_no_loading_or_error_state_silent_absence_on_query_failure
+---
+
+# Operator-Configured Additional Links — product-owner reflection
+
+## product_owner_narrative
+
+The "Additional Links" feature lets a platform **operator** surface a curated list of external
+navigation shortcuts — internal wikis, runbooks, dashboards, Grafana, anything a team should be
+able to reach from inside the catalog — directly in the ODD Platform UI, without writing any code
+or running a database migration. The audience is two-sided: the operator configures the list, and
+every signed-in end-user consumes it (per LinksController.md:concepts.audiences). It is one of the
+"Other Management surfaces" the mission pillar P-08 names alongside M2M tokens and the Alternative
+Secrets Backend — "operationally part of Management even though not rendered as tabs"
+(per system-mission.md P-08 Maintainer-notes, line 246).
+
+The operator's only interface is configuration: a `odd.links[]` list in `application.yml`,
+environment variables, or a Kubernetes ConfigMap, each entry a `{title, url}` pair
+(per AdditionalLinkProperties.md:understanding). There is no admin screen, no save button, no CRUD
+endpoint — the feature is implemented entirely as a Spring `@ConfigurationProperties` record bound
+once at boot (per AdditionalLinkProperties.md:implicit_adrs[0]; LinksController.md:implicit_adrs[0]).
+The end-user's interface is purely consumption: the links appear inside the **App Info menu** — the
+popover behind the information icon in the top-right toolbar, present on every authenticated page
+(per AppInfoMenu.md:understanding; WebFetch 2026-06-04). The user does not configure, reorder, or
+hide anything; they hover the icon, the menu opens, and the operator's links render as clickable
+menu items that open in a new browser tab (per AppInfoMenu.md:concepts.operations.render-operator-links).
+
+The working parts are deliberately thin. The backend has exactly one read-only endpoint,
+`GET /api/links`, which streams the bound config list to the API model with no sort, no pagination,
+no filtering, and no per-role differentiation — every authenticated caller gets the identical list
+(per LinksController.md:understanding; LinksController.md:stress_findings.auth_gates). The frontend
+fetches it once via TanStack Query (`useAppLinks`) and renders each entry as a react-router
+`<Link target='_blank'>` inside the MUI menu, keyed by URL, in API order
+(per AppInfoMenu.md:concepts.operations; AppInfoMenu.md:stress_findings.orderings). The App Info menu
+is shared chrome: the SAME popover also carries four hardcoded surfaces (Documentation, Slack,
+project-version-with-GitHub-link, Leave-Feedback) — so this feature's data shares a widget with
+deployment-introspection (F-009) and community shortcuts (per AppInfoMenu.md:understanding).
+
+The integration story crosses three sibling features. F-009 (Deployment Introspection) co-inhabits
+the same widget and shares its auth-mode behaviour; F-041 owns the toolbar chrome that hosts the
+widget; F-043 (multilingual UI) catalogues the four hardcoded English labels in this menu as one of
+its missing-i18n sites (per F-035.yaml:batch ZJ cross-references). The feature also touches P-09
+(Security) because the configured URL list is gated only by the framework-default `authenticated()`
+rule, and because under `auth.type=DISABLED` it is anonymously reachable (per LinksController.md:security).
+
+A product owner demoing this would highlight the convenience (links appear in seconds, no deploy of
+custom UI) but would also flag the edge cases an operator hits in practice: the list is **bound at
+boot** so YAML edits don't take effect until restart, AND the UI keeps the menu DOM mounted for the
+tab's lifetime so even after a restart, users in open tabs see the stale list until a full reload
+(per AppInfoMenu.md:bugs_limitations_corner_cases[2]); the operator cannot show different links to
+different roles; there is no validation, so a typo'd or malicious URL ships silently into the menu;
+and — the load-bearing one — the menu only opens on mouse hover, so keyboard-only and touch-device
+users cannot open it at all (per AppInfoMenu.md:bugs_limitations_corner_cases[1]).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    "When an operator sets odd.links=[{title:'Runbook', url:'https://wiki/runbook'}] and a user
+    hovers the App Info information icon, that user sees a clickable 'Runbook' menu item that opens
+    https://wiki/runbook in a new tab."
+  derivation: |-
+    The endpoint name (/api/links), the DTO field names (title, url), and the live doc's
+    "renders as a menu item showing its title and opens the configured URL in a new tab" all
+    promise the basic happy path: operator config → visible clickable menu item.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The chain delivers this end-to-end. AdditionalLinkProperties binds odd.links[].{title,url} at
+      boot; LinksController.getLinks streams the record list to Link DTOs verbatim (no transform);
+      useAppLinks fetches it and selects data.items; AppInfoMenu maps each entry to
+      <Link to={link.url} target='_blank'><Typography>{link.title}</Typography></Link>. title renders
+      as escaped text, url becomes the <a href>, target='_blank' opens a new tab.
+    evidence:
+      - sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+        section: stress_findings.request_inputs[0]
+        cite: "AdditionalLinkProperties.java:7-9 -> LinksController.java:31-33 -> AppInfoMenu.tsx:60-66"
+        note: "End-to-end chain: config record -> controller passthrough -> UI render, no remapping."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: concepts.operations.render-operator-links
+        cite: "AppInfoMenu.tsx:55-69"
+        note: "Memoised map over useAppLinks data, one menu item per entry."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    "When the operator configures three links in a specific YAML order, the user sees them in that
+    same order in the menu (declaration order is preserved)."
+  derivation: |-
+    Operators commonly rely on insertion order to put the most-used runbook first. Spring's relaxed
+    binder preserves indexed-property order; the controller streams without sort; the UI maps without
+    re-sort. No field promises sorting, so the user expectation is "the order I typed".
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      No layer re-orders. Spring's @ConfigurationProperties relaxed binder preserves odd.links[0],
+      [1], [2] declaration order; LinksController does linkProperties.links().stream().map(...).toList()
+      with no ORDER BY (there is no SQL — it is an in-memory list); AppInfoMenu renders links.map(...)
+      in array order. The effective order IS the YAML/env declaration order. The one caveat: this
+      contract is asserted by NO test, and Spring's binder behaviour is the only guarantor — a Spring
+      Boot upgrade that changed binder semantics would silently break it (which is exactly why P-128
+      exists).
+    evidence:
+      - sidecar: odd-platform__java__LinksController__controller-class__LinksController.md
+        section: stress_findings.orderings
+        cite: "LinksController.java:31-33"
+        note: "stream().toList() preserves AdditionalLinkProperties.links() order; no explicit sort."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: stress_findings.orderings
+        cite: "AppInfoMenu.tsx:60-66"
+        note: "UI renders in API order without re-sort."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    "When the operator has NOT configured odd.links at all (the shipped default — the key is
+    commented out in application.yml), the App Info menu still works and simply shows no
+    operator-links section (empty state, not an error)."
+  derivation: |-
+    odd.links is optional and absent by default (commented out in shipped application.yml). The
+    empty/no-config state is the operator's DEFAULT starting point, so the menu must degrade to
+    "no extra links" gracefully rather than erroring.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      When odd.links is absent, AdditionalLinkProperties.links() is null at the record layer;
+      LinksController null-guards it (CollectionUtils.isEmpty -> returns items=[]); GET /api/links
+      returns 200 with an empty items list; useAppLinks selects data.items = []; AppInfoMenu's
+      projectLinks map over an empty array renders nothing for the operator-links section, leaving
+      the four hardcoded items (Documentation, Slack, version, Feedback) intact. No error surfaces.
+    evidence:
+      - sidecar: odd-platform__java__LinksController__controller-class__LinksController.md
+        section: tests_coverage_semantic.uncovered_behaviours[0]
+        cite: "LinksController.java:27"
+        note: "items=[] when odd.links is unset/null via the controller's null-guard; this is the operator default state."
+      - sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+        section: bugs_limitations_corner_cases[5]
+        cite: "AdditionalLinkProperties.java:7-9 + LinksController.java:27"
+        note: "Record default is null (not List.of()); the empty-list shape is constructed by the controller's guard."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    "When the operator types url='javascript:alert(1)' (or pastes a malformed/non-http URL) into
+    odd.links, the platform rejects it — either at config load (boot fails fast) or by refusing to
+    render a dangerous link — because 'url' promises an addressable web resource."
+  derivation: |-
+    The field is named 'url'; the live doc says 'absolute URL'; an operator's reasonable assumption
+    (and a Principal-engineer default) is that a field named url is validated against a URL schema
+    before it ships to users' browsers.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Nothing validates the scheme at any layer. AdditionalLinkProperties.Link.url is a bare String
+      with NO @URL, @Pattern, @NotBlank, @Validated (per the record). The Spring binder accepts
+      javascript:, data:text/html, file:, vbscript:, empty string, null, and relative paths
+      (wiki.internal). LinksController passes the string through verbatim. AppInfoMenu sets it as the
+      <Link to=...> which becomes the <a href>. The ONLY defence is React 17+'s runtime sanitiser
+      (strips javascript: from href, leaving a no-op clickable link) plus the browser (modern Chrome
+      refuses top-level data: navigation). Neither is a platform guarantee; both are invisible to the
+      operator; both could regress on a React or browser change.
+    evidence:
+      - sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+        section: stress_findings.request_inputs[1]
+        cite: "AdditionalLinkProperties.java:8 (no @URL, no @Pattern, no scheme check)"
+        note: "DRIFT_INPUT_NAME_VS_IMPLEMENTATION — 'url' accepts any String; the chain flows it unmodified to <a href>."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: stress_findings.request_inputs[0]
+        cite: "AppInfoMenu.tsx:61"
+        note: "Link.to accepts the string verbatim; defence is React's runtime sanitiser, not the app."
+    operator_visible_failure: |-
+      (1) An operator typo'd 'wiki.internal' (forgetting https://) ships a menu item that
+      relative-navigates within the SPA to /wiki.internal -> route-not-found page; no warning at any
+      layer. (2) A javascript: URL renders as a clickable title that silently does nothing (React
+      neutralises it) — the operator believes the link is broken with no diagnostic. (3) A data:text/html
+      URL renders an <a href> the operator did not anticipate; modern browsers sandbox it but the
+      behaviour is surprising and version-dependent. (4) Compounded with H-005 (missing title
+      validation) and H-007 (reverse tabnabbing), an unvalidated operator-supplied (or
+      less-trusted-role-supplied) URL becomes a workspace-wide attack surface. The fix is one
+      annotation (@Pattern('^https?://.*') + @Validated) at AdditionalLinkProperties.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    "When the operator omits the title for a link (sets url but no title), the platform rejects the
+    entry rather than rendering an invisible-but-clickable menu item — because every link the user
+    sees must carry a visible label."
+  derivation: |-
+    The doc calls title a 'required field'. A menu item with no visible text but a live click target
+    is a phishing-vector enabler and a UX defect; an operator assumes 'required' is enforced.
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The doc says title is 'required' but the record has NO @NotBlank on title. The binder accepts an
+      entry with url set and title null/empty. The UI renders <Typography variant='h4'>{link.title}</Typography>
+      with empty content inside a live <Link to={url}> — producing a menu item that is (near-)invisible
+      but clickable. 'Required' is documented but enforced exactly nowhere.
+    evidence:
+      - sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+        section: security.known_security_gaps[2]
+        cite: "AdditionalLinkProperties.java:8 (no @NotBlank on title)"
+        note: "Operator can configure url-without-title -> invisible-but-clickable menu item; phishing-vector enabler."
+      - sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+        section: docs_link_semantic.doc_drift_findings[0]
+        cite: "AdditionalLinkProperties.java:8"
+        note: "Doc says title/url are 'required fields'; record has no JSR-303 constraint -> doc-vs-code claim mismatch."
+    operator_visible_failure: |-
+      An operator (or a less-trusted role with ConfigMap-edit access) plants an entry with no title;
+      the menu shows an apparently-blank row that is nonetheless clickable, navigating an unsuspecting
+      user to the configured URL. Even benignly, a fat-fingered missing title produces a confusing
+      blank menu row with no boot-time error to alert the operator. Fix: @NotBlank on title +
+      @Validated on the class (same one-PR fix as H-004; tracked in PLT-088 Defect 1).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    "A keyboard-only user (Tab to the information icon, press Enter) and a touch-device user (tap the
+    icon on a phone or tablet) can open the App Info menu and reach the operator-configured links —
+    the same way they reach every other control in the platform."
+  derivation: |-
+    Senior-product-owner UX seed (mandatory per Rule 9): "Does the user understand how to use this
+    from what is on screen? How does it behave across device types?" The icon button declares
+    aria-haspopup='true' + aria-controls — the author SIGNALLED keyboard support — so a user (and an
+    assistive technology) reasonably expects Enter/Space to open it.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The icon button wires onMouseEnter ONLY (AppInfoMenu.tsx:81) — there is NO onClick, NO onKeyDown,
+      NO onFocus handler. Keyboard users can focus the button but pressing Enter/Space does nothing;
+      the menu never opens. Touch devices generate no mouseenter on the button, so tapping it does
+      nothing. The aria-haspopup='true' (line 80) and aria-controls={menuId} (line 79) attributes claim
+      a keyboard affordance that is not wired — the ARIA lies. This is a WCAG 2.1 SC 2.1.1 (Keyboard)
+      violation AND a total mobile-UX failure, not a degradation.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "AppInfoMenu.tsx:78-82"
+        note: "Button declares aria-haspopup='true' + aria-controls but wires only onMouseEnter; no keyboard/touch handler."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: security.known_security_gaps[3]
+        cite: "AppInfoMenu.tsx:74-82"
+        note: "WCAG 2.1 SC 2.1.1 violation; ARIA attributes claim support that does not exist."
+    operator_visible_failure: |-
+      (1) Every keyboard-only and screen-reader user is locked out of the ENTIRE App Info menu — not
+      just operator links, but the Documentation link, the Slack link, the project version, and the
+      Feedback link. (2) Every phone and tablet user (iOS Safari, Android Chrome) cannot open the menu
+      by tapping — the feature is invisible to all mobile traffic. (3) ODD deployments serving
+      accessibility-required audiences (US federal Section 508, EU public sector EN 301 549, enterprise
+      compliance) cannot pass an accessibility audit with this widget. The aria-haspopup attribute makes
+      it WORSE: automated AT announces "menu available, press to open" and then nothing happens. Fix:
+      add onClick + onKeyDown(Enter/Space) handlers, keep onMouseEnter for hover-discoverability
+      (tracked in PLT-088 Defect 3).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    "When a user clicks an operator-configured link and it opens in a new tab, the destination page
+    CANNOT control or redirect the original ODD Platform tab (the parent tab is isolated)."
+  derivation: |-
+    Standard target='_blank' security expectation. A user clicking an internal-wiki link trusts that
+    opening it cannot hijack their authenticated ODD session tab. rel='noopener noreferrer' is the
+    platform-portable defence.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      All five link sites in AppInfoMenu (operator-links at line 61 AND the four hardcoded targets at
+      41/95/103/112) use <Link target='_blank'> WITHOUT rel='noopener noreferrer'. The newly-opened
+      page receives a non-null window.opener pointing at the ODD tab and can run
+      window.opener.location = 'https://phishing.example.com' to silently navigate the parent. Modern
+      Chrome/Firefox/Safari apply noopener-by-default for target='_blank' since 2020, BUT react-router
+      <Link>'s pass-through is not guaranteed and compatibility-trailing browsers are unprotected; the
+      explicit rel is the portable defence and it is absent.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "AppInfoMenu.tsx:41, 61, 95, 103, 112"
+        note: "All 5 link sites render target='_blank' without rel; window.opener leaks to every destination."
+      - sidecar: odd-platform__java__LinksController__controller-class__LinksController.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "AppInfoMenu.tsx:60-66"
+        note: "Reverse-tabnabbing vector from any operator-configured URL; bounded by who controls odd.links."
+    operator_visible_failure: |-
+      A user clicks an operator-configured link to a compromised internal wiki (or any future-XSS'd
+      destination); they switch tabs to read it; meanwhile the wiki page's JS has redirected their ODD
+      tab to a pixel-perfect fake login page. When they switch back, they re-enter credentials into the
+      attacker's form. The four hardcoded first-party targets (docs/slack/github/producthunt) inherit
+      the same window.opener leak as a defence-in-depth gap. Compounds with H-004 (no scheme validation)
+      and H-005 (no title validation): an unvalidated operator link becomes a workspace-wide
+      reverse-tabnab vector. Fix: add rel='noopener noreferrer' to all 5 sites (one mechanical edit per
+      site; tracked in PLT-088 Defect 2 / REFACTOR-629).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    "When the operator edits odd.links in a running deployment (adds a new runbook link) and the
+    change is applied, users see the new link on their next page navigation."
+  derivation: |-
+    An operator's default mental model for a config change is "edit the YAML/ConfigMap and it takes
+    effect" — many platforms hot-reload config. The operator expects the new link to appear without a
+    disruptive restart.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The change is invisible until a full process restart AND, for already-open tabs, until a full
+      browser reload. Two compounding layers: (a) AdditionalLinkProperties is a Spring
+      @ConfigurationProperties record bound once at context refresh into a final field on a singleton
+      bean — there is no @RefreshScope, and /actuator/refresh is not exposed by default; the JVM holds
+      the boot-time list for its lifetime. (b) Even after the operator restarts the backend, AppInfoMenu
+      sets keepMounted on the MUI menu (line 90) and useAppLinks sets no staleTime/refetchInterval, so
+      the widget never unmounts and never refetches for the SPA tab's lifetime — users with an open tab
+      keep seeing the OLD list until they hard-reload.
+    evidence:
+      - sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+        section: stress_findings.resource_boundaries
+        cite: "AdditionalLinkProperties.java:6 + AdditionalLinkConfiguration.java:8 (no @RefreshScope)"
+        note: "Boot-time bind; runtime YAML edits invisible until restart — a structural property of @ConfigurationProperties."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "AppInfoMenu.tsx:90 + lib/hooks/api/appInfo.ts:11-17"
+        note: "keepMounted + no staleTime -> widget never unmounts/refetches; YAML edits invisible until full page reload."
+    operator_visible_failure: |-
+      The operator adds a link, refreshes their own page, sees nothing change, and burns 5-10 minutes
+      suspecting a typo or a broken endpoint before discovering a restart is required. Worse, after the
+      restart, colleagues with long-lived tabs STILL don't see the new link and report it as missing,
+      so the operator cannot trust "it's deployed" even after restarting. There is no in-product signal
+      ("config changed, please restart" / "reload to see new links"). The boot-immutability is an
+      intentional architectural default (per implicit_adrs) — so the right remediation is a doc caveat
+      (already shipped via REFACTOR-631/DOC-257) PLUS optionally a UI staleTime fix; the contradiction
+      against the user's expectation stands regardless.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    "The operator-configured links are a navigation convenience visible to every signed-in user — the
+    operator can put internal-wiki/runbook URLs here knowing they are gated behind authentication."
+  derivation: |-
+    Pillar P-08 primary-user-action: operator configures catalog wiring. The doc states the links are
+    'exposed through the authenticated GET /api/links endpoint and are visible to every user signed in'.
+    Tests the boundary: is 'authenticated' actually enforced, and is 'every user' the intended scope?
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      TRUE under LOGIN_FORM/OAUTH2/LDAP: /api/links has no SECURITY_RULES entry and is not in
+      WHITELIST_PATHS, so it falls through to the framework-default pathMatchers('/**').authenticated()
+      rule — every authenticated user (regardless of role/owner) reads the identical list, matching the
+      doc's 'visible to every user signed in'. FALSE under auth.type=DISABLED: DisabledAuthSecurity
+      Configuration permits all exchanges, so /api/links is anonymously reachable — any unauthenticated
+      network caller (and any anonymous SPA visitor hovering the icon) reads the configured
+      internal-network URLs. The doc's word 'authenticated' does not hold under DISABLED. Additionally
+      there is NO per-role visibility — the operator CANNOT scope links to ADMIN-only; 'every user'
+      includes zero-owner read-only users by design, with no opt-out.
+    evidence:
+      - sidecar: odd-platform__java__LinksController__controller-class__LinksController.md
+        section: stress_findings.auth_gates
+        cite: "SecurityConstants.java:95-96 + AuthorizationCustomizer.java:29-30"
+        note: "No SecurityRule, not whitelisted -> default authenticated() under LOGIN_FORM/OAUTH2/LDAP; DISABLED short-circuits auth."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: security.data_exposure[1]
+        cite: "AppInfoMenu.tsx:60-66 + DisabledAuthSecurityConfiguration.java:13-18"
+        note: "Under DISABLED, configured internal URLs render to any anonymous SPA visitor."
+    operator_visible_failure: |-
+      An operator running the shipped default (auth.type=DISABLED is the dev/quick-start default) who
+      configures internal Grafana/runbook URLs exposes those URLs to any network caller who can reach
+      the platform — a recon foothold mapping the internal network. Separately, an operator who wants a
+      sensitive runbook visible only to admins has no mechanism — every signed-in user, including
+      least-privilege viewers, sees every link. The DISABLED-anonymous-disclosure caveat is doc-tracked
+      (DOC-GAP-285 cross-links DOC-GAP-082 META); the no-per-role-visibility is a feature-shape limit
+      (new drift class proposed).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    "When the operator configures two links with the same URL but different titles (e.g. 'Runbook' and
+    'Runbook (archived)' both pointing to the same wiki page), the user sees BOTH menu items."
+  derivation: |-
+    A natural operator pattern is two labels for one destination. The user expects to see both labels
+    they configured; nothing in the field shape forbids duplicate URLs.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The backend returns both entries faithfully (the config list and the controller passthrough do
+      not de-duplicate). BUT the UI uses key={link.url} as the React reconciliation key
+      (AppInfoMenu.tsx:61). Two entries with the same URL produce a duplicate React key: React emits a
+      console warning at all times and, in some reconciliation paths, may de-duplicate the render —
+      silently dropping one of the two labels the operator configured. So the promise holds for the API
+      but is NOT reliably honoured in the rendered menu.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: bugs_limitations_corner_cases[4]
+        cite: "AppInfoMenu.tsx:55-69 (key={link.url})"
+        note: "Duplicate-URL entries collide on the React key; one may be silently de-duplicated."
+      - sidecar: odd-platform__java__LinksController__controller-class__LinksController.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "AppInfoMenu.tsx:60-66"
+        note: "URL-as-key duplicate-warning risk; backend returns both, UI may drop one."
+    operator_visible_failure: |-
+      An operator configures two intentional labels for one URL; one silently vanishes from the menu in
+      affected render paths, and the operator sees a permanent console warning. The operator cannot tell
+      whether they mis-configured or the platform dropped the entry. Fix: key by array index or a
+      backend-stamped synthetic id instead of link.url.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    "A non-English-locale user (e.g. Ukrainian UI) sees the App Info menu's own labels translated, so
+    the operator-link section is consistent with the rest of the localised platform."
+  derivation: |-
+    Product-owner UX seed (Rule 9 — "consistent with how the same kind of task is done elsewhere"):
+    the platform has a useTranslation() i18n layer (used in AppToolbar.tsx:19). A user on a non-English
+    locale expects the menu chrome to be translated like everything else.
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The operator-configured link.title values DO render verbatim — so operators CAN localise their
+      OWN additions by typing localised titles. But the platform's own four labels in the same menu
+      ('Documentation', 'Slack', 'ODD Platform version', 'Leave a feedback') hardcode English at
+      AppInfoMenu.tsx:48/100/108/117 and bypass the useTranslation() infrastructure already imported in
+      AppToolbar.tsx:19. A Ukrainian-locale user sees four English labels amongst otherwise-translated
+      menu items — inconsistent with the rest of the platform.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: bugs_limitations_corner_cases[5]
+        cite: "AppInfoMenu.tsx:20-23, 48, 100, 108, 117 (no t(...) call)"
+        note: "Four hardcoded English labels bypass i18n; operator-supplied titles render verbatim. Cross-link F-043."
+    operator_visible_failure: |-
+      A deployment localised for a non-English audience presents a partially-English App Info menu —
+      the four platform labels are not translated, breaking the consistency promise of a multilingual
+      UI. This is one of 12+ i18n sites F-043 catalogues; the operator/end-user impact here is cosmetic
+      but visible. Routed to F-043 as the owning i18n feature rather than a standalone bug.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: |-
+    "If GET /api/links fails (network error, 401, 5xx) when the user opens the menu, the user sees a
+    clear indication that the additional-links section could not load — not a silently-reduced menu."
+  derivation: |-
+    Product-owner UX seed (Rule 9 — "Does the user understand what is happening?"): a good UI tells the
+    user when a section failed to load rather than silently omitting it, so the user does not mistake a
+    transient failure for "the operator configured nothing".
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      AppInfoMenu destructures only `data` from useAppInfo/useAppLinks (lines 17-18) — no isLoading, no
+      isError, no error handler. If /api/links 401s or 5xxs, links is undefined, projectLinks maps over
+      nothing, and the operator-links section silently disappears; the menu just appears reduced. The
+      user (and operator) cannot distinguish "links failed to load" from "no links configured" from "I
+      am not authenticated". Same silent-absence behaviour for the project-version row when /api/appInfo
+      fails.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: bugs_limitations_corner_cases[6]
+        cite: "AppInfoMenu.tsx:17-18 (no loading/error destructure)"
+        note: "No loading/error UI; query failure surfaces as silent absence, indistinguishable from empty config."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+        section: concepts.invariants
+        cite: "AppInfoMenu.tsx:71-122"
+        note: "Menu has NO loading state, NO error state, NO retry handler."
+    operator_visible_failure: |-
+      An operator debugging "my configured links don't appear" cannot tell from the UI whether the
+      cause is a config typo, a backend error, an auth failure, or a stale tab — the menu looks the same
+      in all cases. This lengthens diagnosis and erodes trust ("the feature is flaky"). It is a clean-UI
+      vs diagnosability trade-off; the contradiction against the user's expectation of feedback stands.
+      New drift class proposed (no existing tracker found for the error-state gap specifically).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-013
+  hypothesis: |-
+    "When the operator misconfigures a very large odd.links list (e.g. an env-var binding accidentally
+    expands to thousands of entries), the platform handles it without breaking the menu or the
+    response."
+  derivation: |-
+    Resource-boundary seed: there is no @Size cap on the list and no pagination at the API or UI. A
+    product owner asks what happens at pathological scale — does the menu degrade gracefully or break?
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      Statically: AdditionalLinkProperties has no @Size; LinksController has no LIMIT and allocates a
+      fresh O(N) ArrayList per request; AppInfoMenu renders 5+N DOM subtrees in one MUI Menu with no
+      pagination and keepMounted. For typical N<=50 this is sub-millisecond and irrelevant. For
+      pathological N (1000s) the sidecars predict (a) an O(N) per-request copy on every /api/links call,
+      (b) a menu render that degrades the MUI Menu's vertical-scroll and positioning algorithm. Whether
+      the menu becomes unusable, the MUI positioning breaks, or the browser hangs at a specific N is not
+      statically determinable — it requires running the UI with a large injected list and observing.
+    evidence:
+      - sidecar: odd-platform__java__LinksController__controller-class__LinksController.md
+        section: performance.scaling_characteristics
+        cite: "LinksController.java:31-33 + AppInfoMenu.tsx:55-69"
+        note: "No pagination at API or UI; list size grows O(N); pathological config degrades menu render."
+      - sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+        section: performance.known_performance_gaps
+        cite: "AdditionalLinkProperties.java:7 (no @Size)"
+        note: "No max-size cap on the list; cost surfaces at every consumer call and UI render, not at the record."
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-035-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: PENDING-F-035-1
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "odd.links url is unvalidated — javascript:/data:/file:/vbscript:/relative/empty strings flow unmodified to <a href>; field named 'url' accepts any String."
+  dedup_status: already_tracked
+  tracked_as: PLT-088
+  note: "PLT-088 Defect 1 (AdditionalLinkProperties no validation) + REFACTOR-630-class + DOC-GAP-285 (b). Convergent: reflection re-derives the validation gap from the user-facing 'url means a URL' promise."
+  proposed_fix_anchor: "AdditionalLinkProperties.java:8 — add @Pattern('^https?://.*') + @NotBlank + @Validated on the class (per PLT-088 suggested fix)."
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: "title documented 'required' but has no @NotBlank — url-without-title ships an invisible-but-clickable phishing-vector menu item."
+  dedup_status: already_tracked
+  tracked_as: PLT-088
+  note: "PLT-088 Defect 1 (same validation-absence fix covers @NotBlank on title). Convergent corroboration."
+  proposed_fix_anchor: "AdditionalLinkProperties.java:8 — @NotBlank on title (same PR as H-004)."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "App Info menu opens on onMouseEnter ONLY — keyboard-only and all touch/mobile users cannot open it; aria-haspopup='true' claims support that is not wired (WCAG 2.1 SC 2.1.1)."
+  dedup_status: already_tracked
+  tracked_as: PLT-088
+  note: "PLT-088 Defect 3 (keyboard handlers) + AppInfoMenu sidecar facet app_info_menu_keyboard_inaccessible_aria_haspopup_claims_support_no_handler_wired. Reflection raises severity to HIGH because the failure is total (no fallback) and spans ALL mobile traffic + ALL AT users, locking out the whole menu (not just operator links)."
+  proposed_fix_anchor: "AppInfoMenu.tsx:78-82 — add onClick + onKeyDown(Enter/Space), keep onMouseEnter (per PLT-088 suggested fix)."
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "All 5 AppInfoMenu link sites use target='_blank' without rel='noopener noreferrer' — destination pages can window.opener-redirect the parent ODD tab (reverse tabnabbing)."
+  dedup_status: already_tracked
+  tracked_as: PLT-088
+  note: "PLT-088 Defect 2 + REFACTOR-629 + DOC-GAP-285 (a). Convergent: reflection re-derives from the user-facing 'opening a link cannot hijack my session tab' promise."
+  proposed_fix_anchor: "AppInfoMenu.tsx:41,61,95,103,112 — add rel='noopener noreferrer'; un-suppress react/jsx-no-target-blank (per REFACTOR-629)."
+- hypothesis_id: H-010
+  severity: LOW
+  one_line: "Duplicate-URL odd.links entries collide on key={link.url} — React warns and may silently drop one of the operator's two configured labels."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-629
+  distinct_from: PLT-088
+  note: "The URL-as-React-key duplicate-warning facet (linkurl_as_react_reconciliation_key_duplicate_url_warning_risk) is recorded on the feature flow and surfaced by the AppInfoMenu sidecar; it sits in the same UI-hygiene scope as REFACTOR-629 but is a DIFFERENT failure mode (render-drop, not security). PLT-088 does NOT cover it — candidate to fold into the same UI PR."
+  proposed_fix_anchor: "AppInfoMenu.tsx:61 — key by array index or backend-stamped synthetic id instead of link.url."
+- hypothesis_id: H-012
+  severity: LOW
+  one_line: "AppInfoMenu has no loading/error state — a /api/links failure silently reduces the menu, indistinguishable from 'no links configured'."
+  dedup_status: net_new
+  distinct_from: PLT-088
+  recommended_log_as: upstream-issue
+  note: "No existing issue/backlog item covers the silent-absence-on-query-failure gap specifically (grep of issues/ + backlog/ for AppInfoMenu/api-links returns only PLT-088 which is the 3-pack validation/tabnabbing/keyboard, and the DOC items). New drift class proposed: app_info_menu_no_loading_or_error_state_silent_absence_on_query_failure."
+  proposed_fix_anchor: "AppInfoMenu.tsx:17-18 — destructure isError/isLoading from useAppLinks/useAppInfo and render an error affordance for the links section."
+
+### caveat_candidates
+- hypothesis_id: H-008
+  one_line: "odd.links is bound at boot AND the UI keepMounts+never-refetches — edits are invisible until process restart AND until users hard-reload open tabs; no in-product signal."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-631
+  note: "REFACTOR-631 (boot-immutability doc-disclosure) + DOC-GAP-285 (boot-time-bind) + DOC-257 (shipped, status:done). The UI keepMounted+no-staleTime amplifier (facet appinfomenu_keepmounted_combined_with_no_staletime...) is the frontend half — REFACTOR-631 covers the backend half; the doc caveat now exists. Convergent corroboration; no re-file."
+- hypothesis_id: H-009
+  one_line: "Configured links are global to every signed-in user (no per-role visibility) AND anonymously reachable under auth.type=DISABLED — internal-network URLs leak to any network caller on the default deployment."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-285
+  note: "DOC-GAP-285 documents the DISABLED-anonymous disclosure and cross-links DOC-GAP-082 META; DOC-257 shipped the global-visibility caveat. The no-PER-ROLE-visibility shape (new drift class additional_links_no_per_role_visibility_...) is a feature-limit observation; per LinksController implicit_adrs[1] it is DELIBERATE (global by design), so it stays a documented caveat, not a bug."
+- hypothesis_id: H-011
+  one_line: "Four hardcoded English labels in the App Info menu (Documentation/Slack/version/Feedback) bypass i18n — a non-English-locale user sees them untranslated, inconsistent with the rest of the platform."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-285
+  distinct_from: PLT-088
+  note: "The i18n gap is owned by F-043 (multilingual UI; one of 12+ catalogued sites) per the F-035 batch-ZJ cross-reference; not a standalone bug. No PLT covers it. Routed to F-043 as the owning feature."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every promise (use_case) sits at coverage: unverified because NO test exists
+# for this feature anywhere (LinksController/AdditionalLinkProperties/AppInfoMenu all report
+# covered_behaviours: []; Grep of odd-platform src/test + tests/ + odd-team integration-tests
+# returns no test touching this chain). Confirmed promises (H-001/H-002/H-003) are the highest-value
+# functional tests to write — a hand-proven happy path with no guard. Contradicted/partial promises
+# get a regression-guard demand for the fix. This is the whole point of v0.3.0: NONE route to none.
+- use_case_id: F-035-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Operator-configured {title,url} renders as a clickable App Info menu item opening url in a new tab."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-1"
+  proposed_test: "Integration (Playwright IT-NNN reusing odd-platform/tests harness): boot with odd.links=[{title:'Runbook',url:'https://example.test/rb'}], open App Info menu, assert a 'Runbook' item exists with href='https://example.test/rb' and target='_blank'."
+- use_case_id: F-035-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "Links render in operator YAML/env declaration order (no re-sort at any layer)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-2"
+  proposed_test: "Integration: GET /api/links with a 3-entry odd.links returns items in declaration order; pairs with P-128 backend ordering assertion. (LinksController uncovered_behaviour: ordering, MEDIUM.)"
+- use_case_id: F-035-UC-3
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "With odd.links unset (the operator default), GET /api/links returns 200 items=[] and the menu shows no operator-links section without error."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-3"
+  proposed_test: "Integration: @WebFluxTest LinksController with empty AdditionalLinkProperties asserts 200 + items=[] (the null-vs-empty branch — LinksController uncovered_behaviour, LOW)."
+- use_case_id: F-035-UC-4
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "odd.links url is validated to an http(s) scheme; malformed/dangerous schemes are rejected at boot."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-4 (regression guard for PLT-088 Defect 1 fix)"
+  proposed_test: "Security/unit: once @Pattern lands, assert AdditionalLinkProperties binding REJECTS url='javascript:alert(1)' / 'data:text/html,...' / 'file:///etc/passwd' / 'wiki.internal' and accepts 'https://x'. Until the fix, a characterization test pinning current passthrough (per LSN-029 pin-known-bug)."
+- use_case_id: F-035-UC-5
+  hypothesis_id: H-005
+  kind: grammar
+  promise: "An odd.links entry with url but no title is rejected (title is required)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-5 (regression guard for PLT-088 Defect 1 @NotBlank)"
+  proposed_test: "Unit: once @NotBlank lands, assert binding fails for {url:'https://x'} with no title; characterization-pin the current accept-empty-title until then."
+- use_case_id: F-035-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Keyboard-only and touch users can open the App Info menu and reach the links (WCAG 2.1 SC 2.1.1)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-6 (regression guard for PLT-088 Defect 3)"
+  proposed_test: "Integration (Playwright): focus the info icon via keyboard, press Enter, assert the menu opens and a known item is reachable; assert a click (not hover) opens the menu (touch proxy). Captured in P-173 (d)."
+- use_case_id: F-035-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "Opening an operator link in a new tab cannot let the destination redirect the parent ODD tab (rel='noopener noreferrer')."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-7 (regression guard for PLT-088 Defect 2 / REFACTOR-629)"
+  proposed_test: "Security (Playwright): assert every <a> rendered by AppInfoMenu (4 hardcoded + N operator) carries rel='noopener noreferrer' on target='_blank'. Captured in P-173 (a)."
+- use_case_id: F-035-UC-8
+  hypothesis_id: H-008
+  kind: edit-reconcile
+  promise: "Operator edits to odd.links become visible to users after the change is applied."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-8 (caveat-guard: assert boot-immutability is the contract)"
+  proposed_test: "Integration: assert GET /api/links does NOT reflect a runtime property change without context restart (pins the documented boot-immutable contract — characterization, per REFACTOR-631 DOC-DISCLOSE choice). Covered conceptually by P-128."
+- use_case_id: F-035-UC-9
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "Links are gated by authentication under LOGIN_FORM/OAUTH2/LDAP (and the operator understands DISABLED makes them anonymous)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-9"
+  proposed_test: "Security: assert GET /api/links returns 401 unauthenticated under LOGIN_FORM/OAUTH2/LDAP and 200 with payload under DISABLED (LinksController uncovered_behaviour, MEDIUM; the most-leverage gap per the sidecar — a WHITELIST edit could silently flip it public). Captured in P-128/P-173 (c)."
+- use_case_id: F-035-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "Two operator links with the same URL but different titles both render."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-10 (regression guard for the React-key fix)"
+  proposed_test: "Integration (Playwright): configure two odd.links with identical url + different titles; assert BOTH menu items render and no duplicate-key warning is emitted."
+- use_case_id: F-035-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "The App Info menu's own labels are localised for non-English locales."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-11 (owned by F-043)"
+  proposed_test: "Integration: under a non-English locale, assert the four menu labels resolve through t(...) (currently fail — they are hardcoded English). Routed to F-043's i18n test set."
+- use_case_id: F-035-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "A failed /api/links surfaces a visible error in the links section rather than silent absence."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) — category: missing-functional, use_case_id F-035-UC-12 (regression guard for the error-state fix)"
+  proposed_test: "Integration (Playwright): stub /api/links to 500; assert the menu shows an error/retry affordance for the additional-links section, distinct from the empty-config state."
+- use_case_id: F-035-UC-13
+  hypothesis_id: H-013
+  kind: render
+  promise: "A pathologically large odd.links list does not break the menu or the response."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-035-1 (probe) — local-only large-list UI render observation"
+  proposed_test: "Probe PENDING-F-035-1 (Playwright, local-only): inject odd.links with 1000+ entries; observe whether the MUI Menu render/positioning degrades or the browser hangs, and at what N the menu becomes unusable."
+
+### probes_emitted
+- probe_id: PENDING-F-035-1
+  hypothesis_id: H-013
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  expected_outcome: |-
+    "When the operator misconfigures a very large odd.links list (e.g. an env-var binding accidentally
+    expands to thousands of entries), the platform handles it without breaking the menu or the
+    response." — observe the AppInfoMenu render with 1000+ injected links (local docker-compose +
+    Playwright per Rule 6): does the MUI Menu vertical-scroll/positioning degrade, does the browser
+    hang, and at what N does the menu become unusable? Backend O(N) per-request copy is cheap; the UI
+    render is the unknown.
+  probe_path: "PARALLEL-SAFE MODE — recorded here only; no P-NNN file created this run."
+
+### validation_gaps
+- sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+  field_insufficient: "performance.scaling_characteristics — predicts pathological-N menu degradation but cannot say WHETHER/AT-WHAT-N the MUI Menu render breaks; only a runtime observation resolves H-013."
+  proposed_refresh: "After PENDING-F-035-1 runs, record the observed breaking N (or 'no observable break up to N=X') so the large-list hypothesis can move from probe-needed to confirmed/contradicted."
+
+### doc_drift_findings
+# IMPORTANT: the live doc (WebFetch 2026-06-04, 200) has ALREADY been updated via DOC-257 (status:done)
+# and now documents all three operator-trust caveats verbatim (no-validation + reverse-tabnabbing +
+# keyboard-inaccessibility). The doc-DRIFT findings recorded in all three sidecars'
+# docs_link_semantic blocks (authored 2026-05-25/26, BEFORE DOC-257 shipped) are therefore STALE.
+# No NEW doc-gap is raised for those three caveats. One stale-sidecar refresh is noted below; it is a
+# sidecar-staleness observation, NOT a live doc-vs-code gap.
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "title and url are 'required fields' (and the doc now also lists 'Missing title / Missing url' under the no-validation caveat)."
+  code_does: "No @NotBlank on either field; missing title/url is accepted at bind time and ships to the UI."
+  recommended_log_as: "none — already covered by DOC-257 (status:done) which documents the no-validation behaviour, and by PLT-088 Defect 1 (the code fix). The word 'required' in the field table is reconciled by the adjacent caveat the same page now carries. No new DOC-GAP."
+
+### sidecar_staleness_note
+- note: |-
+    All three contributing sidecars' docs_link_semantic.doc_drift_findings assert the live page is
+    SILENT on the tabnabbing / URL-scheme / boot-time / keyboard caveats. As of WebFetch 2026-06-04
+    (200) those caveats ARE now on the page (DOC-257 shipped). A future file-analyser refresh of
+    LinksController / AdditionalLinkProperties / AppInfoMenu should re-WebFetch and clear the stale
+    doc-drift findings (they describe a pre-DOC-257 state). This does not change any code-vs-promise
+    verdict above — the CODE still ships the un-hardened behaviour; only the doc caught up.
+
+## maintainer_notes

@@ -1,0 +1,956 @@
+---
+feature_id: F-040
+pillar_anchored_id: P-04:F-003
+pillar: P-04 Data Quality
+feature_name: |-
+  Per-data-entity Data Quality test run history — paginated /history tab on
+  the DQ-test detail page + first-10-runs preview on test-report-details;
+  cross-owner read with diagnostic-text leak channel via status_reason
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: c40661401b5b17aa95b1fdeaa75f44597e1deed9   # odd-team workspace HEAD
+substrate_commit: 4ec2b20   # odd-platform commit the contributing sidecar + feature-flow were extracted at
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController.md
+contributing_sidecars_referenced_unenriched:
+  # hops 0a/0b/2/3/4 are referenced from the controller sidecar but not yet enriched as standalone sidecars
+  - "react-component:TestRunsHistory (hop 0a — unresolved standalone; primary-source citations carried in the controller sidecar upstream_callers + batch UI-L extension)"
+  - "react-component:TestReportDetailsHistory (hop 0b — unresolved standalone; primary-source citations carried in controller sidecar)"
+  - "react-component:TestRunItem (UI row — batch UI-L primary-source)"
+  - "react-component:TestRunStatusReasonModal (UI leak-render surface — batch UI-L primary-source)"
+  - "service:DataEntityRunServiceImpl (hop 2 — unresolved standalone)"
+  - "repository:ReactiveDataEntityTaskRunRepositoryImpl (hop 3 — unresolved standalone)"
+  - "service:DataEntityRunMapper (hop 4 — unresolved standalone)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-quality"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      NOW references the /dataentities/{id}/history view, the status_reason
+      diagnostic, the status filter, infinite-scroll pagination, AND the
+      cross-owner read posture on status_reason — coverage that did NOT exist
+      at the sidecar's 2026-05-25 WebFetch. The runs_history_endpoint_undocumented
+      drift facet is STALE/RESOLVED at the live site.
+  - url: "https://docs.opendatadiscovery.org/features/data-quality/test-run-history"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Dedicated, comprehensive, ACCURATE page. Documents verbatim: the 7-DB-value
+      vs 6-wire-value enum asymmetry; HTTP 500 while a test is RUNNING
+      (strict string-to-enum IllegalArgumentException); in-flight rows at the
+      top with empty Duration; cross-owner read ("any signed-in user from one
+      team reads every other team's per-run diagnostic text indefinitely");
+      PII in status_reason (failing data value samples, compiled SQL);
+      end_time DESC ordering; page sizes 100 (/history) and 10 (/test-report).
+      The doc layer is AHEAD of the code — it documents bugs the code still ships.
+hypothesis_summary:
+  total: 13
+  confirmed: 2
+  contradicted: 6
+  partial: 4
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      The runs-history page returns HTTP 500 for the whole list the moment any
+      run is in flight (RUNNING) — the page is unavailable exactly when the
+      operator most wants to watch a test execute.
+related_feature_flows: [F-022, F-032, F-014, F-007, F-021]
+related_concepts:
+  - data-entity-run-status
+  - data-quality-test
+  - data-transformer
+  - task-run
+  - read-collaborative-catalog-posture
+related_drift_classes:
+  # facets from the feature-flow's drift_class_summary this reflection CONFIRMED via top-down trace
+  - cross_owner_dq_test_run_history_read_no_security_rule
+  - status_reason_diagnostic_text_leak_channel
+  - wire_enum_db_enum_asymmetry_running_status_500_during_in_flight_runs
+  - nulls_first_ordering_running_rows_appear_undated_at_top
+  - no_tie_breaker_on_identical_end_time_infinite_scroll_dup_or_skip
+  - ui_sort_key_start_time_vs_backend_sort_key_end_time
+  - size_param_unbounded_no_max_constraint
+  - soft_delete_inclusive_existence_check_inconsistent_with_sibling_dataquality_controller
+  - entity_class_gate_at_service_tier_not_controller_unhelpful_error_message
+  - page_eq_0_negative_offset_undefined
+  - testreportdetails_history_no_more_indicator_after_10_rows_silent_truncation
+  - testrunshistory_alertstatus_local_state_not_url_share_drift
+new_drift_classes_proposed:
+  - runs_history_endpoint_undocumented_facet_now_STALE_doc_layer_ahead_of_code
+  - service_and_mapper_unit_tests_added_since_sidecar_enrichment_coverage_block_stale
+---
+
+# Per-data-entity DQ Test Run History — product-owner reflection
+
+## product_owner_narrative
+
+DQ Test Run History is the **per-test-execution timeline** surface of the Data Quality pillar. When a data-quality engineer opens a single DQ test (or a Data Transformer job) in the catalog and clicks the **History** tab, they see a paginated, most-recent-first list of every past run of that test: when it started, when it ended, whether it passed or failed, and the free-form `status_reason` diagnostic text the upstream framework (Great Expectations, dbt, a custom push adapter) wrote on that run (per the controller sidecar `understanding` + `DataEntityRunController.java:13-28`; `openapi.yaml:1363-1386`). It is the third read surface of P-04, sitting beside F-022 (per-DATASET test reports + SLA) and F-032 (the catalog-wide Quality Dashboard): F-022 lists the tests for a dataset, F-032 aggregates runs across all tests for all datasets, and F-040 drills into the run timeline of ONE test (per the feature-flow `cross_pillar_relationships[P-04]`). The pillar's load-bearing constraint is that ODD is an **aggregator only** — "Quality checks are not performed inside ODD Platform" (per `system-mission.md` P-04 doc excerpt) — so every row here is a record the platform received from outside, never one it computed.
+
+A user reaches the data at two sites. The dedicated route `/dataentities/{id}/history` mounts `TestRunsHistory` with a status-filter dropdown, infinite scroll, and a hardcoded page size of 100 (per controller sidecar `upstream_callers[0]` + `TestRunsHistory.tsx:24-122`). The test-report tab mounts `TestReportDetailsHistory`, a fixed first-10-runs preview with no pagination and — critically — no "+N more" affordance (per `upstream_callers[1]` + `TestReportDetailsHistory.tsx:30-32`). Behind both, one GET endpoint `/api/dataentities/{data_entity_id}/runs` flows through a thin reactive controller → `DataEntityRunServiceImpl` (which 404s a missing entity and 400s an entity whose class is neither Data Transformer (2) nor Data Quality Test (4)) → `ReactiveDataEntityTaskRunRepositoryImpl` (a JOOQ `SELECT … ORDER BY end_time DESC LIMIT ? OFFSET ?` plus a COUNT subquery) → `DataEntityRunMapper` (MapStruct flat-map to the wire model). Clicking a row opens `TestRunStatusReasonModal`, which renders the `status_reason` text verbatim with no redaction and no "show raw" toggle (per batch UI-L extension note (4) + `TestRunStatusReasonModal.tsx:74-78`).
+
+The working parts a product owner would demo: filter by status (a dropdown over SUCCESS / FAILED / SKIPPED / BROKEN / ABORTED / UNKNOWN), scroll back through history (infinite scroll on the /history route), and inspect a failure's diagnostic by clicking its row. The status values are the **six-value wire enum** `DataEntityRunStatus` (per `components.yaml:1407-1415`) — and this is where the feature's promise and its implementation diverge sharply: the database column `data_entity_task_run.status` accepts a **seventh** value, `RUNNING`, which the wire enum cannot represent (per controller sidecar `concepts.entities.DataEntityRunStatus` + `IngestionTaskRun.java:28-36`). The mapper's strict `Enum.valueOf()` conversion throws on it.
+
+The integration story spans four pillars. The runs themselves are produced by the P-10 ingestion pipeline (`TaskRunIngestionRequestProcessor` bulk-inserts every `data_entity_task_run` row); F-040 is the READ counterpart of that WRITE path. A failing run here is the same signal F-007 (AlertManager) turns into a FAILED_DQ_TEST alert and F-021 (Activity Feed) could surface — F-040 is the read surface, F-007 the event surface, F-021 the audit surface, all over one underlying execution record (per feature-flow `cross_pillar_relationships`). And the read posture is shared with P-09 Security: the endpoint has **no entry in `SecurityConstants.SECURITY_RULES`** and falls through to the `.pathMatchers("/**").authenticated()` catch-all (per controller sidecar `security.authorization_assertions` + `SecurityConstants.java:98-355`), so any signed-in user reads any test's full diagnostic stream.
+
+Edge cases a product owner must flag in the demo: while a test is **in flight**, the page does not show a tidy "running…" row — it (per the sidecar's HIGH-severity hypothesis) returns HTTP 500 for the entire list, because a `RUNNING` row trips the mapper; and even if that were fixed, Postgres's `NULLS FIRST` default puts the dateless in-flight row at the *top* of the timeline, labelled by its start time with an empty Duration, with no visual "in flight" badge (per feature-flow facets 2-3 + `TestRunItem.tsx:25-60`). A deleted DQ test loses its run history entirely on this surface (a bare `get(id)` excludes soft-deleted entities — diverging from F-022's deliberate forensic-preservation `existsIncludingSoftDeleted` pattern). Notably, since the sidecar's 2026-05-25 enrichment, the **documentation has caught up and is now ahead of the code**: the dedicated `/features/data-quality/test-run-history` page documents every one of these caveats accurately, including the 500, the cross-owner read, and the PII risk (per WebFetch 2026-06-04) — so the "endpoint undocumented" drift facet is now stale, and the actionable gap has flipped from "write the doc" to "fix the code the doc now warns about."
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator opens the History tab of a DQ test and the test has past
+    completed runs, the response is a paginated timeline of those runs ordered
+    most-recent-first, each row carrying its status, start time, end time, and
+    the status_reason diagnostic text.
+  derivation: |-
+    Endpoint shape (getRuns returns DataEntityRunList) + response-shape DTO
+    fields (startTime/endTime/status/statusReason) + the UI /history route mount.
+  seed_source: endpoint-shape + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The repository SELECTs data_entity_task_run rows for the entity's oddrn,
+      ORDER BY end_time DESC, LIMIT/OFFSET paginated, and the mapper flat-maps
+      each pojo to a DataEntityRun{startTime,endTime,status,statusReason,
+      dataEntityId} inside a DataEntityRunList{items,pageInfo}. The repository
+      integration test pins ordering + pagination + status-filter end to end
+      against a real Postgres. "Most-recent-first" is by end_time (a caveat —
+      see H-009), but for the steady-state completed-run case the promise holds.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "concepts.entities + invariants(sql-ordering) + tests_coverage_semantic.covered_behaviours"
+        cite: "ReactiveDataEntityTaskRunRepositoryImpl.java:160-191; DataEntityRunMapper.java:12-25; DataEntityRunRepositoryImplTest.java:34-93"
+        note: "happy-path read + ordering + pagination are repository-integration-tested"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "DataEntityRunRepositoryImplTest.testGetDataEntityRuns (ordering+pagination, lines 34-79)"
+    test_demand: none
+    coverage_note: |-
+      Repository tier verified; the controller HTTP boundary is NOT (see H-013).
+      The happy-path PROMISE is guarded at the SQL layer, so coverage=verified,
+      but the end-to-end wire contract is not — that gap is H-013, not this one.
+
+- id: H-002
+  hypothesis: |-
+    When an operator opens the History tab while one of the test's runs is
+    currently in flight (status RUNNING, end_time not yet set), the page shows
+    that in-flight run (e.g. a "running…" row) alongside the completed runs.
+  derivation: |-
+    Response-shape: the DB status column has a RUNNING value (IngestionTaskRun);
+    negative-space: an operator watching a test execute expects to see it listed.
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The DB column data_entity_task_run.status accepts the 7-value
+      IngestionTaskRunStatus enum INCLUDING RUNNING; the wire enum
+      DataEntityRunStatus declares only 6 values (no RUNNING). DataEntityRunMapper
+      flat-maps the String status into the wire enum via MapStruct's Enum.valueOf()
+      strategy, which throws IllegalArgumentException on the unknown literal
+      "RUNNING". With no onErrorResume in the reactive chain, the exception
+      propagates to Spring's default handler → HTTP 500 for the ENTIRE response
+      (not just the offending row). The dedicated doc page confirms this verbatim:
+      "The page returns HTTP 500 while a test is currently running."
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "bugs_limitations_corner_cases[1] + concepts.entities.DataEntityRunStatus + stress_findings.request_inputs[status]"
+        cite: "IngestionTaskRun.java:28-36; components.yaml:1407-1415; DataEntityRunMapper.java:13-14; MapperConfig.java:7-13"
+        note: "7-value DB enum vs 6-value wire enum; strict valueOf mapper"
+      - sidecar: DataEntityRunController
+        section: "implicit_adrs[2]"
+        cite: "DataEntityRunController.java:24-26"
+        note: "no onErrorResume — mapper exception propagates as 500"
+      - source_read_for_validation: true
+        cite: "https://docs.opendatadiscovery.org/features/data-quality/test-run-history (WebFetch 2026-06-04)"
+        note: "doc page documents the 500 verbatim — doc is ahead of code"
+    operator_visible_failure: |-
+      (a) The runs-history page is UNAVAILABLE (HTTP 500 / generic error) for a
+      test the moment any run is in flight — which is exactly the moment an
+      operator opens History to watch the execution. (b) The failure is
+      all-or-nothing: a single RUNNING row poisons the whole page, so even the
+      9 completed runs the operator could have seen are hidden. (c) The
+      test-report preview (TestReportDetailsHistory, size=10) shares the
+      endpoint, so the embedded preview on the test-report tab ALSO breaks
+      while a run is in flight. (d) The status filter offers no escape: the
+      operator cannot filter to "completed only" because RUNNING is not a wire
+      value to exclude against; omitting the filter returns all rows including
+      the poison row.
+    severity: HIGH
+    confidence: MEDIUM
+    probe_id: PENDING-F-040-1
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      No test asserts the 500-during-RUNNING path. The new mapper unit test
+      (DataEntityRunMapperImplTest) covers ONLY the empty-page PageInfo case —
+      it does NOT feed a RUNNING-status pojo through the enum conversion.
+      This is both a bug-candidate AND the regression guard the fix needs.
+
+- id: H-003
+  hypothesis: |-
+    When an operator who does not own a dataset opens (or curls) the run
+    history of a DQ test on that dataset, they are denied or see a redacted
+    view — the per-run diagnostic text of another team's test is not readable
+    by an unrelated signed-in user.
+  derivation: |-
+    Pillar mission (DQ is a per-team operator surface) + cross-pillar P-09
+    Security boundary + the status_reason data-shape (free-form diagnostics).
+  seed_source: cross-pillar + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      There is no owner-scoping anywhere in the chain. The controller has no
+      @PreAuthorize; the endpoint has NO entry in SecurityConstants.SECURITY_RULES
+      (grep over lines 98-355 returns zero matches for /runs); it falls through
+      to AuthorizationCustomizer's .pathMatchers("/**").authenticated() catch-all.
+      The repository filters only on DATA_ENTITY.ID and optional STATUS — no JOIN
+      to ownership, no principal-derived predicate. Therefore ANY authenticated
+      user reads ANY test's full run history including the verbatim status_reason
+      diagnostic text. The dedicated doc page now states this plainly: "any
+      signed-in user from one team reads every other team's per-run diagnostic
+      text indefinitely."
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "security.authorization_assertions + security.owner_scoping + bugs_limitations_corner_cases[5]"
+        cite: "SecurityConstants.java:98-355; AuthorizationCustomizer.java:29-30; ReactiveDataEntityTaskRunRepositoryImpl.java:161-191"
+        note: "no rule entry, no @PreAuthorize, no ownership join — cross-owner read"
+      - sidecar: DataEntityRunController
+        section: "stress_findings.auth_gates"
+        cite: "DataEntityRunController.java (no annotations); DataEntityRunServiceImpl.java (no permission call)"
+        note: "wrong-role caller gets 200 OK + full payload (PROBE-NEEDED → P-152)"
+    operator_visible_failure: |-
+      (a) Any signed-in user reads any DQ test's failure history across the
+      whole catalog regardless of which team owns the dataset — confidentiality
+      boundary that operators reasonably assume exists does not. (b) The leaked
+      payload is qualitatively worse than the namespaces/owners/tags already
+      exposed by cross-owner read elsewhere: status_reason is free-form text the
+      external framework wrote, routinely containing sample failing data VALUES
+      (potential PII) and compiled SQL — per the doc page. (c) A non-owner can
+      enumerate which datasets are tested and the failure cadence across the
+      org (timing-side-channel for "which team's data is unhealthy right now").
+      (d) Under auth.type=DISABLED the same surface is anonymously reachable.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      No security test exercises bob-reads-alice's-runs (P-152 is the pending
+      probe). This is the REFACTOR-024 read-collaborative-catalog posture's 5th
+      invocation site — if the maintainer adopts the documented posture as
+      intentional, this is a caveat (and the doc already carries it); if the
+      status_reason PII shape makes it a fix, it is a bug. Either way the
+      regression guard (a cross-owner WebFluxTest) does not exist.
+
+- id: H-004
+  hypothesis: |-
+    When an operator wants to see only the in-flight runs of a test, they can
+    pass status=RUNNING to the runs endpoint and get back the currently-running
+    executions.
+  derivation: |-
+    Endpoint shape: the status query parameter promises filtering by any run
+    status; an operator monitoring live executions expects RUNNING to be filterable.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The status query parameter is typed to the 6-value wire enum
+      DataEntityRunStatus, which has no RUNNING literal. An operator literally
+      cannot pass status=RUNNING — the request is rejected at OpenAPI
+      deserialisation (400 invalid enum value). Their only path to seeing
+      in-flight runs is to omit the filter and fetch all statuses — which then
+      trips the H-002 mapper 500. So the in-flight-monitoring use case is
+      unreachable through the documented API.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "stress_findings.request_inputs[status]"
+        cite: "components.yaml:1407-1415; ReactiveDataEntityTaskRunRepositoryImpl.java:166-168; IngestionTaskRun.java:28-36"
+        note: "wire enum (6) is a strict subset of DB column values (7); RUNNING unfilterable"
+    operator_visible_failure: |-
+      (a) An operator monitoring a live DQ run has NO API path to list only
+      in-flight runs. (b) The natural workaround (omit the filter) is the one
+      that triggers the H-002 500, so the workaround is also broken. (c) The
+      filter dropdown silently presents an incomplete set of the statuses that
+      actually exist in the data — the operator cannot tell from the UI that a
+      7th state exists in their database.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      Tied to H-002's fix (add RUNNING to the wire enum, or map-to-UNKNOWN).
+      No test asserts the status=RUNNING rejection. Folds into the H-002
+      regression-guard demand.
+
+- id: H-005
+  hypothesis: |-
+    When an operator requests a runs page, the page size they ask for is
+    bounded by a server-side maximum so that a malformed or hostile request
+    cannot pull the entire run history in one response.
+  derivation: |-
+    Endpoint shape (size query parameter) + implicit functional/security
+    requirement an operator of a catalog of this class assumes by default.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      OpenAPI SizeParam (components.yaml:4222-4229) declares int32 with no
+      min/max. The Integer size flows verbatim through controller → service →
+      repository → SQL LIMIT with no clamp anywhere. A curl with size=10000000
+      reaches the DB as LIMIT 10000000; the window-function paginate plan is
+      O(N) on the result set and would attempt to materialise that many rows
+      through JOOQ + MapStruct + Jackson. The UI ships 100 (/history) and 10
+      (/test-report), but nothing enforces those values on the wire.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "bugs_limitations_corner_cases[0] + performance.known_performance_gaps[0] + stress_findings.request_inputs[size]"
+        cite: "components.yaml:4222-4229; DataEntityRunController.java:19-26; ReactiveDataEntityTaskRunRepositoryImpl.java:180-181"
+        note: "no @Max, no service clamp, no spec maximum"
+    operator_visible_failure: |-
+      (a) A single hostile or careless request (size=10000000) is a DoS surface:
+      latency spike + API-tier memory pressure, possibly OOM, affecting all
+      tenants on the instance. (b) There is no 4xx telling the caller their
+      page size was unreasonable — the request is accepted and the damage is
+      server-side. (c) Combined with the cross-owner read (H-003), an
+      unauthorized-but-authenticated user can pull a very large slice of another
+      team's run history in one shot.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      No performance/bounds test asserts a server-side cap. The fix is a
+      @Max(N) on the param or a service clamp; the guard is a test asserting
+      size beyond the cap is rejected or clamped.
+
+- id: H-006
+  hypothesis: |-
+    When an operator requests a DQ test that has run zero times (no executions
+    yet), the runs endpoint returns a 200 with an empty list, not an error.
+  derivation: |-
+    Negative-space: a freshly-registered test with no runs is a normal state;
+    the implicit ADR gates on entity CLASS, not run COUNT.
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      The gate at DataEntityRunServiceImpl rejects only on missing entity (404)
+      or wrong entity class (400); it does not check run count. A runs-capable
+      entity with zero rows returns an empty Page → DataEntityRunMapper wraps it
+      as DataEntityRunList{items:[], pageInfo:{total:0, hasNext:false}} → 200.
+      The new mapper unit test pins exactly this empty-page propagation; the
+      preview UI renders its empty-content placeholder branch.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "stress_findings.tunables[TestReportDetailsHistory.size].N=0 + invariants(entity-class-gate)"
+        cite: "JooqQueryHelper.java:92-105; DataEntityRunServiceImpl.java:35-44; TestReportDetailsHistory.tsx:33-72"
+        note: "gate is on class not count; empty page → 200 empty list"
+      - source_read_for_validation: true
+        cite: "DataEntityRunMapperImplTest.java:28-34 (mapDataEntityRuns_emptyPage_propagatesPageInfoWithEmptyItems)"
+        note: "NEW unit test (added since sidecar enrichment) pins the empty-page PageInfo + empty items"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: verified
+    test_ref: "DataEntityRunMapperImplTest.mapDataEntityRuns_emptyPage_propagatesPageInfoWithEmptyItems"
+    test_demand: none
+    coverage_note: |-
+      The mapper-tier empty-list promise IS now verified (a test the sidecar's
+      tests_coverage_semantic block does NOT list — stale block). The
+      end-to-end 200-empty-list at the HTTP boundary is still unverified (H-013).
+
+- id: H-007
+  hypothesis: |-
+    When an operator requests runs for an entity that is not a DQ test or
+    transformer (e.g. a JOB_RUN or a dataset), the error message tells them
+    which entity classes DO have runs so they can find the right entity.
+  derivation: |-
+    View-mode dispatch (entity-class gate) + senior-PO usability question
+    ("does the user understand the error and know what to do next?").
+  seed_source: view-mode + ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The gate correctly rejects non-transformer/non-quality-test entities with
+      a 400 BadUserRequestException — that half is right and is now unit-tested.
+      But the message is generic: "Data entity with id %d is not supposed to
+      have runs due to its class". It does not name the supported classes
+      (DATA_TRANSFORMER, DATA_QUALITY_TEST) nor hint that for a JOB_RUN the
+      operator should look up the parent JOB. The gate also lives at the service
+      tier, so the controller OpenAPI description carries no hint either.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "bugs_limitations_corner_cases[6] + implicit_adrs[0] + invariants(entity-class-gate)"
+        cite: "DataEntityRunServiceImpl.java:42-45; DataEntityClassDto.java:44-47"
+        note: "rejects correctly; message is unhelpful"
+      - source_read_for_validation: true
+        cite: "DataEntityRunServiceImplTest.java:51-58 (getDataEntityRuns_entityClassDoesNotSupportRuns_errorsBadRequest)"
+        note: "NEW unit test pins the 400 on wrong class — the rejection is now guarded; the message text is not asserted"
+    operator_visible_failure: |-
+      (a) An operator who clicks through to a run-incapable entity sees a
+      dead-end message with no next step. (b) Because the message omits the
+      supported classes, the operator cannot self-correct without reading the
+      code or the docs. This is a UX/usability defect, not a behaviour bug —
+      the rejection itself is correct.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      The 400 IS now unit-tested (DataEntityRunServiceImplTest) — the rejection
+      behaviour is verified. The MESSAGE-quality improvement is unverified;
+      a test asserting the message names the supported classes would guard the fix.
+
+- id: H-008
+  hypothesis: |-
+    When an operator views the History tab of a DQ test that was later
+    soft-deleted, they can still see its run history for forensic / audit
+    purposes (consistent with how the sibling per-dataset DQ surface preserves
+    soft-deleted visibility).
+  derivation: |-
+    Pillar mission (audit/forensic value of DQ history) + cross-feature
+    consistency with F-022's deliberate existsIncludingSoftDeleted pattern.
+  seed_source: pillar + cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      DataEntityRunServiceImpl loads the entity with the bare
+      dataEntityRepository.get(id), which excludes soft-deleted entities, so a
+      DELETED-status DQ test returns 404 and its run history is unreachable
+      here. The sibling DataQualityServiceImpl (F-022) deliberately uses
+      existsIncludingSoftDeleted (lines 55, 67, 96) to PRESERVE DQ visibility
+      for soft-deleted datasets. So the promise holds on the per-dataset surface
+      but is broken on the per-test surface — the two P-04 read surfaces diverge.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "bugs_limitations_corner_cases[7]"
+        cite: "DataEntityRunServiceImpl.java:32; comparison with DataQualityServiceImpl.java:55-58"
+        note: "bare get() excludes soft-deleted — inconsistent with sibling forensic-preservation pattern"
+    operator_visible_failure: |-
+      (a) An auditor investigating a recently-deleted test cannot retrieve its
+      run history through this surface — the forensic trail the platform
+      otherwise preserves is unavailable here. (b) The inconsistency between the
+      two P-04 read surfaces is itself a trap: an operator who learns that
+      soft-deleted DQ data survives on the per-dataset view will reasonably
+      assume the same on the per-test view, and be wrong.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      No test exercises the DELETED-entity → 404 divergence. A test asserting
+      either the divergence (pinned) or the aligned behaviour (after a fix)
+      would guard the choice.
+
+- id: H-009
+  hypothesis: |-
+    When an operator looks at the runs list, the rows are ordered by the column
+    they see in the leftmost position (start time), so the timeline reads
+    top-to-bottom newest-started-first as they expect.
+  derivation: |-
+    UI label (TestRunsHistory renders startTime in the leftmost column) vs the
+    backend sort key — a senior-PO consistency/intuitiveness question.
+  seed_source: ui-label + response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The UI displays startTime as the leftmost column (TestRunsHistory.tsx:75-77,
+      TestRunItem.tsx:30) but the backend orders by end_time DESC
+      (ReactiveDataEntityTaskRunRepositoryImpl.java:178). For typical completed
+      runs end ≈ start + duration so the two correlate and the operator notices
+      nothing. For long-running tests they diverge: a slow run STARTED yesterday
+      but ENDED today appears ABOVE a fast run STARTED + ENDED earlier today.
+      The backend ordering choice (end_time, "most-recently-completed first") is
+      an intentional, repository-test-pinned ADR — but it is not the column the
+      UI shows, so the operator perceives a sort bug.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "bugs_limitations_corner_cases[4] + implicit_adrs[1] + stress_findings.name_behavior_pairs[0]"
+        cite: "ReactiveDataEntityTaskRunRepositoryImpl.java:178; TestRunsHistory.tsx:74-87; TestRunItem.tsx:25-32"
+        note: "display key (start_time) != sort key (end_time)"
+    operator_visible_failure: |-
+      (a) For long-running tests the list looks mis-sorted by the visible
+      column — the operator may conclude the History view is buggy or
+      distrust the timeline. (b) Reasoning about "the most recent run" is
+      ambiguous: the top row is the most-recently-COMPLETED, not the
+      most-recently-STARTED, and nothing on screen says so.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      The end_time DESC ordering is repository-tested (so the backend invariant
+      is guarded), but the display-vs-sort-key mismatch has no test and no UI
+      affordance (a column tooltip / "ordered by completion" label). A
+      UI/e2e assertion would guard a fix.
+
+- id: H-010
+  hypothesis: |-
+    When an operator applies a status filter on the History tab and shares the
+    page URL with a teammate, the teammate opens the same filtered view.
+  derivation: |-
+    UI-label / senior-PO customisation + consistency question (sibling tabs use
+    URL query params; does this one?).
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The status filter is held in local component state
+      (useState<DataEntityRunStatus | 'All'>('All') at TestRunsHistory.tsx:29-31);
+      the URL query string is not updated when the filter changes. Sharing the
+      URL with a filter applied does NOT preserve it — the recipient sees the
+      full unfiltered list. This is inconsistent with the sibling
+      DataEntityActivity tab, which uses useQueryParams; it is consistent with
+      DataCollaboration (useState) — a platform-wide UX-discipline divergence.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "batch_extensions[UI-L-2026-05-26] note (1)"
+        cite: "TestRunsHistory.tsx:29-31"
+        note: "alertStatus filter in local useState, not URL — share-time drift"
+    operator_visible_failure: |-
+      (a) A teammate handed a "look at the failed runs" URL sees ALL runs, not
+      the failed ones — the shared link silently loses intent. (b) A browser
+      refresh / back-forward resets the filter. (c) The inconsistency with the
+      adjacent Activity tab (same detail page) makes the platform feel
+      incoherent — the same gesture behaves differently one tab over.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      No e2e asserts filter-in-URL. The guard is a Playwright test: apply
+      filter → assert URL query updates → reload → assert filter persists.
+
+- id: H-011
+  hypothesis: |-
+    When a DQ test has more than 10 runs, the test-report preview signals that
+    more runs exist (a "+N more" badge or a "see all" link) so the operator
+    knows to open the full History tab.
+  derivation: |-
+    UI-label / senior-PO discoverability question on the TestReportDetailsHistory
+    preview surface.
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      TestReportDetailsHistory hardcodes size:10 with no pagination, no
+      "see more" button, and no badge showing the total run count
+      (TestReportDetailsHistory.tsx:30-32). A test with 11+ runs shows the most
+      recent 10 with no signal that older runs exist; the operator must already
+      KNOW to click the History tab.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "batch_extensions[UI-L-2026-05-26] note (3) + chain hop 0b evidence + stress_findings.tunables[TestReportDetailsHistory.size]"
+        cite: "TestReportDetailsHistory.tsx:30-32"
+        note: "fixed-10 strip, no '+N more' affordance — silent truncation"
+    operator_visible_failure: |-
+      (a) An operator glancing at the test-report preview may believe the test
+      has only ever run 10 times, or that they are seeing the full history,
+      when older runs are silently hidden. (b) Discoverability of the full
+      History tab depends on prior knowledge — a new user has no on-screen cue.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      No e2e asserts the truncation signal. A guard would seed 11+ runs and
+      assert a "+N more"/"see all" affordance appears once the fix lands.
+
+- id: H-012
+  hypothesis: |-
+    When an operator scrolls deep into a long run history (infinite scroll) and
+    two runs completed at the same second, each run appears exactly once across
+    the page boundary — none are duplicated or skipped.
+  derivation: |-
+    Negative-space: pagination correctness at tie boundaries — a deterministic
+    ordering invariant the operator assumes for any paginated list.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      The ORDER BY end_time DESC has no secondary tie-breaker
+      (ReactiveDataEntityTaskRunRepositoryImpl.java:178). When two completed
+      runs share end_time, inter-tie ordering is Postgres physical/heap order —
+      non-deterministic across vacuum/reindex. The InfiniteScroll consumer
+      (TestRunsHistory.tsx:88-113) appends successive independent SQL fetches;
+      if a tie splits across the page boundary differently per fetch, a row may
+      duplicate or be skipped in the rendered list. Whether this manifests for
+      realistic data (rapid-fire same-second test batches) requires running the
+      system — a local probe with N tied end_times paginated at the boundary.
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "bugs_limitations_corner_cases[3] + stress_findings.orderings"
+        cite: "ReactiveDataEntityTaskRunRepositoryImpl.java:176-182; TestRunsHistory.tsx:88-113"
+        note: "single-field ORDER BY, no tie-breaker; infinite-scroll accumulates independent fetches"
+    operator_visible_failure: |-
+      (POTENTIAL, pending probe) Rows duplicated (same run shown twice) or
+      skipped (a run missing from the scrolled list) at page boundaries when
+      multiple runs share a completion second — the operator's count and audit
+      reconstruction are subtly wrong with no error.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-040-2
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: probe
+    coverage_note: |-
+      Probe PENDING-F-040-2 (local: seed tied end_times, paginate at boundary,
+      assert each row once). The repository integration test pins ordering but
+      with distinct end_times only — the tie case is uncovered. Pairs with the
+      sidecar's P-150.
+
+- id: H-013
+  hypothesis: |-
+    When an operator (or a third-party API client) hits GET
+    /api/dataentities/{id}/runs, the documented HTTP contract holds end-to-end:
+    200 with the list for a valid runs-capable entity, 404 for a missing
+    entity, 400 for a wrong-class entity — verified at the wire, not just
+    inside the repository.
+  derivation: |-
+    Endpoint shape (the public OpenAPI contract) + the controller is the unit a
+    third-party API consumer actually depends on.
+  seed_source: endpoint-shape + doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The 404 (missing entity) and 400 (wrong class) paths are now covered by a
+      NEW service-tier unit test (DataEntityRunServiceImplTest, Mockito +
+      StepVerifier) carrying @validates F-040 — these did not exist at the
+      sidecar's enrichment commit. So the service-tier behaviour IS guarded. But
+      there is still NO @WebFluxTest(DataEntityRunController.class) / WebTestClient
+      test: the controller→service→mapper→repository wiring, the actual HTTP
+      status codes on the wire, and the cross-mapper RUNNING→500 case are
+      unverified at the HTTP boundary. The contract is half-proven (service
+      logic) and half-open (wire wiring).
+    evidence:
+      - sidecar: DataEntityRunController
+        section: "tests_coverage_semantic.uncovered_behaviours[0] (controller-level test absent)"
+        cite: "DataEntityRunController.java:13-28; grep src/test for DataEntityRunController → zero at 4ec2b20"
+        note: "controller WebFlux test absent at enrichment commit"
+      - source_read_for_validation: true
+        cite: "DataEntityRunServiceImplTest.java:44-58 (nonExistentEntity_errorsNotFound + entityClassDoesNotSupportRuns_errorsBadRequest)"
+        note: "NEW service-tier unit test covers the 404 + 400 logic — sidecar coverage block is stale"
+    operator_visible_failure: |-
+      (a) The HTTP boundary — the surface a third-party client actually calls —
+      has no regression guard: a wiring change (status-code mapping, parameter
+      binding, mapper swap) could break the contract without any test failing.
+      (b) Specifically, the RUNNING→500 path (H-002) has no controller test, so
+      the most operator-impacting failure mode is unguarded at the layer where
+      it manifests.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    coverage_note: |-
+      Service tier verified (new test); HTTP boundary NOT. Demand a
+      @WebFluxTest covering 200 happy / 404 missing / 400 wrong-class / 500
+      RUNNING-row at the wire.
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    Runs-history endpoint returns HTTP 500 for the whole list while any run is
+    RUNNING (7-value DB enum vs 6-value wire enum; strict valueOf mapper).
+  dedup_status: net_new
+  recommended_log_as: BUG-NNN (or upstream-issue PLT-NNN)
+  proposed_fix_anchor: |-
+    DataEntityRunMapper: add @ValueMapping(source=ANY_UNMAPPED, target=UNKNOWN)
+    OR add RUNNING to the wire enum DataEntityRunStatus (components.yaml:1407-1415)
+    OR filter RUNNING rows before the mapper. Pins via PENDING-F-040-1.
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: |-
+    size query parameter is unbounded — size=10000000 reaches SQL LIMIT verbatim;
+    single-request DoS surface.
+  dedup_status: net_new
+  recommended_log_as: BUG-NNN (or upstream-issue PLT-NNN)
+  proposed_fix_anchor: |-
+    @Max(N) on SizeParam (components.yaml:4222-4229) or a service-tier clamp in
+    DataEntityRunServiceImpl before the repository call.
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: |-
+    History status filter lives in local useState, not the URL — shared/filtered
+    links silently lose the filter; inconsistent with the sibling Activity tab.
+  dedup_status: net_new
+  recommended_log_as: BUG-NNN (UI) — frontend useQueryParams migration
+  proposed_fix_anchor: |-
+    TestRunsHistory.tsx:29-31 — lift alertStatus into useQueryParams (mirror
+    DataEntityActivity) so the filter round-trips through the URL.
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |-
+    Any authenticated user reads any DQ test's run history + verbatim
+    status_reason (possible PII) across owners; anonymous under auth=DISABLED.
+  dedup_status: net_new
+  distinct_from: REFACTOR-024
+  recommended_log_as: |-
+    caveat already PRESENT on https://docs.opendatadiscovery.org/features/data-quality/test-run-history
+    (the cross-owner posture + PII warning is documented). Confirm the doc
+    caveat is sufficient OR escalate to a fix if the status_reason PII shape is
+    deemed unacceptable. REFACTOR-024 tracks the read-collaborative posture
+    family; this is its 5th invocation site — corroborates, does not duplicate
+    (REFACTOR-024 is a scope, not a per-endpoint item; this status_reason leak
+    channel is the distinct data-shape).
+- hypothesis_id: H-004
+  one_line: |-
+    status=RUNNING is unfilterable (wire enum has no RUNNING); the
+    in-flight-monitoring use case is unreachable and its workaround triggers H-002.
+  dedup_status: net_new
+  recommended_log_as: |-
+    caveat on the test-run-history doc page (already documents the 7-vs-6 enum
+    asymmetry) — add the explicit "you cannot filter for in-flight runs" note;
+    folds into the H-002 fix.
+- hypothesis_id: H-007
+  one_line: |-
+    Wrong-class 400 message is generic ("not supposed to have runs due to its
+    class") — does not name the supported classes or the parent-job hint.
+  dedup_status: net_new
+  recommended_log_as: caveat / small UI-message fix (DataEntityRunServiceImpl.java:42-45)
+- hypothesis_id: H-008
+  one_line: |-
+    Soft-deleted DQ test loses run-history visibility here (bare get()),
+    diverging from F-022's deliberate existsIncludingSoftDeleted forensic preservation.
+  dedup_status: net_new
+  recommended_log_as: caveat (document the divergence) OR align with F-022 pattern
+- hypothesis_id: H-009
+  one_line: |-
+    UI shows start_time column but backend sorts by end_time — long-running
+    tests look mis-sorted; "most recent" is ambiguous (started vs completed).
+  dedup_status: net_new
+  recommended_log_as: caveat / UI affordance (column tooltip "ordered by completion")
+- hypothesis_id: H-011
+  one_line: |-
+    test-report preview shows a fixed 10 runs with no "+N more" — older runs are
+    silently truncated; discoverability of the History tab relies on prior knowledge.
+  dedup_status: net_new
+  recommended_log_as: caveat / UI affordance (TestReportDetailsHistory.tsx)
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP
+# candidate (confirmed/partial/contradicted/probe-needed ALL qualify; confirmed-but-
+# untested is the whole point). H-001 and H-006 are coverage:verified and do NOT appear.
+- use_case_id: F-040-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "An in-flight (RUNNING) run is visible in the history, not a 500 for the whole page."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-2)"
+  proposed_test: |-
+    @WebFluxTest(DataEntityRunController) — seed a result set containing a
+    RUNNING (end_time=null) row; assert the endpoint does NOT 500 (post-fix:
+    row maps to UNKNOWN or is included). Pairs with PENDING-F-040-1 / P-151.
+- use_case_id: F-040-UC-3
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "A non-owner cannot read another team's run history + status_reason diagnostic text."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-3)"
+  proposed_test: |-
+    Security WebFluxTest / e2e — bob (no owner association) GETs alice's DQ-test
+    runs; assert the documented posture (200 + full payload today; or denial if
+    fixed). Pairs with P-152. Guards whichever posture the maintainer ratifies.
+- use_case_id: F-040-UC-4
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "An operator can list only the in-flight runs of a test."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-4)"
+  proposed_test: "Assert status=RUNNING is (today) rejected; post-fix assert it filters in-flight runs. Folds with F-040-UC-2."
+- use_case_id: F-040-UC-5
+  hypothesis_id: H-005
+  kind: teardown-constraint
+  promise: "Page size is server-side bounded; a hostile large size is rejected or clamped."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-5)"
+  proposed_test: "Request size beyond the cap; assert 4xx or clamped page (post @Max/clamp fix)."
+- use_case_id: F-040-UC-7
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "The wrong-class 400 message names the supported classes / parent-job hint."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-7)"
+  proposed_test: "Service unit test asserting the BadUserRequest message names DATA_TRANSFORMER + DATA_QUALITY_TEST (post message-improvement)."
+- use_case_id: F-040-UC-8
+  hypothesis_id: H-008
+  kind: teardown
+  promise: "A soft-deleted DQ test's run history is still viewable for forensics (consistent with F-022)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-8)"
+  proposed_test: "Integration test: DELETED-status runs-capable entity → assert current 404 (pinned) or 200 (post-alignment)."
+- use_case_id: F-040-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "The runs list reads in the order of the column the operator sees (or the mismatch is labelled)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-9)"
+  proposed_test: "e2e: seed a long-running run that ends after a later-started fast run; assert ordering + an on-screen 'ordered by completion' cue (post UI affordance)."
+- use_case_id: F-040-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "A shared filtered History URL reproduces the filter for the recipient."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-10)"
+  proposed_test: "Playwright: apply status filter → assert URL query updates → reload → filter persists (post useQueryParams migration)."
+- use_case_id: F-040-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "The test-report preview signals when more than 10 runs exist."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-11)"
+  proposed_test: "e2e: seed 11+ runs; assert a '+N more' / 'see all' affordance on the preview (post fix)."
+- use_case_id: F-040-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "Infinite-scroll over tied end_times shows each run exactly once (no dup/skip)."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-12) — gated on PENDING-F-040-2"
+  proposed_test: "Integration: seed tied end_times spanning a page boundary; assert each row appears exactly once (post deterministic tie-breaker fix)."
+- use_case_id: F-040-UC-13
+  hypothesis_id: H-013
+  kind: happy-path
+  promise: "The HTTP contract (200/404/400 + 500-on-RUNNING) holds at the wire, not just in the service."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-040-UC-13)"
+  proposed_test: "@WebFluxTest(DataEntityRunController) covering 200 happy / 404 missing / 400 wrong-class / 500 RUNNING at the HTTP boundary."
+
+### probes_emitted
+# PARALLEL-SAFE MODE — recorded here only; no P-NNN file created this run.
+- probe_id: PENDING-F-040-1
+  hypothesis_id: H-002
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  full_hypothesis: |-
+    When an operator opens the History tab while one of the test's runs is
+    currently in flight (status RUNNING, end_time not yet set), does the
+    runs-history endpoint return HTTP 500 for the entire response (because the
+    mapper's strict Enum.valueOf() cannot convert the DB-side RUNNING literal
+    into the 6-value wire enum), making the page unavailable exactly while a
+    test is in flight? Local probe: docker-compose ODD + Postgres; seed a
+    data_entity_task_run row with status=RUNNING + end_time=NULL on a DQ test;
+    GET /api/dataentities/{id}/runs; assert HTTP 500 + IllegalArgumentException
+    on enum conversion. Corroborates the sidecar's P-151.
+- probe_id: PENDING-F-040-2
+  hypothesis_id: H-012
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  full_hypothesis: |-
+    When an operator scrolls deep into a long run history via infinite scroll
+    and two completed runs share the same end_time (second-truncated), does a
+    row get duplicated or skipped across the page boundary because the ORDER BY
+    end_time DESC has no deterministic secondary tie-breaker (Postgres falls
+    back to heap order)? Local probe: seed N runs with tied end_times spanning
+    a page boundary (e.g. 6 tied rows, page size 5); fetch page 1 then page 2;
+    assert each run id appears exactly once across the accumulated list.
+    Corroborates the sidecar's P-150 (tie-breaker arm).
+
+### validation_gaps
+- sidecar: "react-component:TestRunsHistory + TestReportDetailsHistory + TestRunItem + TestRunStatusReasonModal (hops 0a/0b)"
+  field_insufficient: |-
+    UI-SURFACE-IN-CHAIN-BUT-NO-STANDALONE-SIDECAR (Rule 9 disclosure). The four
+    UI components are NOT enriched as standalone UI sidecars — hops 0a/0b carry
+    unresolved:true. This reflection's UI-tier hypotheses (H-009/H-010/H-011) and
+    the UX judgements lean on the PRIMARY-SOURCE citations carried inside the
+    controller sidecar's upstream_callers block + the batch UI-L-2026-05-26
+    extension (specific .tsx file:line citations), NOT on a dedicated UI sidecar.
+    Because those primary-source UI citations EXIST, this is NOT an API-only
+    reflection and the F-031 mistake is avoided — the user experience IS judged.
+    But the next batch should enrich the four UI components as standalone
+    sidecars so the UI hypotheses trace to a UI sidecar's own claims rather than
+    to the controller sidecar's view of them.
+  proposed_refresh: |-
+    Enrich TestRunsHistory / TestReportDetailsHistory / TestRunItem /
+    TestRunStatusReasonModal as standalone UI sidecars (close hop-0a/0b to
+    resolved); re-verdict H-009/H-010/H-011 against their own claims.
+- sidecar: DataEntityRunController
+  field_insufficient: |-
+    tests_coverage_semantic IS STALE. The block (enriched at 4ec2b20) lists ONLY
+    the repository integration test and declares the service + mapper tiers
+    uncovered. Since enrichment, TWO behavioural unit tests were added, both
+    carrying @validates F-040: DataEntityRunServiceImplTest (404 missing-entity +
+    400 wrong-class) and DataEntityRunMapperImplTest (empty-page PageInfo
+    propagation). The sidecar's "controller-level test absent" claim remains
+    TRUE (no @WebFluxTest), but the service/mapper coverage claims are outdated.
+  proposed_refresh: |-
+    Re-run file-analyser on DataEntityRunController (and enrich the service +
+    mapper standalone sidecars) to pick up DataEntityRunServiceImplTest +
+    DataEntityRunMapperImplTest in covered_behaviours; downgrade the
+    service/mapper uncovered claims accordingly.
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/data-quality/test-run-history"
+  doc_says: |-
+    "The page returns HTTP 500 while a test is currently running" + "the
+    endpoint's response mapper performs a strict string-to-enum conversion that
+    throws IllegalArgumentException" + "In-flight runs (when they don't trigger
+    the 500) appear at the top of the list with an empty Duration column."
+  code_does: |-
+    Exactly that — the doc accurately describes a CODE BUG that still ships.
+  recommended_log_as: |-
+    NOT a doc gap — this is the INVERSE: the doc is correct and AHEAD of the
+    code. The actionable item is the CODE FIX (bug_candidate H-002), after which
+    the doc should be updated to drop the 500 warning. The sidecar's
+    runs_history_endpoint_undocumented + six_value_wire_enum_undocumented drift
+    facets are now STALE/RESOLVED at the live site (doc-gap closed since
+    2026-05-25). Surface to doc-gap-finder so the stale DOC-GAP candidates in the
+    feature-flow's related_doc_gaps block are retired, and so the doc is
+    re-synced once the code is fixed.
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/data-quality/test-run-history"
+  doc_says: |-
+    "any signed-in user from one team reads every other team's per-run
+    diagnostic text indefinitely" + status_reason "routinely contains
+    team-confidential information" including "samples of failing data values"
+    and the "failing test's compiled SQL".
+  code_does: |-
+    Confirmed — no owner-scoping; status_reason rendered verbatim with no
+    redaction (TestRunStatusReasonModal.tsx:74-78).
+  recommended_log_as: |-
+    NOT a doc gap — the doc now carries the cross-owner + PII caveat the sidecar
+    flagged as missing. The actionable item is whether the documented posture is
+    ratified (caveat H-003) or escalated to a fix. doc-gap-finder retires the
+    cross-owner-undocumented candidate.
+
+## maintainer_notes
+
+(empty — first reflection pass on this feature)

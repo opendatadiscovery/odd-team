@@ -1,0 +1,723 @@
+---
+feature_id: F-033
+pillar_anchored_id: P-08:F-033
+pillar: P-08 Management & Administration
+feature_name: "Integration Wizard — classpath-loaded YAML manifests served with case-insensitive id lookup + platform_url substitution"
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+    last_verified_at: "2026-05-25T00:00:00Z"
+    last_verified_status: 200
+    note: "Cross-referenced via the IntegrationController sidecar's docs_link_semantic (WebFetched 2026-05-25 by file-analyser). Not re-fetched this reflection session — the sidecar's verbatim excerpts are the cross-reference substrate."
+  - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/integrations"
+    last_verified_at: "2026-05-25T00:00:00Z"
+    last_verified_status: 200
+    note: "API-reference page; per sidecar, silent on response schemas, HTTP status codes, and auth requirements."
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-25T00:00:00Z"
+    last_verified_status: 200
+    note: "Permissions catalog; confirms no INTEGRATION_* permission documented."
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 4
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "The UI 'Integrated' badge promises to tell an operator which integrations are wired, but installed is hardcoded false so the badge NEVER renders for any wizard — the operator cannot distinguish 'configured' from 'not configured' anywhere in the product."
+related_feature_flows: [F-008, F-031, F-162]
+related_concepts:
+  - "Integration Wizard (P-08 Management Sub-feature)"
+  - "Open-read by Design (the implicit ADR family)"
+  - "platform_url Substitution"
+  - "DISABLED-mode Bypass Cluster (REFACTOR-185 22nd supporting surface)"
+  - "Classpath-loaded Read-only Registry"
+related_drift_classes:
+  - installed_field_hardcoded_false_dead_ui_badge_never_renders
+  - silent_204_on_missing_id_no_404_no_documented_response
+  - default_platform_url_placeholder_into_copy_pasted_snippets
+  - case_insensitive_id_collision_last_load_wins_silent_merge
+  - boot_time_fail_fast_single_corrupt_yaml_aborts_application_context
+  - no_rbac_permission_open_read_authenticated_users
+  - disabled_mode_anonymous_reachability_platform_url_leaks
+  - empty_registry_default_checkout_state_undocumented
+new_drift_classes_proposed: []
+---
+
+# Integration Wizard — product-owner reflection
+
+## product_owner_narrative
+
+The Integration Wizard is the platform's **copy-paste affordance for connecting a data source to ODD**. It lives under `Management → Integrations` (UI route `/management/integrations`) and answers the operator's question "I want to wire up Snowflake / dbt / Airflow — what configuration do I paste where?". Each integration is a card; opening a card reveals ordered content blocks of prose plus parameterised YAML/code snippets the operator copies into their collector config. The wizard is the documented front door to the Pillar-P-10 producer ecosystem and the first step of the Pillar-P-08 operator workflow (read the wizard → register the datasource on the Datasources tab → issue a token on the Collectors tab) (per the IntegrationController sidecar `understanding` + `upstream_callers`; per `system-mission.md` P-08 sub-feature seed "Integrations tab").
+
+A user interacts with it through exactly two read endpoints, both pure GETs against an in-memory registry: `GET /api/integrations` returns the full list of cards (sorted case-insensitively by id), and `GET /api/integrations/{integration_id}` returns one card's full detail with the platform's own URL substituted into the snippets. There are no write endpoints — an operator cannot author a wizard from the UI. The catalogue of wizards is assembled **once at boot** by scanning every jar on the classpath for `META-INF/wizard/*.yaml` files; integrations are shipped artefacts authored by integration-authors and supplied via classpath overlay, not platform state the operator edits (per sidecar `implicit_adrs` #1 + #3; `IntegrationRegistryFactory.java:26` `classpath*:` glob).
+
+The working parts the operator perceives are: a **searchable card list** (the search box filters client-side by name); a **per-card detail view** with titled content blocks and copy-ready snippets; and a single piece of magic — the **`platform_url` substitution**, which injects the platform's configured `odd.platform-base-url` into the snippets so the operator does not have to type their own platform address (per sidecar `concepts.operations` + `StaticArgumentMappingContext.java:11`). The card model also declares an `installed` boolean that the UI renders as an "Integrated" badge — the product's promise that it will tell you which integrations are already wired (per `IntegrationPreviewItem.tsx:44-51`, cited in the sidecar).
+
+The wizard's integration story is entirely **inbound**: it feeds the operator toward Pillar P-10 (the snippet they copy configures a collector/adapter), and it is gated only by Pillar P-09's `auth.type` knob (per `system-mission.md` cross_pillar_relationships). There is no RBAC permission specific to the wizard — every authenticated user reads the full registry, and under `auth.type=DISABLED` any anonymous network caller does too (per sidecar `security` + `DisabledAuthSecurityConfiguration.java:13-18`).
+
+The edge cases a product owner would flag in a demo are sharp and several: a **fresh checkout ships ZERO wizards** (the `<odd-platform-repo>` has no `META-INF/wizard/*.yaml`), so a developer running locally sees an empty panel with no explanation; an **unknown integration id returns 204 No Content, not 404**, so an SDK or operator cannot tell "does not exist" from "exists but empty"; the **`installed` badge never appears** for any integration because the field is hardcoded false; the **default `platform_url` is a literal placeholder** (`http://your.odd.platform`) that lands verbatim in copied snippets unless the operator configures the override; and a **single malformed wizard YAML aborts the whole platform at boot** (per sidecar `bugs_limitations_corner_cases` 1-6 + `stress_findings`).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator opens Management → Integrations on a freshly-built, default-configuration ODD platform, they see a populated list of available integrations (Snowflake, Postgres, dbt, Airflow, etc.) ready to copy-paste."
+  derivation: "Pillar mission P-08 names 'Integration Wizard surface' as a primary operator action; the UI route + endpoint shape (getIntegrationPreviews) and the live doc's framing 'Lists every integration the platform's classpath registers' imply a non-trivial default list."
+  seed_source: pillar + doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      A default `<odd-platform-repo>` checkout has ZERO `META-INF/wizard/*.yaml` resources on
+      the classpath (Glob across the whole repo returned no hits, per sidecar invariant
+      `empty-default`). The registry TreeMap is empty; `getIntegrationPreviews` returns
+      `{items: []}`; the UI renders a generic `EmptyContentPlaceholder` ("No content") with no
+      explanation. Wizards exist only when an external overlay (vendor jar, docker-image
+      overlay, or operator-supplied classpath addition) supplies them. The wizard is therefore
+      empty out-of-the-box, not populated.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.name_behavior_pairs[empty-default-registry]
+        cite: "IntegrationRegistryFactory.java:26 (classpath*: glob) + Glob META-INF/wizard returns zero hits"
+        note: "Registry source is classpath-only; repo ships none."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: bugs_limitations_corner_cases[empty-default]
+        cite: "IntegrationPreviewList.tsx:71-75"
+        note: "UI renders EmptyContentPlaceholder with no error when items is empty."
+    operator_visible_failure: |
+      A developer or evaluator running ODD locally from source opens Management → Integrations
+      and sees a blank panel with a generic "No content" placeholder. There is no message
+      explaining "no wizard manifests are on this platform's classpath; supply overlays to
+      populate this surface." The most likely operator conclusion is "this feature is broken"
+      — when it is actually a configuration step. This directly harms first-run onboarding
+      (a system-mission audience: platform-operator / integration-author evaluating the
+      platform). The live wizard doc page does not warn of the empty default state either.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator has wired up an integration (e.g. registered a Snowflake datasource), the wizard card for that integration shows an 'Integrated' badge so they can tell at a glance which integrations are done versus pending."
+  derivation: "The OpenAPI contract declares installed:boolean REQUIRED on every IntegrationPreview, and the UI gates an 'Integrated' badge on {installed && (...)} at IntegrationPreviewItem.tsx:44-51 — the field name + UI affordance promise an install-state indicator."
+  seed_source: response-shape + ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `IntegrationMapper.java:27` and `:30` hardcode `@Mapping(target = "installed", constant =
+      "false")` on BOTH the full Integration and the preview shape. No code path anywhere in
+      `odd-platform-api/src/main` detects whether an integration is actually wired into the
+      platform (grep `installed` returns ONLY the two mapper constant lines — no
+      DataSourceRepository lookup, no comparison against registered collectors). The field is
+      structurally dead: REQUIRED-by-contract and always-false. The UI badge code path
+      `{installed && (...)}` therefore NEVER executes for any integration.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.name_behavior_pairs[installed-constant]
+        cite: "IntegrationMapper.java:27, 30 + components.yaml:64-70 + IntegrationPreviewItem.tsx:44-51"
+        note: "DRIFT_NAME_VS_BEHAVIOR — installed is a REQUIRED-and-meaningless contract field."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: bugs_limitations_corner_cases[installed-constant]
+        cite: "grep installed in odd-platform-api/src/main returns only the two mapper lines"
+        note: "No install-detection code exists anywhere."
+    operator_visible_failure: |
+      The 'Integrated' badge — a checkmark icon with a translated label — never appears on any
+      integration card, for any deployment, regardless of how many datasources the operator has
+      actually connected. The operator cannot distinguish 'wizard exists, integration done' from
+      'wizard exists, integration pending' anywhere in the product; the entire visual affordance
+      and its i18n key are dead weight. Worse, an operator reading the API contract is actively
+      misled: `installed: boolean` is documented as a meaningful REQUIRED field on the
+      api-reference page with no warning that it is always false, so a third-party SDK consumer
+      who filters integrations by `installed == true` will always get an empty set and may
+      conclude (wrongly) that nothing is integrated.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an operator copies a code snippet out of an integration card on a default-configuration deployment, the snippet contains their platform's real address ready to use against their running ODD instance."
+  derivation: "The platform_url substitution (StaticArgumentMappingContext sourcing odd.platform-base-url) exists precisely so the operator does not type their own platform address; the feature's value is a ready-to-paste snippet."
+  seed_source: response-shape + endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The substitution mechanism works: any code-snippet argument with `parameter="platform_url"`
+      and `static: true` has the configured `odd.platform-base-url` injected into its
+      `static_value` (`IntegrationMapper.java:38-45`). BUT on a default deployment the property
+      is COMMENTED OUT in `application.yml:209`, so the `@Value("${odd.platform-base-url:http://your.odd.platform}")`
+      default resolves to the literal placeholder `http://your.odd.platform`. The snippet the
+      operator copies therefore points at a non-existent host until they set the override. The
+      promise holds ONLY when the operator has configured `odd.platform-base-url`; on a stock
+      install it silently hands out a placeholder URL.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: bugs_limitations_corner_cases[platform-url-placeholder]
+        cite: "application.yml:209 (commented) + StaticArgumentMappingContext.java:16 + IntegrationMapper.java:38-45"
+        note: "Default resolves to literal placeholder; substitution otherwise correct."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.tunables[platform-base-url]
+        cite: "StaticArgumentMappingContext.java:15-20"
+        note: "No @URL validation; empty-string override yields 'http://' in snippets."
+    operator_visible_failure: |
+      An operator on a stock install copies a wizard snippet, pastes it into their collector
+      config, and the collector points at `http://your.odd.platform` — a non-existent host — so
+      ingestion silently fails to reach the platform. The placeholder is recognisable to a
+      careful reader, but the wizard's whole value proposition (ready-to-paste) is undermined,
+      and the live doc names the fallback exists without warning it is the DEFAULT state.
+      Secondary failure: an empty-string override (`odd.platform-base-url=`) renders bare
+      `http://` into every snippet with no guard.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When an operator requests an integration that does not exist (GET /api/integrations/nonexistent), they receive a 404 Not Found telling them the integration is unknown."
+  derivation: "Standard REST convention for GET-by-id on a missing resource; the codebase's own MetadataFieldServiceImpl.get throws NotFoundException on a missing id — operators reasonably expect the same shape here."
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      On a missing id, `ResourceFilesIntegrationRegistry.java:15-17` issues
+      `Mono.justOrEmpty(registry.get(id))` which returns `Mono.empty`; the controller's
+      `.map(ResponseEntity::ok)` is short-circuited; Spring WebFlux translates the empty Mono to
+      `204 No Content`, NOT 404. There is no `switchIfEmpty(Mono.error(new NotFoundException(...)))`
+      on the path. The OpenAPI contract declares ONLY the 200 response (`openapi.yaml:75-81`) —
+      neither 404 nor 204 is contracted. P-126 was emitted by the file-analyser to pin the exact
+      204 body/content-type; the static trace already establishes 204 (not 404).
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: bugs_limitations_corner_cases[204-on-missing]
+        cite: "ResourceFilesIntegrationRegistry.java:15-17 + IntegrationServiceImpl.java:20-23 + IntegrationController.java:19-22 + openapi.yaml:75-81"
+        note: "Mono.empty → 204; no switchIfEmpty; contract declares only 200."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.name_behavior_pairs[getIntegration-204]
+        cite: "IntegrationController.java:19-22 + openapi.yaml:75-81"
+        note: "drift MINOR; 204 is undocumented either way."
+    operator_visible_failure: |
+      An operator or SDK probing the wizard surface with an unknown id gets `204 No Content` — a
+      SUCCESS status with an empty body. An OpenAPI-generated client expects 200 with an
+      Integration body on this path and may throw a deserialisation error on the empty 204, or
+      silently treat 'no integration' as 'success with null'. An operator cannot distinguish
+      'this integration id does not exist' from 'it exists but has no content' (the latter is
+      currently impossible, but the response shape does not say so). Because no 404/204 is
+      documented, nobody can write a correct client without observing the live behaviour.
+    severity: MEDIUM
+    confidence: HIGH
+    probe_id: PENDING-F-033-1
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an operator looks up an integration by id, the lookup matches the id exactly as the manifest author wrote it (case-sensitive), so two manifests Snowflake and snowflake are distinct integrations."
+  derivation: "The path variable is named integrationId and the manifest carries a single id field; a caller reasonably expects an id to be an exact key."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The registry TreeMap uses `Comparator.comparing(String::toLowerCase)`
+      (`IntegrationRegistryFactory.java:36`), so lookup is CASE-INSENSITIVE: a request for
+      `snowflake` reaches a manifest registered as `Snowflake` and vice-versa. This is a
+      LEGITIMATE, convenient translation for lookup (the operator does not have to remember
+      exact casing) — the sidecar's Category-F analysis classifies it `TRANSLATES_LEGITIMATELY`.
+      BUT the SAME comparator + merge function `(o1, o2) -> o2` (line 35) means two manifests
+      whose ids differ only in case SILENTLY COLLAPSE into one entry (last-loaded wins), so they
+      are NOT distinct integrations. With `classpath*:` scanning multiple jars in
+      filesystem-dependent order, which one survives is non-deterministic across deployments.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.request_inputs[integrationId]
+        cite: "IntegrationRegistryFactory.java:32-37 + ResourceFilesIntegrationRegistry.java:15-17"
+        note: "Case-insensitive lookup = legitimate; case-collision merge = silent data loss."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: bugs_limitations_corner_cases[case-collision]
+        cite: "IntegrationRegistryFactory.java:32-37"
+        note: "Last-load-wins; jar-order dependent; no log/warn/exception."
+    operator_visible_failure: |
+      For the common case (single manifest per id), the case-insensitive lookup is a convenience
+      and behaves as a user would want. The failure is at the overlay boundary: an operator
+      shipping their own `snowflake.yaml` to OVERRIDE a vendor's `Snowflake.yaml` MAY succeed or
+      MAY silently keep the vendor's manifest, depending on classpath/jar load order — with no
+      warning that a collision occurred. The override is non-deterministic across builds and
+      undocumented for wizard authors.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When an operator (or an integration-author) adds a new wizard YAML to their overlay and one of the manifests is malformed, the platform skips the broken manifest, logs a warning, and starts normally with the remaining valid wizards."
+  derivation: "Negative-space: a resilient registry would isolate one bad input; an operator expects adding a buggy card not to take down the entire catalog server."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `IntegrationRegistryFactory.readManifest` (`:53-61`) catches `IOException` and rethrows as
+      `IllegalStateException("Couldn't read wizard manifest: <filename>")` (line 59);
+      `readManifests` (`:42-51`) does the same at the resource-scan level. The exception
+      propagates through `IntegrationConfiguration.integrationRegistry()` and aborts Spring
+      application-context construction. There is NO skip-broken-and-continue and NO
+      warn-and-omit mode. A single malformed wizard YAML in ANY overlay jar makes the entire
+      platform refuse to start. (The error message does include the filename, which makes
+      root-causing fast — that part is deliberate per implicit ADR #5 'fail-fast over silent-skip'.)
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: bugs_limitations_corner_cases[fail-fast-yaml]
+        cite: "IntegrationRegistryFactory.java:48-50, 56-60"
+        note: "Boot-time fail-fast; whole context fails; no skip mode."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: implicit_adrs[fail-fast-on-malformed]
+        cite: "IntegrationRegistryFactory.java:48-50, 56-60"
+        note: "Fail-fast is the documented intent (specific filename-anchored message)."
+    operator_visible_failure: |
+      An operator who adds one buggy wizard YAML to their classpath overlay finds the WHOLE
+      platform fails to boot — not just the wizard surface, but search, lineage, ingestion,
+      every API. The blast radius of a documentation-tier artefact (a wizard manifest is
+      essentially copy-paste docs) is the entire application. This is a deliberate fail-fast
+      decision, so it routes to a caveat (document the boot-time guarantee + recommend
+      deployment-time YAML validation) rather than a bug — but it is a sharp, undocumented
+      operational hazard for anyone authoring overlays.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When the platform runs under an authenticated UI mode (LOGIN_FORM/OAUTH2/LDAP), only an operator with a management/administration-class permission can read the Integration Wizard registry, consistent with the rest of the Management section being permission-gated."
+  derivation: "system-mission P-08 describes Management as the operator-facing, permission-gated surface; every WRITE-shaped Management controller (Tag/Namespace/Role/Policy) has SECURITY_RULES entries — a reader reasonably expects a Management-section read to be gated too."
+  seed_source: cross-pillar + pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Neither `SecurityConstants.SECURITY_RULES` (`SecurityConstants.java:98+`) nor
+      `PolicyPermissionDto` defines ANY `INTEGRATION_*` permission (grep `INTEGRATION` in
+      PolicyPermissionDto.java returns zero matches). Both endpoints fall through to
+      `AuthorizationCustomizer.customize`'s catch-all `pathMatchers("/**").authenticated()`
+      (`AuthorizationCustomizer.java:29-30`). ANY authenticated user — READ_ONLY role, a user
+      with only `DATA_ENTITY_TAGS_UPDATE`, any no-management-permission user — reads the full
+      wizard registry including every content block, code snippet, and the live `platform_url`
+      value. This is INTENTIONAL per implicit ADR #2 'open-read by design' (wizard manifests are
+      treated as documented public-knowledge artefacts), but it contradicts the naive
+      expectation set by the Management-section placement, and it is documented NOWHERE.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.auth_gates
+        cite: "SecurityConstants.java:98+ + AuthorizationCustomizer.java:29-30 + grep INTEGRATION in PolicyPermissionDto.java = 0"
+        note: "No INTEGRATION_* permission; catch-all authenticated() only."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: implicit_adrs[open-read-by-design]
+        cite: "SecurityConstants.java:98+ + PolicyPermissionDto (no INTEGRATION_*)"
+        note: "Open-read is the deliberate architectural decision (parallel-structure absence)."
+    operator_visible_failure: |
+      An operator auditing the platform's RBAC posture cannot find, from the docs or the
+      permissions catalog, that the wizard registry is readable by every authenticated user
+      regardless of role — the live permissions page lists five permission categories and none
+      reference integrations. They may assume the Management → Integrations tab is gated like
+      its sibling tabs (Roles, Policies, Owners) when it is not. The information exposed is
+      low-sensitivity (documentation-grade snippets, not credentials), so this is an
+      open-read-by-DESIGN posture; the failure is the DOCUMENTATION GAP, not the access itself.
+      Note: a future change that ADDED an INTEGRATION_READ permission would silently break the
+      UI for non-permissioned users, because no test pins the open-read contract either way.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When the platform runs under auth.type=DISABLED, the Integration Wizard endpoints (and the platform_url they embed) are NOT reachable by an unauthenticated network caller — DISABLED relaxes UI login but does not expose internal configuration to anonymous traffic."
+  derivation: "system-mission cross_pillar P-09 names auth.type as the load-bearing gate; an operator reasonably expects 'auth disabled' to mean 'no login screen', not 'every endpoint world-readable including substituted internal URLs'."
+  seed_source: cross-pillar + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Under `auth.type=DISABLED`, `DisabledAuthSecurityConfiguration.java:13-18` applies
+      `.anyExchange().permitAll()`. SECURITY_RULES is not consulted. Any network caller able to
+      reach the HTTP port can `GET /api/integrations` and read every wizard manifest, INCLUDING
+      the substituted `platform_url`. If the operator has set `odd.platform-base-url` to an
+      internal hostname (a typical pattern shared with the notification and Slack paths), that
+      internal URL leaks to any anonymous caller. The bundled `application.yml` DEFAULT is
+      `auth.type=DISABLED`, so operators who do not override are running in exactly this posture.
+      This is the REFACTOR-185 DISABLED-mode bypass cluster's 22nd supporting surface.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: security.known_security_gaps[disabled-anonymous]
+        cite: "DisabledAuthSecurityConfiguration.java:13-18 + StaticArgumentMappingContext.java:16 + IntegrationMapper.java:38-45"
+        note: "Anonymous reachability + platform_url leak under the application.yml default."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.auth_gates
+        cite: "DisabledAuthSecurityConfiguration.java:13-18 + AuthorizationCustomizer.java:29-30"
+        note: "DISABLED: 200 with full registry to anonymous callers."
+    operator_visible_failure: |
+      An operator who leaves the default `auth.type=DISABLED` in place (or uses it in a
+      not-truly-private dev/staging network) exposes the wizard registry — and any internal
+      hostname configured in `odd.platform-base-url` — to any passive network observer who can
+      reach the port, with no authentication and no request log to detect the probe. The leak is
+      latent (it depends on the operator having configured an internal URL) but real, and the
+      live wizard doc page is silent on the DISABLED anonymous-access posture. Whether to fork
+      DISABLED to gate this is a platform-wide read-posture decision; the load-bearing immediate
+      ship is the documented caveat.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When an operator types into the Integration Wizard search box, the platform returns matching integrations — the search scales to a large registry because filtering happens server-side."
+  derivation: "Endpoint shape + UI label: a search box on a list view implies a query; a senior PO asks whether the search is server-paged or client-only, and whether it scales."
+  seed_source: ui-label + endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The search IS functional but is CLIENT-SIDE ONLY. `getIntegrationPreviews` accepts no
+      `?query=` and no `?page=&size=` parameters; the service returns the FULL registry
+      (`Flux.fromIterable(registry.values())...collectList()`). The UI's
+      `IntegrationPreviewList.tsx:26-29` filters the already-fetched `data.items` array in JS by
+      name-substring against the user-typed query (fired per-keystroke, no debounce per the
+      ui_review). So the hypothesis "typing returns matching integrations" is CONFIRMED for the
+      user-visible behaviour; the "scales because server-side" clause is FALSE — it scales
+      because the registry is tiny (typical N < 50), not because of server paging. For the
+      intended scale this is correct and acceptable.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: performance.known_performance_gaps[client-side-filter]
+        cite: "IntegrationPreviewList.tsx:26-29 + controller absence of @RequestParam query"
+        note: "Filter is client-side; no server-side query/pagination."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: performance.hot_paths[list]
+        cite: "ResourceFilesIntegrationRegistry.java:19-22 + IntegrationServiceImpl.java:25-28"
+        note: "Full registry returned per call; React-Query caches client-side for the session."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When an operator opens a single integration card, they see the integration's content blocks in a deliberate, stable order (e.g. install → configure → verify), the same order every time and across deployments."
+  derivation: "Response-shape: Integration carries an ORDERED list of content_blocks; the UI (IntegrationRoutes.tsx) navigates to the first block by default — a PO asks whether block order is meaningful and stable."
+  seed_source: response-shape + ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The content-block order is the order the manifest author wrote them: the
+      `IntegrationDeserializer` walks the YAML array in document order into
+      `IntegrationOverviewDto.contentBlocks` (a List), and the mapper preserves list order; the
+      UI's `IntegrationRoutes.tsx:11-29` navigates to the first `contentByTitle` key (JSON object
+      key insertion order, i.e. document order) by default (per the feature-flow ui_review #3).
+      There is no alphabetic re-sort and no server-side reordering. So the order IS stable and
+      author-controlled and identical across deployments for the SAME manifest. (The manifest
+      author bears responsibility for choosing a sensible order; the platform does not impose
+      one.)
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: stress_findings.orderings
+        cite: "IntegrationRegistryFactory.java:36 + ResourceFilesIntegrationRegistry.java:21"
+        note: "List/iteration order preserved; no upstream re-sort."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: concepts.entities (IntegrationContentBlock + IntegrationOverviewDto)
+        cite: "IntegrationContentBlockDto.java:5 + IntegrationOverviewDto.java:8-10"
+        note: "content_blocks is an ordered List; deserialiser preserves document order."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When an operator copies a rendered snippet, they get the FINAL text with all parameters filled in (the platform_url substituted and their typed inputs interpolated), via an obvious copy button — i.e. the wizard delivers ready-to-use output, not a template with unresolved placeholders."
+  derivation: "Pillar mission P-08 frames the wizard as 'generates collector_config.yaml snippets'; the live doc says 'the rendered output is shown ready to copy' — the user-facing promise is copy-ready output and a convenient copy affordance."
+  seed_source: doc-claim + ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The backend substitutes ONLY the single `platform_url` static parameter; everything else
+      (credentials, hosts, ports, schema names) is operator-typed at face value and interpolated
+      client-side by the argument-form authoring surface (the handlebars-compiled template in
+      IntegrationCodeSnippetWithForm.tsx, which the ui_review graduated to a DISTINCT feature
+      F-162). Whether the FINAL rendered text is correctly assembled, whether there is an
+      explicit copy button, and whether the Reconfigure cycle re-hydrates prior inputs are
+      UI-interaction behaviours that live in F-162's chain, NOT in F-033's registry chain. F-162's
+      ui_review already flagged five UI-tier findings here (handlebars useCallback misuse,
+      validate-body string-only, staticValue invisible-input, NO explicit copy button, no
+      Reconfigure re-hydrate). From F-033's chain alone the verdict cannot be reached; it requires
+      running the UI (Playwright) against a populated wizard.
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: implicit_adrs[single-static-param]
+        cite: "StaticArgumentMappingContext.java:11-25"
+        note: "Backend substitutes only platform_url; rest is client-side form interpolation."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: (feature-flow F-033 ui_review_2026_05_26 #4 — graduated to F-162)
+        cite: "IntegrationCodeSnippetWithForm.tsx:13-133 (F-162 surface)"
+        note: "Render/copy/reconfigure UX is owned by F-162, not this chain — cross-feature boundary."
+    operator_visible_failure: |
+      Cannot be enumerated from F-033's chain — the rendering/copy/reconfigure behaviour is in
+      F-162's UI surface. The probe (PENDING-F-033-2) drives the live UI: populate a wizard
+      manifest with a platform_url static argument + one operator-typed argument, render the
+      snippet, assert the final copied text contains the substituted platform_url AND the typed
+      value, and assert a copy affordance exists. This hypothesis is the natural reflection seam
+      between F-033 (the registry/substitution chain) and F-162 (the authoring UX); it is logged
+      probe-needed with a cross-reference to F-162 rather than reflected blind from the backend.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-033-2
+    routes_to_finding: validation-gap
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When an operator probes the wizard endpoint with arbitrary integration ids (GET /api/integrations/<guess>), the platform records the access so a security audit can later see who enumerated the surface."
+  derivation: "Negative-space + security: a free-form String path-variable with no validation invites enumeration; a PO/security reviewer asks whether such probing is observable."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      There is NO request logging on this controller — no `@Slf4j`, no request-time logging in
+      the controller or service (`IntegrationController.java:1-28` + `IntegrationServiceImpl.java:1-29`).
+      The `integrationId` path-variable is a free-form `String` with no `@Pattern`/`@Size`/`@Valid`
+      (`IntegrationController.java:19`). A caller can probe `GET /api/integrations/<arbitrary>`
+      and the 200-vs-204 status acts as an existence oracle, with the probe invisible to any
+      audit. The hypothesis as stated (enumeration is NOT recorded) is CONFIRMED as the actual
+      behaviour — i.e. the negative expectation (no audit) holds. Severity is bounded by the
+      low sensitivity of the data (documented wizard manifests, no secrets).
+    evidence:
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: security.known_security_gaps[no-request-log]
+        cite: "IntegrationController.java:1-28 (no @Slf4j) + IntegrationServiceImpl.java:1-29"
+        note: "No audit logging; enumeration probe is silent."
+      - sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+        section: bugs_limitations_corner_cases[free-form-id]
+        cite: "IntegrationController.java:19 + grep @Pattern/@Valid/@Size/@NotBlank = 0"
+        note: "Free-form id; 200/204 existence oracle."
+    operator_visible_failure: ""
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "installed is hardcoded false on every response — the UI 'Integrated' badge never renders; the REQUIRED OpenAPI field is meaningless; SDK consumers filtering installed==true always get empty."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-277
+  distinct_from: ""
+  recommended_log_as: ""
+  proposed_fix_anchor: "Either implement actual detection (join IntegrationOverviewDto.id against DataSourceRepository registered datasources by family/name) at IntegrationMapper.java:27,30, OR remove installed from components.yaml:64-70. Code-fix candidate is REFACTOR-NNN in F-033 related_refactoring_scopes_batch_zd_candidates; doc-side caveat is DOC-GAP-277."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "GET /api/integrations/{unknown-id} returns 204 No Content, not 404; neither is in the OpenAPI contract; SDK clients on a 200-only path may break on the empty 204."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-278
+  distinct_from: ""
+  recommended_log_as: ""
+  proposed_fix_anchor: "Add switchIfEmpty(Mono.error(new NotFoundException(...))) to ResourceFilesIntegrationRegistry.get OR IntegrationServiceImpl.get; declare the 404 in openapi.yaml:65-83. Code-fix candidate is REFACTOR-NNN in F-033 related_refactoring_scopes_batch_zd_candidates; P-126 pins the current 204 body/content-type; doc-side caveat is DOC-GAP-278."
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "Fresh checkout ships ZERO wizard manifests; the panel renders a generic empty placeholder with no explanation that overlays are required."
+  dedup_status: net_new
+  tracked_as: ""
+  recommended_log_as: "doc-gap (live wizard page — add 'a fresh platform clone has no wizards on classpath; the panel will be empty until overlays are supplied') — matches F-033 related_doc_gaps_batch_zd_candidates 'empty-default-build state'. Candidate DOC-GAP-NNN, not yet minted."
+- hypothesis_id: H-003
+  one_line: "Default odd.platform-base-url placeholder (http://your.odd.platform) is rendered verbatim into copied snippets; empty-string override yields bare http://."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-279
+  recommended_log_as: "Code-side default-unification is PLT-007 (unify odd.platform-base-url default across the three @Value consumers) — corroborated; doc-side caveat DOC-GAP-279."
+- hypothesis_id: H-005
+  one_line: "Case-insensitive id lookup is convenient, but case-divergent manifests silently merge (last-load-wins, jar-order dependent) — an operator override may non-deterministically fail."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-280
+  recommended_log_as: "Doc-side wizard-author constraint DOC-GAP-280; code-side WARN-on-collision is REFACTOR-NNN in F-033 candidates."
+- hypothesis_id: H-006
+  one_line: "A single malformed wizard YAML in any overlay aborts the ENTIRE application context at boot — the blast radius of a docs-tier artefact is the whole platform."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-281
+  recommended_log_as: "Doc-side boot-time-guarantee caveat DOC-GAP-281 (fail-fast is the documented intent per implicit ADR #5)."
+- hypothesis_id: H-007
+  one_line: "No INTEGRATION_* permission — every authenticated user reads the full wizard registry regardless of role; intentional open-read-by-design but documented nowhere."
+  dedup_status: already_tracked
+  tracked_as: DOC-256
+  recommended_log_as: "DOC-256 (Integration Wizard page — authorization posture caveat) is minted on disk and covers exactly this + the DISABLED anonymous case."
+- hypothesis_id: H-008
+  one_line: "Under the default auth.type=DISABLED, the wizard registry + substituted platform_url is anonymously readable to any network caller (internal-hostname leak)."
+  dedup_status: already_tracked
+  tracked_as: DOC-256
+  recommended_log_as: "Covered by DOC-256 (authorization-posture caveat explicitly includes 'anonymous under DISABLED'); REFACTOR-185 DISABLED-mode bypass cluster is the cross-cutting code scope."
+- hypothesis_id: H-012
+  one_line: "Free-form integration id + no request logging make a 200/204 existence-oracle enumeration of the wizard surface invisible to audit (low sensitivity)."
+  dedup_status: net_new
+  tracked_as: ""
+  recommended_log_as: "Low-severity caveat; candidate fold into the DOC-256 authorization-posture section ('access is unlogged; low-sensitivity documentation data'). Not separately minted."
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# F-033 ships with ZERO tests across all four matrix cells (verified: grep IntegrationController
+# in odd-platform-api/src/test = 0; no Integration Wizard e2e spec exists under
+# integration-tests/e2e/specs). Every promise below is unverified.
+- use_case_id: F-033-UC-01
+  hypothesis_id: H-001
+  kind: empty/no-match
+  promise: "A default-checkout deployment with no wizard overlays returns 200 {items: []} and the UI renders an empty-state (the documented empty-default behaviour)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-01) (pending mint)"
+  proposed_test: "@WebFluxTest(IntegrationController.class) + @MockBean IntegrationService returning empty list — assert GET /api/integrations is 200 with items==[]; OR integration: boot with empty classpath + WebTestClient asserts empty items."
+- use_case_id: F-033-UC-02
+  hypothesis_id: H-002
+  kind: render
+  promise: "Every integration response carries installed=false (pin the structurally-dead field so a future install-detection fix REDs this test)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-02) (pending mint)"
+  proposed_test: "IntegrationMapper unit test — map an IntegrationOverviewDto + assert installed==false on both Integration and IntegrationPreview shapes (characterization pin per LSN-029; RED the instant detection is implemented)."
+- use_case_id: F-033-UC-03
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "When odd.platform-base-url is set, the code-snippet static_value for a platform_url argument renders the configured value; when unset, it renders the http://your.odd.platform placeholder."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-03) (pending mint)"
+  proposed_test: "IntegrationMapper + StaticArgumentMappingContext integration test — set odd.platform-base-url=https://my.host:8080, assert substitution; unset, assert placeholder default."
+- use_case_id: F-033-UC-04
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "GET /api/integrations/{unknown-id} returns 204 No Content (pin the current behaviour so a future fix to 404 is detected)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-04; pairs with probe PENDING-F-033-1) (pending mint)"
+  proposed_test: "@WebFluxTest WebTestClient GET /api/integrations/nonexistent — assert status 204 (characterization pin); flip to 404 when the switchIfEmpty fix lands."
+- use_case_id: F-033-UC-05
+  hypothesis_id: H-005
+  kind: grammar
+  promise: "Case-insensitive id lookup hits a manifest registered with different casing; two case-divergent manifests collapse to the last-loaded (pin both behaviours)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-05) (pending mint)"
+  proposed_test: "IntegrationRegistryFactory test — load Snowflake.yaml + snowflake.yaml, assert ONE registry entry (last-wins) AND lookup of either casing returns the survivor."
+- use_case_id: F-033-UC-06
+  hypothesis_id: H-006
+  kind: teardown-constraint
+  promise: "A malformed wizard YAML raises IllegalStateException with the filename and the application context fails to start (pin the fail-fast contract)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-06) (pending mint)"
+  proposed_test: "IntegrationRegistryFactory test — feed a corrupt YAML resource, assert IllegalStateException whose message contains the filename."
+- use_case_id: F-033-UC-07
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "Under LOGIN_FORM/OAUTH2/LDAP, any authenticated user (no INTEGRATION_* permission) gets 200 + full registry (pin the open-read-by-design contract so adding a permission RED-flags the regression)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-07) (pending mint)"
+  proposed_test: "Security integration test (auth-mode matrix) — authenticate a no-management-permission user, assert GET /api/integrations is 200 + non-empty/empty items per fixtures."
+- use_case_id: F-033-UC-08
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "Under auth.type=DISABLED, an anonymous caller gets 200 + full registry including the substituted platform_url (pin the DISABLED-mode reachability + leak)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-08; REFACTOR-185 cluster) (pending mint)"
+  proposed_test: "Security integration test — boot auth.type=DISABLED + odd.platform-base-url=http://internal:8080, anonymous GET /api/integrations/{id}, assert 200 AND internal host present in a code_snippet static_value."
+- use_case_id: F-033-UC-09
+  hypothesis_id: H-009
+  kind: happy-path
+  promise: "The integration list endpoint returns the full registry (no server-side query/pagination); the UI filters client-side by name substring."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-09) (pending mint)"
+  proposed_test: "@WebFluxTest GET /api/integrations with N fixture wizards — assert all N items returned (no query param honoured); optional UI e2e asserts the search box filters in-browser."
+- use_case_id: F-033-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "An integration's content_blocks render in manifest document order, stable across deployments for the same manifest."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-10) (pending mint)"
+  proposed_test: "IntegrationDeserializer test — deserialise a multi-block manifest, assert contentBlocks list preserves YAML document order."
+- use_case_id: F-033-UC-11
+  hypothesis_id: H-011
+  kind: happy-path
+  promise: "A rendered snippet shows the final text (platform_url substituted + operator inputs interpolated) with a copy affordance — the ready-to-paste promise."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-11; OWNED BY F-162 authoring UX, not this chain; pairs with probe PENDING-F-033-2) (pending mint)"
+  proposed_test: "Playwright e2e on F-162 — populate a wizard, fill the argument form, assert the rendered/copied text contains substituted platform_url + typed values; assert a copy control exists."
+- use_case_id: F-033-UC-12
+  hypothesis_id: H-012
+  kind: cross-actor
+  promise: "Enumeration of the wizard surface via arbitrary ids is not logged (existence oracle is invisible; low-sensitivity data)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id F-033-UC-12) (pending mint) — LOW priority; characterization of the no-audit posture."
+  proposed_test: "Optional — assert no log appender fires on GET /api/integrations/{arbitrary}; low value, document-only is acceptable."
+
+### probes_emitted
+- probe_id: PENDING-F-033-1
+  hypothesis_id: H-004
+  full_hypothesis: "When an operator requests an integration that does not exist (GET /api/integrations/nonexistent), they receive a 404 Not Found telling them the integration is unknown. VERDICT contradicted (static trace = 204). Probe pins the EXACT response: does GET /api/integrations/{unknown-id} return 204 with an empty body, a JSON-empty {} body, or a content-type-less 204? (This is the file-analyser's P-126, re-stated at the reflection layer; emitted_by feature-reflector; status pending-reflection-verification; local docker-compose + WebTestClient against the controller slice with one fixture wizard.)"
+  probe_path: "(parallel-safe mode — not written this session; record-only; corresponds to existing file-analyser probe lineage/odd-platform/probes/P-126.yaml)"
+- probe_id: PENDING-F-033-2
+  hypothesis_id: H-011
+  full_hypothesis: "When an operator copies a rendered snippet, they get the FINAL text with all parameters filled in (platform_url substituted + typed inputs interpolated) via an obvious copy button. VERDICT probe-needed — the render/copy/reconfigure UX lives in F-162's chain, not F-033's. Probe drives the live UI (Playwright, local docker-compose): populate a wizard manifest with a platform_url static argument + one operator-typed argument; render the snippet; assert the copied text contains the substituted platform_url AND the typed value; assert a copy affordance exists; assert Reconfigure re-hydrates prior inputs. local_execution: Playwright headless against local platform — allowed per Rule 6. Cross-reference F-162."
+  probe_path: "(parallel-safe mode — not written this session; record-only; should be minted as a P-NNN owned by F-162's reflection / IT-NNN integration spec)"
+
+### validation_gaps
+- sidecar: "(chain hops 2-5 — IntegrationServiceImpl, ResourceFilesIntegrationRegistry, IntegrationMapper, StaticArgumentMappingContext)"
+  field_insufficient: "These four contributing nodes are marked unresolved: true in F-033's chain (no dedicated sidecar enriched). All verdicts in this reflection that touch hops 2-5 were validated via the IntegrationController sidecar's own end-to-end trace (which reads every one of these files at file:line with HIGH confidence), NOT via dedicated per-node sidecars."
+  proposed_refresh: "Enrich the four registry-stack nodes as their own sidecars (IntegrationServiceImpl, ResourceFilesIntegrationRegistry, IntegrationMapper, StaticArgumentMappingContext) so the chain hops 2-5 resolve and the verdicts here are double-anchored. Confidence is currently HIGH only because IntegrationController's analyser already traced them; the chain graph should reflect that."
+- sidecar: "(cross-feature boundary F-033 ↔ F-162)"
+  field_insufficient: "H-011 (the ready-to-paste snippet promise — arguably the wizard's PRIMARY user-facing value) cannot be verdicted from F-033's chain because the snippet-rendering/copy/reconfigure UX was graduated to F-162 (IntegrationCodeSnippetWithForm.tsx). F-033 owns the registry/substitution chain; F-162 owns the authoring UX. The single most important user promise of the wizard therefore has NO confirmed/contradicted verdict in EITHER feature's reflection unless F-162 is also reflected."
+  proposed_refresh: "Run feature-reflector on F-162 with H-011 as a seed; that reflection should carry the render/copy/reconfigure verdicts the ui_review already flagged (handlebars useCallback misuse, validate string-only, staticValue invisible-input, NO copy button, no Reconfigure re-hydrate)."
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/integrations"
+  doc_says: "IntegrationPreview shape is {id, name, description, installed} — installed listed as a normal field."
+  code_does: "installed is hardcoded false on every response; no install-detection code exists."
+  recommended_log_as: "DOC-GAP-277 (already tracked) — api-reference + wizard page should warn 'installed is structurally always false today; do not rely on it'."
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/integrations"
+  doc_says: "Page omits response schemas, HTTP status codes, and authentication requirements entirely."
+  code_does: "GET /api/integrations/{unknown-id} returns 204 (not 404); contract declares only 200."
+  recommended_log_as: "DOC-GAP-278 (already tracked) — document the 204-on-missing-id behaviour."
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard"
+  doc_says: "Page is silent on the authorization posture of the wizard endpoints."
+  code_does: "No INTEGRATION_* permission; any authenticated user reads; anonymous under DISABLED."
+  recommended_log_as: "DOC-256 (minted on disk) — authorization-posture caveat."
+
+## maintainer_notes
+
+(empty — first reflection of F-033)

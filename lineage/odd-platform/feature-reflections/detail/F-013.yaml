@@ -1,0 +1,516 @@
+---
+feature_id: F-013
+pillar_anchored_id: P-01:F-004
+pillar: Data Discovery
+feature_name: "Custom metadata field value upsert — silent UPDATE-not-UPSERT with no type validation"
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md
+  - odd-platform__java__service__service__DataEntityServiceImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl.md
+  - odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/custom-metadata"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 13
+  confirmed: 1
+  contradicted: 10
+  partial: 1
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "PUT /api/dataentities/{id}/metadata/{field_id} named 'upsert' is a pure UPDATE — a write to a (entity,field) pair that has no existing value row returns 200 OK empty body and persists nothing, while the UI toasts 'Metadata successfully updated.'"
+related_feature_flows: [F-046, F-004]
+related_concepts:
+  - "Custom Metadata Field"
+  - "Metadata Field Origin (INTERNAL vs EXTERNAL)"
+  - "Activity Feed"
+  - "Permission (Authorization)"
+related_drift_classes:
+  - silent_200_on_missing_pair
+  - silent_200_on_missing_data_entity
+  - no_type_validation_against_metadata_field_type
+  - external_origin_writable_overwrites_ingestion
+  - forensic_silence_via_missing_activity_log
+  - active_column_dropped_to_null_on_update
+  - openapi_origin_field_silently_dropped
+  - spec_says_upsert_impl_does_update
+  - metadata_field_globally_unscoped
+  - metadata_field_case_sensitivity_asymmetry_exact_vs_substring
+new_drift_classes_proposed:
+  - metadata_edit_ui_surface_unenriched_reflection_judges_edit_path_from_batch_notes_only
+  - upsert_promise_layer_zero_verified_promises_user_facing_feature_at_0_of_13
+---
+
+# Custom metadata field value upsert — product-owner reflection
+
+## product_owner_narrative
+
+Custom Metadata is how an operator pins arbitrary key/value facts onto a catalogued data entity that ODD's fixed schema does not already capture — a `cost_centre`, a `pii_classification`, a `retention_days`, a `data_owner_email`. It lives on the entity's **Overview** tab in a panel beside Description and Tags: the operator clicks "Add metadata", picks (or types) a field name in an autocomplete, the field's declared type drives the value control (a true/false radio for BOOLEAN, a text box otherwise), and Save persists the value (per the e2e page object `tests/ui/pages/data_entity/overview.page.ts:18-23,117-123` — `add_metadata` button → `add_custom_metadata_input` → `add_custom_metadata_type_select` → save; and per `MetadataFieldController` sidecar audiences, the `MetadataCreateFormItem` MUI `freeSolo` autocomplete). The audience is every catalog curator with the `DATA_ENTITY_CUSTOM_METADATA_{CREATE,UPDATE,DELETE}` permission, typically entity owners (per `upsertDataEntityMetadataFieldValue` sidecar audiences + the live Permissions doc).
+
+The feature is a **two-half surface**: a per-entity VALUE write side (F-013, `PUT /api/dataentities/{id}/metadata/{field_id}` + the paired POST/DELETE) and a global FIELD-DEFINITION catalogue read side (F-046, `GET /api/metadata/fields`, powering the autocomplete dropdown). The field DEFINITIONS are global — `metadata_field` has no tenant / owner / namespace column (per `ReactiveMetadataFieldRepositoryImpl` sidecar understanding + `V0_0_1__init.sql:166-173`); only the per-entity VALUES are scoped. The autocomplete is a deliberate **select-or-create combo-box**: typing a brand-new name and saving auto-creates an INTERNAL-origin field row via `getOrCreateMetadataFields` (per `MetadataFieldController` sidecar operations) — the platform's standard novel-vocabulary-mint UX, the same pattern as Tags and Term namespaces (per APPROACH.md Rule 19; the create flow is exactly the e2e `createCustomMetadata` path).
+
+How a user expects it to behave (reasoned from the endpoint shape, the DTO field names, the OpenAPI operationId "upsert", and the UI's own success toast) is the load-bearing question this reflection asks. The OpenAPI operationId is literally "upsert" (`openapi.yaml:1219-1220`); the redux thunk hard-codes "Metadata successfully updated." on any 200 (`metadata.thunks.ts:51-54`); the form body field is named `value` and carries an optional `origin` (`components.yaml:2144-2152`); the field carries a declared `type` from the 8-value `MetadataTypeEnum`. Each of those names is a promise. The implementation, walked controller → service → repository, is a **pure UPDATE with no INSERT-on-conflict, no entity-existence check, no type coercion, no origin guard, and no activity log** (per `upsertDataEntityMetadataFieldValue` sidecar invariants + `DataEntityServiceImpl.java:287-305` + `ReactiveMetadataFieldValueRepositoryImpl.java:95-104`). The gap between the promise layer and the implementation is the substance of the findings below.
+
+This feature feeds Data Discovery search — metadata values are tokenised into the entity's FTS vector on every successful write (per sidecar implicit_adrs.fts-refresh-on-write). It shares the entity surface with Description (F-004, the identical silent-200 pattern), Tags, and Business Names (all of which DO emit activity events; custom metadata is the one that does not). It is fed FROM the Integrations pillar (P-10): collectors ingest EXTERNAL-origin fields + values during the ingestion pipeline (per `MetadataFieldServiceImpl.ingestMetadataFields`), and those EXTERNAL values render in the SAME panel under the SAME edit gate as operator-curated INTERNAL ones (per feature-flow batch `ui-review-2026-05-26-slice-I`).
+
+A product owner demoing this would highlight the happy path ("type a field, set a value, it shows on the entity and it's searchable") — and that happy path has NO automated test of any kind (no WebTestClient HTTP test, no e2e edit flow; the sole test is a mocked service-composition unit test per `upsertDataEntityMetadataFieldValue` sidecar tests_coverage_semantic). Every promise this feature makes is currently unguarded. The live `custom-metadata.md` doc page (created by DOC-189, WebFetched 2026-06-04, 200) has caught up and documents five of the contradictions below as "Known limitations" admonitions — so the doc is honest; the code is not yet fixed (PLT-025, status draft, owns the five fix threads).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator edits a custom metadata field on an entity that does NOT yet have a value for that field (the field exists in the catalogue but was never created for this entity), the PUT call persists the new value and the entity now shows it."
+  derivation: "OpenAPI operationId is literally 'upsert' (openapi.yaml:1219-1220); the UI toast hard-codes 'Metadata successfully updated.' on any 200 — both promise replace-OR-create."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The repository call is a pure `DSL.update(METADATA_FIELD_VALUE).set(VALUE,...).set(ACTIVE,...).where(METADATA_FIELD_ID.eq(?).and(DATA_ENTITY_ID.eq(?))).returning()` with NO `INSERT ... ON CONFLICT` and NO `switchIfEmpty(NotFoundException)`. When no row exists for the (dataEntityId, metadataFieldId) pair, the UPDATE matches zero rows, the inner Mono collapses to empty, the FTS refresh + mapper are short-circuited by empty-mono propagation, and the controller returns 200 OK with an EMPTY body. Nothing is persisted. The redux thunk toasts "Metadata successfully updated." on that empty 200.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: invariants / bugs_limitations_corner_cases[0]
+        cite: "ReactiveMetadataFieldValueRepositoryImpl.java:95-104"
+        note: "pure UPDATE, no switchIfEmpty, missing pair → Mono.empty → silent 200"
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: coupling.ui-toast
+        cite: "odd-platform-ui/src/redux/thunks/metadata.thunks.ts:51-54"
+        note: "hard-coded success toast on any non-error response"
+    operator_visible_failure: |
+      Two failure modes. (1) Reconciliation / API consumers: a script or SDK client written from the OpenAPI "upsert" contract that PUTs the desired state for a field that was never created on the entity silently loses the write — 200, empty body, nothing stored — and has no signal to distinguish success from no-op. (2) UI users editing through some future affordance that targets a not-yet-created pair see the green success toast and believe the value saved; it did not. The catalog silently diverges from the operator's mental model.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator PUTs a metadata value against a data entity ID that does not exist, the API rejects the call (404) rather than reporting success."
+  derivation: "A write to a non-existent resource is a 404 by REST convention; the sibling createMetadata path DOES pre-check entity existence, establishing the platform's own intended behaviour."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      upsertMetadataFieldValue (DataEntityServiceImpl.java:287-305) never calls `reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(...)`. The metadata-field lookup still succeeds (fields are global, not entity-scoped), then the UPDATE matches zero rows (no value row exists for the non-existent entity), then the silent-200-empty-body path fires. Contrast createMetadata at DataEntityServiceImpl.java:257-258 which DOES guard with switchIfEmpty(NotFoundException). This is the same code locus and same failure as H-001 (the zero-row UPDATE), reached from a different input.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: bugs_limitations_corner_cases[1]
+        cite: "DataEntityServiceImpl.java:287-305 (no guard) vs :257-258 (createMetadata guards)"
+        note: "asymmetric existence check between create and upsert siblings"
+    operator_visible_failure: |
+      A typo'd or stale data-entity ID in an API integration returns 200, so the integration's error handling never fires; the operator believes the metadata landed on the entity when no entity (and no row) exists. Combined with H-001 the two missing-validation cases are indistinguishable from a real success at the wire.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an operator writes a value to a field typed INTEGER (or DATETIME, BOOLEAN, JSON, FLOAT), the platform validates the value matches the declared type and rejects 'not a number' on an INTEGER field with a 400."
+  derivation: "The field carries a declared `type` from the 8-value MetadataTypeEnum and the UI renders a type-specific control (a true/false radio for BOOLEAN); a typed field promises type-checking of its values."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      formData.getValue() is a raw String written verbatim into the `text` column regardless of metadata_field.type. No coercion, no validation, no rejection. A user can write "not a number" to an INTEGER field, "hello" to a DATETIME field, "true" to a JSON field — all accepted with 200. The 8-value MetadataTypeEnum is documentation-only at write time. Note the UI's BOOLEAN type-control (true/false radio) constrains values FOR fields entered through that control, but the API enforces nothing, and the type can be changed/typed freely for new fields.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: bugs_limitations_corner_cases[2]
+        cite: "DataEntityServiceImpl.java:292-295 + MetadataTypeEnum.java:3-12 + V0_0_1__init.sql:179 (value text)"
+        note: "only value extracted; never compared against field type"
+    operator_visible_failure: |
+      Downstream readers (a BI tool joining on a metadata value, a script doing Long.parseLong on an INTEGER-typed field, a chart casting a DATETIME) crash or silently mis-render on type-violating content the platform accepted. The catalog's typed-metadata promise is cosmetic — a STRING field and an INTEGER field behave identically at write time. An API consumer cannot trust the declared type as a contract.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "An EXTERNAL-origin field (a value discovered and populated by a collector during ingestion) is read-only from the operator's curation surface — the operator cannot overwrite source-system-discovered metadata through the UI/API."
+  derivation: "The INTERNAL/EXTERNAL origin distinction (per concepts.yaml 'Metadata Field Origin') names two audiences — operator-curated vs source-discovered; a 'discovered' value implies source-of-truth authority the operator does not overwrite."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The upsert path never checks MetadataFieldPojo.getOrigin(). EXTERNAL fields are populated by collectors (MetadataFieldServiceImpl.java:62-71 ingestMetadataFields creates origin=EXTERNAL); a user with DATA_ENTITY_CUSTOM_METADATA_UPDATE can overwrite the collector-ingested value through this endpoint. The override persists until the next ingestion cycle silently replaces it. The UI hides the edit affordance for EXTERNAL fields, but the API enforces nothing — a direct API call (or the auto-create-on-miss path) overwrites freely. The live doc page confirms this verbatim ("An operator with DATA_ENTITY_CUSTOM_METADATA_UPDATE can write a value onto an EXTERNAL field through the API directly").
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: bugs_limitations_corner_cases[3]
+        cite: "DataEntityServiceImpl.java:287-305 (no origin check) + MetadataFieldServiceImpl.java:62-71 (EXTERNAL field creation)"
+        note: "no origin guard on the write path; UI-only hiding"
+    operator_visible_failure: |
+      The catalog can show a fabricated "source-system" value for an EXTERNAL field — combined with the forensic-silence gap (H-007) with no record of the fabrication. An auditor trusting EXTERNAL = discovered-from-source is misled; a downstream consumer reading the EXTERNAL value as authoritative reads operator-injected data. The override is transient (next ingest reverts it) so the data-quality drift is intermittent and hard to reproduce.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an operator submits the optional `origin` field in the update form body, the platform honours it (validates or records the declared origin)."
+  derivation: "MetadataFieldValueUpdateFormData declares an optional `origin: MetadataFieldOrigin` field (components.yaml:2144-2152); a field present in the request schema promises the server reads it."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The impl reads only formData.getValue() (DataEntityServiceImpl.java:292-295); `origin` is silently dropped on the wire. A client posting {value: "...", origin: "INTERNAL"} is told via the spec that origin is meaningful here, but the platform discards it entirely.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: bugs_limitations_corner_cases[7]
+        cite: "components.yaml:2144-2152 (spec includes origin) vs DataEntityServiceImpl.java:292-295 (impl reads only value)"
+        note: "request DTO field accepted by spec, ignored by impl"
+    operator_visible_failure: |
+      An API consumer setting `origin` to assert or change a field's origin sees no effect and no error — the field is a no-op in the contract. Low impact (no data corruption), but it is a spec-vs-impl drift that misleads SDK authors into believing origin can be controlled at this endpoint.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "After an operator edits a metadata value, the value row remains active (visible) — editing a value does not toggle the row's visibility/active state."
+  derivation: "Response-shape: the value row carries an `active boolean DEFAULT TRUE` column; editing the VALUE should not change the row's active flag — a user expects an edit to change only what they edited."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      ReactiveMetadataFieldValueRepositoryImpl.java:98 writes `.set(ACTIVE, pojo.getActive())`, but the upsert path's pojo (DataEntityServiceImpl.java:292-295) never calls setActive(...). The jOOQ-generated getActive() returns boxed Boolean null. The column is `boolean DEFAULT TRUE` but DEFAULTs apply on INSERT only; an UPDATE writing NULL drops a previously-TRUE row to NULL. Every edit silently sets active=NULL.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: bugs_limitations_corner_cases[4]
+        cite: "ReactiveMetadataFieldValueRepositoryImpl.java:97-98 + DataEntityServiceImpl.java:292-295 + V0_0_1__init.sql:180"
+        note: "active=NULL regression on every UPDATE"
+    operator_visible_failure: |
+      Any platform code (current or future) that filters `WHERE active = TRUE` rather than `IS DISTINCT FROM FALSE` silently drops every edited row — the value vanishes from that query after the first edit. The sidecar flags the downstream consumers of `active` as not exhaustively audited, so the blast radius is unverified; the regression itself is certain. This is a latent state-corruption bug invisible until a consumer filtering strictly-TRUE is added.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When an operator (or anyone) edits a custom metadata value, the Activity Feed records who changed what and when — the audit trail covers metadata edits as it covers description / tag / business-name edits."
+  derivation: "Pillar mission (P-07 Activity Feed is the audit-trail surface); ActivityEventTypeDto reserves CUSTOM_METADATA_CREATED/UPDATED/DELETED enum values; sibling write methods (upsertBusinessName, upsertTags) DO emit activity — establishing the platform's own intent."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      upsertMetadataFieldValue has NO @ActivityLog annotation despite CUSTOM_METADATA_UPDATED existing in ActivityEventTypeDto.java:18. The createMetadata (line 245) and deleteMetadata (line 307) siblings are also un-annotated — the entire CUSTOM_METADATA_* family (ActivityEventTypeDto.java:17-19) is reserved-but-never-fired. Contrast upsertBusinessName (line 336, @ActivityLog(BUSINESS_NAME_UPDATED)) and upsertTags (line 358, @ActivityLog(TAG_ASSIGNMENT_UPDATED)). Auditors querying GET /api/activity find no record of metadata writes.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+        section: bugs_limitations_corner_cases[5] / security.known_security_gaps
+        cite: "DataEntityServiceImpl.java:287-305 (no @ActivityLog) vs :336, :358 (siblings emit) + ActivityEventTypeDto.java:17-19"
+        note: "reserved enum, never fired; forensic silence on all custom-metadata mutations"
+    operator_visible_failure: |
+      A compliance auditor asking "who changed cost_centre to $1.2M last Thursday" finds NOTHING in the activity feed. A user with read-but-not-edit on the entity cannot detect that a metadata edit happened. Combined with H-004 (EXTERNAL overwrite) this is a silent data-quality + tamper risk: a value can be fabricated on a "discovered" field with no audit record of the fabrication.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "Reading the custom-metadata field catalogue (the autocomplete dropdown source, GET /api/metadata/fields) requires an appropriate read permission — a least-privileged viewer cannot enumerate every operator-named field name in the deployment."
+  derivation: "Negative-space + pillar (P-09): the catalogue carries operator-authored vocabulary that can encode PII / org structure (finance_cost_centre, pii_redaction_rule); the platform gates the per-value WRITE with three permissions, so a read gate is the expected symmetry."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      GET /api/metadata/fields has NO SecurityRule in SecurityConstants.SECURITY_RULES (the rules register only the per-value PUT/POST/DELETE write paths); the read falls through to pathMatchers("/**").authenticated(). Any authenticated user — regardless of policy/role/owner scope — enumerates the entire INTERNAL field schema. Under auth.type=DISABLED it is unauthenticated. There is NO CUSTOM_METADATA_FIELD_READ permission (live Permissions doc confirms only the three per-value write permissions).
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: invariants ("Auth required but NO per-permission gate" / "No owner-scoping on read")
+        cite: "SecurityConstants.java:202-211 (write rules only; no /api/metadata/fields rule) + AuthorizationCustomizer.java:29-30"
+        note: "catalogue read enumerable by any authenticated user; anonymous under DISABLED"
+    operator_visible_failure: |
+      Multi-team deployments leak operator-named field vocabulary (finance/marketing/PII field names) across team boundaries to every authenticated user. The auto-create-on-miss side-channel compounds it: any user with DATA_ENTITY_CUSTOM_METADATA_UPDATE on a single entity can MINT new catalogue entries visible deployment-wide. An operator wiring custom-metadata RBAC cannot find any read-scoping mechanism.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "The custom-metadata field catalogue read paginates — a deployment with thousands of INTERNAL fields returns a bounded page, and the page_info.hasNext / total drive a 'load more' workflow."
+  derivation: "Response-shape: MetadataFieldList = {items, page_info: {total, hasNext}} (components.yaml:2111-2120) — the embedded PageInfo promises pagination to any SDK client reading the schema."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The SQL at ReactiveMetadataFieldRepositoryImpl.java:44-56 has NO .limit(), NO .offset(), NO .orderBy(). The full filtered INTERNAL catalogue is materialised in one Postgres-heap-order response. The mapper (MetadataFieldMapperImpl.java:29-33) hardcodes total = items.length and hasNext = false — constant-mocked values describing the response, not the catalogue. page_info is theatre. The UI thunk discards page_info entirely (searchMetadata reads only items), so the UI is unaffected, but an SDK consumer building a "load more" loop never fires it and a large catalogue is a 1-2 MB response on every autocomplete keystroke.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: invariants ("No LIMIT, no OFFSET, no ORDER BY" + "page_info is theatre")
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:44-56 + MetadataFieldMapperImpl.java:29-33"
+        note: "no pagination; hardcoded total/hasNext"
+    operator_visible_failure: |
+      SDK clients written from the OpenAPI spec build infinite-scroll / 'load more' pagination that never triggers (hasNext is always false). At scale (10K+ INTERNAL fields) the unbounded payload is returned on every autocomplete keystroke — operator-load-bearing latency. The heap-scan order also means the dropdown order is arbitrary (no ORDER BY), so the same query can list fields in different orders after table churn.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When an operator types a brand-new field name in the 'Add metadata' autocomplete and saves, the platform creates that field (select-or-create), and a name that already exists is reused rather than duplicated."
+  derivation: "UI-label: the 'Add metadata' control is a freeSolo MUI autocomplete (per MetadataFieldController sidecar audiences) — the standard platform select-or-create combo-box; the e2e createCustomMetadata flow exercises exactly this."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The autocomplete is a deliberate select-or-create combo-box. Typing a novel name routes through getOrCreateMetadataFields (MetadataFieldServiceImpl.java:43-59 — listByKey existence check, then bulkCreate for the absent keys), which auto-creates an INTERNAL-origin row. An existing (name, type) key is reused. This is the intended UX pattern (APPROACH.md Rule 19 — a getOrCreate backend behind a select-or-create combo-box is the pattern's implementation, NOT a side-door). The e2e page object's createCustomMetadata (overview.page.ts:117-123) drives exactly this: add → fill name → createNewEntityLink → type dropdown → save.
+    evidence:
+      - sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+        section: operations + audiences (MetadataCreateFormItem freeSolo autocomplete; getOrCreateMetadataFields auto-create-on-miss)
+        cite: "MetadataFieldServiceImpl.java:43-59 + MetadataCreateFormItem.tsx:24-89"
+        note: "select-or-create combo-box — intended pattern, confirmed"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: operations.listByKey / coupling
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:58-71"
+        note: "listByKey existence lookup feeds the get-or-create diff"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "Field-name matching is consistent: the dropdown search, the auto-create-on-miss diff, and the stored name all treat 'cost_centre' and 'Cost_centre' the same way (so a user typing the same field with different casing does not create two fields)."
+  derivation: "Negative-space: a curator typing the same conceptual field across two entities expects one field, not two; the autocomplete shows matches case-insensitively, setting the user's expectation that casing is normalised."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Asymmetric. The UI dropdown search (listInternalMetadata) uses nameField.containsIgnoreCase(query) — case-INSENSITIVE substring (a search for 'cost' returns both cost_centre and COST_CENTRE). But the auto-create-on-miss exact lookup (listByKey) uses METADATA_FIELD.NAME.eq(...) — case-SENSITIVE Postgres text equality. So a user who searches sees both casings (suggesting they are 'the same'), but typing a name with different casing than an existing field creates a NEW distinct field row. The search promise (case-insensitive) and the create behaviour (case-sensitive) disagree.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: invariants ("Case-sensitivity asymmetry — exact lookup is case-SENSITIVE; UI substring search is case-INSENSITIVE")
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:65 (eq, case-sensitive) vs :48 (containsIgnoreCase)"
+        note: "search insensitive, create sensitive — duplicate fields by casing"
+    operator_visible_failure: |
+      A curator who types cost_centre on entity A and Cost_centre on entity B creates two distinct catalogue fields; both appear in the dropdown for a search of 'cost'; both confuse readers (which is the real cost_centre?). There is no merge path. The live doc page now warns 'field names are case-sensitive (cost_centre != Cost_centre) — a common operator surprise', so the caveat is documented; the inconsistency between the case-insensitive search and the case-sensitive store remains.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When a curator soft-deletes a custom metadata field, values previously attached to that field disappear from the entity detail pages (the deleted field is gone everywhere)."
+  derivation: "Negative-space: deleting a field should remove it from the read surfaces; the dropdown (listInternalMetadata) DOES filter soft-deleted out, setting the expectation that deletion is consistent across surfaces."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      getDtosByDataEntityId (the per-entity detail-page metadata join, ReactiveMetadataFieldRepositoryImpl.java:111-121) carries NO `.where(METADATA_FIELD.DELETED_AT.isNull())` filter. Soft-deleted fields with values still attached to an entity surface on the detail page. The dropdown (listInternalMetadata) DOES filter soft-deleted out via addSoftDeleteFilter. So soft-deleting a field hides it from the autocomplete but NOT from per-entity rendering — orphan-like values stay visible. Combined with the no-CASCADE FK and the partial-unique-index soft-delete mismatch, the soft-deleted name even blocks re-creation while reporting "doesn't exist" on the read side.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: invariants ("getDtosByDataEntityId does NOT apply soft-delete filter on metadata_field")
+        cite: "ReactiveMetadataFieldRepositoryImpl.java:111-121 (no deleted_at filter on the join)"
+        note: "soft-deleted field renders on detail page but not in dropdown — cross-surface split"
+    operator_visible_failure: |
+      A curator who deletes a field still sees its values on every entity that had them — the deletion looks broken (the field is "gone" from the add-dropdown but still shows on entities). Re-creating the same field name is impossible (UniqueConstraintException 'Internal metadata with this name already exists') because the partial unique index ignores deleted_at, while the read side says the field doesn't exist — an unrecoverable confusing state with no hard-delete path in the codebase.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-013
+  hypothesis: "Two concurrent operators (or a UI submit racing an ingestion run) creating the same novel field name resolve to a single field — the platform does not error or duplicate under concurrency."
+  derivation: "Negative-space: a get-or-create UX implies the platform handles the concurrent-first-create race gracefully; an operator should not see a raw constraint error from a normal double-click."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      getOrCreateMetadataFields is a TOCTOU read-then-write: listByKey (READ, sees 'doesn't exist'), then bulkCreate (WRITE). The UI tier's bulkCreate has NO ON CONFLICT clause, so two concurrent creates of the same novel (name, type) both pass the existence check, both call bulkCreate; one INSERT succeeds, the other surfaces as UniqueConstraintException('Internal metadata with this name already exists') via IX_UNIQUE_INTERNAL_NAME. The window is real per the sidecar; whether a normal UI double-click is fast enough to hit it, and what the user sees (raw 500/409 toast?), requires running the system. The ingestion path tolerates the race (ingestData uses ON CONFLICT DO UPDATE), so the two paths behave differently under concurrency.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveMetadataFieldRepositoryImpl
+        section: invariants ("TOCTOU race window in getOrCreateMetadataFields")
+        cite: "MetadataFieldServiceImpl.java:42-59 (listByKey then bulkCreate) + ExceptionUtils.java:63-65 (UniqueConstraintException)"
+        note: "UI-tier create not race-protected; ingestion-tier is (ON CONFLICT)"
+    operator_visible_failure: |
+      Under a concurrent first-create of the same field name, one operator gets a UniqueConstraintException error toast on what should be a normal save — a confusing failure for a name that (from the read side) didn't exist a moment ago. The severity depends on whether the window is reachable from realistic UI interactions; this needs a local concurrency probe to confirm and to capture the exact user-facing error.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-013-1
+    routes_to_finding: validation-gap
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: probe
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "PUT 'upsert' is a pure UPDATE — write to a non-pre-existing (entity,field) pair returns 200 empty body and persists nothing while the UI toasts success."
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  proposed_fix_anchor: "PLT-025 Thread A — INSERT ... ON CONFLICT (data_entity_id, metadata_field_id) DO UPDATE, OR rename operationId + switchIfEmpty(NotFoundException) for 404. (ReactiveMetadataFieldValueRepositoryImpl.java:94-104)"
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Every edit silently sets metadata_field_value.active to NULL (DEFAULT TRUE applies on INSERT only); strict WHERE active=TRUE consumers drop edited rows."
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  proposed_fix_anchor: "PLT-025 Thread B — pojo.setActive(true) before UPDATE, or omit the ACTIVE column from the SET clause. (DataEntityServiceImpl.java:292-295)"
+- hypothesis_id: H-012
+  severity: MEDIUM
+  one_line: "getDtosByDataEntityId has no soft-delete filter — soft-deleted fields' values still render on entity detail pages (but not in the dropdown); re-creation blocked by the partial-index soft-delete mismatch."
+  dedup_status: net_new
+  distinct_from: PLT-025
+  recommended_log_as: "PLT-NNN (odd-platform, MEDIUM)"
+  proposed_fix_anchor: "Add `.where(METADATA_FIELD.DELETED_AT.isNull())` to the getDtosByDataEntityId join (ReactiveMetadataFieldRepositoryImpl.java:111-121) AND add `WHERE deleted_at IS NULL` to ix_unique_internal_name / ix_unique_external_name_type (V0_0_1__init.sql:238-244) to match the tag_name_unique fix in V0_0_64. (drift_classes metadata_field_get_dtos_by_data_entity_id_no_soft_delete_filter + metadata_field_soft_delete_partial_unique_index_resurrection_block — surfaced in F-013 batch R but never filed as a code issue)"
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "No data-entity existence check on the upsert path — PUT to a non-existent entity ID returns 200 empty body (folded into the silent-200 / UPDATE-not-UPSERT class)."
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: "Same code locus + same failure as PLT-025 Defect 1 (zero-row UPDATE → silent 200), reached via a non-existent entity rather than a non-existent value-pair. Documented as a caveat on the live custom-metadata.md (DOC-189). Recorded as corroboration; no re-filing."
+- hypothesis_id: H-003
+  one_line: "No type validation against MetadataTypeEnum — 'not a number' accepted on an INTEGER field with 200."
+  dedup_status: already_tracked
+  tracked_as: DOC-189
+  note: "Documented as live-doc admonition 3 ('The API does not validate a value against its field's declared type', WebFetched 2026-06-04). NOT among PLT-025's five fix threads — the code-hardening (reject/coerce) is unfiled; the caveat is captured. Net-new code-fix value is the regression-guard functional test (see functional_test_demands)."
+- hypothesis_id: H-004
+  one_line: "EXTERNAL-origin (collector-ingested) fields are writable through the API; UI hides the affordance but the server enforces nothing; override persists until next ingest."
+  dedup_status: already_tracked
+  tracked_as: DOC-189
+  note: "Documented as live-doc admonition 4 (WebFetched 2026-06-04). NOT a PLT-025 fix thread. Caveat captured; code-hardening unfiled."
+- hypothesis_id: H-005
+  one_line: "OpenAPI `origin` form field is silently dropped by the impl (spec-vs-impl drift)."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-discovery/custom-metadata (LOW) — note `origin` on MetadataFieldValueUpdateFormData is accepted by the spec but ignored by the impl"
+- hypothesis_id: H-007
+  one_line: "Forensic silence — no @ActivityLog on any CUSTOM_METADATA_* mutation despite reserved enum values; auditors find no record of metadata edits."
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: "PLT-025 Defect 5 + Thread E (revive CUSTOM_METADATA_* events). Also DOC-181 (dead-enum context) + live-doc forensic-silence cross-tie. Corroboration."
+- hypothesis_id: H-008
+  one_line: "GET /api/metadata/fields has no read permission and no owner scope — any authenticated user (anonymous under DISABLED) enumerates the entire INTERNAL field vocabulary."
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: "PLT-025 Defect 4 + Thread D (introduce CUSTOM_METADATA_FIELD_READ or document the enumeration posture). F-046b. Corroboration."
+- hypothesis_id: H-009
+  one_line: "Catalogue read page_info is theatre — no LIMIT/OFFSET/ORDER BY at SQL, total/hasNext hardcoded; SDK 'load more' never fires; unbounded payload at scale."
+  dedup_status: already_tracked
+  tracked_as: PLT-025
+  note: "PLT-025 Defect 3 + Thread C (real pagination or drop PageInfo). F-046a. Corroboration."
+- hypothesis_id: H-011
+  one_line: "Field-name search is case-insensitive but create/store is case-sensitive — same name in two casings creates two fields; no merge path."
+  dedup_status: net_new
+  distinct_from: PLT-025
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-discovery/custom-metadata (MEDIUM) — the page already warns names are case-sensitive; add that the dropdown search is case-INSENSITIVE so the two surfaces disagree (drift_class metadata_field_case_sensitivity_asymmetry_exact_vs_substring; also a PLT-025-adjacent hardening candidate: normalise on create or warn in the UI)"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP candidate.
+# This feature is a user-facing surface sitting at 0/13 verified promises; the highest-value of these is the
+# happy path (H-010), which has NO test of any kind despite being demoed as the core capability.
+- use_case_id: F-013-UC-10
+  hypothesis_id: H-010
+  kind: happy-path
+  promise: "Typing a brand-new field name in 'Add metadata' and saving creates the INTERNAL field and attaches the value to the entity; an existing name is reused, not duplicated."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-013-UC-10)"
+  proposed_test: "IT (Playwright e2e, odd-team integration-tests): on a seeded entity, open Overview → Add metadata → type a novel name → pick type → save → assert the value renders on the entity AND GET /api/metadata/fields now returns the new field; repeat the same name on a second entity and assert no duplicate field row is minted. (Reuses the existing overview.page.ts createCustomMetadata flow; this is the core happy path with zero current coverage.)"
+- use_case_id: F-013-UC-01
+  hypothesis_id: H-001
+  kind: resolve-later
+  promise: "A PUT to a (entity,field) pair with no existing value row creates the value (true upsert) — not a silent 200 no-op."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-013-UC-01)"
+  proposed_test: "Mockito + StepVerifier (DataEntityServiceTest) pinning the CURRENT (incorrect) behaviour as a characterization test: PUT a value for a pair the repository returns Mono.empty for → assert 200 + empty body today (RED the instant PLT-025 Thread A lands and the path becomes a true upsert / 404). Plus a WebTestClient HTTP test once the fix ships, asserting the value is persisted."
+- use_case_id: F-013-UC-06
+  hypothesis_id: H-006
+  kind: edit-reconcile
+  promise: "Editing a value preserves the row's active=TRUE flag."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-013-UC-06)"
+  proposed_test: "Repository integration test (ReactiveMetadataFieldValueRepositoryImplTest, real Postgres via Testcontainers): INSERT a value row with active=TRUE → call the upsert update → read back → characterization-assert active IS NULL today (RED when PLT-025 Thread B lands and active stays TRUE)."
+- use_case_id: F-013-UC-03
+  hypothesis_id: H-003
+  kind: resolve-later
+  promise: "A value is validated against its field's declared MetadataTypeEnum; type-violating input is rejected (400)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-013-UC-03)"
+  proposed_test: "Characterization test asserting 'not a number' on an INTEGER-typed field is accepted with 200 today (documents the no-validation caveat as an executable guard; flips to RED if type validation is ever added)."
+- use_case_id: F-013-UC-07
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "A metadata edit emits a CUSTOM_METADATA_UPDATED activity event recording actor + before/after."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-013-UC-07)"
+  proposed_test: "Integration negative-assertion (WebTestClient): authorised PUT then GET /api/activity → characterization-assert NO custom-metadata activity row today (RED when PLT-025 Thread E annotates the call sites)."
+- use_case_id: F-013-UC-08
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "The field catalogue read is permission-gated / owner-scoped."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-013-UC-08)"
+  proposed_test: "Integration auth test (@WebFluxTest / WebTestClient): caller with NO custom-metadata permission GETs /api/metadata/fields → characterization-assert 200 with the full INTERNAL catalogue today (RED when PLT-025 Thread D introduces CUSTOM_METADATA_FIELD_READ)."
+- use_case_id: F-013-UC-12
+  hypothesis_id: H-012
+  kind: teardown
+  promise: "A soft-deleted field's values disappear from entity detail pages, consistent with the dropdown."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-013-UC-12)"
+  proposed_test: "Repository integration test (real Postgres): seed a field + a value, soft-delete the field, call getDtosByDataEntityId → characterization-assert the value STILL returns today (RED when the soft-delete filter is added per the H-012 caveat fix)."
+
+### probes_emitted
+- probe_id: PENDING-F-013-1
+  hypothesis_id: H-013
+  hypothesis_text: "When two concurrent operators (or a UI double-click, or a UI submit racing an ingestion run) create the same novel custom-metadata field name, the platform resolves to a single field without surfacing a raw error to the user — rather than one caller receiving a UniqueConstraintException('Internal metadata with this name already exists') from the un-ON-CONFLICT bulkCreate in the UI tier's getOrCreateMetadataFields TOCTOU window."
+  probe_path: "(parallel-safe mode — not written; PENDING id only)"
+  local_execution_blocked: false
+  probe_sketch: "Local docker-compose ODD + Postgres. Seed an entity. Fire two simultaneous createDataEntityMetadataFieldValue POSTs with the same novel field name (name,type) at the same entity (k6 or two parallel curl); assert whether one returns a UniqueConstraintException-mapped error response and capture the exact HTTP status + body the UI would toast. Then repeat racing one POST against an ingestion run creating the same name to confirm the ingestion path's ON CONFLICT tolerance vs the UI path's exception. emitted_by: feature-reflector; status: pending-reflection-verification; expected_outcome quotes H-013 verbatim."
+
+### validation_gaps
+- sidecar: "(feature-flow batch ui-review-2026-05-26-slice-I — OverviewMetadata / MetadataItem / MetadataCreateForm)"
+  field_insufficient: "The EDIT/UPDATE UI surface of this feature (the MetadataItem row-edit affordance that dispatches the PUT-upsert thunk, and the MetadataCreateForm dialog) is referenced as contributing_nodes in the feature-flow batch but NO file-analyser sidecar was ever enriched for these components. Only the read-side autocomplete (MetadataCreateFormItem) is described, and only second-hand via the MetadataFieldController sidecar's audiences block; the e2e page object exercises only a CREATE flow, not an EDIT flow."
+  proposed_refresh: |
+    Per Rule 9 (senior-product-owner-from-the-screen): this reflection's PUT-upsert hypotheses (H-001, H-002, H-003, H-004, H-005, H-006, H-007) are validated against the BACKEND chain and the redux thunk, NOT against the on-screen edit interaction the operator actually lives through. The reflection is therefore UI-PARTIAL on the EDIT path: I can confirm what the API does to a given request, but I cannot judge from an enriched UI sidecar (a) whether the UI ever issues an edit PUT to a not-yet-created pair (the H-001 trigger), (b) what the MetadataItem row-edit control looks like / how it feeds `value`, (c) whether the BOOLEAN type-control or any client-side validation constrains what reaches H-003. Enrich react-component sidecars for OverviewMetadata.tsx, MetadataItem.tsx, and MetadataCreateForm.tsx (the F-013 UI write surface) so the next reflection refresh judges the edit path from the screen. This is the F-013 instance of the F-031 / LSN-023 hazard: a confident finding from a backend-only chain on a UI-driven feature.
+
+### doc_drift_findings
+# None at HIGH/MEDIUM. The live custom-metadata.md page (DOC-189, WebFetched 2026-06-04, 200) is HONEST —
+# it documents H-001 (admonition 1), H-006 (admonition 2), H-003 (admonition 3), H-004 (admonition 4),
+# and H-008/H-009 (admonition 5, danger) as Known-limitation caveats. This is the inverse of a doc-drift:
+# the doc CORRECTLY describes the wrong-vs-expected behaviour. The only residual doc gaps are LOW:
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/custom-metadata"
+  doc_says: "(silent — the page does not mention the `origin` form field being dropped)"
+  code_does: "MetadataFieldValueUpdateFormData.origin is accepted by the OpenAPI spec but ignored by the impl (DataEntityServiceImpl.java:292-295)"
+  recommended_log_as: "doc-gap-NNN (LOW) — add a one-line note to the custom-metadata.md API section that the optional `origin` body field is a no-op"
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/custom-metadata"
+  doc_says: "field names are case-sensitive (cost_centre != Cost_centre)"
+  code_does: "the dropdown SEARCH is case-INSENSITIVE (containsIgnoreCase) while the store/create is case-SENSITIVE (eq) — the two surfaces disagree, which the doc does not call out"
+  recommended_log_as: "doc-gap-NNN (LOW) — extend the existing case-sensitivity caveat to note the search/store asymmetry"
+
+## maintainer_notes
+
+(empty — no previous reflection)

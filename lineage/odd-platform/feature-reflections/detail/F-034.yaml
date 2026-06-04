@@ -1,0 +1,600 @@
+---
+feature_id: F-034
+pillar_anchored_id: P-09:F-006
+pillar: Security & Access Control (P-09) — cross-cuts Active Platform Features (P-07) + the UI shell (P-41/F-041 chrome)
+feature_name: Platform Feature-Flag Exposure
+reflected_at: '2026-06-04T00:00:00Z'
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__FeatureController__controller-class__FeatureController.md
+  - odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md
+contributing_nodes_unresolved_no_sidecar:
+  - "service:FeatureResolverImpl (facts captured inside FeatureController sidecar understanding/concepts/stress_findings)"
+  - "react-component:App.tsx (Rule-8 single-line read: components/App.tsx:49 dispatch + :51 empty dep-array + :56 AppToolbar mount)"
+  - "react-component:WithFeature.tsx (Rule-8 single-line read: WithFeature.tsx:23 activeFeatures.includes + :32 renders null when disabled)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-05-29"
+    last_verified_status: 200
+    note: "via doc-gaps.md DOC-GAP-116 + FeatureController sidecar docs_link_semantic; documents datacollaboration.enabled / notifications.enabled defaults false; live page NOW documents boot-immutability ('captured at JVM boot and frozen') per DOC-GAP-116 close-note"
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration"
+    last_verified_at: "2026-05-29"
+    last_verified_status: 200
+    note: "via doc-understanding/active-platform-features__data-collaboration.md (live 200 on 2026-05-29); frames the flag as 'disabled by default; 404 when disabled' but does NOT mention the navigation chrome stays visible when the flag is off"
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication"
+    last_verified_at: "2026-05-29"
+    last_verified_status: 200
+    note: "via DOC-GAP-116; enumerates anonymous-under-DISABLED fingerprinting surfaces (whoami, appInfo, actuator/env, all /api/**) but does NOT list /api/features/active"
+hypothesis_summary:
+  total: 12
+  confirmed: 5
+  contradicted: 4
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "Turning a platform feature OFF does not remove its top-level navigation tab — the 9-tab toolbar never reads the active-features set, so users still see and click into surfaces whose backend feature is disabled and land on non-functional sub-pages."
+related_feature_flows: [F-041, F-038, F-011]
+related_concepts:
+  - feature-flag-exposure
+  - WithFeature-ui-gate
+  - boot-immutable-resolver
+  - tab-visibility-model
+  - feature-enum-ui-backend-skew
+  - disabled-mode-anonymous-reach
+related_drift_classes:
+  - feature_flag_set_published_to_redux_unused_by_toolbar_tab_visibility
+  - drift_name_vs_behavior_endpoint_name_implies_runtime_current
+  - cross_repo_enum_drift_default_false_at_consumer
+  - disabled_mode_bypass_provider_null_bleed_limited_risk_facet_of_refactor_185
+new_drift_classes_proposed:
+  - feature_flag_endpoint_returns_global_set_no_per_user_or_per_role_scoping_uniform_across_all_callers
+  - withfeature_disabled_renders_null_no_explanatory_placeholder_silent_disappearance
+---
+
+# Platform Feature-Flag Exposure — product-owner reflection
+
+## product_owner_narrative
+
+Platform Feature-Flag Exposure is the one small mechanism that lets a deployment turn two optional, heavyweight subsystems on or off and have the user interface react: **Data Collaboration** (the Slack-backed Discussions surface) and **Alert Notifications**. When the single-page app mounts, it fires one request — `GET /api/features/active` — and stores the returned list in Redux; from then on, every UI control that belongs to one of those subsystems asks "is my feature in that list?" before it renders (per `odd-platform__java__FeatureController...:understanding` + Rule-8 read `WithFeature.tsx:23`). The audience is two-sided: the **platform operator** who flips `datacollaboration.enabled` / `notifications.enabled` in `application.yml` and expects the UI to follow, and the **end user** who should only ever see the affordances their deployment actually supports. There is no user-facing screen for this feature — it is invisible plumbing whose only job is to make other features appear and disappear cleanly.
+
+A user never interacts with this feature directly. The interaction is entirely indirect: the operator sets two booleans at deploy time, and the end user observes the consequences — an "Open in Slack" button that is present or absent, a Discussions thread surface that exists or does not (per `FeatureController` sidecar `audiences` block, citing `Message.tsx:59`, `DataEntityDetailsHeader.tsx:132`). The request itself is parameterless: it takes no query parameter, no body, and ignores the per-request handle it is given (`FeatureController` sidecar `stress_findings.request_inputs` — the `ServerWebExchange` is received but never read). The response is the same for everyone — there is no per-user or per-role tailoring (`FeatureController` sidecar `security.owner_scoping: N/A`); the flags are a property of the deployment, not of the person.
+
+The working parts are deliberately tiny. The backend resolves the two booleans **once, at boot**, into an immutable `Set<Feature>` and hands back a fresh copy of that same set on every call (`FeatureController` sidecar `implicit_adrs[0]` + `stress_findings.name_behavior_pairs[0]`, citing `FeatureResolverImpl.java:14,16-31`). Both flags default to **false**, so a stock install returns an empty list and both optional surfaces are hidden (`FeatureController` sidecar `understanding`, citing `application.yml:173,205`). The UI side has exactly one consumer primitive — `WithFeature` — which renders its children when the named feature is in the set and renders **nothing** otherwise (Rule-8 read `WithFeature.tsx:31-32`). There is no polling, no re-fetch, no cache invalidation: the value is captured at app-mount and frozen for the session (feature-flow `amplification_note`).
+
+This feature is the meeting point of three pillars and the place where they fail to line up. It is **anchored in Security & Access Control (P-09)** because its accessibility shifts across the four auth modes and because under `auth.type=DISABLED` it is anonymously reachable. It **serves Active Platform Features (P-07)** because the two flags it exposes are exactly the two opt-in subsystems that pillar describes (`system-mission.md` P-07 sub-feature seed: Data Collaboration + Notifications). And it **collides with the UI shell / navigation chrome (F-041)** because the navigation toolbar — the thing that lands a user on a feature's pages — never consults the feature-flag set at all (`ToolbarTabs` sidecar `understanding` + `security.known_security_gaps[1]`, citing the zero-match Grep for `WithFeature|getActiveFeatures` across the AppToolbar subtree). The promise the endpoint name makes ("active features") and the promise the toolbar makes ("these are the surfaces you can use") are honoured in two different places and reconciled in neither.
+
+A product owner demoing this would highlight the empty states and the silent ones. With both flags off (the shipped default), the Discussions tab and the Open-in-Slack button simply are not there — and there is no placeholder explaining why, because `WithFeature` returns `null` (Rule-8 read `WithFeature.tsx:32`). With Data Collaboration **off** but the user clicking the "Data Modelling" tab anyway, they land on a page whose feature-gated controls are wrapped and therefore invisible — a half-empty surface with no signal that the operator disabled something (`ToolbarTabs` sidecar `bugs_limitations_corner_cases[0]` + feature-flow `observed_vs_expected.facets[3].operator_visible_consequence`). And an operator who toggles a flag at runtime and refreshes will be surprised: the running process keeps returning the boot-time set until it is restarted (`FeatureController` sidecar `bugs_limitations_corner_cases[1]`). These are the corner cases this reflection turns into falsifiable hypotheses below.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When both datacollaboration.enabled and notifications.enabled are true, GET /api/features/active returns 200 with a list containing exactly {DATA_COLLABORATION, ALERT_NOTIFICATIONS}, and the UI's feature-gated affordances (Open in Slack, the Discussions thread surface) become visible."
+  derivation: "Endpoint name + the FeatureResolverImpl boot-time mapping of each @Value boolean to one Feature enum value; WithFeature.includes(featureName) gates the affordances."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      FeatureResolverImpl reads ${datacollaboration.enabled} and ${notifications.enabled} at
+      @Component construction, BooleanUtils.isTrue-checks each, and adds the corresponding Feature
+      enum value to a HashSet (FeatureController sidecar concepts.invariants + FeatureResolverImpl.java:16-31).
+      resolveActiveFeatures() wraps that set in a fresh FeatureList per call (FeatureResolverImpl.java:35).
+      The UI thunk fetchActiveFeatures (App.tsx:49) populates the appInfo slice; WithFeature reads the
+      slice via getActiveFeatures and renders children iff activeFeatures.includes(featureName)
+      (Rule-8 read WithFeature.tsx:20,23,31-32). With both flags true the happy path holds end-to-end.
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: concepts.invariants + understanding
+        cite: "FeatureResolverImpl.java:16-31, :35"
+        note: "boot-time @Value to Feature mapping; fresh FeatureList per call"
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: dependencies_semantic.couples-to
+        cite: "Message.tsx:59 + DataEntityDetailsHeader.tsx:132"
+        note: "the WithFeature consumers that become visible"
+      - sidecar: "(Rule-8 source_read_for_validation)"
+        section: WithFeature.tsx
+        cite: "WithFeature.tsx:23,31-32"
+        note: "source_read_for_validation: true — activeFeatures.includes(featureName); children render iff enabled, else null"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When a platform feature is OFF, the top-level navigation tab that leads to that feature's pages is hidden (or disabled) from the toolbar, so a user is never invited to navigate into a feature their deployment has disabled."
+  derivation: "A feature-flag system's user-facing promise is consistency: the existence of WithFeature + the dispatch of fetchActiveFeatures on mount signals the design intent was feature-flag-aware navigation; system-mission P-07 frames all five subsystems as cleanly opt-in."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      ToolbarTabs builds a hard-coded 9-element tab array in a useMemo whose only dependencies are
+      activityQueryString and the i18n t() function — it performs NO useAppSelector(getActiveFeatures)
+      read and wraps NO tab in WithFeature (ToolbarTabs sidecar understanding + invariants; the Grep
+      across the AppToolbar subtree for WithFeature|getActiveFeatures returns ZERO matches). The
+      fetchActiveFeatures dispatch fires on every mount (App.tsx:49) and the set lands in Redux, but the
+      navigation chrome is structurally invariant to it. Tab visibility is decided entirely by the
+      hard-coded array; the flag set is consumed only by sub-page affordances (Message.tsx:59,
+      DataEntityDetailsHeader.tsx:132), never by the chrome that lands the user on those pages.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md
+        section: understanding + concepts.invariants + security.known_security_gaps[1]
+        cite: "ToolbarTabs.tsx:34-82"
+        note: "9 hardcoded tabs; no getActiveFeatures read; WithFeature never used (zero-match Grep)"
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: upstream_callers + dependencies_semantic.couples-to
+        cite: "App.tsx:49"
+        note: "fetchActiveFeatures dispatched into Redux but unread by the toolbar"
+    operator_visible_failure: |
+      With datacollaboration.enabled=false (the shipped default), the Data Modelling tab is still
+      rendered in the primary navigation row. A user clicks it and lands on the Query Examples surface
+      where the actual feature-gated affordances are WithFeature-wrapped and therefore invisible — a
+      half-empty page with no signal that the operator disabled the feature (ToolbarTabs
+      bugs_limitations_corner_cases[0]). The user reads this as "the feature is broken" rather than
+      "the feature is off." Two compounding failures: (1) the navigation invites the user into a
+      disabled surface; (2) there is no placeholder explaining the emptiness, because WithFeature
+      renders null (H-009). The mismatch is invisible to every layer's tests because each layer is
+      internally consistent — only the assembled product shows the gap. NOTE: this is the canonical
+      F-034 cross-feature drift; the chrome surface is owned by F-041.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When an operator toggles datacollaboration.enabled at runtime (e.g. edits application.yml and triggers /actuator/refresh) without restarting the JVM, the next GET /api/features/active reflects the new value."
+  derivation: "The endpoint name getActiveFeatures and the noun 'active features' promise a runtime-current view; a flag named 'enabled' in YAML conventionally suggests runtime toggling."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      FeatureResolverImpl captures the two @Value booleans into a private final Set<Feature> ONCE in the
+      constructor (FeatureResolverImpl.java:14, 16-31). resolveActiveFeatures() returns a wrapper around
+      that same immutable set on every call; there is no @RefreshScope, no @Scheduled refresher, no
+      @EventListener for ContextRefreshedEvent (FeatureController sidecar stress_findings.resource_boundaries
+      + implicit_adrs[0]). The boot-time set is frozen for the JVM lifetime. A runtime config change is
+      silently ignored until process restart.
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: stress_findings.name_behavior_pairs[0] + bugs_limitations_corner_cases[1]
+        cite: "FeatureResolverImpl.java:14, 16-31, :35"
+        note: "final field captured once; no refresh hook anywhere in the file"
+    operator_visible_failure: |
+      An operator who flips datacollaboration.enabled=true and runs actuator/refresh (or hot-swaps an
+      env var) reasonably expects the SPA's Open-in-Slack button and Discussions tab to appear without a
+      restart. They do not. The endpoint keeps returning the OLD boot-time set until the process is
+      restarted, with no warning and no log line (the controller has no @Slf4j). The operator's mental
+      model ('enabled means I can enable it now') is wrong, and nothing on the running system tells them
+      so. A compounding cluster failure (LOW): during a canary rollout where one replica has the flag on
+      and others off, a load-balanced UI session sees the Open-in-Slack button flicker in and out
+      (FeatureController sidecar performance.known_performance_gaps[0]).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "On a stock install (both flags absent or false), GET /api/features/active returns 200 with an empty list (items=[], not null, not 404), so the UI renders with both optional surfaces cleanly hidden and no error."
+  derivation: "Both keys default false per application.yml:173,205; BooleanUtils.isTrue treats null as false; the UI selector falls back to an empty array."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      With both booleans false, the constructor adds neither Feature to the HashSet, so resolveActiveFeatures()
+      returns FeatureList{items:[]} (FeatureController sidecar understanding + concepts.invariants, citing
+      FeatureResolverImpl.java:22,26,35 + application.yml:173,205). BooleanUtils.isTrue(null) is false, so even a
+      missing key yields an empty list rather than a throw. WithFeature.includes on an empty array is false for
+      every featureName, so all gated affordances render null cleanly (Rule-8 read WithFeature.tsx:23,32).
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: understanding + concepts.invariants + tests_coverage_semantic.uncovered_behaviours[1]
+        cite: "FeatureResolverImpl.java:22,26,35 + application.yml:173,205"
+        note: "empty-list stock baseline; null-tolerant Boolean unwrap"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "Under auth.type=DISABLED (the bundled default), an anonymous network caller can hit GET /api/features/active and receive 200 with the feature list, learning which optional features the deployment has enabled."
+  derivation: "DisabledAuthSecurityConfiguration short-circuits with .anyExchange().permitAll(); /api/features/active is not in any whitelist exemption because under DISABLED nothing is gated."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Under auth.type=DISABLED (application.yml:34), DisabledAuthSecurityConfiguration.java:13-18 applies
+      .anyExchange().permitAll(); the controller carries no @PreAuthorize and the resolver has no gate, so an
+      anonymous caller receives 200 with the boot-time FeatureList (FeatureController sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0] + stress_findings.auth_gates[0]). The
+      payload exposes only the on/off enum names — not the underlying slack-oauth-token or notification
+      receiver config. This is the PROVIDER-NULL-BLEED-LIMITED-RISK facet of REFACTOR-185.
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: security.known_security_gaps[0] + stress_findings.auth_gates[0]
+        cite: "FeatureController.java:12-21 + DisabledAuthSecurityConfiguration.java:13-18"
+        note: "anonymous 200 under DISABLED; payload is enum names only"
+    operator_visible_failure: |
+      Recorded for completeness even though confirmed: an external scanner can fingerprint whether
+      DataCollaboration and/or Notifications are activated on a DISABLED-auth deployment without
+      authenticating. The leak is narrow (operator-policy-configurable booleans, NOT credentials or
+      principal identity), which is why severity is LOW — but the live disabled-authentication doc page
+      lists the other anonymous surfaces (whoami, appInfo, actuator/env) and omits this one (DOC-GAP-116).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "Under auth.type=LOGIN_FORM / OAUTH2 / LDAP, an unauthenticated caller hitting GET /api/features/active is blocked (302 to login or 401) BEFORE reaching FeatureController, so the feature-flag set is not anonymously enumerable in a secured deployment."
+  derivation: "/api/features/active is not in SecurityConstants.WHITELIST_PATHS nor LoginFormSecurityConfiguration.permittedPaths, so pathMatchers('/**').authenticated() applies."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static inference confirms .authenticated() applies (the endpoint is in neither whitelist), so an
+      anonymous caller is blocked — but the EXACT response (302 redirect vs 401) under each of
+      LOGIN_FORM / OAUTH2 / LDAP for an unauthenticated curl call cannot be determined without a running
+      stack (FeatureController sidecar stress_findings.auth_gates[0], confidence PROBE-NEEDED, P-132). The
+      block itself is confirmed; only the precise status code is open.
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: stress_findings.auth_gates[0] + security.auth_mode_relevance
+        cite: "SecurityConstants.java:95-96 + LoginFormSecurityConfiguration.java:49-57 + AuthorizationCustomizer.java:29-30"
+        note: ".authenticated() fall-through confirmed; exact 302-vs-401 needs runtime"
+    operator_visible_failure: |
+      If /api/features/active were ever added to a whitelist (e.g. to expose SSO-button feature flags
+      pre-login), the anonymous-fingerprint surface would widen from DISABLED-only to all modes. The
+      probe locks in the current secured-mode block as a regression guard.
+    severity: LOW
+    confidence: MEDIUM
+    probe_id: PENDING-F-034-1
+    routes_to_finding: probe-needed
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: "probe PENDING-F-034-1"
+
+- id: H-007
+  hypothesis: "When a NEW Feature enum value is added on the backend (e.g. GENAI_QUERY_ASSIST) and the backend turns it on, the UI honours it — the corresponding affordance becomes visible — even if the UI's generated sources were not regenerated in lockstep."
+  derivation: "The Feature enum is a shared generated artifact across backend (components.yaml) and UI (generated-sources); WithFeature gates on activeFeatures.includes(featureName)."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      If the backend adds a Feature value and emits it in the response without the UI regenerating its
+      generated-sources, WithFeature.tsx:23 evaluates activeFeatures.includes(featureName) against a
+      featureName the UI does not know about — the new flag is in the response array but no WithFeature
+      consumer references it, and any consumer that DID reference it would be comparing against an enum
+      member absent from the UI build. The UI silently treats the new feature as disabled
+      (FeatureController sidecar bugs_limitations_corner_cases[4] + feature-flow
+      observed_vs_expected.facets[2]). Coordinated backend+UI release is mandatory; nothing detects the drift.
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: bugs_limitations_corner_cases[4] + dependencies_semantic.requires-feature
+        cite: "components.yaml:115-119 + WithFeature.tsx:22-25"
+        note: "enum is a generated cross-repo contract; UI default-false on unknown value"
+    operator_visible_failure: |
+      An operator who upgrades the backend (new feature shipped) ahead of the UI bundle, or runs a
+      mismatched UI/backend pair, turns the feature on at the backend and sees nothing change in the UI.
+      The feature appears 'enabled but broken' with no error. Severity is LOW because the two enum values
+      shipped today move together; the risk is latent and grows with each new Feature value added without
+      a round-trip contract test.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "The feature-flag set returned by GET /api/features/active is the same for every caller — an ADMIN, a READ_ONLY user, and (under DISABLED) an anonymous caller all receive an identical list; the flags are deployment-wide, not per-user."
+  derivation: "The controller takes no Permission/Authentication parameter and applies no @PreAuthorize; the resolver returns the same global set unconditionally."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      There is no role-gated access and no per-user scoping: the endpoint requires only AUTHENTICATION (in
+      secured modes), not authorization, and the response is the global boot-time set regardless of who asks
+      (FeatureController sidecar security.owner_scoping + authorization_assertions + stress_findings.auth_gates[0]
+      wrong-role question: 'All four auth modes: 200 OK ... the role distinction has no effect'). This is the
+      explicit design choice — feature flags describe the deployment, not the principal.
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: security.owner_scoping + stress_findings.auth_gates[0]
+        cite: "FeatureController.java:12-21 + FeatureResolverImpl.java:33-36"
+        note: "no @PreAuthorize, no per-user filter; uniform response"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a feature is disabled, the UI gives the user a clear signal that the affordance was hidden by an operator setting (a placeholder, a disabled state, or a tooltip) rather than silently rendering nothing."
+  derivation: "Senior-PO UX seed (Rule 9 — is it intuitive? does the user understand the state?): a silently-absent control is indistinguishable from a bug or a load failure."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      WithFeature renders its children when the feature is enabled and returns null otherwise (Rule-8 read
+      WithFeature.tsx:31-32). There is no placeholder, no disabled state, no tooltip — the gated affordance
+      simply does not exist in the DOM. The optional renderContent callback (WithFeature.tsx:8-12,27-28) COULD
+      render an explanatory element, but the children-mode consumers (Message.tsx:59, DataEntityDetailsHeader.tsx:132
+      per FeatureController sidecar) use the silent children form, not renderContent.
+    evidence:
+      - sidecar: "(Rule-8 source_read_for_validation)"
+        section: WithFeature.tsx
+        cite: "WithFeature.tsx:27-28,31-32"
+        note: "source_read_for_validation: true — children path returns null when disabled; renderContent path exists but is not used by the gated affordances"
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: dependencies_semantic.couples-to
+        cite: "Message.tsx:59 + DataEntityDetailsHeader.tsx:132"
+        note: "children-mode WithFeature consumers — silent disappearance"
+    operator_visible_failure: |
+      An end user on a deployment with Data Collaboration off sees no Discussions tab and no Open-in-Slack
+      button, with nothing to explain the absence. They cannot tell whether the feature is unavailable by
+      design, broken, or still loading. Combined with H-002 (the navigation tab IS visible), the user is
+      invited into a surface and then shown a blank where the controls should be — the worst of both states.
+      Severity MEDIUM: not a security or data defect, but a real intuitiveness/consistency failure of the kind
+      a senior PO flags unprompted.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    sme_consultation_recommended: true
+    sme_consultation_question: "Do operators of data-catalog platforms (DataHub / Amundsen / OpenMetadata) expect a disabled optional feature to show an explanatory placeholder, or is silent absence the industry-accepted norm for deploy-time feature flags?"
+    sme_archetype: implicit-requirements
+
+- id: H-010
+  hypothesis: "If a deployment override removes the datacollaboration.enabled / notifications.enabled keys entirely (a minimal externalized application.yml), the platform still boots and the feature is treated as off."
+  derivation: "Negative-space: operators frequently write a slim override config; the @Value SpEL uses the bare ${...} form with no :false default."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The behaviour splits on WHICH config layer the key is missing from. BooleanUtils.isTrue(null) is
+      null-tolerant, so the RESOLVER logic is fail-soft (treats absence as false). BUT the @Value bindings
+      ${datacollaboration.enabled} / ${notifications.enabled} carry NO SpEL-level default (FeatureResolver.java:6-10),
+      so if the key is absent from BOTH the override AND the bundled application.yml, Spring fails the @Component
+      constructor at boot with 'Could not resolve placeholder' — the app does not start (FeatureController sidecar
+      bugs_limitations_corner_cases[5] + dependencies_semantic.requires-config). The bundled application.yml supplies
+      false, so a stock install is safe; an operator who writes a fresh application.yml without copying these keys
+      bricks startup with an opaque error. So: 'still boots, treated as off' is TRUE when the bundled defaults remain
+      in the config tree, FALSE (boot failure) when they are removed entirely.
+    evidence:
+      - sidecar: odd-platform__java__FeatureController__controller-class__FeatureController.md
+        section: bugs_limitations_corner_cases[5] + dependencies_semantic.requires-config
+        cite: "FeatureResolver.java:6-10 + FeatureResolverImpl.java:17-18 + application.yml:173,205"
+        note: "bare SpEL no :default → BeanCreationException on fully-absent key"
+    operator_visible_failure: |
+      An operator writing a minimal externalized config (the documented 'edit config and restart' workflow)
+      who omits these two keys gets an opaque BeanCreationException at startup citing an internal placeholder
+      name, with no hint that two feature-flag keys are the cause. This is the exact failure PLT-105 already
+      tracks. The gap is partial because the resolver code itself is fail-soft; the boot failure is in the
+      @Value wiring, not the logic.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "The live documentation accurately tells an operator that toggling a platform feature requires a JVM restart (the flags are not hot-reloadable)."
+  derivation: "Doc-claim seed: the configuration-and-deployment/odd-platform page documents datacollaboration.enabled / notifications.enabled; an operator reads it to understand toggling semantics."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Per DOC-GAP-116's close-note (verified WebFetch 2026-05-29, status 200), the live
+      configuration-and-deployment/odd-platform page now states the feature set is 'captured at JVM boot and
+      frozen ... not reflected' via actuator/refresh — which matches the boot-immutable implementation
+      (H-003 / FeatureResolverImpl.java:14,16-31). The boot-immutability doc gap is CLOSED on the live page.
+    evidence:
+      - sidecar: "(docs cross-reference)"
+        section: doc-gaps.md DOC-GAP-116 close-note + doc-understanding cross-ref
+        cite: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform (200, 2026-05-29)"
+        note: "live page documents boot-immutability accurately; matches code"
+    confidence: MEDIUM
+    routes_to_finding: none
+    use_case_kind: render
+    coverage: verified
+    test_ref: "n/a — doc-claim verified against live page (DOC-GAP-116 close-note), not a code test; coverage=verified by live-doc confirmation"
+
+- id: H-012
+  hypothesis: "The Data Collaboration doc page tells the operator that enabling datacollaboration.enabled is sufficient to make the Discussions feature fully usable from the UI (i.e. the page sets correct expectations about what the flag does)."
+  derivation: "Doc-claim seed: the data-collaboration page frames the flag as 'disabled by default; 404 when disabled' — an operator reads this as 'flip the flag and the feature works'."
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The data-collaboration page (live 200, 2026-05-29) accurately documents the backend gating
+      (@ConditionalOnDataCollaboration → 404 when disabled) per doc-understanding
+      active-platform-features__data-collaboration.md doc_claim_vs_code[2]. BUT the page's framing implies the
+      flag is THE gate, and it does NOT mention that even with the flag ON, the navigation chrome does not
+      change (H-002) and that disabled affordances vanish silently (H-009). An operator reading the page would
+      not learn that disabling the feature leaves its tab visible, nor that the UI gives no placeholder. The doc
+      is correct on what it says and silent on the chrome/UX consequences.
+    evidence:
+      - sidecar: "(docs cross-reference)"
+        section: doc-understanding active-platform-features__data-collaboration.md doc_claim_vs_code[2]
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration (200, 2026-05-29)"
+        note: "doc accurate on backend gating; silent on chrome-invariance + silent-disappearance"
+    operator_visible_failure: |
+      An operator who disables Data Collaboration trusting the doc's '404 when disabled' framing still sees
+      the Data Modelling tab and is surprised when users report a half-empty page. The doc does not set the
+      expectation that the tab persists. This is the doc-side companion of H-002; DOC-248 (status done)
+      already publishes the chrome-invariance caveat on Features.md / odd-platform.md, but the
+      data-collaboration feature page itself does not carry it.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Navigation chrome is invariant to the feature-flag set — disabling a feature leaves its top-level tab visible; users navigate into disabled, non-functional surfaces."
+  dedup_status: already_tracked
+  tracked_as: PLT-068
+  proposed_fix_anchor: "ToolbarTabs.tsx:34-82 — thread useAppSelector(getActiveFeatures) into the tabs useMemo and filter feature-gated tabs (PLT-068 Thread A)."
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "Feature-flag set is boot-immutable — runtime toggle + actuator/refresh is silently ignored; getActiveFeatures keeps returning the boot snapshot until JVM restart."
+  dedup_status: already_tracked
+  tracked_as: PLT-068
+  proposed_fix_anchor: "FeatureResolverImpl.java:14,16-31 — @RefreshScope or per-call re-read (PLT-068 Thread B; recommended B1)."
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: "Bare ${datacollaboration.enabled} / ${notifications.enabled} @Value SpEL has no :false default — a minimal override config that omits the keys bricks JVM startup with an opaque placeholder error."
+  dedup_status: already_tracked
+  tracked_as: PLT-105
+  proposed_fix_anchor: "FeatureResolver.java:6-10 — add :false SpEL defaults (PLT-105 suggested fix)."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Under auth.type=DISABLED, GET /api/features/active is anonymously reachable and lets a network scanner fingerprint which optional features are on (enum names only)."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-116
+- hypothesis_id: H-007
+  one_line: "The Feature enum is a cross-repo generated contract; a backend-added Feature value without a UI regeneration is silently treated as disabled — coordinated release required, no drift detection."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform (feature-flag config section) OR doc-gap"
+  distinct_from: "DOC-248 (DOC-248 covers chrome-invariance + boot-immutability; this is the enum-skew silent-disable class, a different facet)"
+- hypothesis_id: H-009
+  one_line: "WithFeature renders null (no placeholder/tooltip) when a feature is off — a disabled affordance is indistinguishable from a bug or a load failure to the end user."
+  dedup_status: net_new
+  recommended_log_as: "caveat / UX backlog item — WithFeature silent-disappearance; SME consult recommended before filing"
+
+### functional_test_demands
+- use_case_id: F-034-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Both flags true → GET /api/features/active returns {DATA_COLLABORATION, ALERT_NOTIFICATIONS} and the UI affordances become visible."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-1)"
+  proposed_test: "@WebFluxTest FeatureController with datacollaboration.enabled=true + notifications.enabled=true → expect 200, items contains both enum values (integration)."
+- use_case_id: F-034-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "A disabled feature's top-level navigation tab is not rendered (or is disabled)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-2) — regression guard for PLT-068 Thread A fix"
+  proposed_test: "Playwright IT (reuse tests/features harness): boot with datacollaboration.enabled=off, assert the relevant tab is absent/disabled; boot with it on, assert present. Pins the chrome-vs-flag contract."
+- use_case_id: F-034-UC-3
+  hypothesis_id: H-003
+  kind: edit-reconcile
+  promise: "A runtime flag toggle is reflected without a JVM restart."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-3) — characterization test pinning boot-immutability until PLT-068 Thread B lands"
+  proposed_test: "Integration: refresh property source, assert /api/features/active response UNCHANGED (pins current behaviour, flips RED when @RefreshScope is added)."
+- use_case_id: F-034-UC-4
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "Stock install (both flags false) → GET /api/features/active returns 200 with items=[] (not null, not 404)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-4)"
+  proposed_test: "@WebFluxTest FeatureController with both flags false → expect 200, items=[] exactly (integration)."
+- use_case_id: F-034-UC-5
+  hypothesis_id: H-005
+  kind: cross-actor
+  promise: "Under DISABLED, an anonymous caller receives 200 with the feature list (documented anonymous-reach baseline)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-5) — security-class assertion locking the DISABLED reach"
+  proposed_test: "Security integration: auth.type=DISABLED, anonymous GET /api/features/active → 200 with FeatureList body."
+- use_case_id: F-034-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "Under LOGIN_FORM/OAUTH2/LDAP, an anonymous caller is blocked before reaching FeatureController."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-034-1 (resolve 302-vs-401), then TEST-GAP-NNN (pending mint) regression guard against accidental whitelist drift"
+  proposed_test: "Security integration per mode: anonymous GET /api/features/active → 302 or 401 (not 200). Pins the secured-mode block."
+- use_case_id: F-034-UC-7
+  hypothesis_id: H-007
+  kind: grammar
+  promise: "Backend Feature-enum additions and UI generated-sources stay in lockstep (no silent-disable on drift)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-7) — cross-repo enum round-trip contract test"
+  proposed_test: "Contract test asserting the backend Feature enum (components.yaml) and the UI generated Feature enum are value-equal; fails on drift."
+- use_case_id: F-034-UC-8
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "The feature-flag set is identical across ADMIN / READ_ONLY / anonymous — deployment-wide, not per-user."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-8)"
+  proposed_test: "Integration: same FeatureList returned for an ADMIN principal and a READ_ONLY principal (and anonymous under DISABLED)."
+- use_case_id: F-034-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "A disabled feature's UI affordance shows an explanatory state, not a silent blank."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-9) — gated on the H-009 UX decision (SME consult)"
+  proposed_test: "Playwright IT: with a feature off, assert a placeholder/disabled affordance exists where the gated control would be (once the UX is decided)."
+- use_case_id: F-034-UC-10
+  hypothesis_id: H-010
+  kind: teardown-constraint
+  promise: "Omitting the feature-flag keys from a minimal override config does not brick startup."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-034-UC-10) — regression guard for PLT-105 :false-default fix"
+  proposed_test: "Context-load test with the two keys absent → assert the context starts (after the :false defaults land); pins the PLT-105 fix."
+- use_case_id: F-034-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "The Data Collaboration doc page sets correct UI expectations (tab persists when off; affordances vanish silently)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "DOC-GAP (pending mint) — extend the data-collaboration feature page with the chrome-invariance + silent-disappearance caveat (companion to DOC-248)"
+  proposed_test: "n/a — doc-gap, verified by live-site fetch post-merge."
+
+### probes_emitted
+- probe_id: PENDING-F-034-1
+  hypothesis_id: H-006
+  emitted_by: feature-reflector
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  question: "Under auth.type=LOGIN_FORM / OAUTH2 / LDAP, what is the exact HTTP status (302 vs 401) and response shape an UNAUTHENTICATED caller sees on GET /api/features/active? Static inference confirms .authenticated() applies (blocked), but the precise filter-chain response per mode needs a running stack."
+  expected_outcome: "Anonymous caller is BLOCKED (not 200) under all three secured modes — 302 redirect to /login under LOGIN_FORM; 401 (or 302 to provider) under OAUTH2/LDAP. Corroborates H-006 and overlaps the sidecar's existing P-132."
+  overlaps_sidecar_probe: P-132
+  local_execution: "docker-compose odd-platform with auth.type set per run + curl without credentials"
+
+### validation_gaps
+- sidecar: "(missing) react-component:WithFeature.tsx + the gated affordance surfaces (Message.tsx, DataEntityDetailsHeader.tsx Discussions tab / Open-in-Slack button)"
+  field_insufficient: "no enriched sidecar exists for the WithFeature consumer UI surfaces; this reflection judged the user-visible disabled-state experience (H-009) from a Rule-8 single-line read of WithFeature.tsx plus the FeatureController sidecar's audiences cites, NOT from an enriched UI sidecar of the actual Discussions tab / Open-in-Slack control."
+  proposed_refresh: "Enrich the Data Collaboration Discussions tab + Open-in-Slack button UI components (the children-mode WithFeature consumers) so the reflection of 'what the user sees when the flag is off' is grounded in the real affordance, not inferred. Per Rule 9, this feature has ONE enriched UI hop (ToolbarTabs, the negative consumer); the POSITIVE consumer surfaces are unenriched — the on-state user experience is partially inferred."
+- sidecar: "(unresolved) service:FeatureResolverImpl"
+  field_insufficient: "FeatureResolverImpl is a contributing node marked unresolved with no standalone sidecar; its boot-immutability + null-tolerant-unwrap facts were read out of the FeatureController sidecar's understanding/stress_findings rather than a dedicated sidecar."
+  proposed_refresh: "Promote FeatureResolverImpl to its own sidecar (it carries the boot-immutable implicit ADR and the SpEL-no-default boot-failure risk that two PLT issues already track) so future reflections cite it directly."
+
+### doc_drift_findings
+- hypothesis_id: H-012
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration"
+  doc_says: "Data Collaboration is disabled by default and returns 404 when disabled (implies the flag is THE gate to a working/absent feature)."
+  code_does: "Even with the flag ON the navigation chrome is unchanged (the tab persists when OFF), and disabled affordances vanish with no placeholder — the page sets no expectation about either."
+  recommended_log_as: "DOC-GAP (pending mint) — companion to DOC-248; extend the data-collaboration feature page with the chrome-invariance + silent-disappearance UX caveat."
+
+## maintainer_notes
+<!-- preserved across refreshes; only block the maintainer hand-edits -->

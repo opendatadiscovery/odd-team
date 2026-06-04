@@ -570,6 +570,16 @@ observed_vs_expected:
       generation, WebFlux configuration, Jackson serialisation, the
       existence-check helper, or the jOOQ repository would silently
       break this endpoint with the build still green.
+      UPDATE 2026-06-04 (feature-reflector v0.3.0): PARTIALLY CLOSED. The
+      file-system search above is now STALE — AlertServiceImplTest.java
+      EXISTS (@validates F-014; getDataEntityAlerts_nonExistentEntity_errorsNotFound
+      + getDataEntityAlertsCounts_nonExistentEntity_errorsNotFound) and
+      IT-027 entity-alerts-display.spec.ts (@validates F-014) covers the
+      per-entity-tab happy-path render + empty state end-to-end. The 404
+      guard + happy-path render + empty state are now COVERED; the
+      cross-owner / soft-delete / pagination-boundary / DISABLED-anonymous
+      SECURITY cells remain GAP. See use_case_coverage below + the F-014
+      reflection functional_test_demands.
     expected: |-
       Add a WebTestClient regression covering: (a) HTTP-level 200 with
       AlertList shape, (b) 404 on non-existent dataEntityId, (c)
@@ -582,6 +592,117 @@ observed_vs_expected:
       STATIC — primary-source in batch L sidecar
       tests_coverage_semantic.uncovered_behaviours + file-system search
       2026-05-19. Severity: MEDIUM.
+use_cases:
+  # LSN-030 / feature-reflector v0.3.0 promise layer (2026-06-04). Projection of the F-014 reflection
+  # hypotheses (detail/F-014.yaml). uc_id == hypothesis id. This is the canonical home the
+  # test-coverage-mapper Step 2b reads. coverage:verified ONLY where a REAL test exists (grepped 2026-06-04
+  # across odd-platform test tree + odd-team integration-tests). The full hypothesis + validation stays in
+  # the reflection; this is the compact promise/coverage projection.
+  - uc_id: F-014-UC-12
+    kind: happy-path
+    promise: "When an entity HAS alerts, opening its per-entity Alerts tab renders the alert history (200 OK AlertList through UI->API->DB)."
+    actor: odd-platform-ui-end-user
+    trace: "DataEntityController.java:315-321 -> AlertServiceImpl.java:138-143 -> ReactiveAlertRepositoryImpl.java:182-199"
+    coverage: verified
+    test_ref: "IT-027 / entity-alerts-display.spec.ts :: an open alert renders on the Alerts tab"
+    test_demand: none
+  - uc_id: F-014-UC-14
+    kind: "empty/no-match"
+    promise: "When an entity has NO alerts, the per-entity Alerts tab renders nothing (clean data-driven empty state, not an error)."
+    actor: odd-platform-ui-end-user
+    trace: "AlertServiceImpl.java:138-143 -> ReactiveAlertRepositoryImpl.java:182-199 (200 OK empty AlertList)"
+    coverage: verified
+    test_ref: "IT-027 / entity-alerts-display.spec.ts :: an entity with no alerts does not render an alert (negative)"
+    test_demand: none
+  - uc_id: F-014-UC-11
+    kind: "empty/no-match"
+    promise: "When data_entity_id does not exist, GET /api/dataentities/{id}/alerts returns 404 (not an empty 200 hiding the bad id)."
+    actor: odd-api-consumer
+    trace: "AlertServiceImpl.java:140,327-335,330 (checkDataEntityExistence -> NotFoundException)"
+    coverage: verified
+    test_ref: "AlertServiceImplTest.getDataEntityAlerts_nonExistentEntity_errorsNotFound"
+    test_demand: none
+  - uc_id: F-014-UC-13
+    kind: happy-path
+    promise: "Per-entity alert pagination is duplicate/skip-free at page boundaries (deterministic order by LAST_CREATED_AT DESC, ID DESC)."
+    actor: odd-api-consumer
+    trace: "ReactiveAlertRepositoryImpl.java:474-483,505 (shared createAlertJoinQuery ordering)"
+    coverage: unverified
+    test_demand: "missing-functional (confirmed-but-untested — highest-value: the ordering promise is hand-proven, no guard)"
+  - uc_id: F-014-UC-01
+    kind: cross-actor
+    promise: "A user with no ownership of entity X cannot read X's alert history (owner-scoped or denied)."
+    actor: odd-platform-ui-end-user
+    trace: "ReactiveAlertRepositoryImpl.java:182-199 (no OWNERSHIP join) + SecurityConstants.java:98-355 (no rule)"
+    coverage: unverified
+    test_demand: "missing-functional (CONTRADICTED — regression guard + characterization pin of current cross-owner posture)"
+  - uc_id: F-014-UC-02
+    kind: cross-actor
+    promise: "Under DISABLED the per-entity alert read is not anonymously reachable without a network-edge gate."
+    actor: external-systems
+    trace: "DataEntityController.java:315-321 + SecurityConstants.java:98-355 (no rule -> anonymous reach under DISABLED)"
+    coverage: unverified
+    test_demand: "missing-functional (CONTRADICTED — DISABLED dimension of the cross-owner posture pin)"
+  - uc_id: F-014-UC-03
+    kind: "empty/no-match"
+    promise: "A nonsensical size (1_000_000) is clamped and page=0 is rejected with a clean 400."
+    actor: odd-api-consumer
+    trace: "DataEntityController.java:317-318 + components.yaml:4213-4229 + ReactiveAlertRepositoryImpl.java:189 (no clamp; (page-1)*size negative OFFSET)"
+    coverage: unverified
+    test_demand: "missing-functional (CONTRADICTED — regression guard for the @Max/@Min/clamp fix)"
+  - uc_id: F-014-UC-04
+    kind: "empty/no-match"
+    promise: "status=OPEN on the listing returns only OPEN alerts (symmetry with the counts endpoint)."
+    actor: odd-api-consumer
+    trace: "DataEntityController.java:315-321 (no status param) vs :324-330 (counts has one)"
+    coverage: unverified
+    test_demand: "missing-functional (CONTRADICTED — pairs with the listing-status-param enhancement)"
+  - uc_id: F-014-UC-05
+    kind: cross-actor
+    promise: "A soft-deleted entity gives a consistent alert-history answer across UI and API."
+    actor: odd-platform-ui-end-user
+    trace: "AlertServiceImpl.java:327-335 (API serves soft-deleted) vs DataEntityDetailsRoutes.tsx:70-84 (UI route redirects on !isStatusDeleted)"
+    coverage: unverified
+    test_demand: "missing-functional (PARTIAL — cross-channel split pin; same class as F-022/PLT-117 + F-021/PLT-031)"
+  - uc_id: F-014-UC-06
+    kind: render
+    promise: "The per-entity Alerts tab lets the operator filter (status/date) and export from the screen."
+    actor: platform-operator
+    trace: "DataEntityAlerts.tsx:31,78-80 (hardcoded size=30; no filter/sort/status/export UI)"
+    coverage: unverified
+    test_demand: "missing-functional (CONTRADICTED — UX completeness; verifies the eventual PLT-050 filter/export affordance)"
+  - uc_id: F-014-UC-07
+    kind: cross-actor
+    promise: "An unprivileged viewer does not see a Resolve/Reopen action they cannot use."
+    actor: data-steward-owner
+    trace: "AlertItem.tsx:159-166 (button rendered enabled) + :48-70 (permission resolved post-click)"
+    coverage: unverified
+    test_demand: "missing-functional (CONTRADICTED — post-action-permission-discovery pin; PLT-034 + PLT-053)"
+  - uc_id: F-014-UC-08
+    kind: cross-actor
+    promise: "The halt-config affordance is hidden from a user lacking DATA_ENTITY_ALERT_CONFIG_UPDATE."
+    actor: data-steward-owner
+    trace: "WithPermissions.tsx:12-49 (all branches render children — context not gate) + DataEntityAlerts.tsx:53"
+    coverage: unverified
+    test_demand: "missing-functional (PARTIAL — WithPermissions context-not-gate pin; PLT-034)"
+  - uc_id: F-014-UC-09
+    kind: render
+    promise: "The payload does not leak a raw OIDC/LDAP login name on the cross-owner-readable surface."
+    actor: odd-platform-ui-end-user
+    trace: "ReactiveAlertRepositoryImpl.java:83-86,499-502 (username->owner LEFT JOIN; NULL owner -> raw username on unlink)"
+    coverage: unverified
+    test_demand: "missing-functional (PARTIAL — statusUpdatedBy-username privacy pin; DOC-GAP-082 class)"
+  - uc_id: F-014-UC-10
+    kind: cross-actor
+    promise: "The end-to-end audit-export compound (cross-owner + soft-deleted + large size) behaves as the doc workaround implies."
+    actor: platform-operator
+    trace: "ReactiveAlertRepositoryImpl.java:182-199 + AlertServiceImpl.java:327-335 + ReactiveAlertRepositoryImpl.java:189"
+    coverage: unverified
+    test_demand: "PENDING-F-014-1 (probe; parallel-safe — local docker-compose; not yet minted)"
+use_case_coverage:
+  verified: 3
+  total: 14
+  note: "SECOND COVERAGE FRONTIER (verified promises / total promises) — distinct from line/method coverage and from the test_matrix cells. 3/14: H-012 happy-path render (IT-027) + H-014 empty-state (IT-027) + H-011 404-on-absent-id (AlertServiceImplTest), all @validates F-014. The 11 unverified promises are the ENTIRE security/scoping/bounds frontier plus ONE confirmed-but-untested promise (F-014-UC-13 pagination ordering — the highest-value functional test to write per LSN-030). The v0.2.0 'zero test coverage' is now PARTIALLY closed (happy/empty/404) and STILL OPEN for every security cell. See detail/F-014.yaml cross_references.functional_test_demands."
 test_matrix:
   unit:
     state: GAP

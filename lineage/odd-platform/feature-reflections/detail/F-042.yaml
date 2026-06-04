@@ -1,0 +1,657 @@
+---
+feature_id: F-042
+pillar_anchored_id: P-08:F-012
+pillar: Management & Administration (UI-shell failure-path chrome — cross-cutting; serves P-01 / P-06 / P-07 page-level fetch errors)
+feature_name: |-
+  Page-level UI Error Display — per-page-component-owned AppErrorPage widget
+  rendering HTTP status + statusText + Home-Page CTA on async-thunk
+  rejection — combined with the absent global catch-all route and absent
+  React error boundary that produce a BLANK PAGE on bare-URL fall-through
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+  - odd-platform__ts__routes__route__terms.md
+  - odd-platform__ts__routes__route__masterData.md
+source_reads_for_validation:
+  # Rule 8 exception — App.tsx is referenced (unresolved) in the chain; a single Read confirmed the
+  # route registry + absence of path='*' + absence of ErrorBoundary at PRIMARY SOURCE.
+  - file: "odd-platform-ui/src/components/App.tsx"
+    lines: "2,59-89"
+    captured: "11 <Route> children inside <Routes>; NO <Route path='*'>; NO ErrorBoundary wrapping <Routes>"
+  - file: "odd-platform-ui/src/components/shared/elements/AppErrorPage/AppErrorPage.tsx"
+    lines: "1-40"
+    captured: "controlled render; reads only error?.status (25) + error?.statusText (29); Home Page Button to='/' (32); offsetTop default 32 (16)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Management pillar page (P-08). Carries NO mention of error pages, HTTP error codes shown in
+      the UI, blank-page behaviour, a 404 page, or a "Return to the Home Page" CTA. The failure-path
+      chrome is undocumented end-to-end (confirmed in AppErrorPage sidecar docs_link_semantic).
+  - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Business Glossary page — relevant because bare /terms is one of the documented fall-through URLs.
+      The page describes a "Dictionary tab" / "catalog-wide list of all terms" but never cites /terms as
+      a URL and never describes what a user sees at a bare/unknown URL.
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 4
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "Any render-time throw anywhere in the SPA white-screens the whole console (no error boundary) — measured RED by IT-006 (#root emptied)."
+related_feature_flows: [F-024, F-026, F-041, F-206, F-207]
+related_concepts:
+  - error-display-widget
+  - error-state-redux-loader
+  - http-status-code-display
+  - react-router-no-fallback
+  - react-router-fall-through-blank-page
+related_drift_classes:
+  - ui_error_handling_per_page_owned_no_global_safety_net
+  - bare_url_fall_through_produces_blank_page_no_route_path_star_catch_all
+  - no_react_error_boundary_anywhere_in_spa_uncaught_throw_unmounts_entire_app
+  - error_url_and_error_message_fields_silently_dropped_information_disclosure_boundary
+  - react_query_error_cast_to_redux_errorstate_undefined_behaviour_at_runtime
+  - no_retry_cta_only_home_page_navigation
+  - unknown_error_fallback_when_showError_passed_without_error_prop
+  - toast_side_channel_carries_message_for_6s_then_lost
+new_drift_classes_proposed: []
+---
+
+# Page-level UI Error Display — product-owner reflection
+
+## product_owner_narrative
+
+The Page-level UI Error Display is the platform's **failure-path chrome** — the surface a user sees
+when a page they opened cannot load. It is the sibling of the Application Toolbar (F-041): the toolbar
+is the success-path chrome rendered while a page works; AppErrorPage is the widget rendered in its place
+when that page's data fetch fails. Its audience is everyone who uses the platform — a data engineer whose
+glossary term 404s, an operator whose datasource list 403s, an analyst whose search results time out — and
+its job is to turn an opaque failed request into a legible "something went wrong, here is the HTTP code,
+here is the way back home" (per AppErrorPage sidecar `understanding` + `audiences`).
+
+A user never invokes this feature directly; it appears reactively. When any of 23 page-level components
+fires an async data fetch and that fetch rejects, the component reads the error out of the redux loader
+slice and conditionally mounts `<AppErrorPage showError error={...} />` in its own subtree (per
+`upstream_callers`, 23 enumerated caller files; canonical pattern at `DataEntityDetails.tsx:116-119`). What
+the user then sees is a single full-height pane: a large HTTP status code on the left (e.g. `404`), a short
+status-text heading on the right (e.g. `Not Found`), and a "Return to the Home Page" link
+(`AppErrorPage.tsx:20-37`, confirmed at primary source). The widget reads no global state — the parent
+decides whether to show it and supplies the error (per `invariants`: "CONTROLLED component, not subscriber").
+
+The working part a product owner would highlight in a demo is the **information-disclosure boundary**: the
+error object carries four fields — `{status, statusText, url, message}` — populated upstream by
+`getErrorResponse` (`errorHandling.tsx:12-26`), but the page renders only the two least-sensitive ones. The
+failing API URL and the backend's response-body message — which can carry stack-trace fragments, SQL exception
+text, or echoed PII — are never placed in the DOM (`AppErrorPage.tsx:24-29`, confirmed). The backend `message`
+gets a separate, short-lived channel: a `react-hot-toast` shown for 6 seconds (`errorHandling.tsx:48-68` +
+`App.tsx:55` 6000ms default). This two-channel split (status code persistent on the page, message ephemeral
+in a toast) is the feature's load-bearing safety property — and it is entirely undocumented in the code (no
+JSDoc, no comment) and untested.
+
+The feature's defining characteristic, however, is **structural absence** — what is NOT here. There is NO
+React error boundary anywhere in the SPA (Grep `ErrorBoundary|componentDidCatch|getDerivedStateFromError`
+over `odd-platform-ui/src` returns zero matches; confirmed). And there is NO `<Route path='*'>` catch-all in
+the route registry (`App.tsx:59-89` declares 11 routes, none with `path='*'`; confirmed at primary source).
+AppErrorPage is reached ONLY when an async thunk rejects — never when React-Router fails to match a URL, and
+never when a component throws synchronously during render. The consequence is two distinct blank-page failure
+modes the user can hit: (a) typing/sharing a bare URL the router does not match (bare `/terms`, bare
+`/master-data`, any unknown path) renders the toolbar plus an empty pane (per terms + masterData route
+sidecars); (b) any render-time exception in any view unmounts the entire React tree to the closest boundary —
+of which there are none — white-screening the whole console, nav chrome included.
+
+This feature is cross-cutting: it composes with F-041 (the success-path toolbar) and shares its surface with
+the Discovery pillar (P-01 — DataEntityDetails and 7 sub-tabs), the Data Glossary (P-06 — TermDetails, where
+`fetchTermDetails` sets `switchOffErrorMessage: true` so AppErrorPage is the ONLY error surface for term
+failures, per the feature-flow cross_pillar block), and Alerts/Activity (P-07). Because it is the only error
+affordance every one of those pillars relies on, its structural gaps are not local — a blank page on a
+glossary fetch and a blank page on a datasource fetch are the same missing safety net seen from two pillars.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens a page whose data fetch fails with an HTTP error (e.g. a data entity that 404s), they see a page showing the HTTP status code and a short status-text heading, with a link back to the Home Page — not a blank screen and not a raw stack trace."
+  derivation: "Endpoint/widget shape — AppErrorPage renders error?.status + error?.statusText + a Home-Page Button; 23 callers mount it on async-thunk rejection."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      For the async-thunk-rejection path the widget delivers exactly this. AppErrorPage.tsx:20-37 returns a
+      full-viewport grid: Typography variant='errorCode' renders {error?.status} (line 24-26), Typography
+      variant='h1' renders {error?.statusText ?? t('Unknown Error')} (line 29), and a Button text={t('Home
+      Page')} to='/' (line 32). DataEntityDetails.tsx:116-119 is the canonical caller that supplies showError
+      + error from the redux loader slice. The status code shown is the backend's HTTP status verbatim.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "understanding + concepts.operations[render-error-pane]"
+        cite: "AppErrorPage.tsx:20-37"
+        note: "controlled render of status + statusText + Home-Page CTA"
+      - sidecar: "(source read for validation)"
+        section: "AppErrorPage.tsx render"
+        cite: "AppErrorPage.tsx:24-32"
+        note: "confirmed at primary source — errorCode (24-26), h1 statusText (29), Button to='/' (32)"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  # NOTE: confirmed-but-untested — no test (unit or e2e) asserts the happy error-pane renders the status code.
+  # The Vitest harness exists (src/**/__tests__) but has no AppErrorPage test; no IT covers the render.
+
+- id: H-002
+  hypothesis: "When any single view in the platform throws a render-time error (a malformed/version-skewed API payload, an out-of-enum value, an unexpected null), the rest of the console keeps working — the navigation chrome survives and the user can navigate away to an unaffected page — rather than the whole application going blank."
+  derivation: "Negative-space + pillar-mission — a production console serving operators is expected to contain a fault to one view; AppErrorPage's name ('App Error Page') implies an app-level safety net."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is NO error boundary anywhere in the SPA. Grep ErrorBoundary|componentDidCatch|
+      getDerivedStateFromError over odd-platform-ui/src returns zero matches; the closest construct is
+      AppSuspenseWrapper (Suspense only, no error handling). AppErrorPage is a functional component with no
+      error-boundary lifecycle and is mounted as a SIBLING inside page subtrees, never as an ancestor wrapping
+      <Routes> (App.tsx:59-89 has no boundary). React 18's default on an uncaught render throw is to unmount
+      the entire tree to the closest boundary — none exists — so the whole App unmounts and #root empties.
+      IT-006 measured this on 2026-06-02: injecting tables_dashboard=null made DataQualityContent.tsx:55
+      throw during render and #root innerText length went to 0 (nav chrome gone).
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "bugs_limitations_corner_cases[1] + invariants[no error boundary]"
+        cite: "AppErrorPage.tsx:13-38 + Grep over odd-platform-ui/src (zero matches)"
+        note: "no componentDidCatch / getDerivedStateFromError; AppErrorPage is a sibling, not an ancestor"
+      - sidecar: "(source read for validation)"
+        section: "App.tsx Routes block"
+        cite: "App.tsx:59-89"
+        note: "confirmed at primary source — <Routes> has no ErrorBoundary wrapper"
+      - sidecar: "(integration test, measured)"
+        section: "IT-006 run-log 2026-06-02"
+        cite: "integration-tests/e2e/specs/error-boundary-containment.spec.ts"
+        note: "RED measured — #root innerText length = 0 after injected render throw (white-screen reproduced)"
+    operator_visible_failure: |
+      A SINGLE local data fault becomes a TOTAL outage. One malformed or version-skewed API payload, one
+      out-of-enum status value (the PLT-052 dashboard palette crash is a live instance), one unexpected null
+      anywhere in the component tree blanks the entire console: the navigation chrome, every route, the toolbar
+      — all gone, leaving a white screen with no error message and no recourse short of a hard reload (and the
+      reload lands on the same poisoned data). The operator cannot even navigate to an unaffected page to keep
+      working. Lazy-chunk-load failures (React.lazy at App.tsx:30-41) compound this: a chunk-load failure is an
+      indefinitely-pending Suspense fallback in production. The feature named "App Error Page" cannot catch any
+      of these — it only renders for async-thunk rejections, which are a strict subset of the ways a view fails.
+    severity: HIGH
+    confidence: HIGH
+    probe_id: ""
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: verified
+    test_ref: "integration-tests/e2e/specs/error-boundary-containment.spec.ts (IT-006 — RED-pinned, validates F-042)"
+    test_demand: functional
+  # coverage verified: IT-006 is a real runnable Playwright spec that exercises + pins this exact behaviour
+  # (currently RED by design, pinning the open bug TEST-GAP-1013). The functional_test_demand is the
+  # regression guard that flips GREEN when a root/route-level ErrorBoundary is added.
+
+- id: H-003
+  hypothesis: "When a user types or follows a link to a bare or unknown URL — bare /terms, bare /master-data, or any path no route matches — they see a recognisable 'page not found' surface (a 404 pane or a redirect), not a silent blank page below the toolbar."
+  derivation: "Negative-space + endpoint shape — every production SPA is expected to handle no-match URLs; React-Router v6 no-match renders nothing without a path='*' catch-all."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      App.tsx:59-89 declares 11 <Route> entries and NO <Route path='*'> catch-all (confirmed at primary
+      source). React-Router-DOM v6's no-match behaviour is to render nothing inside <Routes>. The AppToolbar
+      (App.tsx:56, outside <Routes>) still renders, but the route-body area is empty. Two concrete cases are
+      load-bearing: bare /terms matches the parent route (App.tsx:66) which has a :termId/* child but NO index
+      route and NO element on the parent → blank pane (terms route sidecar); bare /master-data matches NO route
+      at all (masterDataRoutes only exports lookupTablesPath() → /master-data/lookup-tables; no /master-data
+      parent) → blank pane (masterData route sidecar). Worse, the Master Data toolbar tab still lights up as
+      selected on bare /master-data via pathname.includes('master-data') (ToolbarTabs.tsx:101).
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__terms.md
+        section: "bugs_limitations_corner_cases[0] + invariants[no element on /terms]"
+        cite: "App.tsx:66-68 + termsRoutes.ts:21-23"
+        note: "/terms parent has no index child, no element — bare /terms renders blank; pinned by P-164"
+      - sidecar: odd-platform__ts__routes__route__masterData.md
+        section: "bugs_limitations_corner_cases[0] + stress_findings.name_behavior_pairs[BASE_PATH]"
+        cite: "App.tsx:60-89 + masterDataRoutes.ts:1"
+        note: "no /master-data parent route, no wildcard fallback — bare /master-data renders blank; P-163"
+      - sidecar: "(source read for validation)"
+        section: "App.tsx Routes block"
+        cite: "App.tsx:59-89"
+        note: "confirmed at primary source — 11 routes, none with path='*'"
+    operator_visible_failure: |
+      A user who hand-types a URL, follows a stale shared/bookmarked link, or clicks any code path that
+      navigates to bare /terms or /master-data lands on a working toolbar with a completely empty content area —
+      no '404', no message, no redirect, no Home-Page link. The only signal that anything is wrong is the
+      address bar. For /master-data the surprise is sharper: the toolbar tab highlights as if the user is on a
+      valid Master Data page, so the blank pane reads as "this feature is broken/empty" rather than "wrong URL".
+      The Business Glossary doc implies a browseable "catalog-wide list of all terms" exists — an operator who
+      deduces "maybe it's at /terms" gets the blank page. This is the documented cross-batch ZH+ZI observation.
+    severity: MEDIUM
+    confidence: HIGH
+    probe_id: ""
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+  # confirmed-contradiction but UNVERIFIED: no IT/spec navigates to bare /terms or /master-data. P-163/P-164
+  # are pending probes, not committed tests. A functional regression test is owed.
+
+- id: H-004
+  hypothesis: "When a page fails with a backend error, the failing API URL is never shown to the user on the error page (so internal endpoint structure is not disclosed in the rendered DOM)."
+  derivation: "Response-shape / security — ErrorState carries error.url (failing API URL) populated by getErrorResponse; the prop name 'error' implies the whole context could surface."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      AppErrorPage.tsx accesses ONLY error?.status (line 25) and error?.statusText (line 29). error.url —
+      populated upstream by getErrorResponse from response?.url (errorHandling.tsx:23) — is never read by the
+      JSX (Grep error\.url|error\?\.url over AppErrorPage/ returns no matches). The failing API URL does not
+      reach the DOM via this widget under any of the 23 callers.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "security.data_exposure + invariants[only status+statusText displayed]"
+        cite: "AppErrorPage.tsx:24-29 + redux/interfaces/loader.ts:3-8"
+        note: "only 2 of 4 ErrorState fields rendered; url omitted"
+      - sidecar: "(source read for validation)"
+        section: "AppErrorPage.tsx render"
+        cite: "AppErrorPage.tsx:24-29"
+        note: "confirmed at primary source — no error.url reference anywhere in the JSX"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+  # confirmed-but-untested — this is the load-bearing safety property of the widget and NOTHING pins it.
+  # The sidecar itself flags this as the single highest-leverage test (security class, P-176).
+
+- id: H-005
+  hypothesis: "When a page fails, the backend response-body message (which may carry stack traces, SQL exception strings, or echoed PII) is never persisted in the rendered error page DOM — at most it appears briefly in a transient channel."
+  derivation: "Security / negative-space — error.message is populated (body?.message or 'An error occurred') but a maintainer reading the prop signature would expect it surfaced; leaking it would be an information-disclosure bug."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The persistent error PAGE never renders error.message (AppErrorPage.tsx:24-29 reads only status +
+      statusText). So the page itself holds the boundary. BUT the message IS surfaced via a separate channel:
+      showServerErrorToast (errorHandling.tsx:48-68) emits a react-hot-toast carrying the backend message for
+      6 seconds (App.tsx:55 6000ms default). So the message is disclosed — briefly, side-of-screen — for every
+      error EXCEPT where the thunk sets switchOffErrorMessage: true (e.g. fetchTermDetails, terms.thunks.ts:83,
+      where AppErrorPage is then the ONLY surface and the message is suppressed entirely). The hypothesis holds
+      for the page but is "partly true" for the user: the message is shown, then lost.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "security.known_security_gaps[toast-side-channel] + implicit_adrs[1]"
+        cite: "AppErrorPage.tsx:24-29 + errorHandling.tsx:48-68 + App.tsx:55"
+        note: "page omits message; toast carries it for 6s then it is gone"
+      - sidecar: odd-platform__ts__routes__route__terms.md
+        section: "upstream_callers[TermDetails] (switchOffErrorMessage)"
+        cite: "terms.thunks.ts:83"
+        note: "term fetches suppress the toast — message disclosed nowhere"
+    operator_visible_failure: |
+      Two asymmetric failure modes. (1) Information-disclosure: for non-suppressed errors the backend message
+      (potentially a SQL exception fragment, a permission hint like 'You need DATA_ENTITY_READ', or echoed
+      input) is shown to whoever is at the screen for 6 seconds — short, but real, and not redacted. (2) Lost
+      recourse: the status code stays on the page indefinitely while the message vanishes in 6 seconds; a user
+      who blinks, or whose first toast is dismissed by a second, can never recover the backend's specific hint.
+      For term-detail failures the message is suppressed entirely, so the user gets only '404 / Not Found' with
+      zero context about which term or why.
+    severity: LOW
+    confidence: HIGH
+    probe_id: ""
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When a page fails with a transient backend error (a network blip, a brief 502), the user can retry the failed request from the error page without losing their place — e.g. a 'Try Again' button."
+  derivation: "Pillar-mission / negative-space — operator-conventional transient-failure UX; the senior-PO 'is it convenient?' question on the failure surface."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      AppErrorPage exposes NO retry affordance. The props interface is showError / error / offsetTop only
+      (AppErrorPage.tsx:8-13) — there is no onRetry prop. The single CTA is 'Return to the Home Page', a
+      hard-coded react-router Link to='/' (AppErrorPage.tsx:31-32). There is no way to re-fire the parent's
+      fetching thunk from the error pane.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "bugs_limitations_corner_cases[3] (no retry affordance)"
+        cite: "AppErrorPage.tsx:8-13 + AppErrorPage.tsx:31-32"
+        note: "no onRetry prop; only Home-Page Link to='/'"
+      - sidecar: "(source read for validation)"
+        section: "AppErrorPage.tsx props + CTA"
+        cite: "AppErrorPage.tsx:8-13,32"
+        note: "confirmed at primary source — props are showError/error/offsetTop; only CTA is Home Page"
+    operator_visible_failure: |
+      A user who hits a transient failure sees a permanent-looking error page. Their only options are to click
+      'Home Page' — which navigates to the Overview root and discards any in-progress state (form input, filter
+      selections, scroll position, the deep route they were on) — or to press the browser refresh button. There
+      is no in-place recovery. For a momentary 502 on a deep page (e.g. /dataentities/:id/structure/compare), the
+      user is bounced to the root and must navigate all the way back manually.
+    severity: LOW
+    confidence: HIGH
+    probe_id: ""
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "Across the platform, every page that can fail shows the SAME error surface — a user who learns what an error page looks like on one page recognises it everywhere (consistency)."
+  derivation: "Pillar-mission + senior-PO consistency question — AppErrorPage is the single error widget; 23 callers follow one pattern."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      For the 15 callers that pass both showError AND error, the surface is identical (status + statusText +
+      Home Page) — strong consistency. BUT 8 caller files pass showError WITHOUT an error prop
+      (OwnerAssociationsActive.tsx:99, OwnerAssociationsNew.tsx:95, OwnerAssociationsResolved.tsx:103 and
+      siblings). For those, AppErrorPage.tsx:24-26 renders {error?.status} as an empty span (left column
+      collapses to an empty 72px-tall margin) and line 29 falls back to t('Unknown Error'). So the same widget
+      shows a DEGRADED, inconsistent surface — 'Unknown Error' with no status code — on the owner-association
+      admin pages, while every other page shows a real code. The consistency holds for the majority pattern and
+      breaks for a named minority.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "bugs_limitations_corner_cases[4] (showError without error) + implicit_adrs[0]"
+        cite: "AppErrorPage.tsx:24-26,29 + OwnerAssociationsActive.tsx:99"
+        note: "8 callers omit error → empty code column + 'Unknown Error'; 15 callers pass it → full pane"
+    operator_visible_failure: |
+      An operator working the Owner-Association admin triplet (Active / New / Resolved) who hits a fetch error
+      sees a centered 'Unknown Error' heading with a blank space where the HTTP status code should be — strictly
+      less informative than the error page everywhere else in the platform, and visually inconsistent (an empty
+      left column). They get no signal whether the failure was a 403 (permission), a 404, or a 500 — defeating
+      the one job of the error code.
+    severity: LOW
+    confidence: HIGH
+    probe_id: ""
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When an Integration or Integration-preview page fails (these use react-query, not redux), the user sees a sane error page with the correct HTTP status code — the same as a redux-backed page."
+  derivation: "Endpoint-shape / cross-layer drift — Integration.tsx + IntegrationPreviewList.tsx pass a react-query error via 'error as ErrorState'; the typed prop is ErrorState (redux shape)."
+  seed_source: view-mode
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Integration.tsx:33 and IntegrationPreviewList.tsx:70 pass a react-query error to AppErrorPage via
+      error={error as ErrorState} — an explicit cast that compiles but is a type-system lie: a react-query
+      Error is NOT a redux ErrorState and may not carry status / statusText. AppErrorPage.tsx:25,29 then read
+      error?.status and error?.statusText off it. Whether the rendered code is correct depends on the ACTUAL
+      runtime shape of the react-query error object on these two pages when their fetch fails — which the static
+      chain cannot determine (it depends on what useIntegration / useIntegrationPreviewList throw, and how the
+      fetch wrapper shapes it). If the shape lacks status/statusText the page degrades to an empty code +
+      'Unknown Error'. This requires running the system to resolve.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "bugs_limitations_corner_cases[2] (react-query cast)"
+        cite: "Integration.tsx:33 + IntegrationPreviewList.tsx:70 + AppErrorPage.tsx:10"
+        note: "react-query error cast to ErrorState; runtime shape unverified"
+    operator_visible_failure: |
+      Potential (unconfirmed pending probe): on an Integration / Integration-preview fetch failure the error page
+      may show an empty status-code column with an 'Unknown Error' heading instead of the real HTTP status —
+      degrading the integration-admin error experience relative to every redux-backed page. Today it works iff
+      react-query happens to populate status/statusText; a react-query version bump or a fetch-wrapper change
+      could silently break it.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-042-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-042-1"
+
+- id: H-009
+  hypothesis: "When a user clicks 'Return to the Home Page' on the error page, they are navigated client-side to the platform's home (Overview) without a full browser reload."
+  derivation: "UI-label — the 'Home Page' button text; the in-house Button with to='/' resolves to a react-router Link."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      AppErrorPage.tsx:32 renders <Button text={t('Home Page')} to='/' buttonType='tertiary-m' />. The in-house
+      Button, when given a `to` prop, renders a styled react-router Link (Button.tsx:60-74 + Button.styles.ts:141
+      StyledLink = styled(Link)), so the navigation is client-side to the root route, which App.tsx:60 mounts to
+      <Overview />. No full page reload; the SPA stays booted.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "concepts.entities[Home-Page CTA] + requires-runtime[react-router-dom Link]"
+        cite: "AppErrorPage.tsx:32 + Button.tsx:60-74 + App.tsx:60"
+        note: "to='/' → react-router Link → Overview; client-side nav"
+      - sidecar: "(source read for validation)"
+        section: "AppErrorPage.tsx CTA"
+        cite: "AppErrorPage.tsx:32"
+        note: "confirmed at primary source — Button to='/'"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When a user navigates to a deep glossary URL with a non-numeric term id (e.g. /terms/abc/overview) — a malformed shared link — they see a clear 'not found' error page, not a broken request that fails opaquely."
+  derivation: "Endpoint-shape / negative-space — useTermsRouteParams coerces termId via parseInt(termId,10) with no isNaN guard; the failure surfaces through AppErrorPage."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      useTermsRouteParams (termsRoutes.ts:60) runs parseInt(termId, 10) with no isNaN guard, so /terms/abc/overview
+      yields termId=NaN. TermDetails.tsx:38 dispatches fetchTermDetails({termId: NaN}); the backend (TermController
+      getTermDetails, per the TermController sidecar) cannot bind NaN to a Long path param / matches no row and
+      returns 404. The rejection routes through the loader slice and TermDetails.tsx:80-83 mounts AppErrorPage
+      showing '404 / Not Found'. So the user DOES get an error page (the hypothesis holds) — though it is a generic
+      404 rather than an 'invalid term id' message, and (because fetchTermDetails suppresses the toast) with no
+      message hint.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__terms.md
+        section: "bugs_limitations_corner_cases[1] (NaN coercion) + invariants[termId coercion swallows NaN]"
+        cite: "termsRoutes.ts:60 + TermDetails.tsx:25,38,80-83"
+        note: "parseInt→NaN→backend 404→AppErrorPage 404 pane"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a page is loading or has succeeded, the error widget contributes nothing — no leftover whitespace, no flash of an error pane on a healthy page."
+  derivation: "Widget-shape — the dominant case; AppErrorPage returns null when showError=false."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      AppErrorPage.tsx:20,37 returns null when showError is false — no JSX, no DOM, no whitespace. There is no
+      skeleton branch and no other-state branch; the widget is invisible on every healthy page (the dominant
+      steady-state case across all 23 callers). The only render is the error grid when showError is true.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+        section: "invariants[null when showError=false] + concepts.operations[render-nothing]"
+        cite: "AppErrorPage.tsx:20,37"
+        note: "returns null on showError=false — no DOM contributed"
+      - sidecar: "(source read for validation)"
+        section: "AppErrorPage.tsx ternary"
+        cite: "AppErrorPage.tsx:20,37"
+        note: "confirmed at primary source — `showError ? (...) : null`"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "No React error boundary anywhere in the SPA — any render-time throw white-screens the entire console (nav chrome included); measured RED by IT-006."
+  dedup_status: already_tracked
+  tracked_as: "TEST-GAP-1013 (pinned by IT-006); F-042 scanner finding F-042a (missing-caveat HIGH, SR-20260527T2300Z)"
+  proposed_fix_anchor: "Wrap <Routes> at App.tsx:59 in a root/route-level ErrorBoundary (e.g. react-error-boundary) that degrades a render throw to a contained error UI; then flip IT-006 to feature-complete."
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "No <Route path='*'> catch-all — bare /terms, bare /master-data, and any unknown URL render a silent blank pane below the toolbar."
+  dedup_status: already_tracked
+  tracked_as: "F-042 scanner finding F-042b (missing-caveat MEDIUM, SR-20260527T2300Z); probes P-163 (/master-data) + P-164 (/terms)"
+  proposed_fix_anchor: "Add <Route path='*' element={<AppErrorPage showError error={{status:404, statusText:'Page Not Found', url:'', message:''}} />} /> to App.tsx:89 (5-line fix) — routes ALL fall-through to the widget."
+- hypothesis_id: H-006
+  severity: LOW
+  one_line: "Error page has no retry affordance — only 'Return to the Home Page', which discards in-progress state on transient failures."
+  dedup_status: net_new
+  distinct_from: "F-042a/F-042b — those are the boundary + catch-all structural gaps; this is the per-widget UX gap (no onRetry prop on the rendered pane)."
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/management (troubleshooting / error-pages section) OR a PLT-NNN UX enhancement
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Backend error message is disclosed in a 6s toast (potential info-leak) and then unrecoverable; for term fetches it is suppressed entirely — asymmetric with the persistent status code."
+  dedup_status: already_tracked
+  tracked_as: "F-042 scanner finding F-042c (missing-caveat MEDIUM — the information-disclosure-boundary facet); probe P-176"
+- hypothesis_id: H-007
+  one_line: "8 owner-association admin callers pass showError without error → degraded 'Unknown Error' pane with empty status-code column, inconsistent with the 15 callers that pass a full error."
+  dedup_status: net_new
+  recommended_log_as: caveat in error-pages troubleshooting doc OR a lint-rule PLT-NNN flagging <AppErrorPage showError> without error
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# Confirmed-but-untested promises (H-001, H-004, H-009, H-010, H-011) belong HERE, not dropped to none.
+- use_case_id: F-042-UC-001
+  hypothesis_id: H-001
+  kind: render
+  promise: "An async-thunk-rejected page shows the backend HTTP status code + status-text heading + a Home-Page CTA (not blank, not a stack trace)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-001)"
+  proposed_test: "Unit (Vitest/RTL, src/components/shared/elements/AppErrorPage/__tests__/AppErrorPage.test.tsx): render <AppErrorPage showError error={{status:404, statusText:'Not Found'}} /> → assert '404' and 'Not Found' and a Home-Page link are in the DOM."
+- use_case_id: F-042-UC-004
+  hypothesis_id: H-004
+  kind: render
+  promise: "The failing API URL is NEVER rendered to the error-page DOM (information-disclosure boundary)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-004) — HIGHEST leverage; sidecar security-class P-176"
+  proposed_test: "Unit: render with error={{status:500, statusText:'Internal Server Error', url:'/api/internal/admin/x', message:'SQLException: ...'}} → assert the DOM contains '500'/'Internal Server Error' and does NOT contain the url or the message substring (pins the no-leak contract so a future <Typography>{error.url}</Typography> cannot land silently)."
+- use_case_id: F-042-UC-005
+  hypothesis_id: H-005
+  kind: render
+  promise: "The persistent error page never holds the backend message; it appears only in the transient toast (or is suppressed)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-005)"
+  proposed_test: "Unit: assert error.message is absent from the AppErrorPage DOM; integration: assert the 6s toast carries the message for a non-suppressed thunk and is absent for a switchOffErrorMessage thunk (terms)."
+- use_case_id: F-042-UC-002
+  hypothesis_id: H-002
+  kind: render
+  promise: "A render-time throw in one view is contained — nav chrome survives, a scoped error UI shows — instead of white-screening the whole app."
+  verdict: contradicted
+  coverage: verified
+  recommended_log_as: "Already covered by IT-006 (RED-pinned). The functional demand is the GREEN regression guard once a root ErrorBoundary is added — keep IT-006, move to feature-complete on fix."
+  proposed_test: "IT-006 (exists) — after fix, assert #root still has nav chrome + contained error UI after the injected throw."
+- use_case_id: F-042-UC-003
+  hypothesis_id: H-003
+  kind: empty/no-match
+  promise: "A bare/unknown URL shows a recognisable not-found surface or redirect, not a silent blank pane."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-003)"
+  proposed_test: "e2e (Playwright, integration-tests): navigate to /master-data and to /terms; assert a non-empty content area (a 404 pane) below the toolbar. RED today (blank); GREEN when the path='*' catch-all is added. Folds P-163 + P-164."
+- use_case_id: F-042-UC-006
+  hypothesis_id: H-006
+  kind: render
+  promise: "A user can retry a transient failure from the error page without losing their place."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-006) — gated on the onRetry enhancement existing"
+  proposed_test: "Unit: once an onRetry prop exists, assert a 'Try Again' button is rendered and invokes the callback. (Test is owed with the feature enhancement, not before.)"
+- use_case_id: F-042-UC-007
+  hypothesis_id: H-007
+  kind: render
+  promise: "Every page's error surface is consistent — same widget, same fields."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-007)"
+  proposed_test: "Unit: render <AppErrorPage showError /> with NO error prop → assert the 'Unknown Error' fallback + empty status code (pins the degraded-display contract the 8 owner-association callers depend on)."
+- use_case_id: F-042-UC-008
+  hypothesis_id: H-008
+  kind: render
+  promise: "Integration / Integration-preview (react-query) failures render the correct HTTP status, same as redux-backed pages."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-008) — gated on probe PENDING-F-042-1 resolving the runtime react-query error shape"
+  proposed_test: "e2e: fail the useIntegration fetch and assert the AppErrorPage shows the real HTTP code (not an empty 'Unknown Error'). Pending probe to confirm expected value."
+- use_case_id: F-042-UC-009
+  hypothesis_id: H-009
+  kind: render
+  promise: "'Return to the Home Page' navigates client-side to Overview without a full reload."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-009)"
+  proposed_test: "Integration (RTL + MemoryRouter): render AppErrorPage in a router, click 'Home Page', assert the route changed to '/' without a window reload (regression guard against a switch to <a href='/'>)."
+- use_case_id: F-042-UC-010
+  hypothesis_id: H-010
+  kind: empty/no-match
+  promise: "A non-numeric term-id deep link (/terms/abc/overview) lands on a 404 error page, not an opaque failure."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-010)"
+  proposed_test: "Unit: useTermsRouteParams on /terms/abc returns termId NaN (regression guard for the coercion); e2e: navigate to /terms/abc/overview and assert the 404 AppErrorPage renders."
+- use_case_id: F-042-UC-011
+  hypothesis_id: H-011
+  kind: render
+  promise: "The widget renders nothing (null, no whitespace) on a healthy/loading page."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-042-UC-011)"
+  proposed_test: "Unit: render <AppErrorPage showError={false} /> → assert the container renders null (no DOM output). Catches a regression to always-render."
+
+### probes_emitted
+- probe_id: PENDING-F-042-1
+  hypothesis_id: H-008
+  probe_path: "(parallel-safe mode — not written; recorded here)"
+  question: |
+    On an Integration / Integration-preview page (Management > Integrations), force the underlying
+    useIntegration / useIntegrationPreviewList react-query fetch to fail (e.g. intercept GET /api/integrations
+    /{id} → 500 via Playwright route interception against odd-minimal, AUTH_TYPE=DISABLED, local docker-compose).
+    Observe the rendered AppErrorPage: does the left column show the real HTTP status code (500), or does it show
+    an empty column with an 'Unknown Error' heading (proving the react-query error shape lacks status/statusText
+    and the `error as ErrorState` cast is a runtime lie)? Local-only (Rule 6): odd-minimal stack + Playwright.
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  expected_outcome: "Hypothesis H-008: the integration error page shows the correct HTTP status code, same as a redux-backed page."
+
+### validation_gaps
+- sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+  field_insufficient: "tests_coverage_semantic.covered_behaviours (= []) + gaps ('no *.test.* file exists anywhere in odd-platform-ui/src, verified via Glob 2026-05-26')"
+  proposed_refresh: |
+    STALE — a Vitest/RTL harness DOES exist (Grep `**/*.test.tsx` over odd-platform-ui/src returns committed
+    suites: src/components/shared/elements/{BooleanFormatted,EntityClassItem,NumberFormatted,TextFormatted}/
+    __tests__/*.test.tsx and src/components/Overview/DataEntitiesUsageInfo/**/__tests__/*.test.tsx). The blanket
+    claim 'no test file exists / platform UI has no Jest/Vitest/RTL suite' is false at commit 107c9aa. The
+    correct statement is narrower: no test targets AppErrorPage specifically. The next file-analyser refresh of
+    this node should (a) correct the blanket claim, (b) note the harness exists so the proposed unit tests
+    (H-001/H-004/H-007/H-011) are immediately writable in it, not blocked on standing up a harness.
+- sidecar: "(chain hop) odd-platform ts react-component:App.tsx"
+  field_insufficient: "App.tsx is referenced as `unresolved: true` in 3 places (contributing_nodes, chain hop 1) — the single most load-bearing node for this feature (the route registry + the absent boundary) has no standalone sidecar."
+  proposed_refresh: |
+    Enrich App.tsx as a standalone sidecar. It is the locus of BOTH structural contradictions (H-002 no
+    boundary, H-003 no catch-all) and is currently validated only via a Rule-8 source read here. A first-class
+    sidecar would let future reflections trace these without re-reading source, and would anchor the 5-line
+    catch-all fix + the ErrorBoundary fix to a node.
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "(silence) — the Management pillar page contains NO description of error pages, HTTP error codes shown in the UI, the blank-page behaviour, a 404 page, or the Home-Page CTA."
+  code_does: "23 page-level components render an HTTP status + statusText + Home-Page link on fetch failure; bare/unknown URLs render a blank page; any render throw white-screens the app."
+  recommended_log_as: "DOC-NNN — add a 'Troubleshooting / Common error pages' section (operator-guides): what an error page looks like, what the HTTP codes mean, and that a blank page on a hand-typed URL is a no-match (until the path='*' fix lands)."
+
+## maintainer_notes
+
+<!-- preserved across refreshes — only block the maintainer hand-edits -->

@@ -1,0 +1,653 @@
+---
+feature_id: F-037
+pillar_anchored_id: P-02:F-001
+pillar: P-02 Data Modelling
+feature_name: "ERD/Graph Relationships Listing"
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+  - odd-platform__ts__routes__route__relationships.md
+  - odd-platform__ts__react-component__component__DataModelling.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling/relationships"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: "Live verified by the batch-ZI route sidecar (WebFetch 2026-05-26). Not re-fetched this reflection; cited as the route sidecar captured it verbatim."
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 5
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "The Target column on every relationship row displays the SOURCE entity (copy-paste bug) — the user cannot see what any relationship points TO from the list page."
+related_feature_flows: [F-005, F-008, F-025]
+related_concepts:
+  - "Entity Relationship (ERD edge, foreign-key derived)"
+  - "Graph Relationship"
+  - "Query Example"
+  - "Read-collaborative catalog posture"
+related_drift_classes:
+  - drift_input_name_vs_implementation_path_param_target_column_mismatch
+  - read_collaborative_posture_undocumented_cross_pillar
+  - arithmetic_pagination_no_min_page_validation
+  - schema_admits_multi_row_match_application_expects_single
+  - feature_gap_search_scope_under_documents
+  - ui_row_renderer_copy_paste_bug_target_column_displays_source_data
+  - doc_drift_overstates_type_specific_routing_code_navigates_to_overview_unconditionally
+new_drift_classes_proposed: []
+---
+
+# ERD/Graph Relationships Listing — product-owner reflection
+
+## product_owner_narrative
+
+The Relationships Listing is the Data Modelling pillar's catalog-topology browser: a single page at `/data-modelling/relationships` where any operator can see, in one paginated table, every entity-to-entity link the platform has discovered or that operators have defined — foreign-key-style ERD edges between two table-class datasets, and free-form graph edges between graph-store nodes (per the P-02 pillar mission, `system-mission.md:108-120`, and the live doc at `docs.opendatadiscovery.org/features/data-modelling/relationships`). It answers the question "how is my data connected?" — the complement to Query Examples ("how is my data queried?") that together capture the pillar's stated mission of recording "the contract of a dataset" (per `odd-platform__ts__react-component__component__DataModelling.md:138-141`). It is reached as the second of the two Data Modelling sidebar tabs; the toolbar "Data Modelling" entry deep-links to Query Examples, so Relationships is found by a second click or a direct deep-link (per route sidecar `implicit_adrs[2]`).
+
+A user lands on the page, sees a header with a total count, a "Search relationships" free-text input, an ALL / ERD / Graph tab strip, and a table whose documented columns are Name, Type, Namespace + Datasource, Source entity, and Target entity (per route sidecar `docs_link_semantic.fetched_excerpts`). They scroll; the list infinite-scrolls 30 rows per page (per route sidecar `concepts.invariants`, `Relationships.tsx:23` hard-codes `size: 30`). Switching the tab rewrites `?type=` in the URL and re-queries the backend; typing in the search box rewrites `?q=`; both are URL state, so a refresh or a deep-link reconstructs the filtered view (per route sidecar `concepts.invariants` + `request_inputs`). Clicking a row navigates to the underlying data entity's overview page (per route sidecar `concepts.invariants[0]`, `RelationshipsListItem.tsx:52`). Three REST endpoints back the surface — `GET /api/relationships` (list), `GET /api/relationships/erd/{relationship_id}` and `/graph/{relationship_id}` (detail) — and the detail endpoints are reached by the data-entity overview page's relationship cards, NOT by the list-page row click (per controller sidecar `concepts.operations` + route sidecar `doc_drift_findings`).
+
+The working parts the user touches are: a type filter (ALL / ERD / GRAPH, which the backend honours via the `relationships.relationship_type` column — name and behaviour align, per controller sidecar `request_inputs` for `type`); a name search (which matches the relationship row's own external_name, NOT the source/target dataset names — a scope the user may misread); pagination (1-indexed by arithmetic convention, oldest-relationship-first by `data_entity.id ASC`, per controller sidecar `orderings`); and per-row navigation. The entire chain — route mount, controller, service, repository — carries no authorization gate: no permission wraps the route, no `@PreAuthorize` guards the controller, no `SECURITY_RULES` entry exists for `/api/relationships/**`, and the repository SQL applies no owner / namespace / `EXCLUDE_FROM_SEARCH` / data-source filter (per controller sidecar `security` + route sidecar `auth_gates`). This is the platform's deliberate read-collaborative posture (relationships are public catalog metadata), but it is undocumented and asymmetric to `/api/dataentities`, which DOES apply `EXCLUDE_FROM_SEARCH`.
+
+The feature feeds the connection graph alongside lineage (P-02 feeds P-05, per `system-mission.md:439-442`): the same ERD edges that surface here contribute to the lineage graph the F-005 surface walks. It draws its data from the ingestion side (Postgres / Snowflake collectors extract ERD edges; graph-store collectors extract graph edges, per the pillar mission's cross-pillar `feeds_from`). The audiences are the platform end-user, the data-engineer/analyst tracing topology, and the viz/BI engineer assessing source structure (per `system-mission.md:328-332`).
+
+The edge cases a product owner would flag in a demo: the Target column currently shows source data on every row (a copy-paste bug — the flagship demo failure); a deep-link with a mistyped `?type=` value lands the user on a blank list with no active tab and no error; a third-party API caller reading the OpenAPI spec and supplying a real `relationships.id` to a detail endpoint gets a 404 because the parameter is silently consumed as a `data_entity.id`; a 0-indexed `?page=0` caller hits an opaque 500 instead of the first page; and in a multi-tenant deployment behind one IDP, every team's relationships are visible to every authenticated operator. Every one of these is reasoned from the assembled chain below.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens /data-modelling/relationships, the table lists every relationship in the catalog with its Name, Type, Namespace+Datasource, Source entity, and Target entity, 30 rows at a time with infinite scroll."
+  derivation: "Pillar mission ('browse the cross-source Relationships list filtered by ERD vs graph') + live doc column contract + Relationships.tsx size:30 + InfiniteScroll."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The page renders the header with total count, the search input, the ALL/ERD/GRAPH tab
+      strip, the documented column headers, and an infinite-scroll list of 30 rows per page
+      backed by GET /api/relationships (route sidecar concepts.invariants + name_behavior_pairs
+      'Relationships'). The list itself is faithful EXCEPT the Target-entity column, which renders
+      the Source entity's data on every row (the H-002 copy-paste bug). So the page delivers the
+      promised shape and pagination, but one of the five promised columns is wrong on every row.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: stress_findings.name_behavior_pairs[Relationships]
+        cite: "Relationships.tsx:16-84 + RelationshipsListItem.tsx:64-81"
+        note: "Header + search + tabs + table + InfiniteScroll all render as documented; Target column bugged."
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: stress_findings.name_behavior_pairs[getRelationships]
+        cite: "ReactiveDataEntityRelationshipRepositoryImpl.java:57-131"
+        note: "Backend returns the paged list with source + target refs; backend correctness unaffected by the UI bug."
+    operator_visible_failure: |
+      The overall page works and paginates, but the Target column failure (H-002) means the
+      list does not fully deliver the documented five-column contract — a demo of "browse the
+      relationship list" succeeds on shape and fails on the Target column.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When a user reads a relationship row, the Target-entity column shows the entity the relationship POINTS TO (its target), distinct from the Source-entity column."
+  derivation: "Live doc documents distinct 'Source entity, Target entity' columns; the DataEntityRelationship interface carries both sourceDataEntity and targetDataEntity."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      RelationshipsListItem.tsx:73-81 renders the Target cell with dataEntityId={item.sourceDataEntity.id},
+      name={item.sourceDataEntity.internalName || item.sourceDataEntity.externalName || ''}, and
+      oddrn={item.sourceDataEntity.oddrn || ''} — byte-identical to the Source cell at lines 64-72.
+      item.targetDataEntity is present on the DataEntityRelationship interface and is consumed
+      correctly by sibling components (RelationshipTypes/EntityRelationship.tsx:33-35,
+      GraphRelationship.tsx:32-34) but is NEVER referenced in the list-item renderer. The bug is a
+      pure copy-paste in the row renderer; the backend payload is correct. The fix is a three-token
+      rename at lines 75/77/79 (sourceDataEntity -> targetDataEntity).
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "RelationshipsListItem.tsx:64-81"
+        note: "Source and Target cells both read item.sourceDataEntity; targetDataEntity never referenced."
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: docs_link_semantic.doc_drift_findings[0]
+        cite: "WebFetch docs.opendatadiscovery.org/features/data-modelling/relationships (2026-05-26 status 200)"
+        note: "Doc documents distinct Source/Target columns; doc is RIGHT, code is WRONG."
+    operator_visible_failure: |
+      Every relationship row in the entire catalog displays the same dataset in both the Source and
+      Target columns. The core question the page exists to answer — "what does table A link TO?" —
+      cannot be answered from the list page at all; the operator sees A -> A for every edge. An ERD
+      browser that shows identical endpoints on every edge is functionally useless for topology
+      discovery. The failure is uniform (every row), silent (TypeScript compiles cleanly — both
+      fields are type-correct), and undetectable without a runtime Source!==Target assertion.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user passes ?type=ERD, the list returns only ENTITY_RELATIONSHIP rows; ?type=GRAPH returns only GRAPH_RELATIONSHIP rows; ?type=ALL (or no type) returns both."
+  derivation: "Tab labels ALL/ERD/Graph + RelationshipsType enum; the type parameter promises a class filter."
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Relationships.tsx:19 reads ?type and forwards it through useSearchRelationships ->
+      relationshipApi.getRelationships -> RelationshipController.getRelationships ->
+      RelationshipsServiceImpl -> ReactiveDataEntityRelationshipRepositoryImpl.java:99-101: when
+      RelationshipsType.ALL, DSL.noCondition() disables the filter; otherwise the SQL applies
+      relationships.relationship_type = type.getValue(). The parameter name ('type') and the tab
+      labels align with the relationship_type column the filter binds to — no drift. (Confirmation
+      of the URL->backend->distinct-subset round-trip is PROBE-NEEDED at P-167 Block B/C, but the
+      SQL binding itself is statically certain.)
+    evidence:
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: stress_findings.request_inputs[type]
+        cite: "ReactiveDataEntityRelationshipRepositoryImpl.java:99-101"
+        note: "type filters by the relationships.relationship_type column — matches the name's promise."
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: stress_findings.request_inputs[type]
+        cite: "RelationshipsTabs.tsx:6-23 + Relationships.tsx:19"
+        note: "Tab values map to RelationshipsType.ALL|ERD|GRAPH; forwarded verbatim to the backend."
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When a user types text into the 'Search relationships' box, the list narrows to relationships whose names match — including relationships involving a dataset the user typed (e.g. typing 'orders' finds relationships touching the ORDERS table)."
+  derivation: "UI label 'Search relationships' + the pillar's discovery purpose; an operator searching topology expects to find edges by the table they care about."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The search works for the relationship's OWN name but NOT for source/target dataset names.
+      ReactiveDataEntityRelationshipRepositoryImpl.java:68-69 binds ?q to
+      DATA_ENTITY.EXTERNAL_NAME.containsIgnoreCase against the relationship-class data_entity row
+      (entity_class=9), not against the joined source/target dataset entities. The source and
+      target external_names ARE joined and selected (lines 102-105) but excluded from the WHERE
+      text-match (controller sidecar request_inputs[query], available-but-unused column note). The
+      UI label is literally 'Search relationships' (RelationshipsSearchInput.tsx:17), which aligns
+      with the SQL — so the narrow label does NOT over-promise; but the operator's natural mental
+      model (find edges by the table they involve) is silently unmet.
+    evidence:
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: stress_findings.request_inputs[query]
+        cite: "ReactiveDataEntityRelationshipRepositoryImpl.java:68-69 + :102-105"
+        note: "Match is on relationship-row external_name; source/target names joined but not filtered."
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: stress_findings.request_inputs[q]
+        cite: "RelationshipsSearchInput.tsx:17"
+        note: "Label 'Search relationships' aligns with the relationship-name match — no false promise at the label."
+    operator_visible_failure: |
+      An operator who opens the Relationships page to answer "what is connected to my ORDERS table?"
+      types 'orders' and sees an empty or near-empty result, unless a relationship row happens to
+      carry 'orders' in its own external_name. The discovery workflow the page exists for is silently
+      defeated for the most natural query. This is a feature-scope gap, not a label lie — but it is
+      the operator-relevant consequence of the search binding.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When a user clicks any relationship row, they are taken to that relationship's detail view, with the destination determined by the relationship type (ERD vs graph)."
+  derivation: "Live doc verbatim: 'Users can click any row to open the relationship's detail page, with routing determined by the relationship type.'"
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      RelationshipsListItem.tsx:52 unconditionally calls dataEntityDetailsPath(item.id) — the
+      data-entity OVERVIEW page URL — for every row regardless of relationship type. There is no
+      type branch on the row click. The type-specific detail endpoints (/api/relationships/erd/{id},
+      /graph/{id}) are reached only by the data-entity overview page's relationship-card rendering
+      (OverviewRelationshipStats/OverviewRelationshipType/*.tsx), never by the list-page row click.
+      The doc's "routing determined by the relationship type" overstates a client-side type
+      discrimination that does not exist at this surface.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: docs_link_semantic.doc_drift_findings[4]
+        cite: "RelationshipsListItem.tsx:52"
+        note: "Row click navigates to dataEntityDetailsPath(item.id) unconditionally — no type branch."
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: concepts.invariants
+        cite: "openapi.yaml:4160-4192"
+        note: "erd/{id} and graph/{id} detail endpoints exist but are reached from the overview page, not the list row."
+    operator_visible_failure: |
+      An operator reading the doc expects the row click to open a relationship-type-specific detail
+      page; instead every click lands on the same /dataentities/{id}/overview page. The type-specific
+      ERD/graph rendering happens INSIDE that overview, so the user is not lost — but the documented
+      behaviour is not what the code does. This is primarily a doc-overstatement (the doc-side fix is
+      the cheap option); the operator-visible impact is mild (correct destination, wrong description).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When a user (or third-party API consumer) requests a relationship detail by id — GET /api/relationships/erd/{relationship_id} — supplying the relationship's primary key returns that relationship."
+  derivation: "OpenAPI parameter relationship_id + operation summary 'Get erd relationship by id' promise the relationships-table primary key."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The SQL at ReactiveRelationshipsRepositoryImpl.java:194 filters by
+      relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId) — the data_entity.id of the
+      relationship-class entity, NOT relationships.id. The list endpoint mapper returns
+      id = data_entity.id (RelationshipMapper.java:53), so the UI's list-then-detail round-trip is
+      self-consistent. But a third-party consumer reading the OpenAPI spec literally and supplying an
+      actual relationships.id gets HTTP 404 (NotFoundException). Worse, if their relationships.id
+      coincidentally collides with some data_entity.id (both are bigserial), they get a 200 with the
+      payload for an UNRELATED relationship. The available-but-unused column RELATIONSHIPS.ID is the
+      one the name promises; the fix requires changing both the SQL filter and the list mapper.
+    evidence:
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: stress_findings.request_inputs[relationshipId]
+        cite: "ReactiveRelationshipsRepositoryImpl.java:194 + RelationshipMapper.java:53"
+        note: "relationship_id consumed as data_entity.id; RELATIONSHIPS.ID exists but is unused at the filter."
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "RelationshipController.java:31 + RelationshipsServiceImpl.java:38-39"
+        note: "Category F TRANSLATES_SILENTLY; UI round-trip masks the drift."
+    operator_visible_failure: |
+      Two failure modes: (1) a third-party SDK or Swagger-UI user reading the published spec and
+      supplying a real relationships.id gets a 404 on data that exists; (2) on a bigserial collision
+      they get a 200 with a DIFFERENT relationship's payload — silent wrong data, the worse failure.
+      The published API contract is broken for any consumer not using the list-then-detail round-trip.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a non-admin / read-only authenticated user opens the Relationships page, they see only relationships they are entitled to — relationships within their own tenant / namespace / owned data sources."
+  derivation: "Negative-space: an operator deploying ODD with the platform's RBAC story (enable-security/authorization) expects view scoping consistent with the rest of the catalog."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No scoping is applied at any layer. The route at DataModellingRoutes.tsx:40 is bare (no
+      WithPermissionsProvider); the controller has no @PreAuthorize; SecurityConstants (357 lines,
+      read end-to-end) has no /api/relationships/** matcher; the service applies no check; and the
+      repository SQL has no OWNERSHIP join, no data_source_id filter, no namespace_id filter, no
+      EXCLUDE_FROM_SEARCH filter, no HOLLOW filter. Every authenticated caller sees every relationship
+      across every data source, including hidden and cross-tenant rows. Under auth.type=DISABLED any
+      caller reaching the port sees them unauthenticated. This is asymmetric to /api/dataentities,
+      which DOES apply EXCLUDE_FROM_SEARCH (controller sidecar security.known_security_gaps). The
+      platform-wide intent is read-collaborative (relationships are public catalog metadata, per
+      implicit_adrs), but that posture is undocumented for this surface.
+    evidence:
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: security.owner_scoping
+        cite: "ReactiveDataEntityRelationshipRepositoryImpl.java:66-75 + SecurityConstants.java:95-355"
+        note: "No owner / namespace / data_source / exclude_from_search filter; no SECURITY_RULES entry."
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: stress_findings.auth_gates
+        cite: "DataModellingRoutes.tsx:40"
+        note: "Bare route, no WithPermissionsProvider; gate lives NOWHERE end-to-end."
+    operator_visible_failure: |
+      In a multi-tenant deployment behind a single IDP (one platform, multiple operator teams), every
+      team's relationships — table names, cardinalities, data-source identities — are visible to every
+      authenticated user; the page is a complete cross-tenant enumeration oracle. An EXCLUDE_FROM_SEARCH
+      ('hidden') relationship is nonetheless returned here even though it is suppressed on /api/dataentities.
+      An operator who configured READ_ONLY roles expecting catalog scoping is wrong, with no signal in
+      the product or the docs. Whether intentional or a gap, the asymmetry + the doc silence is the
+      operator-relevant exposure.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    sme_consultation_recommended: true
+    sme_consultation_question: "Do operators of catalog tools (DataHub / Amundsen / OpenMetadata) treat relationship/ERD topology as public-within-instance metadata, or do they expect per-tenant/per-domain scoping by default? This determines whether H-007 is a bug to fix or a posture to document."
+    sme_consultation_archetype: implicit-requirements
+
+- id: H-008
+  hypothesis: "When a user deep-links to /data-modelling/relationships?type=ERD (or any valid type), the page opens directly on the filtered view with the ERD tab active."
+  derivation: "Route sidecar: ?type is URL state; a deep-link reconstructs the filtered view."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Relationships.tsx:19 reads ?type from useSearchParams on mount and forwards it to the backend
+      call; RelationshipsTabs.tsx computes the active tab via findInitTabIdx matching the type value.
+      For a valid type (ALL/ERD/GRAPH) the tab strip shows the correct active tab and the list is
+      filtered. A refresh restores the state from the URL (route sidecar concepts.invariants 'q and
+      type query parameters are URL-state').
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: concepts.invariants
+        cite: "RelationshipsTabs.tsx:34-43 + Relationships.tsx:19"
+        note: "type is URL state written by the tab strip and read on mount; deep-link reconstructs the view."
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When a user deep-links with a malformed type — /data-modelling/relationships?type=foo — the page degrades gracefully (e.g. falls back to ALL with a clear state), not into a broken/blank view."
+  derivation: "Negative-space + endpoint-shape: a mistyped or stale deep-link is a normal user event; the UI casts ?type with a type assertion and no runtime validation."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Relationships.tsx:19 reads (searchParams.get('type') ?? RelationshipsType.ALL) as RelationshipsType
+      — a TYPE ASSERTION with no runtime check. For ?type=foo the value 'foo' is typed as RelationshipsType
+      and flows into the backend call. RelationshipsTabs.tsx:27-32 computes findInitTabIdx via
+      tabs.findIndex(tab => tab.value === type), which returns -1 for 'foo' — AppTabs interprets -1 as
+      'no selection', so the tab strip shows NO active tab. Meanwhile the backend's RelationshipsType
+      enum deserialiser rejects 'foo' at bind time -> the user gets an opaque HTTP 400 with no
+      list and no active tab. The page is effectively blank with no actionable error message.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataModelling.md
+        section: batch_extensions(ZM)
+        cite: "Relationships.tsx:19 + RelationshipsTabs.tsx:27-32"
+        note: "Type assertion with no runtime validation; arbitrary strings propagate; tabs show -1 (no active)."
+    operator_visible_failure: |
+      A user following a stale or mistyped deep-link (e.g. a bookmarked URL from before a type was
+      renamed, or a hand-edited URL) lands on a blank Relationships view: no active tab, an opaque 400
+      from the backend, no error toast, no fallback to ALL. There is no recovery affordance on screen —
+      the user does not know to delete the ?type= fragment. A normal, expected user event produces a
+      dead-end UI.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When a 0-indexed API caller requests GET /api/relationships?page=0, they receive the first page of results (graceful), not an error."
+  derivation: "Negative-space + endpoint-shape: page is the conventional 0-or-1-indexed pagination knob; a JavaScript-default caller sends page=0; the OpenAPI PageParam lacks minimum:1."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      ReactiveDataEntityRelationshipRepositoryImpl.java:79 computes offset = (page - 1) * size with no
+      Math.max(0,...) guard. For page=0 the offset is -size (negative); Postgres rejects a negative
+      OFFSET with 'OFFSET must not be negative', surfacing as an opaque HTTP 500 (or 400 if WebFlux
+      wraps the SQLException). The OpenAPI PageParam does not declare minimum:1 and Spring's binding
+      accepts page=0. The page=null case throws an NPE at the Integer unboxing. (The exact HTTP status
+      is PROBE-NEEDED at P-130, but that a non-graceful error occurs is statically certain.)
+    evidence:
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "ReactiveDataEntityRelationshipRepositoryImpl.java:79 + RelationshipController.java:20-26"
+        note: "(page-1)*size produces negative offset for page=0; no minimum:1 on PageParam; no validation."
+    operator_visible_failure: |
+      A third-party developer following the typical 0-indexed pagination convention (the JavaScript
+      default) sends page=0 on their first call and receives an opaque 500 instead of the first page,
+      with no hint that pages are 1-indexed. The published list endpoint is hostile to the most common
+      pagination assumption. page=null produces a 500 (NPE) as well.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a relationship-class data_entity is somehow associated with more than one relationships row, the detail endpoint returns a single, well-defined relationship (or a clear error), not silent/undefined behaviour."
+  derivation: "Negative-space + schema: V0_0_87 declares data_entity_id with FK but no UNIQUE; the detail repository uses mono() expecting exactly one row."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      V0_0_87__create_relation_tables.sql:1-10 declares relationships.data_entity_id as bigint with
+      only an FK constraint, no UNIQUE — so one relationship-class data_entity COULD own multiple
+      relationships rows. ReactiveRelationshipsRepositoryImpl.java:197 uses jooqReactiveOperations.mono(query),
+      which expects a single row; on a multi-row match the behaviour is JOOQ-driver-specific — either a
+      TooManyResultsException (an error the user sees) or a silent first-row return (silent wrong data).
+      No current collector produces multi-row (the doc ingestion matrix lists only Postgres + Snowflake),
+      but the schema admits it (e.g. a collector regression or a manual SQL UPSERT). Which branch the
+      driver takes cannot be determined from the code alone — it requires running the system with a
+      seeded multi-row state.
+    evidence:
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "V0_0_87__create_relation_tables.sql:1-10 + ReactiveRelationshipsRepositoryImpl.java:197"
+        note: "No UNIQUE on data_entity_id; mono() expects one row; multi-row behaviour driver-specific."
+    operator_visible_failure: |
+      If a multi-row state is reached, the detail page either errors (TooManyResultsException -> opaque
+      500) or silently shows one arbitrary relationship's payload (wrong data with no signal). The
+      severity hinges on which branch the R2DBC/JOOQ driver takes, which the probe resolves.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: PENDING-F-037-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: "PENDING-F-037-1"
+
+- id: H-012
+  hypothesis: "When a power-user on a large catalog wants more than 30 rows per page, they can adjust the page size from the UI."
+  derivation: "Senior-product-owner UX seed (customisation): a list browser on a large catalog would let the user tune density / page size."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The hypothesis predicts a customisation affordance; the code confirms its ABSENCE as the
+      designed behaviour. size: 30 is hard-coded at Relationships.tsx:23 with no URL parameter, no
+      settings control, and no react-query override. To change it a developer edits the literal and
+      rebuilds. The 30 value matches the documented page size (no doc drift), and infinite-scroll
+      mitigates the lack of a tunable for most users — but a power-user on a large catalog cannot
+      increase page size to reduce scroll fatigue, and a small-catalog operator cannot decrease it.
+      This is a confirmed (intentional) limitation rather than a defect.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__relationships.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "Relationships.tsx:23"
+        note: "size:30 hard-coded; no URL param, no user-configurable control, no runtime override."
+      - sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+        section: stress_findings.tunables
+        cite: "Relationships.tsx:23 + documentation/docs/data-modelling/relationships.md:38"
+        note: "30 matches the documented value; not configurable from the UI."
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Target column on every relationship row renders Source entity data (copy-paste bug at RelationshipsListItem.tsx:73-81); three-token rename fixes it."
+  dedup_status: already_tracked
+  tracked_as: PLT-056
+  recommended_log_as: "(corroboration only — PLT-056 Defect 1 + DOC-229 Caveat 1)"
+  proposed_fix_anchor: "RelationshipsListItem.tsx:75/77/79 — sourceDataEntity -> targetDataEntity"
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "relationship_id detail-endpoint parameter is silently data_entity.id not relationships.id — 404 on a real PK, or wrong payload on a bigserial collision."
+  dedup_status: already_tracked
+  tracked_as: PLT-102
+  recommended_log_as: "(corroboration only — PLT-102 + PLT-056 Defect 5 + DOC-229 Caveat 6)"
+  proposed_fix_anchor: "ReactiveRelationshipsRepositoryImpl.java:194 + RelationshipMapper.java:53 (both halves, or rename param to data_entity_id)"
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "No authorization gate at any layer; /api/relationships is a cross-tenant catalog-enumeration oracle and returns EXCLUDE_FROM_SEARCH rows that /api/dataentities suppresses."
+  dedup_status: already_tracked
+  tracked_as: PLT-056
+  recommended_log_as: "(corroboration only — PLT-056 Defect 2 + PLT-102 + DOC-229 Caveat 2)"
+  proposed_fix_anchor: "SecurityConstants /api/relationships/** entry + repository namespace/owner/exclude_from_search filter (pending SME on whether scoping is intended)"
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: "?type=foo (malformed/stale deep-link) propagates unvalidated -> opaque backend 400 + tab strip shows no active tab -> blank dead-end UI with no recovery affordance."
+  dedup_status: already_tracked
+  tracked_as: PLT-056
+  recommended_log_as: "(corroboration only — PLT-056 Defect 4 + DOC-229 Caveat 5)"
+  proposed_fix_anchor: "Relationships.tsx:19 — runtime-validate ?type against RelationshipsType enum, fall back to ALL on miss"
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: "GET /api/relationships?page=0 produces a negative OFFSET -> opaque 500; no minimum:1 on PageParam; page=null NPEs. Hostile to the 0-indexed pagination convention."
+  dedup_status: net_new
+  distinct_from: PLT-056
+  recommended_log_as: "PLT-NNN (or fold into PLT-056 as Defect 7 — page-zero boundary; NOT currently in PLT-056/PLT-102, which omit pagination-boundary validation)"
+  proposed_fix_anchor: "ReactiveDataEntityRelationshipRepositoryImpl.java:79 (Math.max guard) OR OpenAPI PageParam minimum:1 (platform-wide JooqQueryHelper pattern)"
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Doc says row-click routing is 'determined by the relationship type'; code at RelationshipsListItem.tsx:52 always navigates to the data-entity overview. Doc overstates type discrimination."
+  dedup_status: already_tracked
+  tracked_as: DOC-229
+  recommended_log_as: "(corroboration only — DOC-229 Caveat 3 + PLT-056 Defect 3)"
+- hypothesis_id: H-004
+  one_line: "Search matches relationship-row name only, not source/target dataset names; an operator searching 'orders' to find ORDERS-table edges is silently disappointed."
+  dedup_status: already_tracked
+  tracked_as: DOC-229
+  recommended_log_as: "(corroboration only — DOC-229 Caveat 4 + PLT-056 Defect 6)"
+- hypothesis_id: H-012
+  one_line: "Page size is hard-coded at 30 with no UI customisation; power-users on large catalogs cannot tune density. Intentional limitation; matches the documented value."
+  dedup_status: net_new
+  recommended_log_as: "caveat in docs/data-modelling/relationships.md (low priority) OR fold into DOC-229 as a customisation note"
+
+### functional_test_demands
+# LSN-030 / Rule 11 — F-037 sits at test_matrix 0/4 with ZERO tests across unit/integration/
+# performance/security (verified: only QueryExampleService*Test exist in the Java tree, and they
+# test query-example-to-dataset relations, NOT F-037; no Playwright IT covers /data-modelling/
+# relationships). EVERY promise below is unverified — confirmed promises included. This is the
+# whole point of v0.3.0: the user-facing happy paths (H-001/H-003/H-008/H-012) have no guard, and
+# the contradicted promises need regression guards for their fixes.
+- use_case_id: F-037-UC-1
+  hypothesis_id: H-001
+  kind: render
+  promise: "The Relationships list page renders the documented five-column table with 30-row infinite scroll over the full catalog."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: "Playwright IT: open /data-modelling/relationships against a seeded catalog; assert header count, 5 column headers, >=1 row, and a second page loads on scroll."
+- use_case_id: F-037-UC-2
+  hypothesis_id: H-002
+  kind: render
+  promise: "Each row's Target column shows the relationship's target entity, distinct from the Source column."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint) — REGRESSION GUARD for PLT-056 Defect 1"
+  proposed_test: "Playwright IT on a seeded A->B relationship: assert Source cell links to A and Target cell links to B (Source.href !== Target.href). RED today (pins the copy-paste bug); GREEN after the rename."
+- use_case_id: F-037-UC-3
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "?type=ERD returns only ERD rows; ?type=GRAPH only graph rows; ?type=ALL both."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: "WebFluxTest / integration on GET /api/relationships?type=ERD vs GRAPH vs ALL against seeded mixed rows; assert disjoint, type-correct subsets and ALL = union."
+- use_case_id: F-037-UC-4
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "Search narrows the list by relationship name (documented scope — NOT source/target dataset name)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: "Integration on GET /api/relationships?query=<relationship-name-substr>; assert match on relationship external_name and assert a source/target dataset name does NOT match (pins the documented scope)."
+- use_case_id: F-037-UC-5
+  hypothesis_id: H-005
+  kind: happy-path
+  promise: "Clicking a relationship row opens the relationship's detail (currently: the data-entity overview)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: "Playwright IT: click a row; assert navigation to /dataentities/{id}/overview (pins the actual uniform routing; flips if PLT-056 Defect 3 changes it)."
+- use_case_id: F-037-UC-6
+  hypothesis_id: H-006
+  kind: happy-path
+  promise: "GET /api/relationships/erd/{id} returns the relationship for the id the published spec describes."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint) — REGRESSION GUARD for PLT-102 / PLT-056 Defect 5"
+  proposed_test: "Integration: seed a relationship, call erd/{data_entity_id} -> 200; call erd/{relationships.id} -> assert current 404 (characterization pin of the silent translation)."
+- use_case_id: F-037-UC-7
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "A non-admin / cross-tenant user sees only relationships they are entitled to."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional + security, use_case_id set) (pending mint) — the highest-leverage uncovered axis per test_matrix"
+  proposed_test: "Security integration: two tenants seeded; assert tenant-A caller currently sees tenant-B relationships (characterization pin of the no-authz posture); assert EXCLUDE_FROM_SEARCH row is returned. Flips when PLT-056 Defect 2 lands."
+- use_case_id: F-037-UC-8
+  hypothesis_id: H-008
+  kind: happy-path
+  promise: "A deep-link with a valid ?type opens the filtered view with the correct tab active."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint)"
+  proposed_test: "Playwright IT: navigate directly to /data-modelling/relationships?type=ERD; assert the ERD tab is active and the list is ERD-filtered."
+- use_case_id: F-037-UC-9
+  hypothesis_id: H-009
+  kind: empty/no-match
+  promise: "A malformed ?type deep-link degrades gracefully rather than into a blank dead-end."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint) — REGRESSION GUARD for PLT-056 Defect 4"
+  proposed_test: "Playwright IT: navigate to ?type=foo; assert current behaviour (no active tab + 400/empty) as a characterization pin; flips to graceful-fallback when validation lands."
+- use_case_id: F-037-UC-10
+  hypothesis_id: H-010
+  kind: empty/no-match
+  promise: "GET /api/relationships?page=0 returns the first page rather than erroring."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint) — pairs with net_new bug-candidate (page-zero boundary)"
+  proposed_test: "Integration: GET /api/relationships?page=0 -> assert current 500 (characterization pin of the negative-offset boundary); GET ?page=null -> assert error."
+- use_case_id: F-037-UC-11
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "A relationship-class data_entity with multiple relationships rows resolves to a well-defined detail response."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-037-1 (probe); on resolution -> TEST-GAP-NNN (category: missing-functional)"
+  proposed_test: "Probe PENDING-F-037-1 first (seed a multi-row data_entity_id, observe mono() branch); then pin the resolved behaviour."
+- use_case_id: F-037-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "Page size is fixed at 30 with no UI customisation (intentional)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) (pending mint) — low priority"
+  proposed_test: "Unit/IT: assert useSearchRelationships is called with size:30 and no UI control mutates it (pins the intentional limitation)."
+
+### probes_emitted
+- probe_id: PENDING-F-037-1
+  hypothesis_id: H-011
+  full_hypothesis: "When a relationship-class data_entity is associated with more than one relationships row, the detail endpoint (GET /api/relationships/erd|graph/{data_entity_id}, jooqReactiveOperations.mono at ReactiveRelationshipsRepositoryImpl.java:197) returns a single well-defined relationship OR a clear error, not silent/undefined behaviour. Resolve by: seed a relationship-class data_entity (entity_class=9) with two relationships rows sharing one data_entity_id (admissible per V0_0_87 — no UNIQUE constraint); call the detail endpoint with that data_entity.id; observe whether mono() raises TooManyResultsException (-> opaque 500) or silently returns the first row (-> wrong data). Local-only: Testcontainers + local Postgres with a manual two-row INSERT."
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  note: "Parallel-safe mode — recorded here only, no P-NNN file created. Maintainer/orchestrator mints the P-NNN slot."
+
+### validation_gaps
+- sidecar: odd-platform ts react-component:Relationships.tsx
+  field_insufficient: "node is marked unresolved:true in the feature-flow contributing_nodes — there is no DIRECTLY-enriched Relationships.tsx sidecar; its behaviour was traced entirely through the batch-ZI route sidecar's cross-file walk and the batch-ZM component-review notes embedded in the feature-flow."
+  proposed_refresh: "Enrich Relationships.tsx, RelationshipsListItem.tsx, RelationshipsTabs.tsx, RelationshipsSearchInput.tsx as first-class sidecars so the UI-tier verdicts (H-002/H-008/H-009/H-012) rest on their own enriched nodes rather than on the route sidecar's secondary observations. All UI verdicts in this reflection are nonetheless HIGH/traced because the route sidecar walked the JSX with file:line citations — but the contributing_nodes should be promoted from unresolved to enriched."
+- sidecar: odd-platform java service:RelationshipsServiceImpl
+  field_insufficient: "node is unresolved:true; the service-tier dispatch (hardcoded ERD/GRAPH type per endpoint) is described only via the controller sidecar's cross-references, not its own sidecar."
+  proposed_refresh: "Enrich RelationshipsServiceImpl + ReactiveDataEntityRelationshipRepositoryImpl + ReactiveRelationshipsRepositoryImpl as first-class nodes; the controller sidecar carries their key claims with citations, but the chain's middle hops are inferred rather than independently enriched."
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/relationships"
+  doc_says: "Users can click any row to open the relationship's detail page, with routing determined by the relationship type."
+  code_does: "RelationshipsListItem.tsx:52 always navigates to dataEntityDetailsPath(item.id) (the data-entity overview), regardless of relationship type."
+  recommended_log_as: "(already tracked — DOC-229 Caveat 3)"
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/data-modelling/relationships"
+  doc_says: "A table displaying Name, Type, Namespace + Datasource, Source entity, Target entity."
+  code_does: "The Target-entity column renders Source-entity data on every row (RelationshipsListItem.tsx:73-81 copy-paste)."
+  recommended_log_as: "(already tracked — DOC-229 Caveat 1; code-side fix at PLT-056 Defect 1)"
+
+## maintainer_notes
+
+(Empty — first reflection of this feature. Preserve this block across refreshes; only the maintainer hand-edits it.)

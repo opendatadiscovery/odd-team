@@ -1,0 +1,712 @@
+---
+feature_id: F-015
+pillar_anchored_id: P-09:F-003
+pillar: Security & Access Control (P-09) — owner-scoped read surface; cross-pillar into P-01 Data Discovery (Recommended panel) + P-05 Data Lineage (the lineage substrate)
+feature_name: "My-Objects Anchor-Set Reads — GET /api/dataentities/my/{upstream,downstream} (the owner-anchored lineage-neighbourhood triplet)"
+reflected_at: '2026-06-04T00:00:00Z'
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream.md
+  - odd-platform__java__DataEntityController__controller-method__getMyObjectsWithDownstream.md
+  - odd-platform__java__service__service__AuthIdentityProviderImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+  - odd-platform__java__service__service__DataEntityServiceImpl.md  # referenced via chain hop 2 (batch-I confirmation; same service shell)
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-lineage"
+    last_verified_at: "2026-06-04T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      MATERIAL CHANGE since the 2026-05-19 sidecar fetch (which found the page SILENT on the /my* triplet).
+      The live page + local primary source (documentation/docs/data-lineage.md:24-67) NOW carries a full
+      "My-objects triplet — composition + anchor architecture" section documenting: (a) the non-owned-but-reachable
+      semantic (lines 24-34); (b) the OpenAPI-summary inversion as a known bug with the "follow the UI label
+      semantic" workaround (lines 36-40); (c) the single-point-of-failure anchor architecture / REFACTOR-225
+      (lines 46-50); (d) the unbounded anchor fan-out (lines 52-56); (e) the four-way silent-empty with an
+      explicit /api/identity/whoami + /api/dataentities/my cross-check workaround (lines 58-67). The
+      doc_silent_on_owner_anchored_lineage_view facet from the feature-flow is therefore RESOLVED IN LIVE DOC;
+      the OpenAPI spec inversion (DOC-GAP-099) remains a live bug the doc documents but does not fix.
+hypothesis_summary:
+  total: 13
+  confirmed: 4
+  contradicted: 5
+  partial: 3
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "GET /api/dataentities/my/upstream returns the entities the user does NOT own (lineage neighbours, anchor explicitly excluded) — the OpenAPI summary 'data entities owned by current user with upstream dependencies' is the literal inverse, so any SDK compiled from the spec mis-attributes other owners' entities as the caller's own."
+related_feature_flows: [F-005, F-011, F-021, F-029, F-001]
+related_concepts:
+  - Anchor Set
+  - Derived Set
+  - User-Owner Association
+  - Lineage Graph Traversal
+  - Read-Collaborative Posture
+  - Data Entity
+related_drift_classes:
+  - anchor_set_single_point_of_failure
+  - spec_says_X_impl_does_Y
+  - inverse_semantic_openapi_summary
+  - no_join_side_defence_in_depth
+  - silent_empty_indistinguishable_from_unlinked
+  - unbounded_in_clause_anchor_fanout
+  - unstable_pagination_no_order_by
+  - hollow_and_softdelete_silent_exclusion
+new_drift_classes_proposed:
+  - my_objects_triplet_doc_now_documents_inversion_but_openapi_spec_still_inverted
+  - recommended_panel_empty_tile_no_request_association_affordance_ui_unenriched
+  - no_functional_test_on_any_my_star_promise_anchor_isolation_undefended
+---
+
+# My-Objects Anchor-Set Reads — product-owner reflection
+
+## product_owner_narrative
+
+The platform's Catalog Overview home page greets a signed-in user with a "Recommended" panel of four small tiles (per the live UI component `OwnerEntitiesList.tsx:76-105`, read directly because no enriched UI sidecar exists for this node): **My Objects**, **Upstream dependents**, **Downstream dependents**, and **Popular**. This feature owns the middle two. The promise the user reads off the screen is a personalised lineage briefing: *"here is the data I am responsible for, here is what it depends on, and here is what depends on it"* — a five-item-each at-a-glance map of the user's immediate data neighbourhood. The tiles are backed by `GET /api/dataentities/my/upstream` and `GET /api/dataentities/my/downstream` (`DataEntityController.java:291-305`); a sibling `GET /api/dataentities/my` backs the My Objects tile. The user provides no input at all — no owner-id, no filter, no page control — the panel hardcodes `{ page: 1, size: 5 }` and resolves *who you are* deep in the service chain via reactor-Context principal propagation (`DataEntityRelationsServiceImpl.java:26` → `authIdentityProvider.fetchAssociatedOwner()`, per the AuthIdentityProvider sidecar `understanding`).
+
+Mechanically, each of the two endpoints runs a deliberate two-phase **anchor-set + derived-set** computation (per `getMyObjectsWithUpstream.md` `understanding` + implicit_adrs[0]). Phase 1 — the *anchor* — resolves the caller's bound Owner and lists the entities that Owner owns, JOIN-OWNERSHIP-defended at the SQL layer (`ReactiveDataEntityRepositoryImpl.java:515-534`). Phase 2 — the *derived set* — walks exactly one lineage hop out from the anchor in the chosen direction (`getLineageRelations(oddrns, LineageDepth.empty(), {UP|DOWN}STREAM)` at `DataEntityRelationsServiceImpl.java:34`; the recursive CTE fires only its seed step because `LineageDepth.empty()` encodes depth=-1, per `ReactiveLineageRepositoryImpl.java:174` + invariant[5]), then **explicitly excludes the anchor** via `Predicate.not(oddrns::contains)` (`DataEntityRelationsServiceImpl.java:37`). The result is the lineage neighbours of your stuff, *minus your stuff* — the entities you do NOT own that touch the entities you do. The UI labels this honestly ("Upstream dependents", not "my upstream"); the OpenAPI summary does not (it says "data entities owned by current user with upstream dependencies" — the literal inverse).
+
+The user interacts with the panel by reading it and clicking a tile entry, which navigates to that entity's detail page (`DataEntityList.tsx:38` → `dataEntityDetailsPath(item.id)`). There is no pagination, no sort control, no filter, no "show more" — the surface is a fixed top-5 briefing, not a browsable list. An entry shows a stale-clock indicator and an alert icon when relevant (`DataEntityList.tsx:40-41`), consistent with how entities render across the rest of the catalog. An empty tile renders a generic `EmptyContentPlaceholder` (`DataEntityList.tsx:65-66`) with no copy explaining *why* it is empty.
+
+The integration story is three-pillar. The feature is anchored in **P-09 Security & Access Control** because its entire value proposition is owner-scoping — it is one of the few read surfaces that filters by who you are, against a platform whose documented baseline is a *read-collaborative posture* where every authenticated user can read every entity (per P-09 maintainer-notes + `data-lineage.md:69-73`). It draws its substrate from **P-05 Data Lineage** (the same LINEAGE table and CTE generator that back the F-005 lineage canvas, but confined to a single hop here vs caller-supplied depth there). And it surfaces in **P-01 Data Discovery** as a sub-surface of the Catalog Overview's Recommended panel (per the feature-flow's P-01 cross_pillar_relationship). The owner-scoping itself rests on the **User-Owner Association** mechanism (P-09): a user with no `USER_OWNER_MAPPING` row has no anchor, so the panel shows empty.
+
+In a demo, the product owner would flag the edge cases that bite real operators: a brand-new federated user (OAUTH2/LDAP first login) has no owner association yet, so all three personalised tiles render empty with no on-screen affordance pointing them to the association-request flow (per AuthIdentityProvider sidecar bugs[2]); an admin or CI-bot owner who happens to own thousands of entities pays an O(anchor) database cost on every page-load because the anchor is fetched unpaginated before the requested `size=5` slice is applied (per `getMyObjectsWithUpstream.md` performance.known_performance_gaps[0]); and four genuinely different conditions (no association / association-but-no-entities / entities-but-no-lineage / no-security-context) all collapse to the same empty tile (per bugs[3] + `data-lineage.md:58-67`). The live Data Lineage doc now documents every one of these caveats explicitly (a material improvement since 2026-05-19) — but the OpenAPI spec a third-party SDK compiler reads still describes the inverse response shape.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a signed-in user with a bound Owner and some owned entities opens the Catalog Overview home page, the 'Upstream dependents' tile shows up to 5 entities that the user's owned entities depend on (their upstream lineage neighbours)."
+  derivation: "UI label 'Upstream dependents' (OwnerEntitiesList.tsx:87) + the two-phase anchor+derive pipeline + LineageStreamKind.UPSTREAM; the happy-path promise the screen makes."
+  seed_source: ui-label + pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The chain delivers exactly this. fetchMyUpstreamDataEntitiesList fires on mount with {page:1,size:5}
+      (OwnerEntitiesList.tsx:61, 59) → getMyObjectsWithUpstream (DataEntityController.java:299-305) →
+      listAssociated(page,size,UPSTREAM) → getDependentDataEntityOddrns(UPSTREAM): resolve owner, list owned
+      entities (JOIN-OWNERSHIP-defended), collect oddrns, single-hop UPSTREAM lineage walk, exclude the anchor,
+      then listByOddrns(derived, false, false, 1, 5). The user sees the up-to-5 upstream neighbours of their
+      owned set. This is the intended product behaviour.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: understanding + operations
+        cite: "DataEntityController.java:299-305 + DataEntityRelationsServiceImpl.java:25-39"
+        note: "the full two-phase pipeline traced end-to-end"
+      - sidecar: "(direct UI read — Rule 8 exception)"
+        section: OwnerEntitiesList.tsx
+        cite: "OwnerEntitiesList.tsx:61,87 + DataEntityList.tsx:36-49"
+        note: "the tile label + the size=5 fetch + the click-through render"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When a third-party developer compiles an SDK from the OpenAPI spec and calls GET /api/dataentities/my/upstream, the response is 'a list of data entities owned by the current user with their upstream dependencies' (i.e. the caller's OWN entities, enriched with lineage) — as the spec summary states."
+  derivation: "OpenAPI summary openapi.yaml:843-844 'Returns list of data entities owned by current user with upstream dependencies'; the doc-claim/endpoint-shape seed read literally from the contract layer an SDK consumer sees."
+  seed_source: doc-claim + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The response is the literal INVERSE of the spec summary. Predicate.not(oddrns::contains) at
+      DataEntityRelationsServiceImpl.java:37 EXPLICITLY EXCLUDES the caller's owned entities from the result —
+      the response is the NON-owned set adjacent to the owned set (the lineage neighbours), never the owned set
+      itself. The owned set is the ANCHOR (the input), not the output. The DataEntityRef shape is identical to
+      the /my endpoint, so an SDK consumer treating the response as "my entities" gets no type-level signal that
+      the entities are not theirs. The live data-lineage doc (data-lineage.md:36-40) documents this exact
+      inversion as a known bug and tells integrators to "follow the UI label semantic" — but the spec the SDK
+      generator actually reads is still inverted.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: bugs_limitations_corner_cases[1] + invariants[1] + docs_link_semantic.doc_drift_findings[0]
+        cite: "openapi.yaml:843-844 (summary) vs DataEntityRelationsServiceImpl.java:37 (the exclusion filter)"
+        note: "DOC-GAP-099 primary-source — summary is literally inverse of behaviour"
+      - sidecar: "(live doc cross-reference)"
+        section: data-lineage.md
+        cite: "documentation/docs/data-lineage.md:36-40"
+        note: "the doc now flags the inversion as a known bug; the spec is still wrong"
+    operator_visible_failure: |
+      (1) An SDK consumer building a "show me my data and its dependencies" integration receives entities the
+      caller does NOT own and silently mis-attributes them to the caller — e.g. a lineage-impact dashboard that
+      lists "your tables and their sources" actually lists OTHER teams' source tables as if the caller owned
+      them. (2) Because the DataEntityRef shape matches the /my endpoint exactly, the bug is type-invisible — no
+      deserialisation error, no missing field — it surfaces only as wrong business meaning. (3) A multi-tenant
+      operator who reads "owned by current user" as a tenancy guarantee deploys believing the endpoint is
+      tenant-isolated; it returns cross-tenant lineage neighbours. (4) Anyone reading ONLY the spec (not the
+      separately-published data-lineage doc) never learns the truth — the spec and the doc disagree.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user passes type/direction DOWNSTREAM (the 'Downstream dependents' tile), the response is the set of entities that depend ON the user's owned entities (the downstream consumers), not the upstream sources."
+  derivation: "UI label 'Downstream dependents' (OwnerEntitiesList.tsx:94) + LineageStreamKind.DOWNSTREAM; view-mode/direction dispatch seed."
+  seed_source: view-mode + ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      getMyObjectsWithDownstream passes LineageStreamKind.DOWNSTREAM (DataEntityController.java:295) through the
+      identical pipeline; the only difference from upstream is the direction the recursive CTE follows
+      (DOWNSTREAM follows parent->child, UPSTREAM follows child->parent, per ReactiveLineageRepositoryImpl
+      understanding). The response is the non-owned single-hop downstream neighbours of the owned set. The
+      direction discriminator is the sole behavioural difference between the two endpoints (getMyObjectsWithDownstream.md
+      invariants[2]).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithDownstream
+        section: understanding + invariants[2]
+        cite: "DataEntityController.java:291-297 + DataEntityRelationsServiceImpl.java:34"
+        note: "symmetric to upstream; only the enum constant differs"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+        section: understanding
+        cite: "ReactiveLineageRepositoryImpl.java:150-176"
+        note: "DOWNSTREAM follows parent->child in the CTE seed"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "The 'Upstream dependents' tile excludes the user's own entities — an entity that is BOTH owned by the user AND a lineage neighbour of another of their owned entities does NOT appear in the dependents tile (it belongs in My Objects, not Upstream dependents)."
+  derivation: "implicit_adrs[0] — the Predicate.not(oddrns::contains) exclusion is the deliberate design that distinguishes the three tiles; negative-space hypothesis on the exclusion invariant."
+  seed_source: negative-space + response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      DataEntityRelationsServiceImpl.java:37 filters the flattened derived oddrn set with
+      Predicate.not(oddrns::contains) where oddrns is the anchor (owned) set. Any oddrn that is in the owned set
+      is removed from the derived set before listByOddrns fetches rows. So an entity that is owned AND a lineage
+      neighbour of another owned entity is excluded from upstream/downstream and appears only in My Objects. This
+      is the load-bearing line that makes the three tiles non-overlapping and is the same line that produces the
+      OpenAPI-summary inversion (H-002) — the exclusion is correct; the spec describing it is wrong.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: operations[exclude-anchor] + implicit_adrs[0]
+        cite: "DataEntityRelationsServiceImpl.java:37"
+        note: "the explicit anchor-exclusion filter"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "The 'Upstream dependents' tile shows only the IMMEDIATE (one-hop) dependencies of the user's owned set — it does NOT transitively expand to the sources-of-the-sources."
+  derivation: "invariant[2] / implicit_adrs[1] — LineageDepth.empty() bounds the walk to the seed step; endpoint-shape seed on the depth parameter (which the user cannot set)."
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      LineageDepth.empty() (LineageDepth.java:16-18 -> depth=-1, empty=true) is passed at
+      DataEntityRelationsServiceImpl.java:34. The recursive CTE termination predicate tDepth.lessThan(depth) at
+      ReactiveLineageRepositoryImpl.java:174 evaluates 0 < -1 (always false), so the recursive UNION ALL never
+      fires — only the seed (one-hop) rows are returned. The tile is a one-hop briefing by design; there is no
+      depth query parameter on these endpoints (unlike the F-005 canvas which takes a caller-supplied depth).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: invariants[2] + implicit_adrs[1]
+        cite: "DataEntityRelationsServiceImpl.java:34 + ReactiveLineageRepositoryImpl.java:174 + LineageDepth.java:16-18"
+        note: "empty() encodes seed-only; recursion never fires"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+        section: invariants[5]
+        cite: "ReactiveLineageRepositoryImpl.java:174"
+        note: "the boolean empty flag is NOT read by the CTE — only the -1 int value gates it (fragile sentinel)"
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When user A (owner A) opens the Recommended panel, the 'Upstream dependents' tile shows ONLY the lineage neighbours of A's owned set — it never leaks the lineage neighbourhood of a different owner B."
+  derivation: "pillar mission P-09 owner-scoping ('gating mutations... owner-scoped reads'); the core security promise of the feature, and the REFACTOR-225 anchor-set single-point-of-failure facet."
+  seed_source: pillar + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      TODAY the isolation holds: the anchor is resolved per-caller via fetchAssociatedOwner() and the derived set
+      is computed strictly from that anchor — so A sees A's neighbourhood. BUT the isolation is enforced at
+      EXACTLY ONE site (DataEntityRelationsServiceImpl.java:26). Downstream, the lineage CTE has no owner JOIN
+      (the LINEAGE table has no owner column, per ReactiveLineageRepositoryImpl invariants[3]) and the final
+      listByOddrns projection (ReactiveDataEntityRepositoryImpl.java:228-253) is a pure WHERE ODDRN IN(...) scan
+      with no OWNERSHIP join — contrast the base /my endpoint's listByOwner (lines 515-534) which DOES JOIN
+      OWNERSHIP. So the promise is fully true for the correct anchor but has ZERO defence-in-depth: a regression
+      at the single anchor-fetch site (fallback owner-id under DISABLED, a misordered WebFilter dropping the
+      SecurityContext, a USER_OWNER_MAPPING corruption, a flatMap-vs-map typo) silently returns owner B's entire
+      lineage neighbourhood to A with no SQL-layer trip-wire. The live doc (data-lineage.md:46-50) documents this
+      caveat verbatim and names fetchAssociatedOwner as "the single load-bearing line."
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: security.owner_scoping + bugs[0] + implicit_adrs[2]
+        cite: "DataEntityRelationsServiceImpl.java:26 (sole scoping site) + ReactiveDataEntityRepositoryImpl.java:228-253 (no owner JOIN) vs :515-534 (the JOIN-defended contrast)"
+        note: "REFACTOR-225 primary source — single-point-of-failure, no defence-in-depth"
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl
+        section: security.owner_scoping + bugs[3]
+        cite: "AuthIdentityProviderImpl.java:24-35,50-53"
+        note: "empty SecurityContext propagates silently rather than fail-fast — the regression-detection surface is absent"
+    operator_visible_failure: |
+      The promise is correct today, so the failure is LATENT, not active. The operator-visible failure on a
+      future regression: user A's Recommended panel silently shows owner B's upstream/downstream dependents — a
+      cross-owner lineage-neighbourhood leak that looks like a normal (well-formed) response, with no error and no
+      empty result to signal the breach. Compounded by the cross-mode username collision (F-011 / AuthIdentityProvider
+      bugs[0]): a multi-mode deployment with a name collision is one regression away from this leak. The absence of
+      any test pinning anchor-isolation (see functional_test_demands) means such a regression ships green.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: "When a brand-new user who has authenticated (OAUTH2/LDAP first login) but has not yet been associated with an Owner opens the home page, the 'Upstream dependents' tile makes clear WHY it is empty and how to get data into it (e.g. 'request an owner association')."
+  derivation: "Senior-product-owner UX seed (Rule 9 — 'does the user understand how to use this from what is on screen?') + AuthIdentityProvider bugs[2] (no auto-create, silent empty); negative-space on the empty state."
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      An unassociated user's anchor resolves empty (fetchAssociatedOwner emits empty Mono — AuthIdentityProvider
+      bugs[2]), so the derived set is empty and the tile renders a generic EmptyContentPlaceholder
+      (DataEntityList.tsx:65-66) with NO copy explaining the cause and NO link to the OwnerAssociationRequest flow.
+      No Owner is auto-created on first login (AuthIdentityProvider dependencies_semantic.requires-feature[2] +
+      OwnerAssociationRequestServiceImpl.java:54-76 — the request+approval round-trip is mandatory and explicit).
+      The user sees three empty personalised tiles (My Objects, Upstream dependents, Downstream dependents) and a
+      populated Popular tile, with no on-screen signal that they need to request an association. The screen makes
+      the feature look broken or look like the user has no data, when the real state is "you are not linked to an
+      owner yet."
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl
+        section: bugs_limitations_corner_cases[2] + security.known_security_gaps[3]
+        cite: "AuthIdentityProviderImpl.java:50-53 + OwnerAssociationRequestServiceImpl.java:54-76"
+        note: "no auto-create; silent empty; no onboarding affordance — the same gap F-011 surfaced"
+      - sidecar: "(direct UI read — Rule 8 exception)"
+        section: DataEntityList.tsx
+        cite: "DataEntityList.tsx:65-66 + OwnerEntitiesList.tsx:78-98"
+        note: "the empty tile is a generic placeholder with no cause/affordance copy"
+    operator_visible_failure: |
+      (1) New-user onboarding dead-end: a federated user lands on the home page, sees their personalised tiles
+      empty, and has no path forward — they may conclude they have no catalog access at all (when they in fact
+      have read-collaborative read access AND can request an owner association). (2) Support burden: "the
+      Recommended panel is broken / shows nothing" is the predictable ticket, when the answer is an undocumented
+      onboarding step. (3) The empty state is indistinguishable on screen from the legitimate "you own things but
+      they have no lineage" state (H-008), so even an experienced user cannot self-diagnose from the tile.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When a user receives an empty 'Upstream dependents' tile, that empty result has a single, diagnosable meaning (so the user / operator can tell what to do about it)."
+  derivation: "Response-shape seed + negative-space; the silent_empty_indistinguishable_from_unlinked drift facet."
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Four distinct conditions all produce the identical HTTP 200 + [] (and thus the identical empty tile): (a)
+      no USER_OWNER_MAPPING row (unassociated); (b) associated but owns zero entities; (c) owns entities but they
+      have no upstream lineage edges; (d) no SecurityContext (anonymous under auth.type=DISABLED). There is no
+      401, no 403, no metadata envelope, no discriminator anywhere in the response. The live doc
+      (data-lineage.md:58-67) documents this four-way ambiguity and prescribes a manual workaround (cross-check
+      /api/identity/whoami and /api/dataentities/my) — but neither the API nor the UI tile distinguishes the
+      cases, so the workaround is an operator chore, not a product affordance.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: bugs_limitations_corner_cases[3] + invariants[4]
+        cite: "DataEntityRelationsServiceImpl.java:26-30 + DataEntityServiceImpl.java:218-225 (no switchIfEmpty)"
+        note: "empty anchor propagates silently; service does not discriminate"
+      - sidecar: "(live doc cross-reference)"
+        section: data-lineage.md
+        cite: "documentation/docs/data-lineage.md:58-67"
+        note: "doc documents the four-way ambiguity + manual cross-check workaround"
+    operator_visible_failure: |
+      (1) A user cannot tell from the empty tile whether the platform thinks they own nothing, thinks they are
+      unlinked, or simply has no lineage to show — three very different next-actions collapse to one blank box.
+      (2) An operator debugging "why is my Recommended panel empty?" must run two extra API calls the doc
+      prescribes; there is no in-product diagnosis. (3) Under DISABLED auth the anonymous-caller empty is
+      indistinguishable from a real empty, masking misconfiguration.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When an admin or CI-bot owner who owns thousands of entities opens the home page, the 'Upstream dependents' tile (which requests only size=5) returns quickly — the cost is proportional to the 5 rows displayed."
+  derivation: "Endpoint-shape seed (the size=5 page parameter) + the unbounded_in_clause_anchor_fanout facet; the user's reasonable expectation that a 5-item tile is cheap."
+  seed_source: endpoint-shape + pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The cost is O(anchor-set size), NOT O(page size). listByOwner(ownerId) at DataEntityRelationsServiceImpl.java:27
+      fetches ALL owned entities with no pagination; getLineageRelations then builds a CTE with WHERE
+      CHILD_ODDRN IN (...) over the full anchor oddrn set (Postgres planner cost non-linear above ~1000 IN
+      elements); the lineage Flux is then .distinct().filter().collectList() — fully materialised in JVM memory —
+      BEFORE listByOddrns applies the SQL LIMIT 5 OFFSET 0. So an admin owner of 10k entities pays the full
+      anchor-fetch + wide-IN-CTE + in-memory-dedup cost on every page-load, even though only 5 rows are shown.
+      The Recommended panel fires this on every SPA mount alongside three sibling endpoints. The live doc
+      (data-lineage.md:52-56) documents this and advises operators to bound the owned set.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: bugs[2] + performance.known_performance_gaps[0,1,2]
+        cite: "DataEntityRelationsServiceImpl.java:27 (unpaginated listByOwner) + :34 (unbounded IN) + :35-38 (in-memory dedup defeats SQL pagination)"
+        note: "cost fixed by anchor size, not page size"
+      - sidecar: "(live doc cross-reference)"
+        section: data-lineage.md
+        cite: "documentation/docs/data-lineage.md:52-56"
+        note: "doc documents the O(anchor) cost + operator mitigation"
+    operator_visible_failure: |
+      (1) Slow home-page load for any user mapped to a large-ownership Owner (admin who became owner-of-everything
+      at setup, CI-bot auto-assigned on every ingestion) — perceived as a sluggish platform. (2) Database CPU
+      pressure per-pageload, not per-explicit-call, because the Recommended panel mounts on the home route. (3)
+      An authenticated-insider DoS amplification surface: repeated home-page loads by a large-anchor user drive
+      heavy queries at request rate (no rate-limit, no caching at any layer). (4) The mitigation (bound the owned
+      set / use service-account ownership) is an operational discipline, not enforced by code.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When the same user loads the home page twice (or paginates), the set of entities shown in the 'Upstream dependents' tile is stable — the same neighbours appear in the same order, no entity flickers in and out."
+  derivation: "Response-shape/pagination seed + the unstable_pagination_no_order_by facet; a user's reasonable expectation of a stable briefing surface."
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      listByOddrns builds DSL.selectFrom(DATA_ENTITY).where(conditions).limit(size).offset(...) at
+      ReactiveDataEntityRepositoryImpl.java:247-250 with NO .orderBy(...) call. Postgres documents pagination
+      without ORDER BY as undefined — row order may change across consecutive identical queries, especially under
+      concurrent writes. For the size=5/page=1 home-tile use case the practical impact is small (the derived set
+      is usually small and the whole first "page" is shown), so the top-5 set membership is generally stable for
+      a static catalog; but the ordering within the tile is not guaranteed, and for any larger or paginated
+      consumption (a direct-API caller paging through /my/upstream) entities can appear on both adjacent pages or
+      on neither. The promise holds for the common small-set tile case and breaks for the paginated/large-set
+      case — hence partial.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: bugs[5] + performance.scaling_characteristics[3]
+        cite: "ReactiveDataEntityRepositoryImpl.java:247-250 (no .orderBy before limit/offset)"
+        note: "unstable pagination; undefined Postgres row order"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl
+        section: understanding + gaps[4]
+        cite: "ReactiveDataEntityRepositoryImpl.java:228-253"
+        note: "listByOddrns is a raw scan distinct from the cteDataEntitySelect path; no ordering applied"
+    operator_visible_failure: |
+      (1) A direct-API consumer paging /my/upstream?page=1 then page=2 may see the same entity on both pages or
+      miss an entity entirely (duplicate/skip across page boundaries). (2) Even on the home tile, the 5 entries
+      can re-order between loads, which reads as instability though the membership is usually unchanged. The
+      defect is latent for the size=5 happy path and active for any pagination — the fix (add .orderBy(DATA_ENTITY.ID)
+      before limit/offset, the platform's canonical pattern) is the same for both.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When the user's owned set has an upstream lineage edge pointing to an entity that is a hollow stub (ingestion placeholder) or soft-deleted, the 'Upstream dependents' tile reflects that the neighbour exists (or signals that some neighbours were elided)."
+  derivation: "invariant[8] / bugs[4] — includeHollow=false includeDeleted=false silently drop such rows; negative-space on the hollow+softdelete exclusion facet."
+  seed_source: negative-space + response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      DataEntityServiceImpl.java:223 passes includeHollow=false, includeDeleted=false to listByOddrns. If an
+      upstream LINEAGE edge points to a hollow entity (oddrn-only stub created when the parent is not yet
+      ingested) or a soft-deleted entity, the LINEAGE row is in the derived oddrn set but the entity row is
+      filtered out at the final scan. The tile is silently SHORTER than the lineage actually implies, with no
+      tombstone count or "N neighbours hidden" signal. This is plausibly intentional (don't show stubs in a
+      user-facing tile) but is undocumented in the spec and invisible in the UI — the user cannot tell their
+      upstream graph contains stubs or deleted entities.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: bugs_limitations_corner_cases[4] + invariants[8]
+        cite: "DataEntityServiceImpl.java:223 + ReactiveDataEntityRepositoryImpl.java:228-253"
+        note: "includeHollow=false/includeDeleted=false silently elide neighbours"
+    operator_visible_failure: |
+      (1) A user reasoning about their data's dependencies sees an incomplete picture — an upstream source that is
+      a not-yet-ingested stub, or a recently-deleted source, simply does not appear, with no indication it was
+      omitted. (2) For a deprecation/impact workflow this is misleading: "nothing upstream depends on this" when in
+      fact a soft-deleted entity does. (3) The behaviour is undocumented (unlike the other caveats now in the
+      live doc), so neither operators nor SDK consumers know to expect it.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "Only the rightful caller can read their personalised dependents — the endpoint requires authentication and there is no parameter (owner-id, user-id) by which one caller could request another user's My-Objects neighbourhood."
+  derivation: "Endpoint-shape seed (the method signature accepts only page/size/exchange — no principal parameter) + pillar P-09 auth posture; the auth-gate question (Stress Category D analogue)."
+  seed_source: endpoint-shape + pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The endpoint signature genuinely accepts no owner/user parameter (DataEntityController.java:291-305) — the
+      principal is read from reactor Context, so a caller CANNOT request another user's neighbourhood by passing
+      an id (this half of the promise is confirmed). BUT there is no @PreAuthorize, no SECURITY_RULES entry; the
+      path falls through to pathMatchers("/**").authenticated() (getMyObjectsWithUpstream invariants[6] +
+      security.authorization_assertions). Under auth.type=DISABLED no SecurityContext is populated, so an
+      anonymous caller reaches the endpoint and (because the anchor resolves empty) receives 200 + [] — NOT a
+      cross-owner leak today, but the protection is the empty-propagation accident (AuthIdentityProvider
+      security.known_security_gaps), not an authorization gate. So "only the rightful caller can read their
+      dependents" is true under the three real auth modes via authentication + per-caller anchor, and is
+      vacuously safe-but-ungated under DISABLED — partial because the safety rests on empty-propagation, not on
+      an explicit gate, and a fallback-owner regression (H-006) would convert DISABLED from safe-empty to
+      cross-owner leak.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: security.auth_mode_relevance + invariants[3,6] + known_security_gaps[2]
+        cite: "DataEntityController.java:299-305 (no @PreAuthorize) + AuthorizationCustomizer .pathMatchers(/**).authenticated() fallback"
+        note: "no parameter to spoof (good) but no explicit gate; DISABLED safety is empty-propagation accident"
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl
+        section: security.auth_mode_relevance
+        cite: "AuthIdentityProviderImpl.java:24-35 + DisabledAuthSecurityConfiguration.java:11-19"
+        note: "empty SecurityContext -> empty anchor -> empty (not leak) under DISABLED"
+    operator_visible_failure: |
+      No active failure today — no parameter exists to request another user's data, and authentication is
+      required under the three real modes. The partial mark records that the DISABLED-mode safety is incidental
+      (empty-propagation) rather than enforced, so it shares the H-006 latent blast-radius: a future
+      default-to-admin-owner fallback under DISABLED would turn the anonymous safe-empty into an anonymous
+      cross-owner lineage leak.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-013
+  hypothesis: "Under sustained concurrent home-page loads from many users each mapped to large-ownership Owners, the four-parallel-endpoint Recommended panel (each firing the unpaginated anchor fetch + wide-IN CTE) stays within acceptable latency and does not exhaust the R2DBC connection pool."
+  derivation: "Performance seed (per-page-mount hot path + 4 parallel endpoints + no caching) + the unbounded-fanout facet; a load question the static trace cannot answer."
+  seed_source: cross-pillar + pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The static trace establishes the cost shape (O(anchor) per call, 4 parallel calls per mount, no caching at
+      any layer, no rate-limit) but cannot establish the actual latency curve or the connection-pool behaviour
+      under concurrency — that requires running the system. Whether the panel degrades gracefully or saturates
+      the pool at, say, 50 concurrent large-anchor users is an empirical question. Local-executable per Rule 6
+      (docker-compose ODD + Postgres + seeded large-ownership owners + k6/wrk against the home route).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream
+        section: performance.hot_paths + scaling_characteristics
+        cite: "DataEntityRelationsServiceImpl.java:27,34,35-38 + OwnerEntitiesList.tsx:58-64"
+        note: "4 parallel endpoints, O(anchor) each, no cache/rate-limit — cost shape known, latency curve not"
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-015-1
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-015-1"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "New federated user (OAUTH2/LDAP first login, no owner association) sees three empty personalised Recommended tiles with no on-screen affordance to request an owner association — onboarding dead-end."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-225-adjacent / F-011 (AuthIdentityProvider bugs[2]; index F-011 drift class 'first_login_user_sees_silently_empty_personalised_surfaces_no_onboarding_affordance')
+  proposed_fix_anchor: "Add an empty-state affordance in OwnerEntitiesList/DataEntityList that, when the anchor is empty due to no owner association, links to the OwnerAssociationRequest flow; backend could expose the unassociated state via /api/identity/whoami so the UI can branch."
+- hypothesis_id: H-013
+  severity: MEDIUM
+  one_line: "The Recommended panel fires four uncached, unrate-limited, O(anchor)-cost endpoints in parallel on every SPA mount; under concurrent large-anchor users the R2DBC pool behaviour is unverified (probe PENDING-F-015-1)."
+  dedup_status: net_new
+  distinct_from: "unbounded_in_clause_anchor_fanout facet — that facet is the per-call cost; this is the per-mount × concurrency pool-exhaustion question the facet does not measure."
+  recommended_log_as: upstream-issue (performance) — pending probe outcome
+  proposed_fix_anchor: "Per-request/per-session memoisation of fetchAssociatedOwner + the owned-oddrn set (AuthIdentityProvider implicit_adrs[3] notes the deliberate no-cache); OR push pagination into the derived-set SQL so cost is O(page)."
+
+### caveat_candidates
+- hypothesis_id: H-006
+  one_line: "Owner-isolation on /my/{upstream,downstream} is enforced at exactly one site (fetchAssociatedOwner) with no JOIN-side defence-in-depth; correct today, but a regression there silently leaks another owner's lineage neighbourhood (REFACTOR-225)."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-225
+  recommended_log_as: "caveat already LIVE in documentation/docs/data-lineage.md:46-50 — keep; the code-side fix (listByOddrnsAndOwner) remains REFACTOR-225."
+- hypothesis_id: H-008
+  one_line: "Empty Recommended tile is indistinguishable across four root causes (unlinked / no-entities / no-lineage / no-security-context); no API or UI discriminator."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-099-adjacent (silent_empty_indistinguishable_from_unlinked facet)
+  recommended_log_as: "caveat already LIVE in documentation/docs/data-lineage.md:58-67 (with whoami + /my cross-check workaround) — keep; UI affordance would be the product-side fix."
+- hypothesis_id: H-009
+  one_line: "Admin/CI-bot large-ownership owners pay O(anchor) DB cost per home-page mount even at size=5; mitigation is operational (bound the owned set), not enforced."
+  dedup_status: already_tracked
+  tracked_as: unbounded_in_clause_anchor_fanout facet
+  recommended_log_as: "caveat already LIVE in documentation/docs/data-lineage.md:52-56 — keep."
+- hypothesis_id: H-010
+  one_line: "listByOddrns has no ORDER BY before LIMIT/OFFSET — /my/{upstream,downstream} pagination is unstable (duplicate/skip across pages); home-tile top-5 membership is usually stable but order is not guaranteed."
+  dedup_status: net_new
+  distinct_from: "F-001/F-003 popular-ranking ORDER BY findings — those concern listPopular's view_count ordering; this is the total ABSENCE of any ORDER BY on the listByOddrns scan path."
+  recommended_log_as: "REFACTOR (small) — add .orderBy(DATA_ENTITY.ID.asc()) on listByOddrns at ReactiveDataEntityRepositoryImpl.java:247-250 (the platform's canonical fix)."
+- hypothesis_id: H-011
+  one_line: "Hollow stubs + soft-deleted entities in the upstream/downstream neighbourhood are silently elided (includeHollow=false/includeDeleted=false) with no tombstone signal; undocumented."
+  dedup_status: already_tracked
+  tracked_as: hollow_and_softdelete_silent_exclusion facet
+  recommended_log_as: "doc-gap — NOT yet in the live data-lineage doc (the other 4 caveats are; this one is missing). Add a one-line note to data-lineage.md:42-67."
+- hypothesis_id: H-012
+  one_line: "/my/{upstream,downstream} has no @PreAuthorize / SECURITY_RULES entry; safety under DISABLED is the empty-propagation accident, not an explicit gate (shares H-006 latent blast radius)."
+  dedup_status: already_tracked
+  tracked_as: REFACTOR-225 (same anchor-set single-point-of-failure cluster)
+  recommended_log_as: "covered by the REFACTOR-225 caveat in data-lineage.md:46-50 — keep."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the promise layer. EVERY hypothesis is a user-facing promise; NONE has a real test
+# (Grep of odd-platform-api/src/test for getMyObjectsWith* / listAssociated / getDependentDataEntityOddrns in
+# the DataEntity context returns ZERO matches; the only getDependentDataEntityOddrns reference is
+# ActivityServiceImplTest mocking it for the Activity MY_OBJECTS path — it does NOT exercise these endpoints).
+# Every confirmed/partial/contradicted promise therefore routes here. This is the second coverage frontier
+# at 0/13 verified — a user-facing feature with ZERO verified promises.
+- use_case_id: F-015-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A user's 'Upstream dependents' tile shows up to 5 entities their owned set depends on (upstream neighbours)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-1)"
+  proposed_test: "@WebFluxTest/WebTestClient: mock fetchAssociatedOwner -> fixture owner with N owned entities + M upstream LINEAGE edges; assert GET /api/dataentities/my/upstream body = the M distinct non-owned upstream-adjacent entities (sized to 5)."
+- use_case_id: F-015-UC-2
+  hypothesis_id: H-002
+  kind: grammar
+  promise: "GET /api/dataentities/my/upstream returns the NON-owned lineage-neighbour set (the spec summary's literal inverse) — pin so a future 'fix to match the summary' breaks the build."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-2) — DOC-GAP-099 regression pin"
+  proposed_test: "Contract test asserting the response EXCLUDES the caller's owned entities (Predicate.not(oddrns::contains)); RED if anyone makes the response include the owned set to match the OpenAPI summary."
+- use_case_id: F-015-UC-3
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "'Downstream dependents' returns the entities that depend ON the user's owned set (downstream consumers), not the upstream sources."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-3)"
+  proposed_test: "WebTestClient: fixture owner with a known downstream edge; assert /my/downstream returns the downstream-side neighbour and /my/upstream does NOT (directionality pin via LineageStreamKind)."
+- use_case_id: F-015-UC-4
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "An entity that is owned AND a lineage neighbour of another owned entity is excluded from the dependents tiles (appears only in My Objects)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-4)"
+  proposed_test: "Fixture where owned entity B is upstream of owned entity A; assert B is absent from /my/upstream (anchor-exclusion pin at DataEntityRelationsServiceImpl.java:37)."
+- use_case_id: F-015-UC-5
+  hypothesis_id: H-005
+  kind: grammar
+  promise: "The dependents tiles show only IMMEDIATE (one-hop) neighbours — no transitive expansion (LineageDepth.empty() seed-only)."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-5) — pairs with the LineageDepth.empty() fragile-sentinel caveat"
+  proposed_test: "Fixture A -> B -> C (two hops upstream of A); owner owns A only; assert /my/upstream returns B but NOT C; RED if a CTE termination change (lessThanOrEqual) silently expands to two hops."
+- use_case_id: F-015-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "User A's dependents tiles never leak owner B's lineage neighbourhood (anchor isolation)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-6) — the REFACTOR-225 regression-vector test; HIGHEST VALUE"
+  proposed_test: "Two fixture owners A,B with cross-owner lineage edges; mock fetchAssociatedOwner to return A; assert /my/upstream contains ONLY A's neighbourhood. Then inject a misconfigured provider returning B; assert (today) the response leaks B's neighbourhood — pinning the single-point-of-failure so a future listByOddrnsAndOwner defence-in-depth is verifiable."
+- use_case_id: F-015-UC-7
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "An unassociated first-login user gets a clear on-screen path to request an owner association from the empty Recommended tiles."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-7) — integration/e2e (Playwright)"
+  proposed_test: "e2e: authenticate a user with no USER_OWNER_MAPPING; open home; assert the empty Recommended tiles render an association-request affordance (currently a bare EmptyContentPlaceholder — RED until the affordance ships)."
+- use_case_id: F-015-UC-8
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: "An empty dependents result is diagnosable to a single cause."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-8)"
+  proposed_test: "Parameterised WebTestClient over the 4 empty-causes (no mapping / no entities / no lineage / no context); document that all return 200 + [] (characterization pin) OR assert a discriminator once one is added."
+- use_case_id: F-015-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "A size=5 dependents tile is cheap regardless of owned-set size."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional/performance, use_case_id F-015-UC-9)"
+  proposed_test: "Performance probe: seed owner with 10k owned entities; measure /my/upstream?size=5 latency + DB cost vs a 5-entity owner baseline (pins the O(anchor) cost the doc warns about)."
+- use_case_id: F-015-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "Dependents pagination is stable across page loads (no duplicate/skip)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-10)"
+  proposed_test: "Fixture with > size derived entities; request page=1 then page=2; assert set-membership is a partition (no overlap, no gap) — RED today (no ORDER BY); GREEN after .orderBy(ID) fix."
+- use_case_id: F-015-UC-11
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "Hollow/soft-deleted neighbours are either shown or explicitly signalled as elided."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-015-UC-11)"
+  proposed_test: "Fixture upstream edge to a hollow stub + a soft-deleted entity; assert they are absent from /my/upstream (characterization pin of includeHollow=false/includeDeleted=false at DataEntityServiceImpl.java:223)."
+- use_case_id: F-015-UC-12
+  hypothesis_id: H-012
+  kind: cross-actor
+  promise: "No caller can request another user's dependents (no owner/user parameter exists) and the endpoint requires authentication."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional/security, use_case_id F-015-UC-12)"
+  proposed_test: "Auth-matrix WebTestClient: assert authenticated user with no owner-param can only get their own anchor; assert DISABLED anonymous gets 200 + [] (not a leak) — the empty-propagation safety pin."
+- use_case_id: F-015-UC-13
+  hypothesis_id: H-013
+  kind: render
+  promise: "The 4-parallel Recommended panel stays within latency + pool budget under concurrent large-anchor load."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "probe PENDING-F-015-1 (local k6/wrk) — not a unit/integration test"
+  proposed_test: "k6/wrk against the home route with N concurrent large-anchor users; measure p95 latency + R2DBC pool saturation."
+
+### probes_emitted
+- probe_id: PENDING-F-015-1
+  hypothesis_id: H-013
+  hypothesis: "Under sustained concurrent home-page loads from many users each mapped to large-ownership Owners, the four-parallel-endpoint Recommended panel (each firing the unpaginated anchor fetch + wide-IN CTE, no caching, no rate-limit) stays within acceptable latency and does not exhaust the R2DBC connection pool."
+  local_execution_blocked: false
+  probe_sketch: "docker-compose ODD platform + Postgres; seed 2-3 large-ownership owners (10k owned entities each) + cross-owner lineage edges; k6/wrk drives concurrent GET of the home route (or the 4 /my* + /popular endpoints in parallel) at rising concurrency; observe p95/p99 latency, DB CPU, and R2DBC pool wait/timeout counts; compare against a typical 5-entity-owner baseline."
+  status: pending-reflection-verification
+
+### validation_gaps
+- sidecar: "odd-platform ts react-component:OwnerEntitiesList (chain hop 6)"
+  field_insufficient: "the UI hop has NO enriched sidecar — chain hop 6 cites '(referenced from batch-J UI realisation pattern)', not a real understanding/*.md file. Per Rule 9, this reflection's UI-facing verdicts (H-001, H-003, H-007, H-008, H-009, H-010, H-011) were grounded by reading the live component (OwnerEntitiesList.tsx + DataEntityList.tsx) directly under the Rule 8 single-read exception — NOT from an enriched sidecar. The reflection is therefore UI-validated-by-direct-read, not UI-validated-by-sidecar; the empty-state UX finding (H-007) and the briefing-surface UX (no pagination/sort/filter/customisation) deserve a proper UI sidecar."
+  proposed_refresh: "Enrich OwnerEntitiesList.tsx + DataEntityList.tsx + DataEntityListSkeleton + the OwnerAssociation parent as substrate nodes (this is the LSN-025 Failure-F class — ~550 React components, most unenriched). Capture: the four-tile composition, the hardcoded {page:1,size:5}, the EmptyContentPlaceholder empty-state with no association affordance, the click-through to dataEntityDetailsPath, the stale-clock/alert-icon consistency."
+- sidecar: "odd-platform java service service:DataEntityServiceImpl (chain hop 2)"
+  field_insufficient: "chain hop 2 cites '(referenced from batch-I primary-source confirmation; same service shell)' — there is no dedicated getMyObjects-path sidecar for DataEntityServiceImpl.listAssociated; the listAssociated(page,size,streamKind) trace (DataEntityServiceImpl.java:218-225, includeHollow=false/includeDeleted=false) was confirmed via the two controller-method sidecars' citations, not a DataEntityServiceImpl sidecar of its own."
+  proposed_refresh: "On the next DataEntityServiceImpl enrichment, capture the listAssociated overload explicitly (the flatMapMany -> listByOddrns chain + the false,false flags) so the hollow/deleted exclusion (H-011) and the no-switchIfEmpty silent-empty (H-008) trace to a service-layer sidecar rather than only to the controller sidecars."
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "odd-platform-specification/openapi.yaml:843-844 (upstream) + :861-862 (downstream)"
+  doc_says: "Returns list of data entities owned by current user with upstream/downstream dependencies."
+  code_does: "Returns the NON-owned set adjacent to the owned set (lineage neighbours, anchor explicitly excluded via Predicate.not(oddrns::contains))."
+  recommended_log_as: "DOC-GAP-099 (already tracked, primary-source-confirmed). The live feature doc (data-lineage.md:36-40) NOW documents the inversion as a known bug and prescribes 'follow the UI label semantic' — but the OpenAPI spec itself is still inverted, so SDK generators still emit the wrong mental model. Fix = correct the two summary/description strings in openapi.yaml; the doc hint can then be removed."
+- hypothesis_id: H-011
+  doc_url: "https://docs.opendatadiscovery.org/features/data-lineage"
+  doc_says: "(silent on hollow/soft-deleted neighbour elision — 4 of 5 triplet caveats are documented; this one is not)"
+  code_does: "includeHollow=false/includeDeleted=false silently drops hollow + soft-deleted neighbours from the tile (DataEntityServiceImpl.java:223) with no tombstone signal."
+  recommended_log_as: "DOC-GAP (small) — add a 5th hint to the data-lineage.md My-objects-triplet caveats block (lines 42-67) noting hollow/soft-deleted neighbours are elided without signal."
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/features/data-lineage"
+  doc_says: "Documents the four-way empty ambiguity + the /api/identity/whoami + /api/dataentities/my manual cross-check workaround (data-lineage.md:58-67). RESOLVED IN LIVE DOC since the 2026-05-19 sidecar fetch found the page silent."
+  code_does: "Four conditions collapse to 200 + []; matches the doc."
+  recommended_log_as: "doc-silence facet (doc_silent_on_owner_anchored_lineage_view) — RESOLVED IN LIVE DOC; record the resolution in doc-gaps.md and on the feature-flow."
+
+## maintainer_notes
+
+(preserved across refreshes — only block the maintainer hand-edits)

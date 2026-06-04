@@ -859,6 +859,129 @@ observed_vs_expected:
     drift_class: misaligned_timestamp_contract
     provenance: STATIC — primary-source verification in batch-I AlertServiceImpl sidecar bugs_limitations_corner_cases[7]
       + ExternalAlert.java:14 (the LocalDateTime type).
+use_cases:
+  # LSN-030 promise layer — projected from feature-reflections/detail/F-007.yaml (feature-reflector/0.3.0,
+  # reflected 2026-06-04). uc_id == hypothesis id. coverage is the SECOND coverage frontier (verified
+  # promises / total). The full hypothesis + validation lives in the reflection; this is the compact
+  # projection the test-coverage-mapper Step 2b reads. ZERO promises are verified — the only F-007 test
+  # (AlertServiceImplTest.handleExternalAlerts_emptyBatch_isNoOpTouchingNoRepository) pins the empty-batch
+  # no-op, not any user-facing promise.
+  - uc_id: H-013
+    kind: happy-path
+    promise: "A valid AlertManager POST (real entity_oddrn, http(s) generatorURL) creates a visible OPEN DISTRIBUTION_ANOMALY alert on that entity and (while OPEN) on the global All tab, with no further operator action."
+    actor: "platform-operator / prometheus-alertmanager"
+    trace: "AlertManagerController.java:21-26 -> AlertServiceImpl.handleExternalAlerts:151-191 -> ReactiveAlertRepositoryImpl.createAlerts:332-342 + OPEN_ALERT_RECEIVED activity (AlertServiceImpl.java:309-325)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional (HIGH) — only the empty-batch no-op is pinned; THE highest-value test on this feature"
+  - uc_id: H-014
+    kind: render
+    promise: "The global alert list orders by (last_created_at DESC, id DESC) — a stable total order — so infinite-scroll boundaries never skip or duplicate a row, even on a last_created_at tie."
+    actor: "odd-platform-ui-end-user (steward)"
+    trace: "ReactiveAlertRepositoryImpl.java:474-483,505 (order applied to inner CTE + outer select) -> alerts.thunks.ts/alerts.slice.ts (no client re-sort)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: "missing-functional (MEDIUM) — no test pins the order or the tie-boundary stability"
+  - uc_id: H-009
+    kind: happy-path
+    promise: "Each created alert emits an OPEN_ALERT_RECEIVED Activity event (is_system_event=true) — the auditable record that an alert was received on an entity (the ingress source itself is unaudited)."
+    actor: "platform-operator (forensic / audit)"
+    trace: "AlertServiceImpl.registerNewAlertsActivityEvents:309-325 -> ActivityService.createActivityEvents -> ReactiveActivityRepositoryImpl.save(List):57-71"
+    verdict: partial
+    coverage: unverified
+    test_demand: "missing-functional (MEDIUM) — guards the audited half; ingress-audit gap is a caveat/backlog item, not a test"
+  - uc_id: H-006
+    kind: grammar
+    promise: "The 'All' tab population (what a steward sees vs the 'All' label) — current behaviour is OPEN-only; a resolved alert is absent from every global tab."
+    actor: "odd-platform-ui-end-user (steward)"
+    trace: "AlertsTabs.tsx:22 (label 'All') vs ReactiveAlertRepositoryImpl.java:142-145 (hard STATUS=OPEN); per-entity tab unfiltered at 182-199"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (MEDIUM) — e2e characterization pin of the Category-B drift; P-194 at probe layer"
+  - uc_id: H-003
+    kind: resolve-later
+    promise: "Idempotency on retry — current behaviour: a repeated POST duplicates the alert row (intended: de-duplicate to one)."
+    actor: "prometheus-alertmanager (at-least-once retry)"
+    trace: "AlertServiceImpl.handleExternalAlerts:151-191 skips AlertActionResolver (vs 222-227) -> ReactiveAlertRepositoryImpl.createAlerts:332-342 no ON CONFLICT"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (MEDIUM) — POST-twice assert count; PLT-014 Defect 3 guard"
+  - uc_id: H-004
+    kind: render
+    promise: "A javascript:-scheme (or arbitrary-host) generatorURL is sanitised/rejected and not rendered as a live link — current behaviour: it passes."
+    actor: "odd-platform-ui-end-user (any reader)"
+    trace: "AlertServiceImpl.java:168 (UriComponentsBuilder.fromUri, no scheme constraint), 185 (embedded verbatim) -> AlertItem.tsx:86 (render)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (HIGH) — ingestion-side scheme reject + UI render-sink test; PLT-014 Defect 2 (blocked on render-mechanism validation_gap)"
+  - uc_id: H-001
+    kind: teardown-constraint
+    promise: "Auth posture of the webhook — current behaviour: unauthenticated under every auth.type mode (documented intended posture, operator perimeter-control mitigation)."
+    actor: "platform-operator / any caller with network reach"
+    trace: "AlertManagerController.java:21-26 (no @PreAuthorize) + SecurityConstants.java:96 (/ingestion/** whitelist) + IngestionDataEntitiesFilter.java:28 (binds /ingestion/entities only)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (LOW) — @WebFluxTest pins reachability without credentials; DOC-179 done, PLT-014 code fix"
+  - uc_id: H-005
+    kind: edit-reconcile
+    promise: "AlertManager status=resolved auto-closes the alert — current behaviour: the field is silently dropped by the lossy DTO; the alert stays OPEN."
+    actor: "platform-operator (send_resolved:true config)"
+    trace: "AlertManagerController.java:28-32 + ExternalAlert.java:9-15 (DTO drops status/endsAt/fingerprint) -> AlertServiceImpl.java:179 (created OPEN)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (LOW) — deserialisation test pins the lossy-DTO contract"
+  - uc_id: H-010
+    kind: empty/no-match
+    promise: "An alert POSTed without entity_oddrn is handled sanely — current behaviour: silently accepted with 204, persisted with NULL FK, counted in totals but invisible everywhere."
+    actor: "platform-operator (mislabelled AlertManager rule)"
+    trace: "AlertServiceImpl.java:178 (labels.get returns null) -> AlertManagerController.java:25 (unconditional 204); counted by countAlertsWithStatusOpen (no FK predicate)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (LOW) — pin the orphan/silent-204 behaviour"
+  - uc_id: H-007
+    kind: cross-actor
+    promise: "A read-only viewer is not offered a Resolve action they cannot use — current behaviour: the button renders for everyone; permission is checked only post-click."
+    actor: "odd-platform-ui-end-user (read-only steward)"
+    trace: "AlertItem.tsx:159-166 (button rendered unconditionally) + AlertItem.tsx:48-70 (permission probe on click)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (LOW) — e2e read-only-user button-visibility; systemic PLT-034 locus"
+  - uc_id: H-008
+    kind: edit-reconcile
+    promise: "Resolving an alert decrements the tab badge — current behaviour: the badge is fetched once on mount and stays stale until full reload."
+    actor: "odd-platform-ui-end-user (steward working a queue)"
+    trace: "Alerts.tsx:15-17 (useEffect empty deps) -> never re-fetched after a Resolve; totals = 3-COUNT + lineage CTE (AlertServiceImpl.java:90-109)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (LOW) — e2e badge-decrements-after-resolve; distinct from PLT-050"
+  - uc_id: H-011
+    kind: render
+    promise: "A cross-owner alert row does not leak a colleague's raw OIDC/LDAP username — current behaviour: statusUpdatedBy.identity.username renders verbatim to every reader."
+    actor: "odd-platform-ui-end-user (any reader on the cross-owner All tab)"
+    trace: "AlertItem.tsx:86 (username rendered verbatim) + ReactiveAlertRepositoryImpl.java:143-145 (no owner predicate)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "missing-functional (LOW) — render test; corroborates DOC-GAP-082 read-collaborative posture"
+  - uc_id: H-002
+    kind: cross-actor
+    promise: "A cross-team entity_oddrn is validated/scoped — current behaviour: mapped verbatim with no existence/ownership/permission check (forge-and-display compound)."
+    actor: "any caller (hostile or careless)"
+    trace: "AlertServiceImpl.java:178 (three negations) + ReactiveAlertRepositoryImpl.java:143-145 (cross-owner read)"
+    verdict: probe-needed
+    coverage: unverified
+    test_demand: "probe PENDING-F-007-1 is the verification artefact (PLT-014 Defect 1 + the feature-flow's named highest-leverage unprobed cell)"
+  - uc_id: H-012
+    kind: grammar
+    promise: "An operator can triage a large alert backlog (filter / sort / bulk-resolve / tunable page size) — current behaviour: none of these exist on the global Alerts page."
+    actor: "platform-operator (busy platform)"
+    trace: "AlertsList.tsx:72 (hard size=30, no filter/sort/bulk) + AlertController.java:36-57 (no status/type/date query params)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "none — missing-CAPABILITY enhancement (PLT-050); no current behaviour to pin"
+use_case_coverage:
+  verified: 0
+  total: 14
+  note: "SECOND COVERAGE FRONTIER (verified promises / total). 0 of 14 user-facing promises are guarded by a real test. The two HAPPY-PATH promises (H-013 webhook-creates-OPEN-alert, H-014 deterministic ordering) are hand-proven CONFIRMED from primary source but UNVERIFIED — the only F-007 test (AlertServiceImplTest.handleExternalAlerts_emptyBatch_isNoOpTouchingNoRepository) pins the empty-batch no-op; AlertIngestionTest covers the sibling applyAlertActions path; there is no /alerts e2e. 12 of 14 promises route to a missing-functional TEST-GAP (H-002 verifies via probe PENDING-F-007-1; H-012 is a missing-capability enhancement with no behaviour to pin). Highest-value test: F-007-UC-13 (webhook happy path)."
 test_matrix:
   unit:
     state: GAP

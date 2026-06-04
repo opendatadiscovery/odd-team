@@ -1,0 +1,679 @@
+---
+feature_id: F-026
+pillar_anchored_id: P-03:F-001
+pillar: Master Data Management (Reference Data Management)
+feature_name: "Lookup Tables (Reference Data Management)"
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: c40661401b5b17aa95b1fdeaa75f44597e1deed9
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+  - odd-platform__ts__react-component__component__LookupTables.md
+  - odd-platform__ts__routes__route__masterData.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: "Cross-referenced via the LookupTables + ReferenceDataController + masterData sidecars' docs_link_semantic blocks (WebFetched 2026-05-20 + 2026-05-26 by the file-analyser, both status 200). Not re-fetched this reflection session; treated as a cross-reference per Rule 1, not a truth source."
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 5
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "A Policy granting LOOKUP_TABLE_UPDATE for one team's tables actually permits editing/deleting EVERY lookup table in the platform — the 9 permissions use the NO_CONTEXT resolver, so the table-id in the URL never scopes the grant."
+related_feature_flows: [F-004, F-001, F-003, F-005, F-017, F-024, F-025, F-058]
+related_concepts:
+  - "Lookup Table (operator-curated reference data — Data Entity sub-type)"
+  - "Lookup-Table Definition (column schema)"
+  - "Lookup-Table Row (value persistence)"
+  - "Lookup-Table Column (per-column metadata)"
+  - "Reference Data Search Session"
+  - "Master Data Management (narrow MDM scope per docs)"
+  - "Read-collaborative Catalog Posture"
+  - "F-004 XSS Family"
+related_drift_classes:
+  - lookup_table_global_no_context_scoped_permissions_no_per_owner_scope
+  - read_endpoints_no_security_rule_six_of_fourteen
+  - xss_surface_extension_row_values_column_names_unsanitised
+  - update_column_path_param_discarded_cross_table_jump
+  - build_table_name_lossy_normalisation_collision_500
+  - cascade_orphan_on_parent_data_entity_delete
+  - rename_breaks_downstream_pipelines_silently
+  - lookup_tables_list_infinite_scroll_scrollable_target_directory_entities_list_copy_paste_mismatches_actual_container_id_lookup_tables_list_pagination_silently_capped_at_thirty
+  - lookup_table_form_sends_namespace_name_on_wire_for_update_open_api_schema_lookup_table_update_form_data_rejects_field_spring_default_lenient_binding_silently_discards
+  - lookup_tables_h1_counter_leaks_global_population_size_no_owner_filter_no_namespace_scope_no_permission_filter_authenticated_user_sees_full_count
+new_drift_classes_proposed: []
+---
+
+# Lookup Tables (Reference Data Management) — product-owner reflection
+
+## product_owner_narrative
+
+Lookup Tables is the single user-observable surface of the Master Data Management pillar (P-03). It lets an operator (a data steward, or a data engineer) create and curate **reference data inside the platform itself** — the canonical lists, code tables, and lookup values that downstream pipelines and BI tools join against (per `system-mission.md:125-141` + `odd-platform__java__ReferenceDataController...md` understanding). The promise that makes the feature distinctive: the rows you curate in the UI are stored as a **real, SQL-joinable PostgreSQL table** in a dedicated `lookup_tables_schema`, named `n_{namespaceId}__{lowercased_underscored_name}`, so a BI tool can `JOIN` against it directly (per the controller sidecar `implicit_adrs[3]` + `ReferenceDataServiceImpl.java:191-194`). Unlike every other catalog entity, the operator is BOTH the author and the storage owner.
+
+A user reaches the feature by clicking the "Master Data" toolbar tab, which routes to `/master-data/lookup-tables` (per `odd-platform__ts__routes__route__masterData.md`). The page (`LookupTables.tsx`, the de-facto pillar root per LSN-018) shows an H1 with a live count badge ("X lookup tables overall"), a global free-text search box, a permission-gated "+ Add new" button that opens a modal create/edit form, and a virtualised infinite-scroll list with Name / Description / Namespace columns plus per-row Edit and Delete buttons (per the `LookupTables` sidecar understanding + `LookupTablesList`/`LookupTablesListItem` referenced through it). Behind the screen, every action dispatches to a 14-path (17-operation) REST surface on `ReferenceDataController` at `/api/referencedata/*`, split into Table CRUD, Column CRUD, Row CRUD, and a faceted-search session (POST creates the session, GET/PUT operate on it, `/results` paginates — the same session-id pattern as the catalog Search, F-017).
+
+The working parts the product owner would demo: you create a table by naming it and picking a namespace; you define typed columns (the docs name 9 PostgreSQL field types, the code carries 9 enum constants resolving to 8 distinct SQL types since SERIAL is INTEGER+sequence — per `LookupTableColumnTypes.java:30-50`); you add and edit rows in a Data tab; you search the list as you type; and operators can grant a three-surface RBAC split — table-level, definition-level (the schema), data-level (the rows) — so a steward can be given "edit the data" without "edit the schema" (per the controller sidecar `implicit_adrs[2]` + the live doc quote). The pillar is intentionally narrow: one feature today, with `/master-data` reserved as a URL namespace for future siblings (per the masterData route sidecar `implicit_adrs[0]`).
+
+The feature integrates outward as a Data Entity: a Lookup Table is a `DATA_SET` sub-type (`DataEntityClassDto.java:43`), so it surfaces in Discovery search, the Directory, Catalog Overview entity reports, and participates in lineage (cross-pillar feeds P-01 + P-05 per `system-mission.md`). The per-row name links into the dataset-details page via `dataEntityDetailsPath(item.datasetId)`. It is operator-curated only — nothing pushes Lookup Tables in via ingestion (P-03 has no `feeds_from`).
+
+The edge cases a senior product owner would flag in the demo, before any code is read: what happens when a tenant has more than one page of tables (does the list show them all)? What does a user with no LOOKUP_TABLE permissions see? When two operators name tables that normalise to the same physical name, what error do they get? When the operator renames a table that BI already joins against, what breaks? And — the load-bearing governance question for a feature sold as "multi-tenant-safe reference data" — when an operator is granted edit on *their team's* tables, can they edit *everyone's*? Each of these becomes a falsifiable hypothesis below; several of them are where the assembled feature does NOT deliver what the screen and the endpoint shape promise.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator clicks '+ Add new', names a table 'Customer Tiers', picks a namespace, and submits, a real PostgreSQL table named n_{namespaceId}__customer_tiers is created in lookup_tables_schema and is SQL-joinable from a downstream BI tool."
+  derivation: "The feature's defining promise (per the live doc 'SQL-joinable schema-direct-access' + system-mission.md:128 'query rows directly via PostgreSQL lookup_tables_schema') and the create endpoint shape (POST /api/referencedata/table)."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The create chain delivers exactly this. ReferenceDataServiceImpl.createLookupTable resolves the
+      namespace by name, computes the physical table name via buildTableName (name.toLowerCase().replace(" ","_")),
+      and ReferenceDataRepositoryImpl issues jOOQ DDL `CREATE SEQUENCE` + `CREATE TABLE` inside lookup_tables_schema
+      (SCHEMA_NAME = "lookup_tables_schema"). The R2DBCConfiguration customConnectionPool appends
+      `?schema=lookup_tables_schema` so the table lands in the dedicated schema that the docs name as the
+      stable public contract. The UI create flow (LookupTableForm mounted from LookupTables.tsx) POSTs to the
+      same endpoint. The table is a normal Postgres table — SQL-joinable as promised.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: implicit_adrs[3] + concepts.invariants
+        cite: "ReferenceDataRepositoryImpl.java:57,65-76 + ReferenceDataServiceImpl.java:191-194"
+        note: "Physical CREATE SEQUENCE + CREATE TABLE in lookup_tables_schema; name = n_{nsId}__{lowercased}."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: downstream_side_effects[5]
+        cite: "LookupTableForm.tsx:60-66 + ReferenceDataController.java:33-39"
+        note: "UI '+ Add new' POSTs /api/referencedata/table on submit."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: "When an operator is granted LOOKUP_TABLE_UPDATE via a Policy intended to scope them to their own team's tables, they can edit ONLY those tables — not lookup tables owned by other teams."
+  derivation: "The three-surface RBAC split (per the live doc + controller implicit_adrs[2]) and the platform's per-entity scoping precedent (TERM resolver, DATA_ENTITY resolver) promise per-resource governance; a feature sold as 'multi-tenant-safe reference data' would scope a grant to the table it names."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      All 9 LOOKUP_TABLE_* SecurityRule entries use the NO_CONTEXT resolver (SecurityConstants.java:114, 326-354)
+      — the resolver that does NOT pass the lookup_table_id in the URL to a permission-scope extractor. Contrast
+      with TERM (TERM resolver, lines 174-193) and DATA_ENTITY (DATA_ENTITY resolver, lines 194-227), both of
+      which scope the grant to the specific resource's owners. The consequence: a Policy granting LOOKUP_TABLE_UPDATE
+      permits editing ANY lookup table in any namespace, regardless of how the Policy's ODDRN pattern is written.
+      The table-id in the URL is decorative for authorization purposes.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: security.authorization_assertions + known_security_gaps[2]
+        cite: "SecurityConstants.java:114,326-354 (NO_CONTEXT) vs 174-193 (TERM) vs 194-227 (DATA_ENTITY)"
+        note: "9 LOOKUP_TABLE_* rules all NO_CONTEXT; sibling permission families are entity-scoped."
+    operator_visible_failure: |
+      An operator who sets up a Policy intending "this role can edit the Marketing team's reference tables"
+      grants edit (and, with the _DELETE permission, delete) over EVERY lookup table in the platform. In a
+      multi-tenant or multi-team deployment this is a silent privilege escalation: the operator believes they
+      configured least-privilege governance and actually configured platform-wide write access. There is no
+      error, no warning, and no UI signal — the misconception only surfaces when someone edits a table they
+      "shouldn't be able to." The DELETE variant additionally enables cross-team data destruction (each delete
+      DROPs the physical Postgres table — see H-008).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: "When a user who holds NO LOOKUP_TABLE_* permissions navigates to /master-data/lookup-tables, they cannot see the platform's lookup-table inventory (the page is gated)."
+  derivation: "The route mount wraps the page in WithPermissionsProvider listing CREATE/UPDATE/DELETE (App.tsx:79-83) and the live doc describes the '+Add new' button as the create entry point — a reader reasonably expects the surface to be permission-gated."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The route-level WithPermissionsProvider does NOT block rendering — PermissionProvider.tsx:12-44 only
+      computes isAllowedTo and publishes it via React context; it never returns null. WithPermissionsProvider
+      renders its children unconditionally. So a user with zero LOOKUP_TABLE_* permissions still sees the full
+      page chrome: the H1 counter, the global search box, and the table list (Name / Description / Namespace).
+      Only the in-page '+ Add new' button (and the per-row Edit/Delete buttons) are gated by the inner
+      <WithPermissions> wrappers. The backend reads are also ungated (6 of 14 endpoints carry no SecurityRule),
+      so the list and counter populate for any authenticated caller — and under auth.type=DISABLED, for any
+      caller at all.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__masterData.md
+        section: bugs_limitations_corner_cases[1] + stress_findings.auth_gates[0]
+        cite: "App.tsx:75-88 + PermissionProvider.tsx:12-44 + WithPermissionsProvider.tsx:11-49"
+        note: "Provider passes context, never blocks render — DRIFT_NAME_VS_BEHAVIOR at the route mount."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: security.known_security_gaps[0] + stress_findings.auth_gates
+        cite: "LookupTables.tsx:72-82 (only the +Add new button is gated)"
+        note: "Page chrome renders for zero-permission users; only mutating affordances are hidden."
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: security.known_security_gaps[0] + authorization_assertions(read-no-rules)
+        cite: "SecurityConstants.java (no read-endpoint LOOKUP_TABLE_* rule; only 9 mutating rules)"
+        note: "Reads fall through to .authenticated() only — anonymous under DISABLED."
+    operator_visible_failure: |
+      A reviewer auditing route-level RBAC by reading App.tsx concludes the page is gated; it is not. A
+      zero-permission user (or, under DISABLED auth, an anonymous user) browses the complete reference-data
+      inventory — table names, descriptions, namespaces, and per-row data once they open a table. If an operator
+      stored sensitive reference data (internal employee codes, customer-tier mappings, pricing lookups) believing
+      the MANAGEMENT permission split would hide it from non-stewards, that data is readable by every authenticated
+      user. The split offers only CREATE/UPDATE/DELETE — there is no LOOKUP_TABLE_*_READ gradient to grant.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: "When an operator opens the Lookup Tables page on a tenant that has 250 lookup tables, scrolling the list reveals all 250 (the list is paginated, not capped)."
+  derivation: "Endpoint shape — the search/results endpoint takes page+size and the UI uses an infinite-scroll list (LookupTablesList); the H1 counter shows the full total, promising the list reaches it."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The list is silently capped at the first 30 rows. LookupTablesList.tsx:51-53 mounts
+      <ScrollableContainer id='lookup-tables-list'> wrapping <InfiniteScroll scrollableTarget='directory-entities-list'>
+      — the scrollableTarget is a copy-paste from the Directory feature and references a DOM id that does NOT
+      exist on this page. react-infinite-scroll-component falls back to window scroll, but ScrollableContainer
+      sets overflow:auto (with $offsetY=165), so window scroll never fires for content inside the container.
+      fetchNextPage is therefore never triggered by scrolling; only the first page (size=30) is ever requested.
+      The list shows no bottom skeleton and no "load more" affordance, so it APPEARS complete.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[1] + stress_findings.tunables(size=30) + name_behavior_pairs(InfiniteScroll)
+        cite: "LookupTablesList.tsx:23 (size=30), 51-53 (DOM-id mismatch)"
+        note: "DRIFT_NAME_VS_BEHAVIOR; PROBE-NEEDED P-192 in the sidecar (now tracked as PLT-057)."
+    operator_visible_failure: |
+      Any tenant with more than 30 lookup tables sees only the first 30 in the UI and has no signal that more
+      exist — the list looks complete. The only visible contradiction is that the H1 counter ("250 lookup tables
+      overall") disagrees with the ~30 visible rows, and most users will not register the discrepancy. Because P-03
+      has exactly one user-facing surface, this degrades 100% of the pillar's UX for any non-trivial tenant: tables
+      31+ are unreachable from the UI (an operator must know the exact name to search for them, or deep-link via
+      Discovery). This is the single highest operator-volume defect in the feature.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: "When an operator edits an existing lookup table (changes its name or description), the namespace field — shown disabled in the form — is not transmitted and cannot be changed."
+  derivation: "The form disables the namespace field on edit (disabled={!!lookupTable}) and the live doc says LOOKUP_TABLE_UPDATE covers only 'renaming or editing its description', implying namespace is fixed; a disabled field promises 'not transmitted'."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The namespace is correctly NOT changeable server-side (the UPDATE contract LookupTableUpdateFormData,
+      components.yaml:3853-3862, defines only name + description, and there is no updateNamespace path). BUT the
+      form sends namespace_name on the wire on every edit anyway: LookupTableForm.tsx:49 types the form data as
+      LookupTableFormData (the CREATE shape with required namespaceName), and the edit-submit branch
+      (lines 60-66) posts that same shape to editLookupTable({ lookupTableUpdateFormData: data, lookupTableId }).
+      The generated client serialises namespace_name into the JSON body. The server is assumed to silently discard
+      the unknown field (Spring/Jackson FAIL_ON_UNKNOWN_PROPERTIES=false) — but whether it discards (no-op) or
+      strict-rejects (400 on every edit) is not verifiable from the chain (see H-006). The UX promise (disabled =
+      not editable) holds for the OUTCOME; the wire reality (field transmitted) contradicts the "not transmitted"
+      reading.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: bugs_limitations_corner_cases[2] + docs_link_semantic.doc_drift_findings[0] + stress_findings.request_inputs[1]
+        cite: "LookupTableForm.tsx:49,60-66,117-123 + components.yaml:3853-3862"
+        note: "DRIFT_INPUT_NAME_VS_IMPLEMENTATION; namespace_name on wire though UPDATE schema rejects it. P-191."
+    operator_visible_failure: |
+      An operator inspecting the network tab on an edit sees namespace_name on the wire, contradicting the
+      disabled-field UX cue and the doc's implication that namespace is not part of an update. If the server
+      silently discards (the assumed behaviour), the consequence is cosmetic — confusing for an integrator reading
+      the wire, but the namespace stays put. If the server strict-rejects, EVERY edit fails with a 400 (a HIGH
+      functional break). The verdict is partial because the user-facing outcome is correct only under the
+      discard assumption; H-006 carries the probe that decides which.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: "When the edit form sends namespace_name (a field absent from LookupTableUpdateFormData), the server silently discards it and the edit succeeds (rather than rejecting the edit with a 400)."
+  derivation: "Response-shape — the actual server behaviour for an unknown JSON body field decides whether every UI edit works or every UI edit fails; it cannot be read from the chain (depends on the running Jackson/WebFlux deserialiser config)."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The chain cannot prove discard-vs-reject. The OpenAPI UPDATE schema (components.yaml:3853-3862) omits
+      namespace_name; the UI sends it (H-005). Spring Boot's default is FAIL_ON_UNKNOWN_PROPERTIES=false (discard),
+      but ODD may override the ObjectMapper, and the generated WebFlux server stub may bind strictly. Running the
+      system is required: POST a table, then PUT /api/referencedata/table/{id} with a body that includes
+      namespace_name, and observe whether the response is 200 (discard) or 400 (reject).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.request_inputs[1] (TRANSLATES_SILENTLY) + probes_emitted(P-191)
+        cite: "LookupTableForm.tsx:60-66 + components.yaml:3853-3862"
+        note: "Sidecar already marks this PROBE-NEEDED as P-191; reflection inherits the open verdict."
+    operator_visible_failure: |
+      If reject: every UI edit of a lookup table fails with a 400 and the operator cannot rename or re-describe
+      any table from the UI at all — a HIGH, fully-blocking functional defect hiding behind a normal-looking form.
+      If discard: cosmetic only (wire noise). The two outcomes are an order of magnitude apart in severity, which
+      is exactly why this must be measured, not assumed.
+    severity: HIGH
+    confidence: LOW
+    probe_id: PENDING-F-026-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: PENDING-F-026-1
+
+- id: H-007
+  hypothesis: "When an operator creates a lookup table named 'Customer Lookups' and another named 'customer_lookups' in the same namespace, they get a clear, friendly error explaining the name collision (e.g. a 409 with a readable message)."
+  derivation: "Endpoint shape — buildTableName performs lossy normalisation (lowercase + space-to-underscore); a senior product owner expects a name-collision case to be handled with an actionable error, not a stack trace."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Both names normalise to the same physical table name n_{nsId}__customer_lookups via
+      name.toLowerCase().replace(" ","_") (ReferenceDataServiceImpl.java:191-194). createLookupTable
+      (lines 73-86) does NOT pre-check for an existing table with that normalised name before issuing
+      DSL.createTable. Postgres raises `relation already exists`, which surfaces to the user as a generic
+      HTTP 500 — no friendly 409, no BadUserRequestException, no message naming the collision or the
+      conflicting table.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "ReferenceDataServiceImpl.java:191-194 (lossy normalisation) + 73-86 (no pre-check)"
+        note: "No uniqueness pre-check; collision becomes a raw Postgres error → generic 500."
+    operator_visible_failure: |
+      An operator hits an opaque "something went wrong" 500 when creating a table whose name collides with an
+      existing one after normalisation. They have no way to know WHY (the names look different to them —
+      "Customer Lookups" vs "customer_lookups"), so they cannot self-correct; they may retry, file a support
+      ticket, or assume the feature is broken. The lossy normalisation itself is undocumented at the UI layer,
+      so the operator also cannot anticipate that "My Reference Tables" becomes n_5__my_reference_tables.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: "When the parent DataEntity of a lookup table is deleted (via /api/dataentities/{id} or ingestion soft-delete TTL), the lookup table's catalog row and its physical lookup_tables_schema table are cleaned up too — the catalog and the data store stay consistent."
+  derivation: "Negative-space + data-integrity — a Lookup Table IS a Data Entity (DataEntityClassDto.java:43); deleting the entity should not leave a half-deleted artefact. An operator expects catalog and storage to agree."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The cleanup cascade is service-orchestrated ONLY on the DELETE /api/referencedata/table/{id} path
+      (LookupDataServiceImpl.java:114-118 deletes search-entrypoint → table-definitions → tableRepository row →
+      DataEntity, then ReferenceDataRepositoryImpl drops the physical table). It is NOT enforced by an FK on
+      the inverse direction (lookup_tables.data_entity_id has no ON DELETE CASCADE). Deleting the parent
+      DataEntity via /api/dataentities/{id}, OR a soft-delete via STATUS=DELETED / housekeeping TTL, bypasses
+      this orchestration entirely — leaving orphan rows in lookup_tables_schema.n_* AND an orphan lookup_tables
+      row. Additionally, the two-step delete on the canonical path is two separate transactions
+      (@ReactiveTransactional service + @ReactiveCustomTransactional repository) with no compensation, so a
+      failure between catalog DELETE and physical DROP also drifts the two stores.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: bugs_limitations_corner_cases[3] + [4]
+        cite: "LookupDataServiceImpl.java:114-118 + ReferenceDataRepositoryImpl.java:268-277; no inverse FK"
+        note: "Cleanup only on the controller delete path; parent-entity delete + soft-delete orphan; 2-tx no-compensation."
+    operator_visible_failure: |
+      The catalog UI shows the lookup table as gone (or the operator never sees it), but the underlying PostgreSQL
+      table is still present and queryable from BI/ETL — a stewardship and compliance hazard: "deleted" reference
+      data keeps serving downstream joins. Conversely an orphaned lookup_tables row with no live parent entity is
+      a dangling catalog record. The orphaned physical table also continues to consume schema space with no
+      catalog handle to clean it up. Because two soft-delete mechanisms (STATUS + housekeeping TTL) both bypass the
+      cleanup, this can happen without any explicit operator delete action at all.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: "When an operator renames a lookup table that downstream BI/ETL already joins against, the platform protects the downstream consumer (a deprecation alias/view, a rename-block, or at minimum a warning) so the join does not silently break."
+  derivation: "The feature's SQL-joinable promise (the whole reason rows are stored as real Postgres tables) implies the physical name is a contract; a senior product owner expects rename to preserve or warn about that contract."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Rename rebuilds the physical table name from the new display name (buildTableName) and issues
+      ALTER TABLE ... RENAME TO (ReferenceDataRepositoryImpl.java:181-202). There is no Postgres VIEW alias on
+      the old name, no rename-blocker, and no warning at the rename UI. The operative `updateLookupTable`
+      additionally emits no ActivityEvent (no @ActivityLog, no last_modified_by), so there is not even an audit
+      record of who renamed what when.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: bugs_limitations_corner_cases[7]
+        cite: "ReferenceDataServiceImpl.java:107-124 + ReferenceDataRepositoryImpl.java:181-202"
+        note: "Rename = ALTER TABLE RENAME TO against the documented public schema; no alias/block/warning."
+    operator_visible_failure: |
+      An operator renames a lookup table from the UI for a perfectly normal reason (typo fix, naming convention)
+      and every downstream BI dashboard / ETL job that hardcoded `lookup_tables_schema.n_5__old_name` breaks
+      immediately and silently — the rename succeeds with no warning that external consumers exist. Because there
+      is no audit emission on rename, the post-mortem on the broken pipeline cannot answer "who renamed which table
+      when" from platform logs. This directly contradicts the SQL-joinable-stable-table promise that motivates the
+      feature.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: "When a user with LOOKUP_TABLE_DEFINITION_UPDATE on table A submits a PATCH to /api/referencedata/table/A/column/{column_id} where {column_id} actually belongs to table B, the update is rejected (the column-belongs-to-table invariant is enforced on writes as it is on reads)."
+  derivation: "Endpoint shape — the URL carries {lookup_table_id}, promising the operation is scoped to that table; the read path getLookupTableField already enforces the parent-table linkage, so a consumer expects the write path to do the same."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      updateLookupTableField discards the {lookup_table_id} path parameter: the controller passes lookupTableId
+      in (ReferenceDataController.java:131-141) but the service signature is updateLookupTableField(Long columnId,
+      LookupTableFieldUpdateFormData) — no table-id (ReferenceDataServiceImpl.java:126-143). So a client can PATCH
+      /api/referencedata/table/999/column/{column_id} and the update succeeds regardless of whether column_id
+      belongs to table 999. This is asymmetric with the READ path getLookupTableField (lines 58-70), which DOES
+      validate the linkage and raises BadUserRequestException — and that read-side check IS unit-tested
+      (ReferenceDataServiceImplTest.getLookupTableField_columnBelongsToDifferentTable_errorsBadRequest). The write
+      path has no equivalent guard, and the NO_CONTEXT permission (H-002) does not catch the cross-table jump.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: bugs_limitations_corner_cases[5] + security.known_security_gaps[3]
+        cite: "ReferenceDataController.java:131-141 + ReferenceDataServiceImpl.java:126-143 vs 58-70"
+        note: "Write path drops table-id; read path enforces it (and the read check is unit-tested)."
+      - sidecar: source_read_for_validation
+        section: ReferenceDataServiceImplTest
+        cite: "odd-platform-api/.../service/ReferenceDataServiceImplTest.java:74-82"
+        note: "READ-side column-belongs-to-table is GREEN-tested; the symmetric WRITE-side guard is absent + untested."
+    operator_visible_failure: |
+      A caller authorized (even legitimately) on table A's columns can mutate a column belonging to table B by
+      spoofing the table-id segment of the URL — a cross-resource integrity break. Combined with the NO_CONTEXT
+      global scope (H-002), the practical blast radius is large: any holder of LOOKUP_TABLE_DEFINITION_UPDATE can
+      alter any column of any table. The read path validates the same linkage, so the asymmetry is also a
+      correctness smell that a careful operator (or pen-tester) will notice and exploit.
+    severity: MEDIUM
+    confidence: HIGH
+    source_read_for_validation: true
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: "When a user types into the search box, the list filters to lookup tables whose name/description/namespace matches the typed text, ordered by full-text relevance."
+  derivation: "UI label — the search box reads 'Search lookup tables...'; the query field flows to the reference-data search session and its FTS predicate."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      handleSearch (LookupTables.tsx:50-52) fires updateFacets({...facets, query}), issuing PUT
+      /api/referencedata/search/{searchId}; LookupDataSearchServiceImpl merges the query into FacetStateDto and
+      the subsequent /results call returns the matching rows via the Postgres tsvector @@ tsquery search-entrypoint.
+      The query string flows verbatim from the input box to the SQL predicate (no silent translation — the Category-F
+      request-input check in the sidecar marks drift NONE). The list preserves the backend order verbatim (no
+      client-side re-sort). The only caveats are throughput (per-keystroke PUT if SearchInput does not debounce —
+      a performance envelope, not a correctness drift) and that the search is the ONLY way to reach tables 31+
+      given H-004.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: stress_findings.request_inputs[2](query, drift NONE) + name_behavior_pairs(useSearchLookupTables)
+        cite: "LookupTables.tsx:50-52,67 + LookupDataSearchServiceImpl.java:27-34"
+        note: "query → FacetStateDto.query → FTS predicate; verbatim, no translation."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: "When an operator types a row value containing HTML/script (e.g. <img src=x onerror=alert(1)>) and saves it, the value is sanitised or escaped before it is stored and rendered, so it cannot execute when another user views the table."
+  derivation: "Negative-space + cross-pillar (F-004 XSS family) — a steward-curated reference surface that other authenticated users read is a stored-XSS target; a product owner expects input sanitisation on a multi-user surface."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      At the STORAGE layer the value is persisted verbatim — LookupCharValidator.getValue returns the input
+      string unchanged (LookupCharValidator.java:14-17): no <script> stripping, no length cap, no HTML escaping,
+      no allowlist; the OpenAPI form schemas place no maxLength/pattern on name/description/default_value/value.
+      Writes are SQL-injection-safe (parameterised DSL.val), but content is stored raw. At the RENDER layer the
+      list renders {name, description, namespace.name} through React's <Link>/{...}/<Typography> (per
+      LookupTablesListItem referenced via the LookupTables sidecar) — React's default text-node escaping provides
+      partial mitigation (the same defence-in-depth envelope the F-004 family relies on), so a naive payload in a
+      text node does not execute. The hypothesis is PARTIAL: storage does NOT sanitise (contradicts the promise),
+      while the common render path escapes (the promise mostly holds for plain-text cells). The full attack surface
+      depends on every render site of these values (markdown-rendered description fields, attribute contexts,
+      the confirm-dialog body) — not all are verified from this chain.
+    evidence:
+      - sidecar: odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+        section: bugs_limitations_corner_cases[1] + security.known_security_gaps[1]
+        cite: "LookupCharValidator.java:14-17 + components.yaml:3863-3882,4006-4025"
+        note: "Verbatim storage, no constraints; F-004 5th surface (storage side)."
+      - sidecar: odd-platform__ts__react-component__component__LookupTables.md
+        section: security.known_security_gaps[2] + data_exposure
+        cite: "LookupTablesListItem.tsx:30-44 (name/description/namespace rendered to any authenticated user)"
+        note: "Render path; React text-node escaping is the partial mitigation."
+    operator_visible_failure: |
+      Reference-data values are a stored-XSS vector: the platform accepts and stores arbitrary HTML/JS verbatim,
+      and the values are visible to every authenticated user (reads are ungated — H-003). React's default escaping
+      blocks the simplest text-node payloads, but any render site that interprets the value as markup (a markdown
+      description renderer, an attribute interpolation, the delete-confirmation dialog that echoes the table name)
+      is exploitable. The platform offers no storage-layer defence, so the security posture rests entirely on every
+      consumer escaping correctly forever — the exact fragility the F-004 family documents. An operator pasting
+      reference data from an untrusted source has no warning that the surface is trusted-input-only.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "LOOKUP_TABLE_* permissions use NO_CONTEXT resolver — a Policy granting UPDATE/DELETE for one team's tables permits editing/deleting EVERY lookup table platform-wide."
+  dedup_status: already_tracked
+  tracked_as: PLT-019
+  proposed_fix_anchor: "SecurityConstants.java:114,326-354 — introduce a LookupTableResolver mirroring TERM/DATA_ENTITY (PLT-019 already drafts the LookupTableResolver shape; DOC-182 ships the interim caveat — status done)."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "Route-mount WithPermissionsProvider does not block render + reads are ungated — a zero-permission (or DISABLED-anonymous) user browses the full reference-data inventory and the global counter."
+  dedup_status: already_tracked
+  tracked_as: PLT-098
+  proposed_fix_anchor: "App.tsx:75-88 (provider is not a gate) + SecurityConstants.java (no LOOKUP_TABLE_*_READ gradient) — PLT-098 files the ungated-reads + counter-leak holes."
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "InfiniteScroll scrollableTarget='directory-entities-list' (copy-paste) mismatches container id 'lookup-tables-list' — the list silently caps at 30 rows on every tenant with >30 tables."
+  dedup_status: already_tracked
+  tracked_as: PLT-057
+  proposed_fix_anchor: "LookupTablesList.tsx:53 — set scrollableTarget to 'lookup-tables-list' (PLT-057 Defect 1, severity critical)."
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "buildTableName lossy normalisation ('Customer Lookups' and 'customer_lookups' collide) returns a raw Postgres 'relation already exists' as a generic 500 — no 409, no actionable message."
+  dedup_status: net_new
+  distinct_from: PLT-019
+  recommended_log_as: PLT-NNN (pending mint) — or fold into PLT-019 as a 5th Lookup Tables hardening facet
+  proposed_fix_anchor: "ReferenceDataServiceImpl.java:73-86 — pre-check normalised-name uniqueness in the namespace; raise BadUserRequestException (409) naming the collision. NOTE: PLT-019 covers NO_CONTEXT/cascade/rename/XSS but NOT the collision-500; this is a distinct create-UX defect."
+- hypothesis_id: H-008
+  severity: HIGH
+  one_line: "Cascade orphan — deleting the parent DataEntity (or soft-delete TTL) leaves orphan lookup_tables rows + orphan physical lookup_tables_schema tables; catalog and data store drift; 2-tx delete has no compensation."
+  dedup_status: already_tracked
+  tracked_as: PLT-019
+  proposed_fix_anchor: "Inverse FK ON DELETE CASCADE on lookup_tables.data_entity_id + trigger to DROP the physical table (PLT-019 Defect 2 drafts both); DOC-182 Caveat 2 ships the interim caveat."
+- hypothesis_id: H-009
+  severity: HIGH
+  one_line: "UI rename issues ALTER TABLE RENAME TO against the documented public lookup_tables_schema — downstream BI/ETL joins break immediately and silently; no alias/block/warning; no audit emission."
+  dedup_status: already_tracked
+  tracked_as: PLT-019
+  proposed_fix_anchor: "ReferenceDataRepositoryImpl.java:181-202 — VIEW alias on old name OR rename-block after external use (PLT-019 Defect 3); rename-audit emission is PLT-057 Defect 2; DOC-182 Caveat 3 ships the interim caveat."
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: "PATCH column discards the {lookup_table_id} path param — a caller authorized on table A can mutate a column of table B by URL-spoofing; the symmetric READ check is enforced AND unit-tested, the WRITE guard is absent."
+  dedup_status: already_tracked
+  tracked_as: PLT-098
+  proposed_fix_anchor: "ReferenceDataServiceImpl.java:126-143 — pass lookupTableId through and assert column-belongs-to-table before mutating (mirror getLookupTableField:58-70). PLT-098 files the cross-table column PATCH."
+- hypothesis_id: H-012
+  severity: HIGH
+  one_line: "Lookup-table row values + column names + table name are stored verbatim (LookupCharValidator returns input unchanged) and read by every authenticated user — stored-XSS 5th surface of the F-004 family; only React render-escaping partially mitigates."
+  dedup_status: already_tracked
+  tracked_as: PLT-019
+  proposed_fix_anchor: "LookupCharValidator.java:14-17 — apply Encode.forHtml at storage, OR document trusted-input-only (DOC-182 Caveat 4, status done). Coordinate render-layer fix with PLT-015/PLT-018 (F-004 XSS family)."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "Edit form sends namespace_name on the wire on every edit though the UPDATE schema rejects it (disabled-field UX cue contradicts wire reality); namespace correctly stays unchanged server-side assuming silent discard."
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables — or DOC-NNN (pending). NOTE: distinct from PLT-087's datasource namespace_name side-door (different feature/endpoint); not tracked for Lookup Tables.
+
+### functional_test_demands
+# LSN-030 / Rule 11 — the promise layer. EVERY use_case is currently coverage:unverified (the only existing
+# tests are 2 service-tier unit tests covering reads/NotFound + the READ-side column-belongs-to-table invariant;
+# NONE exercise a user-facing promise end-to-end). use_case_coverage on the feature-flow is therefore 0/12.
+# A confirmed-but-untested promise (H-001, H-011) routes HERE, NOT to none.
+- use_case_id: F-026-UC-001
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Creating a lookup table produces a real SQL-joinable Postgres table in lookup_tables_schema named n_{nsId}__{lowercased}."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set)"
+  proposed_test: "Integration (Testcontainers PG): POST /api/referencedata/table {name:'Customer Tiers', namespace} → assert row in lookup_tables + a queryable n_{nsId}__customer_tiers table exists in lookup_tables_schema."
+- use_case_id: F-026-UC-002
+  hypothesis_id: H-002
+  kind: cross-actor
+  promise: "A LOOKUP_TABLE_UPDATE grant scopes the operator to the tables the Policy names — not every table."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — regression guard for the PLT-019 LookupTableResolver fix"
+  proposed_test: "Security: user with LOOKUP_TABLE_UPDATE via a Policy scoped to table A → PUT table B → assert 403 once the resolver lands (today asserts the bug: 200)."
+- use_case_id: F-026-UC-003
+  hypothesis_id: H-003
+  kind: cross-actor
+  promise: "A user with zero LOOKUP_TABLE_* permissions cannot enumerate the platform's reference-data inventory."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — pairs with PLT-098"
+  proposed_test: "e2e (Playwright, LDAP role with no LOOKUP_TABLE perms): visit /master-data/lookup-tables → today page+counter+list render (pin the bug); after fix → assert gated/empty. Plus @WebFluxTest: GET reads under DISABLED return 200 (pin) → 401/403 after fix."
+- use_case_id: F-026-UC-004
+  hypothesis_id: H-004
+  kind: render
+  promise: "Scrolling the list reveals all tables up to the H1 count, not just the first 30."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — regression guard for PLT-057 Defect 1"
+  proposed_test: "e2e (Playwright): seed 35 lookup tables → open page → scroll list → assert row 31+ becomes visible (today fails — caps at 30); cross-check H1 counter == visible count after full scroll."
+- use_case_id: F-026-UC-005
+  hypothesis_id: H-005
+  kind: edit-reconcile
+  promise: "Editing a table changes only name/description; namespace is fixed and not transmitted."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set)"
+  proposed_test: "Integration: PUT /api/referencedata/table/{id} with namespace_name in body → assert namespace unchanged AND assert response 200 (decides H-006). Plus a UI contract test asserting the edit form does NOT serialise namespace_name once the form types UpdateFormData."
+- use_case_id: F-026-UC-006
+  hypothesis_id: H-006
+  kind: edit-reconcile
+  promise: "The server tolerates the extra namespace_name field on edit (discards it) rather than 400-rejecting every edit."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — gated on probe PENDING-F-026-1"
+  proposed_test: "Probe PENDING-F-026-1 (local docker-compose): PUT update body with namespace_name → record 200-discard vs 400-reject; promote to a regression test once measured."
+- use_case_id: F-026-UC-007
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "A name-normalisation collision yields a clear 409/actionable error, not a generic 500."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set)"
+  proposed_test: "Integration: POST 'Customer Lookups' then POST 'customer_lookups' (same namespace) → assert friendly 4xx naming the collision (today: 500)."
+- use_case_id: F-026-UC-008
+  hypothesis_id: H-008
+  kind: teardown
+  promise: "Deleting the parent DataEntity (or soft-delete) cleans up the lookup table's catalog row and physical table."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — regression guard for PLT-019 Defect 2"
+  proposed_test: "Integration: create lookup table → DELETE /api/dataentities/{parentId} → assert no orphan lookup_tables row AND no orphan n_* physical table (today both orphan)."
+- use_case_id: F-026-UC-009
+  hypothesis_id: H-009
+  kind: edit-reconcile
+  promise: "Renaming a table protects downstream joins (alias/block/warn) and emits an audit event."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — guards PLT-019 Defect 3 + PLT-057 Defect 2"
+  proposed_test: "Integration: rename a table → assert old physical name still resolvable via a VIEW alias (post-fix) OR a documented block; assert a LOOKUP_TABLE_RENAMED ActivityEvent is emitted."
+- use_case_id: F-026-UC-010
+  hypothesis_id: H-010
+  kind: cross-actor
+  promise: "A PATCH on /table/{A}/column/{col_of_B} is rejected (write-side column-belongs-to-table guard, symmetric with reads)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — regression guard for PLT-098; symmetric with the GREEN read-side test in ReferenceDataServiceImplTest"
+  proposed_test: "Unit (Mockito+StepVerifier, mirror ReferenceDataServiceImplTest:74-82): updateLookupTableField with column belonging to a different table → assert BadUserRequestException (today: succeeds)."
+- use_case_id: F-026-UC-011
+  hypothesis_id: H-011
+  kind: happy-path
+  promise: "Typing in the search box filters the list to FTS-matching tables in backend relevance order."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set)"
+  proposed_test: "Integration: seed tables with distinct names → PUT search {query:'Customer'} → GET /results → assert only matching tables returned, order preserved."
+- use_case_id: F-026-UC-012
+  hypothesis_id: H-012
+  kind: render
+  promise: "A row value containing HTML/script is neutralised so it cannot execute when another user views the table."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (category: missing-functional, use_case_id set) — F-004 XSS family; coordinate with PLT-015/PLT-018"
+  proposed_test: "Integration + e2e: POST a row value '<img src=x onerror=alert(1)>' → GET row list (assert verbatim storage today) → render the table in a headless browser → assert no script execution on the plain-text cells AND probe the description/confirm-dialog render sites."
+
+### probes_emitted
+- probe_id: PENDING-F-026-1
+  hypothesis_id: H-006
+  hypothesis_text: "When the Lookup Table edit form sends namespace_name (a field absent from LookupTableUpdateFormData), does the server silently discard it (edit succeeds, namespace unchanged) or strict-reject it (every edit 400s)? Local docker-compose: POST a table, then PUT /api/referencedata/table/{id} with a body including namespace_name; record HTTP status + whether the namespace changed. (Sidecar already carries this as P-191 — pending-reflection-verification; parallel-safe mode forbids writing a P-NNN file this run.)"
+  local_execution_blocked: false
+
+### validation_gaps
+- sidecar: "odd-platform java ReferenceDataServiceImpl (hop 2) + ReferenceDataRepositoryImpl (hop 3) + LookupDataServiceImpl (hop 4) + LookupCharValidator (hop 5)"
+  field_insufficient: "These four backend hops are marked not-yet-enriched / unresolved:true in the F-026 chain — their behaviour was traced through the ReferenceDataController class sidecar's deep citations (HIGH confidence) rather than their own sidecars. Verdicts for H-001/H-007/H-008/H-009/H-010/H-012 lean on the controller sidecar's read-through; a direct sidecar would let the next refresh re-verify the cascade ordering, the two-transaction boundary, and the buildTableName normalisation at first-hand."
+  proposed_refresh: "Enrich ReferenceDataServiceImpl + ReferenceDataRepositoryImpl + LookupDataServiceImpl + LookupCharValidator as first-class sidecars; promote the chain hops from unresolved:true to resolved."
+- sidecar: "odd-platform ts react-component LookupTableForm + LookupTablesListItem"
+  field_insufficient: "The Lookup Tables UI surface IS in the chain and enriched at the page-root (LookupTables.tsx) + list (LookupTablesList) + leaf-row (LookupTablesListItem, ui-review) level, so this is NOT an API-only reflection (Rule 9 satisfied). BUT LookupTableForm (the create/edit modal that drives H-005/H-006) and the per-row LookupTablesListItem are described THROUGH the LookupTables sidecar rather than carrying their own enriched sidecars. The form's edit-DTO drift (H-005) and the confirm-dialog XSS render site (H-012) are therefore one read-through deep."
+  proposed_refresh: "Mint dedicated sidecars for LookupTableForm.tsx and LookupTablesListItem.tsx so the modal form contract + the per-row render sites are first-hand, not inherited."
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+  doc_says: "9 permissions across three surfaces let operators grant edit-the-data without grant-edit-the-schema (implying scoped, governable RBAC)."
+  code_does: "All 9 permissions are NO_CONTEXT-resolved — a grant is platform-wide, never per-table; the three-surface split is real but the scope is global."
+  recommended_log_as: "DOC-182 (status: done) — Caveat 1 already names the global-table RBAC posture. Convergent: reflection independently re-derived the documented caveat."
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+  doc_says: "Describes the +Add new button as the create entry point; silent on what a zero-permission user sees and on auth modes."
+  code_does: "The page chrome + counter + list render for any authenticated user (and anonymous under DISABLED); only the +Add new button is gated."
+  recommended_log_as: "DOC-NNN (pending) — extend the Lookup Tables page with a 'who can see this page' note; PLT-098 is the code-side track. (DOC-182 covers RBAC scope but not the render-without-permissions / ungated-read visibility.)"
+- hypothesis_id: H-009
+  doc_url: "https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables"
+  doc_says: "Original Name of Lookup Table functions as a table identifier within PostgreSQL (implying the name is stable)."
+  code_does: "Rename issues ALTER TABLE RENAME TO against the physical table; the 'stable identifier' is silently rewritten."
+  recommended_log_as: "DOC-182 (status: done) — Caveat 3 corrects this sentence. Convergent re-derivation."
+
+## maintainer_notes
+
+(Empty — no prior reflection existed. This is the first F-026 reflection, minted at v0.3.0. The
+dedup-at-emission sweep found a dense convergence: 6 of 8 bug-candidates independently re-derive findings
+already tracked in PLT-019 / PLT-057 / PLT-098 / DOC-182 — strong corroboration that the contradicted
+hypotheses are real, not reflection artefacts. The 2 net-new items are the buildTableName collision-500
+(H-007, distinct from PLT-019's four facets) and the edit-form namespace_name-on-wire caveat (H-005,
+distinct from PLT-087's datasource side-door). The headline product-owner finding: a feature sold as
+"multi-tenant-safe, SQL-joinable, governable reference data" contradicts that promise on governance
+(H-002 global perms, H-003 ungated reads), on the SQL-joinable contract (H-009 silent rename break,
+H-008 orphan-on-delete), and on basic list usability (H-004 30-row cap). Maintainer prose added here
+survives future refreshes.)

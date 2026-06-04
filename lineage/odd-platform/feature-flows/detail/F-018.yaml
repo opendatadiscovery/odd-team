@@ -1145,6 +1145,154 @@ observed_vs_expected:
       UNVERIFIED" + stress_findings resource_boundaries (PROBE-NEEDED).
       Severity: MEDIUM (HIGH if P-026 shows partial commit). Probe P-026
       pins the data-shape contract.
+use_cases:
+  # LSN-030 promise layer — projected from feature-reflections/detail/F-018.yaml (feature-reflector
+  # v0.3.0, 2026-06-04). Each use_case is the falsifiable "when [input], [observable]" promise of
+  # one reflection hypothesis (uc_id <-> hypothesis_id). The full hypothesis + verdict +
+  # operator-visible-failure live in the reflection file; this block is the compact projection the
+  # test-coverage-mapper Step 2b reads. coverage: verified ONLY where a REAL test guards the promise.
+  - uc_id: F-018-UC-015
+    hypothesis_id: H-015
+    kind: happy-path
+    promise: "Create / rename / important-toggle / delete a tag via the Management > Tags page and the change is reflected on the Tags list."
+    actor: "vocabulary steward (TAG_CREATE / TAG_UPDATE / TAG_DELETE)"
+    trace: "tests/ui/pages/management/tags-page.ts -> POST/PUT/DELETE /api/tags -> TagController -> TagServiceImpl -> ReactiveTagRepositoryImpl"
+    coverage: verified
+    test_ref: "tests/features/tags/{add-tag,change-tag,delete-tag}.spec.ts (Playwright e2e)"
+    test_demand: none
+  - uc_id: F-018-UC-014
+    hypothesis_id: H-014
+    kind: teardown-constraint
+    promise: "A side-channel mint creates important=false ALWAYS; a UI dataset-field replace-all NEVER removes Collector-owned (EXTERNAL / EXTERNAL_STATISTICS) relations."
+    actor: "any tag-assign-permission holder; Collector"
+    trace: "TagServiceImpl.java:155 (important=false) + :102,:109 + ReactiveTagRepositoryImpl.java:289-295 (delete gated by origin=INTERNAL)"
+    coverage: unverified
+    test_demand: functional   # CONFIRMED but UNGUARDED — the canonical LSN-030 demand (highest-value: pins the Collector-ownership invariant)
+  - uc_id: F-018-UC-001
+    hypothesis_id: H-001
+    kind: render
+    promise: "GET /api/tags / the Top Tags strip returns the MOST-USED tags, not the oldest, when the directory exceeds one page."
+    actor: "any catalog reader"
+    trace: "ReactiveTagRepositoryImpl.java:148 (paginate TAG.ID ASC) + :158 (outer count DESC re-rank over the truncated window)"
+    coverage: unverified
+    test_demand: functional   # contradicted (LSN-019); ALSO a regression guard for PLT-026 Thread A
+  - uc_id: F-018-UC-002
+    hypothesis_id: H-002
+    kind: render
+    promise: "GET /api/tags?ids=[...] filters by tag id (and the spec describes ids correctly)."
+    actor: "API / SDK consumer"
+    trace: "ReactiveTagRepositoryImpl.java:141-142 (TAG.ID.in(ids)) vs components.yaml:4239-4248 (IdsParam description 'Entity ids')"
+    coverage: unverified
+    test_demand: functional   # partial — impl correct, contract misleads
+  - uc_id: F-018-UC-003
+    hypothesis_id: H-003
+    kind: grammar
+    promise: "Tag-name search and tag creation agree on case (one coherent vocabulary)."
+    actor: "any catalog reader / tagger"
+    trace: "TagServiceImpl.java:144-159 (case-sensitive listByNames write) vs ReactiveAbstractCRUDRepository.java:242-243 (containsIgnoreCase read)"
+    coverage: unverified
+    test_demand: functional   # contradicted (write case-sensitive, read case-insensitive)
+  - uc_id: F-018-UC-004
+    hypothesis_id: H-004
+    kind: happy-path
+    promise: "PUT /api/datasetfields/{id}/tags with a non-empty tag list succeeds and persists origin=INTERNAL."
+    actor: "DATASET_FIELD_TAGS_UPDATE holder"
+    trace: "DatasetFieldServiceImpl.java:264-271 (no .setOrigin) + ReactiveTagRepositoryImpl.java:355-368 + V0_0_82:12 (origin NOT NULL DEFAULT INTERNAL)"
+    coverage: unverified
+    test_demand: "P-030 (resolve the unset-origin INSERT first; the integration test that pins origin=INTERNAL is the regression guard)"
+  - uc_id: F-018-UC-005
+    hypothesis_id: H-005
+    kind: cross-actor
+    promise: "Only a TAG_CREATE holder mints catalog vocabulary; a per-surface tag-assign permission does not, and the unauthenticated ingestion path does not."
+    actor: "two principals (A = tag-assign only; B = no TAG_*); Collector"
+    trace: "TagServiceImpl.java:80-86,144-159,:1-167 (getOrCreateTagsByName auto-create, zero @PreAuthorize) + SecurityConstants.java:185-186,288-290"
+    coverage: unverified
+    test_demand: functional   # contradicted (HIGH); PENDING-F-018-1 is the cross-user probe-journey
+  - uc_id: F-018-UC-006
+    hypothesis_id: H-006
+    kind: cross-actor
+    promise: "Listing the tag vocabulary requires at least one TAG_* permission (or is a documented open-read)."
+    actor: "no-TAG_*-permission principal; anonymous under DISABLED"
+    trace: "SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30 (catch-all authenticated)"
+    coverage: unverified
+    test_demand: functional   # contradicted — open read to any authenticated user
+  - uc_id: F-018-UC-007
+    hypothesis_id: H-007
+    kind: grammar
+    promise: "Tag names are validated server-side (length cap, charset, trim, no whitespace-only)."
+    actor: "any tagger; buggy Collector"
+    trace: "components.yaml:337-345 (bare string, no pattern/length) + TagServiceImpl.java:144-159 (no trim/normalise); no DB CHECK"
+    coverage: unverified
+    test_demand: functional   # contradicted — no validation anywhere (DoS / pollution surface)
+  - uc_id: F-018-UC-008
+    hypothesis_id: H-008
+    kind: happy-path
+    promise: "The per-entity tag-assign autocomplete signals when typing a novel name mints a global directory row."
+    actor: "user labelling their own entity"
+    trace: "TagsEditFormAutocomplete.tsx (~147 LOC, no global-catalog warning) -> POST /api/dataentities/{id}/tags -> TagServiceImpl.java:96-121"
+    coverage: unverified
+    test_demand: functional   # contradicted (Rule 9 UX seed; MEDIUM confidence — UI not enriched, see reflection validation_gap)
+  - uc_id: F-018-UC-009
+    hypothesis_id: H-009
+    kind: teardown
+    promise: "Deleting a tag removes its dataset-field relations AND stops the tag name surfacing in full-text search."
+    actor: "TAG_DELETE holder"
+    trace: "TagServiceImpl.java:64-65 (hard-delete term + data-entity only) + ReactiveTagRepositoryImpl.java:299-306 (unused deleteDatasetFieldRelations) + :68-69 (asymmetric/too-late FTS)"
+    coverage: unverified   # the directory-soft-delete arm IS e2e-tested (-> F-018-UC-015); the CLEAN-teardown promise (orphans + FTS) is NOT
+    test_demand: functional   # contradicted; pins P-032 + P-033
+  - uc_id: F-018-UC-010
+    hypothesis_id: H-010
+    kind: teardown-constraint
+    promise: "A Collector-owned tag cannot be renamed or deleted from the UI — on EITHER the data-entity OR the dataset-field side."
+    actor: "TAG_UPDATE / TAG_DELETE holder; Collector"
+    trace: "TagServiceImpl.java:49,62 (!external guard) + ReactiveTagRepositoryImpl.java:54-66 (getDto joins only TAG_TO_DATA_ENTITY, never tag_to_dataset_field origin)"
+    coverage: unverified
+    test_demand: functional   # partial — data-entity arm works, dataset-field arm unprotected (the unmet part)
+  - uc_id: F-018-UC-011
+    hypothesis_id: H-011
+    kind: render
+    promise: "The OpenAPI tag contract is legible for auth + error modes (security block, 4xx, correct success status, description)."
+    actor: "API / SDK / contract-test generator"
+    trace: "openapi.yaml:19 (bare name) + openapi.yaml:352-421 (only success statuses, no 4xx) + components.yaml grep ede5d277 (no securitySchemes); TagController.java:27 returns 200 vs 201"
+    coverage: unverified
+    test_demand: functional   # contradicted; aligns with F-029
+  - uc_id: F-018-UC-012
+    hypothesis_id: H-012
+    kind: edit-reconcile
+    promise: "PUT /api/tags/{id} returns the tag's full state (external + usedCount) for re-render."
+    actor: "UI / API consumer re-rendering a chip"
+    trace: "TagServiceImpl.java:54 (.map(mapToTag) on bare TagPojo) + TagMapper.java:26 (maps only id/name/important) + :23-24 (unused TagDto overload)"
+    coverage: unverified
+    test_demand: functional   # contradicted — response omits external/usedCount (both null)
+  - uc_id: F-018-UC-013
+    hypothesis_id: H-013
+    kind: cross-actor
+    promise: "A tag change on any object (entity / dataset field / term) is recorded in the Activity Feed."
+    actor: "auditor; any tagger"
+    trace: "DatasetFieldServiceImpl.java:119 (full before/after) vs DataEntityServiceImpl.java:358 (param-only) vs TermServiceImpl.java:252-264 (NO @ActivityLog)"
+    coverage: unverified
+    test_demand: functional   # contradicted — three-way audit asymmetry + directory-CRUD untraced
+use_case_coverage:
+  # LSN-030 — the SECOND coverage frontier: verified promises / total promises. Distinct from the
+  # test_matrix's per-test-type cells and from line/method coverage. A user-facing feature sitting
+  # near 0/N verified promises is itself a finding.
+  verified: 2
+  total: 15
+  note: |
+    2 of 15 user-facing promises are guarded by a real test, and BOTH are the directory-CRUD
+    happy path through the management Tags page: F-018-UC-015 (create/rename/important/delete and
+    it appears on the list — Playwright e2e tests/features/tags/*.spec.ts) and the directory-
+    soft-delete arm of F-018-UC-009 (delete removes the list row, subsumed by UC-015's delete-tag
+    spec). EVERY contradicted / partial / probe-needed promise is UNVERIFIED — including the
+    feature's most dangerous behaviours (the LSN-019 ranking lie, the silent global-mint
+    side-channel, the open read, the incomplete Collector-ownership guard, the unclean delete) and
+    the ONE fully-confirmed guardrail (F-018-UC-014: side-channel mints important=false + UI cannot
+    wipe EXTERNAL relations), which has NO regression test. 13 missing-functional test demands are
+    routed via the reflection's cross_references.functional_test_demands block for the
+    test-coverage-mapper / maintainer to mint as TEST-GAP-NNN (category: missing-functional,
+    carrying use_case_id). The existing related_test_gaps (TEST-GAP-017 +
+    TEST-GAP-LSN019-listMostPopular-ranking) cover the structural/ranking arms; the functional
+    promise demands are the user-facing layer on top.
 test_matrix:
   unit:
     state: PARTIAL
@@ -1174,22 +1322,23 @@ test_matrix:
     state: PARTIAL
     covered:
     - TagRepositoryImplTest is a BaseIntegrationTest (Testcontainers-Postgres) — happy-path repository coverage exists at the integration tier
+    - 'DIRECTORY-CRUD happy path via the management Tags page UI is e2e-covered — tests/features/tags/{add-tag,change-tag,delete-tag}.spec.ts (Playwright) drive POST/PUT/DELETE /api/tags through the modals; create/rename/important-toggle/delete are asserted on the list. This is the verified arm of use_case F-018-UC-015. NOT the per-entity side-channel; NOT ranking/case/validation/FTS/audit.'
     uncovered:
-    - 'TagController has ZERO controller-perimeter tests — no TagControllerTest.java exists (X-TAGGING verified by Grep across all four controller-method sidecars); createTag / getPopularTagList / updateTag / deleteTag are all unverified end-to-end'
+    - 'TagController has ZERO controller-perimeter tests — no TagControllerTest.java exists (X-TAGGING verified by Grep across all four controller-method sidecars; re-confirmed 2026-06-04); createTag / getPopularTagList / updateTag / deleteTag are all unverified at the API tier (the e2e specs cover the happy path via the UI, not the API contract / error / auth modes)'
     - 'createTag in-batch / cross-batch duplicate atomicity — P-026 (does a self-duplicate batch roll back wholly or partially commit?)'
     - 'createTag duplicate-name failure surfaces a 4xx not a 500 (UniqueConstraintException translation)'
-    - 'getPopularTagList LSN-019 ranking drift at the REST boundary — 35-tag fixture + size=30 + assert response IDs are the 30 LOWEST — P-010'
+    - 'getPopularTagList LSN-019 ranking drift at the REST boundary — 35-tag fixture + size=30 + assert response IDs are the 30 LOWEST — P-010 (use_case F-018-UC-001)'
     - 'getPopularTagList page/size degenerate inputs (page=0 negative OFFSET, size=-1 negative LIMIT, null Integer NPE) surface as a clean 4xx not a 500 — P-029'
     - 'updateTag rename propagates the new name into search_entrypoint.tag_vector + does NOT leave the old token (overwrite-vs-append) — P-025'
     - 'deleteTag soft-deletes the tag row + hard-deletes tag_to_term + tag_to_data_entity'
-    - 'deleteTag asymmetric cascade — tag_to_dataset_field rows are NOT deleted, orphans persist pointing at the soft-deleted tag — P-032'
-    - 'deleteTag asymmetric + too-late FTS refresh — data-entity-side tag_vector not refreshed (H1); term-side refresh no-ops because it runs after the relation delete (H2) — P-033'
+    - 'deleteTag asymmetric cascade — tag_to_dataset_field rows are NOT deleted, orphans persist pointing at the soft-deleted tag — P-032 (use_case F-018-UC-009)'
+    - 'deleteTag asymmetric + too-late FTS refresh — data-entity-side tag_vector not refreshed (H1); term-side refresh no-ops because it runs after the relation delete (H2) — P-033 (use_case F-018-UC-009)'
     - 'createTermTagsRelations replace-all + empty-tag_name_list-clears-all + auto-create-on-miss — P-027'
     - 'createTermTagsRelations unique-index race on concurrent novel-tag creation — P-028'
-    - 'updateDatasetFieldTags relation INSERT with unset origin actually persists with origin=INTERNAL (CRITICAL — endpoint dead if jOOQ emits explicit NULL) — P-030'
-    - 'updateDatasetFieldTags delete-all-then-recreate — tags:[] removes all INTERNAL relations; EXTERNAL_STATISTICS relations survive'
-    - 'updateDatasetFieldTags emits DATASET_FIELD_TAGS_UPDATED with correct before/after tag-state JSON'
-    - 'End-to-end side-channel — entity-tag-update-permission-holder mints a directory row visible to a separate user via GET /api/tags'
+    - 'updateDatasetFieldTags relation INSERT with unset origin actually persists with origin=INTERNAL (CRITICAL — endpoint dead if jOOQ emits explicit NULL) — P-030 (use_case F-018-UC-004)'
+    - 'updateDatasetFieldTags delete-all-then-recreate — tags:[] removes all INTERNAL relations; EXTERNAL_STATISTICS relations survive (use_case F-018-UC-014)'
+    - 'updateDatasetFieldTags emits DATASET_FIELD_TAGS_UPDATED with correct before/after tag-state JSON (use_case F-018-UC-013)'
+    - 'End-to-end side-channel — entity-tag-update-permission-holder mints a directory row visible to a separate user via GET /api/tags (use_case F-018-UC-005; PENDING-F-018-1 probe)'
     - 'Ingestion-side tag creation emits no @ActivityLog (cross-channel audit asymmetry pin)'
   performance:
     state: GAP
@@ -1206,20 +1355,28 @@ test_matrix:
     state: GAP
     covered: []
     uncovered:
-    - 'REFACTOR-223 side-channel regression-pin — assert each of DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE holders CAN mint a directory row (current behaviour) without TAG_CREATE'
+    - 'REFACTOR-223 side-channel regression-pin — assert each of DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE holders CAN mint a directory row (current behaviour) without TAG_CREATE (use_case F-018-UC-005)'
     - 'createTag TAG_CREATE enforcement — a caller without TAG_CREATE (holding only DATA_ENTITY_TAGS_UPDATE) gets 403'
     - 'updateTag TAG_UPDATE enforcement + deleteTag TAG_DELETE enforcement — no-permission caller gets 403; unauthenticated gets 401/302'
-    - 'getPopularTagList open-read posture — a caller holding NO TAG_* permission gets 200 + the full directory (the absence of a GET SecurityRule); under DISABLED an anonymous caller sees the full directory'
+    - 'getPopularTagList open-read posture — a caller holding NO TAG_* permission gets 200 + the full directory (the absence of a GET SecurityRule); under DISABLED an anonymous caller sees the full directory (use_case F-018-UC-006)'
     - 'createTermTagsRelations TERM_TAGS_UPDATE (not TERM_UPDATE) is the gate — a caller holding TERM_UPDATE but not TERM_TAGS_UPDATE is denied'
     - 'updateDatasetFieldTags parent-scoped authorization — a caller without DATASET_FIELD_TAGS_UPDATE on the dataset field PARENT data entity gets 403; the dataset-field-to-parent resolution returns the right parent'
-    - 'external-guard incompleteness — a tag whose ONLY external origin is a tag_to_dataset_field EXTERNAL row CAN be renamed (updateTag) and deleted (deleteTag) by a UI user — pin the current gap'
+    - 'external-guard incompleteness — a tag whose ONLY external origin is a tag_to_dataset_field EXTERNAL row CAN be renamed (updateTag) and deleted (deleteTag) by a UI user — pin the current gap (use_case F-018-UC-010)'
     - 'deleteTag !external guard — a tag with an external=true data-entity relation is rejected with BadUserRequestException / 422'
-    - 'Tag-name DoS — assert pathological inputs (very long, control characters, whitespace) are accepted across createTag / createTermTagsRelations / updateDatasetFieldTags (current behaviour) — pin so the fix is gated by an explicit test edit'
+    - 'Tag-name DoS — assert pathological inputs (very long, control characters, whitespace) are accepted across createTag / createTermTagsRelations / updateDatasetFieldTags (current behaviour) — pin so the fix is gated by an explicit test edit (use_case F-018-UC-007)'
     - 'DISABLED-mode bypass — anonymous PUT /api/terms/{id}/tags and PUT /api/datasetfields/{id}/tags overwrite tag sets + mint directory rows (current behaviour pin)'
     - 'LSN-019 listMostPopular ranking lie regression-pin — N > size with equal counts -> response = OLDEST size by tag.id ASC; the 5 youngest equally-popular tags are ABSENT. P-010 + P-LSN019-listMostPopular-drift target.'
     - 'LSN-019 listMostPopular varying-count case — N > size with the YOUNGEST having HIGHER counts than the OLDEST — assert the response STILL contains only the oldest size.'
     - 'LSN-019 service-tier zero-permission-checks pin — TagServiceImpl.java:1-167 grep @PreAuthorize|permissionService.hasPermission returns ZERO matches; pin the absence so a regression surfaces in CI.'
     - 'LSN-019 updateRelationsWithDataEntity empty-set destruction — PUT /api/dataentities/{id}/tags with empty body removes ALL non-external relations on the entity.'
+use_case_test_demands_note: |-
+  LSN-030 cross-link: the 13 functional (promise-level) test demands are authored in
+  feature-reflections/detail/F-018.yaml -> cross_references.functional_test_demands, each carrying
+  a use_case_id (F-018-UC-NNN) and a proposed_test. Several map onto the integration / security
+  test_matrix rows above (e.g. UC-001 <-> the LSN-019 REST-boundary pin; UC-005 <-> the REFACTOR-223
+  side-channel regression-pin; UC-004 <-> the unset-origin INSERT; UC-009 <-> the deleteTag cascade
+  + FTS pins). The functional_test_demands block is the canonical mint source for the
+  test-coverage-mapper; the test_matrix uncovered cells are the per-test-type view of the same gaps.
 control_summary: |-
   PARTIAL unit + PARTIAL integration + GAP performance + GAP security.
   Batch X-TAGGING recomposes F-018's flow from SEVEN newly-enriched
@@ -1271,6 +1428,16 @@ control_summary: |-
   dataset-field tag relations survive a UI replace-all
   (updateDatasetFieldTags); auto-created tags get `important = false`
   hardcoded so the side-channel cannot mint promoted tags.
+
+  PROMISE-LAYER COVERAGE (LSN-030, feature-reflector v0.3.0, 2026-06-04):
+  use_case_coverage = 2/15 verified. The ONLY guarded promises are the
+  directory-CRUD happy path through the management Tags page (F-018-UC-015,
+  Playwright e2e add/change/delete-tag.spec.ts) + the directory-soft-delete
+  arm of F-018-UC-009. EVERY contradicted / partial / probe-needed promise
+  is unverified — including the fully-CONFIRMED Collector-ownership guardrail
+  (F-018-UC-014), which has no regression test (the canonical LSN-030
+  hand-proven-but-unguarded demand). 13 missing-functional test demands are
+  routed via the reflection's functional_test_demands block.
 
   Highest-leverage probe candidates (all LOCAL docker-compose +
   Testcontainers-Postgres executable): P-030 (the CRITICAL dataset-field

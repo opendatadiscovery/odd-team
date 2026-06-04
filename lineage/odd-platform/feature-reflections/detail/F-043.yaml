@@ -1,0 +1,948 @@
+---
+feature_id: F-043
+pillar_id: P-08
+pillar_anchored_id: P-08:F-013
+pillar: Management & Administration
+feature_name: |-
+  Multilingual UI — six-locale (en/es/ch/fr/ua/hy) i18next-driven UI
+  translation layer with browser-localStorage-persisted preference,
+  natural-keys English-source pattern, and silent missing-key fallback
+  that ships unlocalised English to non-English users for any t() call
+  whose key is missing from the locale bundle
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
+contributing_sidecars_read:
+  - odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md
+  - odd-platform__json__locales_translations__i18n-resource__en.md
+  - odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md
+  - odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md
+  - odd-platform__java__ActivityController__controller-class__ActivityController.md
+  - odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Recorded by the i18n.ts + SelectLanguage sidecars (three WebFetch attempts
+      2026-05-08, re-anchored 2026-05-26). Verbatim verdict: the multilingual UI
+      feature (six locales, locale-switcher widget, persisted preference) is
+      undocumented end-to-end — no locale list, no persistence explanation, no
+      contribution guide. Canonical F-047 finding. No live re-fetch this run
+      (minimal-resources; the dated verdicts stand).
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Recorded by the en.json sidecar (WebFetch 2026-05-26 status 200). Verbatim:
+      "User — show events performed by one or more selected users (multi-select).
+      Useful for auditing a specific person's platform activity." The doc copy
+      reinforces the LSN-020 wrong promise — the i18n key t('User') is the channel
+      through which the misleading label reaches every locale uniformly.
+hypothesis_summary:
+  total: 12
+  confirmed: 1
+  contradicted: 7
+  partial: 3
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: |-
+      The t('User') Activity-feed filter label channels through the i18n layer to
+      every one of the six locales verbatim (natural-keys), so the LSN-020 SQL drift
+      (userIds binds to USER_OWNER_MAPPING.OWNER_ID, not the actor activity.created_by)
+      is presented to a Spanish/French/Chinese/Ukrainian/Armenian compliance reviewer
+      with exactly the same wrong promise as to an English one — no locale corrects it.
+related_feature_flows: [F-021, F-024, F-041, F-035]
+related_concepts:
+  - i18n-fallback-chain
+  - natural-keys-i18next-pattern
+  - locale-bundle-import
+  - missing-key-silent-fallback
+  - lsn-020-label-vs-implementation-drift
+related_drift_classes:
+  - i18n_natural_keys_silent_missing_key_fallback_no_validation
+  - missing_key_drift_12_plus_keys_referenced_in_code_absent_in_all_six_locales
+  - locale_set_drift_three_to_four_keys_per_locale_diverge_from_english
+  - no_missingkey_event_handler_silent_failure_at_runtime
+  - activity_user_filter_label_misleading_label_vs_sql_drift_lsn_020_channel
+  - fallbackLng_array_walks_all_five_non_english_locales_before_english_cross_locale_surprise
+  - statuses_key_locale_divergent_spanish_singular_translates_plural_english
+new_drift_classes_proposed:
+  - i18n_cross_locale_drift_uniformity_no_locale_corrects_any_label_drift
+  - i18n_language_switcher_in_english_only_unreachable_by_target_user
+---
+
+# Multilingual UI (i18n / Locale Switching) — product-owner reflection
+
+## product_owner_narrative
+
+Multilingual UI is the platform SPA's localisation surface: the promise to a new
+customer is "the ODD Platform interface is available in six languages — English,
+Spanish, Chinese, French, Ukrainian, and Armenian — and a user's chosen language
+persists across reloads" (per `i18n_ts.md` understanding; six locales registered at
+`i18n.ts:10-17`). The audience is every authenticated `odd-platform-ui-end-user`,
+and operationally the `platform-operator` deploying ODD for a non-English-speaking
+team. It is a cross-cutting UI-shell capability owned by the Management pillar's UI
+surface, sibling to F-041 (the Application Toolbar that HOSTS the switcher) and F-035
+(the App Info menu); F-043 owns the i18n LAYER itself — the contract between every
+`t('<key>')` call site and the locale bundles.
+
+A user interacts with it through one control: the `SelectLanguage` dialog, reached
+from the user-account dropdown in the top-right toolbar (per `SelectLanguage.md`
+understanding; mounted at `AppToolbar.tsx:97`). The dialog lists every locale read
+live from `i18n.languages`, filters by a friendly-name search, and on click swaps the
+active bundle via `i18n.changeLanguage(lang)` and writes the choice to
+`localStorage('i18nextLng')` (`SelectLanguage.tsx:28-33`). There is no backend call,
+no cookie, no user-profile record — the entire persistence path is browser-local
+(grep for `i18nextLng` across `odd-platform-api/` returns zero matches, per both UI
+sidecars). On next page load the bootstrap reads the key back, falling back to a
+hardcoded `'en'` when it is unset or whitelisted-out (`i18n.ts:20-25`).
+
+The working parts a product owner would demo: 418 distinct English source strings in
+`en.json` rendered across every page (`en.md` understanding); the **natural-keys**
+contract where the key IS the English phrase (417/418 entries have `key === value`,
+one slug exception at `en.json:381`); a six-element `fallbackLng` chain
+`['en','es','ch','fr','ua','hy']` walked on a missing key (`i18n.ts:30`); and the
+locale switcher with country-flag visuals (`SelectLanguage.tsx:60-62`). But the
+reality diverges from the promise in ways only a non-English user can see. Twelve-plus
+keys referenced via `t()` are absent from EVERY locale — including the three top-level
+navigation tabs `Data Quality` / `Data Modelling` / `Master Data` (`ToolbarTabs.tsx:46,51,56`)
+— so a French user sees three untranslated English tabs amid the translated chrome
+(`en.md` bugs_limitations_corner_cases.[0], grep-verified across all six files). The
+locale files have drifted in cardinality (en=418, ch=415, fr=415, es=414, hy=414,
+ua=414) with no CI parity check, and no `missingKeyHandler` is wired (`i18n.ts:27-31`)
+— so the contract "every t() call has a matching key" is enforced by nothing.
+
+The integration story is where this layer becomes load-bearing for OTHER features.
+Every label drift in the platform channels through this layer UNIFORMLY: the Activity
+Feed `t('User')` filter label (`en.json:347` → `Filters.tsx:58`) is the LSN-020 drift
+surface — `userIds` binds at the SQL layer to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)`
+(`ReactiveActivityRepositoryImpl.java:273`), not to the actor `activity.created_by`,
+and no locale corrects the misleading label (F-021 owns the SQL bug; F-043 is the
+channel). The `Dictionary` tab label → `/termsearch` URL drift channels the same way
+(F-024 downstream). The natural-keys default means a wrong label reaches a Spanish or
+Armenian compliance reviewer with identical fidelity to an English one — the
+multilingual feature actively PROPAGATES every label-vs-implementation mismatch across
+all six languages rather than offering a per-locale correction seam.
+
+Edge cases a senior product owner would flag in the demo: the switcher itself is
+labelled and searchable only in English (`SelectLanguage.tsx:48-50` filters by the
+English friendly-name; native-name search returns empty) — the one control a
+non-English user needs to find their language is in a language they may not read;
+`navigator.language` is never consulted on first visit, so a Spanish-browser user
+lands entirely in English (`i18n.ts:22`); the preference resets to English on any new
+device or cleared browser data; and the whole feature is invisible in the published
+docs (`en.md` doc_drift_findings.[1] / F-047).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When a user opens the SelectLanguage dialog and picks "Spanish", the entire SPA
+    re-renders in Spanish — every label that HAS an es.json entry shows the Spanish
+    string — and the choice is applied immediately without a page reload.
+  derivation: |-
+    SelectLanguage is the single locale-switch control (UI-label seed); changeLanguage
+    swaps the in-memory bundle and the react-i18next provider broadcasts a re-render.
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      Picking a locale row calls `await i18n.changeLanguage(lang)` (SelectLanguage.tsx:29)
+      which swaps the active resource bundle in memory; the react-i18next provider
+      (wired at i18n.ts:27 via initReactI18next) broadcasts a change event that
+      re-renders every t()/useTranslation()-consuming component in the tree (per
+      SelectLanguage.md performance.known_performance_gaps.[0] — "a single broadcast").
+      No reload is required; the swap is synchronous-feeling for the user. For every
+      key present in es.json the Spanish value renders; for keys absent from es.json
+      the fallbackLng chain returns English (or another locale — see H-008).
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md
+        section: understanding + concepts.operations.swap_active_i18next_language
+        cite: "SelectLanguage.tsx:29 (i18n.changeLanguage) + SelectLanguage.tsx:48 (i18n.languages list)"
+        note: "in-memory bundle swap + provider broadcast; no reload, no backend call."
+      - sidecar: odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md
+        section: dependencies_semantic.requires-feature
+        cite: "i18n.ts:27 (initReactI18next provider binding)"
+        note: "the provider chain is what propagates the language change to all consumers."
+    confidence: HIGH
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-002
+  hypothesis: |-
+    When a user picks a language and later reloads the page (same browser, same device),
+    the platform remembers their choice and renders in that language again.
+  derivation: |-
+    The switcher writes localStorage('i18nextLng') and the bootstrap reads it back —
+    the persistence round-trip is the user-facing promise "my preference persists".
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      The localStorage round-trip works WITHIN one browser on one device: SelectLanguage
+      writes `localStorage.setItem('i18nextLng', lang)` (SelectLanguage.tsx:30) and the
+      bootstrap reads `localStorage('i18nextLng')` on next module load (i18n.ts:22), so a
+      same-browser reload restores the choice. It does NOT persist across devices,
+      browsers, private-mode windows, or a browser-data clear — there is no server-side
+      user-profile binding (grep i18nextLng across odd-platform-api/ = 0 matches, per
+      both UI sidecars). On any of those resets the user falls back to hardcoded English.
+      This is the same finding F-041 H-010 surfaces from the chrome's seat.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md
+        section: implicit_adrs.[0] + bugs_limitations_corner_cases.[2]
+        cite: "SelectLanguage.tsx:30 (write) + i18n.ts:22 (read) + grep i18nextLng in odd-platform-api = 0"
+        note: "client-side only persistence; no server profile, no cookie."
+      - sidecar: odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md
+        section: bugs_limitations_corner_cases.[1] + scaling_characteristics.[1]
+        cite: "i18n.ts:22 (localStorage read with hardcoded 'en' fallback)"
+        note: "switching browsers/devices/clearing data resets to default English."
+    operator_visible_failure: |-
+      A user who sets Spanish on their work laptop sees English when they open ODD on
+      their phone, in an incognito window, or after clearing cookies — for a six-locale
+      product this materially undercuts the "persists across reloads" promise: it
+      persists across reloads on ONE browser only. An operator deploying ODD for a
+      Spanish-speaking team cannot set an org-wide default; every user must re-pick on
+      every device. The reset is silent — no banner explains the language reverted.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+
+- id: H-003
+  hypothesis: |-
+    When a user with a Spanish-language browser visits ODD for the first time (no prior
+    preference stored), the UI loads in Spanish to match their browser locale.
+  derivation: |-
+    Endpoint/bootstrap shape — the first-visit language is decided at i18n.ts:20-25;
+    the conventional i18next pattern consults navigator.language on first visit.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The bootstrap reads `localStorage('i18nextLng')` and falls back to a HARDCODED
+      'en' when it is unset (i18n.ts:20-25). `navigator.language` (the browser's
+      preferred language) is NEVER consulted — there is no i18next language-detector
+      plugin wired. A Spanish-, French-, or Armenian-browser user's first visit is
+      entirely in English. They must discover the gear/account menu and switch manually
+      — and that switcher is itself in English (see H-004).
+    evidence:
+      - sidecar: odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md
+        section: understanding + bugs_limitations_corner_cases (browser-language facet)
+        cite: "i18n.ts:20-25 (localStorage read + hardcoded 'en'; no navigator.language)"
+        note: "no language-detector; first visit is always English regardless of browser locale."
+    operator_visible_failure: |-
+      Cross-cultural first-impression defect: every non-English visitor's first
+      impression of the platform is in English, even when their browser declares a
+      supported locale ODD ships. Bounce risk for first-time non-English visitors who
+      may not realise the UI is multilingual at all. The feature's value (six locales)
+      is hidden behind a manual gesture the user has no cue to perform. Same finding as
+      F-041 H-010 (the navigator.language half), surfaced here as the i18n-layer root.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-004
+  hypothesis: |-
+    When a Spanish-only user wants to find their language in the switcher, they can type
+    the native name of their language ("Español") and see it in the filtered list.
+  derivation: |-
+    UI-label seed — the SelectLanguage search input filters the locale list; a language
+    picker conventionally lets a user find their language by its native self-name.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The search filter matches ONLY against the English-locale friendly name from
+      LANGUAGES_MAP (e.g. 'Spanish'), via `LANGUAGES_MAP[lang].toLowerCase().includes(query)`
+      (SelectLanguage.tsx:48-50). A user typing the native form 'Español' / 'Українська'
+      / 'Հայերեն' gets an EMPTY result list — no native-name lookup table exists in the
+      codebase (SelectLanguage.md implicit_adrs.[4]). The flag icons (LANG_TO_COUNTRY_CODE_MAP)
+      provide a non-text cue, but the search itself is English-only.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md
+        section: implicit_adrs.[4] + bugs_limitations_corner_cases.[3]
+        cite: "SelectLanguage.tsx:48-50 (filter on LANGUAGES_MAP friendly name) + lib/constants.ts:158-165"
+        note: "search-by-English-friendly-name only; native-name query returns empty."
+    operator_visible_failure: |-
+      The single control a non-English user needs to escape an English UI is itself
+      navigable only in English: a Spanish-only user who opens the dialog and types what
+      they know ('Español') sees nothing and may conclude their language is unavailable.
+      They must recognise the English word 'Spanish' or the Spain flag. This is the
+      i18n-layer's intuitive-and-self-service gap (senior-PO convenience question): the
+      switcher is not intuitive for exactly the users it exists to serve.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+
+- id: H-005
+  hypothesis: |-
+    When a non-English user navigates the platform, every visible label is shown in
+    their selected language — the UI is fully localised.
+  derivation: |-
+    Pillar mission anchor — "the UI is available in six languages" promises complete
+    localisation of the visible surface for any selected locale.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      12+ keys referenced via t() are ABSENT from en.json AND from every non-English
+      locale (grep-verified across all six files) — notably the three top-level nav
+      tabs t('Data Quality') / t('Data Modelling') / t('Master Data')
+      (ToolbarTabs.tsx:46,51,56), plus t('Query Examples'), t('Save lookup table'),
+      t('Table name'), t('Enter business name'), t('Link query'), t('Add query example'),
+      etc. (en.md bugs_limitations_corner_cases.[0]). The natural-keys + fallbackLng chain
+      makes i18next return the KEY STRING itself after exhausting the chain — so the
+      English UI accidentally works, but every non-English locale ALSO renders the English
+      key string. A French user sees three untranslated English tabs in the always-present
+      chrome. The drift is uniform across all five non-English locales (identical missing
+      set). F-041 H-006 surfaces the tab-label instance from the chrome's seat; F-043 owns
+      the i18n-layer root cause (no missing-key handler, no parity check).
+    evidence:
+      - sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+        section: bugs_limitations_corner_cases.[0] + stress_findings.request_inputs.[2]
+        cite: "en.json (14+ keys absent, grep-verified) + ToolbarTabs.tsx:46,51,56 + QueryExamples.tsx:23,25,42 + LookupTableForm.tsx:77,90,129"
+        note: "missing-key set identical across all six locale files; natural-keys returns the key string."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md
+        section: bugs_limitations_corner_cases.[1]
+        cite: "ToolbarTabs.tsx:46,51,56 + locales/translations/en.json (3 keys absent) + ua.json (same 3 absent)"
+        note: "Ukrainian user sees 6 translated tabs + 3 untranslated English tabs."
+    operator_visible_failure: |-
+      Non-English users see English fragments amid translated UI — three top-level
+      navigation tabs always visible on every page, plus 12+ form labels, button texts,
+      and modal titles in the Query Examples, Lookup Tables, and business-name flows.
+      The inconsistency erodes trust in the localisation ("if THIS is in English, what
+      else is wrong?"). It is invisible to the English-only maintainers (the English UI
+      renders correctly) and to any error channel (nothing logs the missing key), so it
+      ships and persists silently. Amplified: 12+ keys × 5 non-English locales = 60+
+      user-visible English fragments across the non-English UIs.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-006
+  hypothesis: |-
+    When a Spanish/French/Chinese/Ukrainian/Armenian compliance reviewer opens the
+    Activity Feed and reads the "User" filter label in their language, the label honestly
+    describes what the filter does (filter by which user PERFORMED each action).
+  derivation: |-
+    Cross-pillar promise (P-07 shares_data_with) + response/label seed — the t('User')
+    key is the i18n channel for the LSN-020 Activity-feed filter across all six locales.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The i18n key t('User') resolves to 'User' in EVERY locale (natural-keys: en.json:347
+      = "User":"User"; no non-English locale translates it), rendered as the multi-select
+      filter label `<MultipleFilter filterName='userIds' name={t('User')} />` (Filters.tsx:58).
+      The label promises "filter by who performed the action." But the SQL binds `userIds`
+      to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` (ReactiveActivityRepositoryImpl.java:273,
+      via getCommonConditions line 272-275 guarded by isNotEmpty(userIds)) — it filters by
+      the OWNER-of-the-affected-entity-mapped-from-a-user, NOT by the actor. The actual
+      actor column `activity.created_by` is read in the LEFT JOIN (USER_OWNER_MAPPING ON
+      OIDC_USERNAME = ACTIVITY.CREATED_BY, lines 157-158/178-179/199-200/221-222) but is
+      NEVER referenced in WHERE. The live doc reinforces the wrong promise verbatim
+      ("events performed by one or more selected users", WebFetch 2026-05-26). F-043's
+      distinct contribution: the natural-keys default means NO LOCALE CORRECTS THE LABEL —
+      the wrong promise reaches a Spanish reviewer with identical fidelity to an English
+      one. The SQL bug itself is F-021 H-001, pinned by ActivityActorFilterKnownBugTest.
+    evidence:
+      - sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+        section: bugs_limitations_corner_cases.[2] + stress_findings.request_inputs.[0]
+        cite: "en.json:347 (\"User\":\"User\") + Filters.tsx:58 (MultipleFilter filterName='userIds')"
+        note: "the i18n key is the channel; no locale corrects it; doc copy reinforces the wrong promise."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: implicit_adrs.[3] (actor-resolution) + Category A5 (userIds guard) + bugs_limitations (My-axis)
+        cite: "ReactiveActivityRepositoryImpl.java:273 (USER_OWNER_MAPPING.OWNER_ID.in(userIds)) + :157-158 (CREATED_BY join) + :272-275 (isNotEmpty guard)"
+        note: "userIds binds to OWNER_ID; actor column created_by joined for display but never filtered."
+      - sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+        section: stress_findings Category A5 + openapi-route
+        cite: "ActivityController.getActivity (12 query params incl. userIds) + openapi.yaml:3206-3284"
+        note: "controller binds userIds: List<Long> from OpenAPI; no validation/transformation."
+    operator_visible_failure: |-
+      A compliance reviewer auditing "what did Alice do last week" sets userIds=[alice_id]
+      and gets WRONG results in EVERY language: (a) if Alice has no user-owner mapping the
+      filter returns empty — the reviewer concludes Alice was inactive; (b) reassigning a
+      user-owner association retroactively rewrites which past rows the filter returns —
+      the same audit query a week later gives different answers with no warning; (c) multiple
+      users mapped to one owner all return identical rows. Because no locale corrects the
+      label, a Spanish/Armenian regulator following the localised UI + doc copy is misled
+      exactly as an English one — the multilingual feature propagates the LSN-020 audit
+      defect across all six languages rather than containing it.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+
+- id: H-007
+  hypothesis: |-
+    When a user clicks the "Dictionary" tab (in any locale), they land on a URL that
+    reflects the Dictionary concept the label names.
+  derivation: |-
+    Cross-pillar promise (P-06 shares_data_with) + Category-F input-name seed — the
+    t('Dictionary') key labels the tab that routes to /termsearch.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      t('Dictionary') resolves to 'Dictionary' in every locale (natural-keys; en.json:115)
+      and labels the tab at ToolbarTabs.tsx:66, whose link is termsSearchPath() → '/termsearch'
+      (termsRoutes.ts:5). The URL vocabulary ('termsearch') disagrees with the label
+      vocabulary ('Dictionary') uniformly across all six locales — no locale reconciles
+      them. The click dispatches createTermSearch then navigates to /termsearch/<id>.
+      F-043's frame: the i18n layer is the channel that ships the 'Dictionary' label to
+      every language while the URL stays /termsearch; the downstream label-vs-URL drift
+      is F-024 / F-041 H-012.
+    evidence:
+      - sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+        section: bugs_limitations_corner_cases.[3] + stress_findings.request_inputs.[1]
+        cite: "en.json:115 (\"Dictionary\":\"Dictionary\") + ToolbarTabs.tsx:66,111 + termsRoutes.ts:5"
+        note: "label 'Dictionary' vs URL '/termsearch'; uniform across all six locales."
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md
+        section: docs_link_semantic.doc_drift_findings.[1] + stress_findings.request_inputs (Dictionary)
+        cite: "ToolbarTabs.tsx:66-69 (label=Dictionary, link=termsSearchPath) + termsRoutes.ts:6"
+        note: "DRIFT_LABEL_VS_ROUTE; no /dictionary route exists anywhere."
+    operator_visible_failure: |-
+      A user clicks 'Dictionary' (or its locale-rendered equivalent — which is still
+      'Dictionary' under natural-keys) expecting a /dictionary URL and lands on
+      /termsearch/<uuid>. Bookmarks, Slack-shared deep links, and tutorial docs all carry
+      'termsearch', forcing every piece of documentation to explain why the label says
+      Dictionary but the URL says termsearch — in every language. Vocabulary disagreement
+      that compounds the F-024 surface; cosmetic-to-confusing, not functionally broken.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-008
+  hypothesis: |-
+    When a French user hits a key that is missing from fr.json, they see the English
+    fallback (a sensible graceful degradation) — never a third, unexpected language.
+  derivation: |-
+    Endpoint/bootstrap shape — fallbackLng at i18n.ts:30 governs missing-key behaviour;
+    the conventional value is a single 'en'.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      `fallbackLng` is the full six-element array `['en','es','ch','fr','ua','hy']`
+      (i18n.ts:30), not the conventional single `'en'`. i18next walks this array in order
+      on a missing key — so for a key present in es.json or ch.json but ABSENT from fr.json,
+      a French user sees the SPANISH or CHINESE value mid-page before English would ever be
+      reached. The natural-keys pattern (en.json is the canonical source) makes the
+      common case land on English, but for any locale-set-drift key that exists in an
+      earlier-in-chain locale and not the active one, the fallback is cross-locale. The
+      i18n.ts sidecar flags this as "almost certainly not the intended UX" — a one-line fix
+      (fallbackLng: 'en'). Seeded from SHB-147.
+    evidence:
+      - sidecar: odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md
+        section: bugs_limitations_corner_cases.[0] + concepts.invariants.fallback_chain
+        cite: "i18n.ts:30 (fallbackLng: ['en','es','ch','fr','ua','hy'])"
+        note: "array walked in order; a fr-missing key present in es.json shows Spanish before English."
+      - sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+        section: implicit_adrs.[3] + concepts.invariants.locale_count_drift
+        cite: "wc -l per locale: en=418, ch=415, fr=415, es=414, hy=414, ua=414"
+        note: "locale-set drift is the precondition that makes cross-locale fallback observable."
+    operator_visible_failure: |-
+      Low-frequency but real: a French (or Ukrainian, or Armenian) operator encountering a
+      key that exists in es.json/ch.json but not their locale sees a Spanish or Chinese
+      phrase embedded in their otherwise-French UI — a jarring cross-locale surprise that
+      no monolingual-locale test catches and no error channel reports. Combined with the
+      locale-set drift (H-009), the array fallback turns "graceful degradation to English"
+      into "degradation to whichever of five locales happens to have the key first."
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-009
+  hypothesis: |-
+    Every label a user sees in English is also available in each of the five non-English
+    locales — the locale bundles are at parity.
+  derivation: |-
+    Pillar mission anchor + response-shape — "available in six languages" implies the
+    six bundles carry the same key set.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The locale files have drifted in cardinality: en=418, ch=415, fr=415, es=414, hy=414,
+      ua=414 (wc -l, verified at commit 4ec2b20). Three to four keys exist in en.json but
+      NOT in the non-English locales (separate from the 12+ keys missing from ALL six —
+      H-005). The natural-keys + fallbackLng combination HIDES this: the missing entries
+      fall through to English. There is no CI step validating code↔resource parity or
+      locale↔locale parity, and no missingKeyHandler (i18n.ts:27-31 has only resources/lng/
+      fallbackLng) — so a contributor adding a key to en.json receives NO signal that the
+      other five need updating. The divergence is invisible until a non-English user
+      renders an in-en-but-not-in-their-locale key.
+    evidence:
+      - sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+        section: bugs_limitations_corner_cases.[1] + tests_coverage_semantic (locale-completeness drift)
+        cite: "wc -l on six locale files (en=418 vs 414-415) + i18n.ts:30 (fallbackLng hides it)"
+        note: "3-4 keys in en.json absent from non-English locales; no parity CI."
+      - sidecar: odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md
+        section: bugs_limitations_corner_cases + implicit_adrs (no missing-key handler)
+        cite: "i18n.ts:27-31 (init has no missingKeyHandler/saveMissing)"
+        note: "the contract is enforced by nothing; drift ships silently."
+    operator_visible_failure: |-
+      A non-English-locale user intermittently sees English text where they expect their
+      language, with no pattern they can predict — the divergence surfaces only when a
+      specific drifted key renders. For the maintainer the failure is structural: adding a
+      feature touches en.json, the English UI works, review passes, and the five non-English
+      locales silently drift further out of parity with each release. This is the root the
+      whole F-043 drift family grows from — the missing parity gate.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+
+- id: H-010
+  hypothesis: |-
+    When a Spanish-locale user opens the Search "Statuses" multi-select facet, the label
+    is correctly localised and grammatically matches the multi-select control.
+  derivation: |-
+    Response/label seed — t('Statuses') labels the multi-select status facet; the es.json
+    translation governs the Spanish rendering.
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      es.json:410 translates "Statuses" → "Estado" — a SINGULAR Spanish noun translating a
+      PLURAL English one. The other four locales (ch/fr/hy/ua) carry the English source
+      "Statuses" verbatim (no translation). The facet is rendered via name={t('Statuses')}
+      on a MULTI-select control (en.md bugs_limitations_corner_cases.[4]; Search Filters.tsx:65).
+      So the promise holds partly: Spanish IS localised (unlike the four locales that don't
+      translate at all), but the singular "Estado" mis-describes a multi-select widget,
+      and the inconsistency (one locale translates, four don't) is itself a drift — a
+      classic partial-contributor change.
+    evidence:
+      - sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+        section: bugs_limitations_corner_cases.[4]
+        cite: "en.json:418 (\"Statuses\":\"Statuses\") + es.json:410 (\"Statuses\":\"Estado\") + ch/fr/hy/ua identity entries"
+        note: "es singular 'Estado' on a multi-select facet; four locales untranslated."
+    operator_visible_failure: |-
+      A Spanish-locale user sees "Estado" (singular, "Status") labelling a control that
+      lets them select MULTIPLE statuses — a minor grammatical mismatch that suggests a
+      single choice. Users of the four non-translating locales see English "Statuses" on
+      an otherwise-localised facet row. Minor UX inconsistency; surfaces the absence of a
+      locale-parity + translation-quality review process (same root as H-009).
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-011
+  hypothesis: |-
+    When a non-English user reads the main search bar placeholder, it describes what they
+    can search for — equivalently to what an English user sees.
+  derivation: |-
+    Response/label seed — the slug key 'main search placeholder' (the one non-natural-keys
+    entry) carries the search-bar hint per locale.
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      en.json:381 carries "Search data tables, feature group, jobs and ML models via keywords"
+      — enumerating four entity types. The non-English locales carry SHORTER generic strings:
+      fr.json:377 = "espace de recherche principal" ("main search space"); es/ch/ua/hy similar
+      (en.md bugs_limitations_corner_cases.[6]). So the placeholder IS localised (the key
+      exists in every locale — unlike H-005's missing keys), but the SEMANTIC CONTENT drifts:
+      a French user does not see the four-entity-type enumeration an English user sees. This
+      is the single genuinely-localisable phrase in the whole corpus and it has degraded in
+      translation quality.
+    evidence:
+      - sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+        section: bugs_limitations_corner_cases.[6] + implicit_adrs.[1]
+        cite: "en.json:381 (4-entity enumeration) vs fr.json:377 ('espace de recherche principal') + MainSearchInput.tsx:63"
+        note: "key present in all locales but non-English values are shorter/generic."
+    operator_visible_failure: |-
+      Discoverability of the search surface differs across locales: an English user is
+      prompted that they can search data tables, feature groups, jobs, and ML models; a
+      French/Spanish/Chinese/Ukrainian/Armenian user sees only a generic "main search"
+      hint and may not realise the breadth of what the search covers. Localisation-quality
+      drift, not correctness — but it materially changes how the UI describes its own
+      capability per locale.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+
+- id: H-012
+  hypothesis: |-
+    When a French user switches the language on a deeply-mounted page (e.g. a lineage
+    graph with 100+ nodes), the language change applies smoothly without a perceptible
+    freeze.
+  derivation: |-
+    UI-label seed + senior-PO cross-device/performance question — changeLanguage triggers
+    a single global re-render; the perceived latency on a heavy page is unverified.
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      `i18n.changeLanguage(lang)` (SelectLanguage.tsx:29) triggers the react-i18next
+      provider to broadcast a change event that re-renders EVERY t()/useTranslation()
+      consumer in the tree in a single broadcast — no incremental/lazy/suspense-boundary
+      strategy (SelectLanguage.md performance.known_performance_gaps.[0]). On a deeply-
+      mounted page (lineage graph with 100+ entity nodes), the sidecar notes the perceived
+      latency to first paint after the click is "noticeable" but the magnitude is NOT
+      measured. Whether it is sub-100ms (imperceptible) or a multi-hundred-ms freeze
+      requires running the system on a representative page across device profiles.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md
+        section: performance.known_performance_gaps.[0] + hot_paths.[1]
+        cite: "SelectLanguage.tsx:29 (single changeLanguage broadcast) + i18n.ts:27 (provider re-render)"
+        note: "global re-render on language change; latency on heavy pages noted but unmeasured."
+    operator_visible_failure: |-
+      If the global re-render is slow on heavy pages, a user switching language while
+      viewing a large lineage graph or a long search-result list perceives the click as a
+      freeze, and on a low-end mobile device the freeze could be multi-second — a poor
+      first experience of the very multilingual feature the user is trying to use. The
+      severity hinges on the measured latency, which is why this is probe-needed rather
+      than asserted.
+    severity: LOW
+    confidence: LOW
+    probe_id: PENDING-F-043-1
+    routes_to_finding: validation-gap
+    use_case_kind: render
+    coverage: unverified
+    test_demand: PENDING-F-043-1
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: |-
+    The Activity-feed t('User') filter label channels the LSN-020 userIds→OWNER_ID SQL
+    drift to all six locales verbatim (natural-keys); no locale corrects the misleading
+    label, so a non-English compliance reviewer is misled identically to an English one.
+  dedup_status: already_tracked
+  tracked_as: "F-021 H-001 (+ ActivityActorFilterKnownBugTest.java structural pin, @pins LSN-020) + DOC-GAP-303 (doc-copy reinforcement)"
+  proposed_fix_anchor: |-
+    The SQL bug fix lands in F-021 (ReactiveActivityRepositoryImpl.java:273 — bind userIds
+    to the actor created_by, not USER_OWNER_MAPPING.OWNER_ID). F-043's distinct fix: once
+    the SQL semantic is decided, rename the i18n key en.json:347 to express it honestly
+    (e.g. "User" → "Affected Entity Owner") and propagate to all six locales — the
+    rename is the i18n-layer half. CONVERGENT VALIDATION: this reflection re-derived the
+    LSN-020 drift independently from the i18n channel; the existing pin corroborates it.
+
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |-
+    12+ t() keys (incl. the Data Quality / Data Modelling / Master Data nav tabs) are
+    absent from all six locales; non-English users see untranslated English fragments.
+  dedup_status: net_new
+  distinct_from: "F-041 H-006"
+  tracked_as: "F-041 H-006 covers the 3 tab-label instances from the chrome's seat"
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: |-
+    Add the 14+ enumerated missing keys to en.json and propagate to the five non-English
+    locales (en.md bugs_limitations_corner_cases.[0] enumerates them with call-site cites).
+    DISTINCT FROM F-041 H-006: that hypothesis catches the 3 toolbar tabs specifically;
+    THIS is the i18n-layer-wide missing-key class (Query Examples, Lookup Tables,
+    business-name, query-example-delete flows) of which the tabs are one instance. The
+    durable fix is the parity gate (see H-009 / functional_test_demands).
+
+- hypothesis_id: H-009
+  severity: HIGH
+  one_line: |-
+    Locale bundles have drifted out of parity (en=418 vs 414-415) with no CI parity gate
+    and no missingKeyHandler; contributors get no signal when locales need updating.
+  dedup_status: net_new
+  recommended_log_as: "BUG-NNN (or REFACTOR-030 — add a code↔resource + locale↔locale parity CI step + a dev-time missingKeyHandler)"
+  proposed_fix_anchor: |-
+    Wire a one-shot CI script grepping t\\(['\"]([^'\"]+)['\"]\\) across odd-platform-ui/src
+    asserting presence in en.json AND each non-English locale (en.md tests_coverage_semantic
+    proposes exactly this), and add a dev-time missingKeyHandler in i18n.ts:27-31. This
+    single gate catches H-005, H-009, and prevents recurrence — the highest-leverage fix
+    in the whole feature. Cross-link REFACTOR-030.
+
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: |-
+    The language switcher's search filters by English friendly-name only; a non-English
+    user typing their language's native name ("Español") gets an empty list.
+  dedup_status: net_new
+  recommended_log_as: "BUG-NNN (add native-name search terms to the SelectLanguage filter, or fall back to flag/code matching)"
+  proposed_fix_anchor: |-
+    SelectLanguage.tsx:48-50 — extend the filter to match a native-name lookup (a new
+    map in lib/constants.ts) alongside the English LANGUAGES_MAP name, so 'Español' /
+    'Українська' / 'Հայերեն' resolve. The control a non-English user needs must be
+    navigable in their language.
+
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    fallbackLng is the six-element array, so a missing key in fr.json can render Spanish
+    or Chinese before English — a cross-locale surprise mid-page.
+  dedup_status: net_new
+  recommended_log_as: "BUG-NNN (one-line fix: fallbackLng: 'en' at i18n.ts:30); seeded from SHB-147"
+  proposed_fix_anchor: |-
+    i18n.ts:30 — change `fallbackLng: ['en','es','ch','fr','ua','hy']` to `fallbackLng: 'en'`.
+    The array form is almost certainly a contributor mistaking fallbackLng for supportedLngs
+    (i18n.ts sidecar bugs_limitations_corner_cases.[0]).
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: |-
+    Language preference is browser-local only — resets to English on any new device,
+    browser, private window, or cleared storage; no server-side / org default.
+  dedup_status: net_new
+  distinct_from: "F-041 H-010"
+  tracked_as: "F-041 H-010 surfaces the same browser-local + navigator.language facts from the chrome"
+  recommended_log_as: "caveat in the 'Localization (i18n)' doc page (F-047 / DOC-GAP-NNN) — document that preference is browser-local with no server binding"
+
+- hypothesis_id: H-003
+  one_line: |-
+    navigator.language is never consulted on first visit; a Spanish-browser user lands
+    in English and must switch manually.
+  dedup_status: net_new
+  distinct_from: "F-041 H-010"
+  recommended_log_as: "caveat in the 'Localization (i18n)' doc page (F-047) OR BUG-NNN (wire an i18next language-detector on first visit)"
+
+- hypothesis_id: H-007
+  one_line: |-
+    The Dictionary tab label (uniform across all six locales) navigates to /termsearch,
+    not /dictionary — label vs URL vocabulary disagreement.
+  dedup_status: already_tracked
+  tracked_as: "F-024 (downstream surface) + F-041 H-012 (Catalog→/search & Dictionary→/termsearch) + DOC-GAP-300/301"
+  recommended_log_as: "caveat in features/data-glossary (already routed via F-024/DOC-GAP-300/301); F-043 records the i18n-channel uniformity only"
+
+- hypothesis_id: H-010
+  one_line: |-
+    'Statuses' is translated singular ('Estado') in Spanish on a multi-select facet, and
+    untranslated in four other locales — partial-contributor translation drift.
+  dedup_status: net_new
+  recommended_log_as: "caveat / future-cleanup — fold into the locale-parity review item (H-009 fix); or a translation-quality DOC-GAP for the locale-contribution guide"
+
+- hypothesis_id: H-011
+  one_line: |-
+    The main-search-placeholder is localised but the non-English values are shorter and
+    drop the four-entity-type enumeration the English placeholder gives.
+  dedup_status: net_new
+  recommended_log_as: "caveat / translation-quality item — fold into the locale-contribution guide (F-047 doc page)"
+
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise becomes a missing-functional TEST-GAP candidate.
+# All 6 contributing sidecars report covered_behaviours: []; the only test touching this
+# feature's surface is ActivityActorFilterKnownBugTest (a STRUCTURAL source-string @pins for
+# the F-021 SQL bug — it asserts the literal USER_OWNER_MAPPING.OWNER_ID.in(userIds) string is
+# present; it does NOT exercise the i18n layer, the rendered label, cross-locale behaviour, or
+# any query result). No odd-platform-ui *.test/*.spec references i18n/SelectLanguage/locale; no
+# odd-platform/tests Playwright spec exists; no odd-team integration-tests/protocols IT-NNN
+# covers locale switching. So every F-043 promise is unverified — 0/12 verified.
+- use_case_id: F-043-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "Picking 'Spanish' in the SelectLanguage dialog re-renders the SPA in Spanish immediately (no reload); keys present in es.json show Spanish values."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-1)"
+  proposed_test: "IT-NNN (Playwright): open account menu -> SelectLanguage -> pick Spanish -> assert a known es.json-present label re-renders without navigation; reuse odd-platform/tests harness. THE LSN-030 hole — hand-proven happy path with no guard."
+
+- use_case_id: F-043-UC-2
+  hypothesis_id: H-002
+  kind: edit-reconcile
+  promise: "A language choice persists across a same-browser reload (localStorage round-trip) AND does NOT persist across a new browser/device/cleared-storage (browser-local only)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-2)"
+  proposed_test: "IT-NNN (Playwright): pick Spanish -> reload -> assert Spanish persists; then clear localStorage -> reload -> assert English (documents the browser-local caveat as a guarded behaviour)."
+
+- use_case_id: F-043-UC-3
+  hypothesis_id: H-003
+  kind: render
+  promise: "First visit with no stored preference loads English regardless of navigator.language (current behaviour) — guard this until/unless a language-detector is wired."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-3)"
+  proposed_test: "UI unit/integration: mock navigator.language='es-ES', clear localStorage, mount bootstrap, assert active lng='en' (regression guard for the no-detector decision; flips when H-003 fix lands)."
+
+- use_case_id: F-043-UC-4
+  hypothesis_id: H-004
+  kind: happy-path
+  promise: "A native-name search query ('Español') in SelectLanguage surfaces the matching locale row."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-4)"
+  proposed_test: "UI unit: render SelectLanguage, type 'Español', assert the Spanish row is present (RED today; GREEN after native-name filter fix — regression guard for H-004)."
+
+- use_case_id: F-043-UC-5
+  hypothesis_id: H-005
+  kind: render
+  promise: "Every t() call site has a key present in en.json AND in each non-English locale (no untranslated-English fragments for non-English users)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-5)"
+  proposed_test: "Unit/CI: grep t\\(['\"]([^'\"]+)['\"]\\) across odd-platform-ui/src, assert each key present in en.json + all five non-English locales (RED today on the 12+ missing keys; the parity gate from H-009)."
+
+- use_case_id: F-043-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "The Activity-feed 'User' filter label honestly names the filter's SQL behaviour, in every locale."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-6) — the BEHAVIORAL guard the F-021 structural pin lacks; assert across locales"
+  proposed_test: "IT-NNN (Playwright, multi-locale per P-171): switch to es/fr, open Activity filter, assert label text; PLUS a Mockito/StepVerifier repo test asserting userIds filters the ACTOR once F-021 is fixed (behavioral, not the existing source-string pin)."
+
+- use_case_id: F-043-UC-7
+  hypothesis_id: H-007
+  kind: render
+  promise: "Clicking 'Dictionary' (any locale) lands on a URL coherent with the label."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-7) — cross-link F-024 / F-041 H-012 (dedup before mint)"
+  proposed_test: "IT-NNN (per P-172): click Dictionary tab across all six locales, assert URL is /termsearch (pins the locale-invariant-URL contract)."
+
+- use_case_id: F-043-UC-8
+  hypothesis_id: H-008
+  kind: grammar
+  promise: "A key missing from the active locale falls back to English, never to a third locale."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-8)"
+  proposed_test: "Unit: with fallbackLng as-shipped, set lng='fr', look up a key present only in es.json, assert the rendered value is the es value (characterizes the cross-locale fallback; flips to English-only when fallbackLng:'en' lands — the H-008 fix guard)."
+
+- use_case_id: F-043-UC-9
+  hypothesis_id: H-009
+  kind: grammar
+  promise: "All six locale bundles carry the same key set (parity)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-9) — the durable parity gate; cross-link REFACTOR-030"
+  proposed_test: "Unit/CI: assert keySet(en.json) == keySet(each non-English locale) (RED today on the 3-4 drifted keys; the locale↔locale half of the parity gate)."
+
+- use_case_id: F-043-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "The 'Statuses' facet label is consistently localised (and grammatically plural) across all six locales on its multi-select control."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-10)"
+  proposed_test: "Unit: assert t('Statuses') is either translated in all locales or none (catches the es-only singular drift); fold into the parity-gate suite."
+
+- use_case_id: F-043-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "The main-search placeholder is content-equivalent across locales (enumerates the searchable entity types)."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-043-UC-11)"
+  proposed_test: "Translation-quality review item (hard to unit-assert content equivalence); track as a locale-contribution-guide checklist rather than an automated gate."
+
+- use_case_id: F-043-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "Switching language on a heavy page (100+ node lineage graph) applies without a perceptible freeze across device profiles."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "PENDING-F-043-1 (probe) — measure changeLanguage re-render latency on a heavy page; if slow, log a perf REFACTOR"
+  proposed_test: "PENDING-F-043-1 probe (Playwright + perf trace): measure time from language-row click to first paint on a 100+ node lineage page across desktop/throttled-mobile profiles."
+
+### probes_emitted
+- probe_id: PENDING-F-043-1
+  hypothesis_id: H-012
+  hypothesis_text: |-
+    When a user switches the UI language on a deeply-mounted page (a lineage graph with
+    100+ entity nodes, or a long search-results list), the language change applies smoothly
+    without a perceptible freeze across device profiles (desktop + throttled mobile).
+  expected_outcome: |-
+    i18n.changeLanguage triggers a single global react-i18next re-render (SelectLanguage.tsx:29
+    + i18n.ts:27); first-paint latency after the click is sub-100ms on desktop and does not
+    exceed a usable threshold on a throttled mobile profile. Probe measures the actual latency
+    on a representative heavy page; CONTRADICTED if the freeze is multi-hundred-ms (desktop)
+    or multi-second (throttled mobile).
+  local_execution: |-
+    docker-compose ODD platform + Playwright with a CDP performance trace; navigate to a
+    seeded 100+ node lineage page, click a SelectLanguage row, measure to next paint; repeat
+    under CPU/network throttling. Local-only per Rule 6.
+  status: pending-reflection-verification
+  note: |-
+    PARALLEL-SAFE MODE — recorded here only; no P-NNN file created. Orchestrator/maintainer
+    mints the canonical probe id on the next sweep.
+
+### validation_gaps
+- sidecar: "feature-flow F-043 contributing_nodes (node_id references)"
+  field_insufficient: |-
+    The feature-flow's contributing_nodes reference the LSN-020 channel nodes by node_id
+    "odd-platform java ActivityController controller-method:getActivity" and
+    "...repository:ReactiveActivityRepositoryImpl", but the actual enriched sidecars live at
+    slugs odd-platform__java__ActivityController__controller-class__ActivityController.md and
+    odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+    (controller-CLASS, not controller-METHOD; repository__reactive__repository nesting). A
+    naive slug resolution from the declared node_id fails (Glob on the declared shape returns
+    nothing). Resolved here by content-grep; the contributing_nodes[4..5].sidecar fields have
+    been backfilled to the actual slugs in this run, but the node_id strings still carry the
+    controller-method shape — the next feature-flow-builder refresh should reconcile node_id
+    with sidecar so downstream consumers resolve deterministically.
+  proposed_refresh: |-
+    Reconcile F-043 contributing_nodes[4..5].node_id to the controller-class +
+    repository__reactive__repository shape the sidecars actually use (matching F-021's flow).
+
+- sidecar: "(no UI sidecar for the Search Filters Statuses facet host / MainSearchInput)"
+  field_insufficient: |-
+    H-010 (Statuses singular-Spanish drift) and H-011 (main-search-placeholder content drift)
+    are validated from the en.json sidecar's cross-references to Search/Filters.tsx:65 and
+    MainSearchInput.tsx:63, but neither host component has its own enriched sidecar in the
+    chain — the rendered-control context (is the Statuses facet definitely multi-select at the
+    render site? does MainSearchInput pass the placeholder verbatim?) is inferred from en.md's
+    citation, not from a dedicated UI sidecar.
+  proposed_refresh: |-
+    Enrich Search/Filters.tsx (the Statuses multi-select host) and MainSearchInput.tsx so the
+    label-to-control binding is first-class, letting a future refresh confirm H-010/H-011 from
+    the render site rather than from the resource sidecar's reference.
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: |-
+    "User — show events performed by one or more selected users (multi-select). Useful for
+    auditing a specific person's platform activity." (WebFetch 2026-05-26, status 200.)
+  code_does: |-
+    userIds binds to USER_OWNER_MAPPING.OWNER_ID.in(userIds) (filters by owner-of-affected-
+    entity-via-mapping), NOT by the actor activity.created_by. The doc copy reinforces the
+    wrong promise; the i18n key channels it to every locale verbatim.
+  recommended_log_as: "DOC-GAP-303 (already tracked) — fix the doc copy in lockstep with the F-021 SQL fix + the en.json:347 key rename"
+
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/"
+  doc_says: |-
+    No mention of multilingual UI, supported locales, locale switching, or preference
+    persistence anywhere on the published docs site (three WebFetch attempts 2026-05-08, all
+    200 with zero i18n references).
+  code_does: |-
+    Ships six locales, a locale-switcher widget, and browser-local persistence — entirely
+    undocumented end-to-end.
+  recommended_log_as: "DOC-GAP-NNN / F-047 — author a 'Localization (i18n)' doc page (supported locales, browser-local persistence, contribution guide); the natural home for H-002/H-003/H-011 caveats"
+
+## maintainer_notes
+
+(none — auto-derived reflection; this block is preserved across refreshes for maintainer
+hand-edits only.)

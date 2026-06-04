@@ -3,9 +3,24 @@ feature_id: F-007
 pillar_anchored_id: P-07:F-001
 pillar: "P-07 Active Platform Features"
 feature_name: "AlertManager Integration — Prometheus webhook ingest (POST /ingestion/alert/alertmanager) + the global Alerts read surface (/alerts/*)"
-reflected_at: 2026-06-01T00:00:00Z
-reflected_at_commit: 43d13eb
-prompt_version: feature-reflector/0.2.0
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: c4066140
+prompt_version: feature-reflector/0.3.0
+supersedes_prompt_version: feature-reflector/0.2.0
+refresh_note: |
+  v0.3.0 refresh (LSN-030 promise layer). The 14 hypotheses + verdicts from the
+  v0.2.0 reflection are preserved verbatim in substance (no maintainer_curated entries
+  existed to pin). The NET-NEW work in this refresh is the PROMISE LAYER: every
+  hypothesis now projects to a use_case carrying a coverage verdict, and every
+  confirmed/partial/contradicted/probe-needed promise with NO real test now routes
+  to a functional_test_demand instead of routes_to_finding: none. This closes the
+  v0.2.0 hole where H-013 (webhook happy path) and H-014 (deterministic ordering)
+  were both confirmed-but-untested and routed to `none` — those hand-proven promises
+  had no regression guard. STALE-FACT CORRECTION: the AlertServiceImpl sidecar's
+  tests_coverage_semantic claimed `find ... AlertService* returned zero matches`;
+  an AlertServiceImplTest.java has since been added (@validates F-007 + F-014) — but
+  it covers ONLY the empty-batch no-op for handleExternalAlerts, NOT the
+  create-an-alert happy path, so the happy-path promise remains unverified.
 contributing_sidecars_read:
   - odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md
   - odd-platform__java__AlertManagerController__controller-method__postAlerts.md
@@ -13,6 +28,22 @@ contributing_sidecars_read:
   - odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
   - odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md   # cited via AlertServiceImpl + feature-flow batch R; not re-opened end-to-end (audit-write hop)
   - odd-platform__ts__react-component__component__Alerts.md
+tests_cross_referenced:
+  # LSN-030 — the coverage frontier is derived from BOTH sidecar covered_behaviours AND a live Grep of the test trees.
+  - test_file: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AlertServiceImplTest.java"
+    relevant_tests:
+      - "getDataEntityAlerts_nonExistentEntity_errorsNotFound (line 53) — @validates F-014 (per-entity not-found); NOT a F-007 webhook behaviour"
+      - "getDataEntityAlertsCounts_nonExistentEntity_errorsNotFound (line 59) — @validates F-014; NOT a F-007 webhook behaviour"
+      - "handleExternalAlerts_emptyBatch_isNoOpTouchingNoRepository (line 66) — @validates F-007 EMPTY-batch no-op ONLY; verifyNoInteractions on the repos. Does NOT exercise the create-an-alert happy path, entity_oddrn mapping, idempotency, or any read/display behaviour."
+    coverage_verdict: "F-007 webhook happy path UNVERIFIED — the single F-007 test pins only the degenerate empty-batch path. No test creates an alert from a real ExternalAlert payload."
+  - test_file: "odd-platform-api/.../ingestion/AlertIngestionTest.java"
+    relevant_tests:
+      - "7 @DisplayName tests exercise applyAlertActions (the IN-PLATFORM ingestion path) end-to-end — NOT handleExternalAlerts (the AlertManager webhook path). These verify the SIBLING write path that DOES use AlertActionResolver."
+    coverage_verdict: "Does NOT cover the F-007 AlertManager webhook path (handleExternalAlerts) — it covers applyAlertActions, the path the webhook deliberately bypasses."
+  - test_tree: "odd-platform/tests/ (Playwright e2e)"
+    relevant_tests:
+      - "Glob **/tests/**/*.spec.ts — tags / search / filters / owners / activity specs exist; NO /alerts spec. The search.spec.ts 'alert' matches are the catalog 'No matches found' UI message, not the Alerts feature."
+    coverage_verdict: "ZERO e2e coverage of the /alerts/* read surface (no IT-NNN). The entire global Alerts page (All-tab OPEN-only, Resolve button gating, stale badges, ordering) is unguarded by any UI test."
 docs_cross_referenced:
   - url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
     last_verified_at: "2026-06-01T00:00:00Z"
@@ -53,6 +84,11 @@ hypothesis_summary:
     hypothesis_id: H-001
     severity: HIGH
     one_line: "POST /ingestion/alert/alertmanager is unauthenticated under EVERY auth.type mode (whitelisted /ingestion/**, NOT covered by the ingestion filter) — anonymous under DISABLED, any-authenticated-user otherwise — so anyone with network reach creates OPEN alerts on any data entity."
+use_case_coverage_headline:
+  # LSN-030 second coverage frontier — verified promises / total promises (see use_case_coverage on the feature-flow detail).
+  verified: 0
+  total: 14
+  note: "0 of 14 user-facing promises are guarded by a real test. The two HAPPY-PATH promises (H-013 webhook-creates-OPEN-alert, H-014 deterministic ordering) are hand-proven CONFIRMED from primary source but UNVERIFIED — the only F-007 test pins the empty-batch no-op. Every contradicted promise is also a regression-guard demand. This is the highest-leverage functional-test cluster on the P-07 alerting surface."
 related_feature_flows: [F-009, F-004, F-014, F-022, F-021, F-006]
 related_concepts:
   - Alert
@@ -87,7 +123,7 @@ The working parts, described as the operator experiences them. On the write side
 
 The integration story is where F-007 is load-bearing for the whole "Active Platform" pitch. The OPEN alert this feature writes is the START of a chain: the INSERT on the `ALERT` table is captured by Postgres logical replication and drives **F-009** (WAL-driven outbound notification fan-out to Slack / webhook / email), which is where a forged alert reaches every operator-configured channel and where the F-004 Slack mrkdwn-injection surface lives (per F-007 feature-flow batch Y + related_features F-009/F-004). The same alert displays at **F-014** (per-entity Alert view) and surfaces on **F-022** (per-dataset DQ Test reports tab). And the alert-state transitions (OPEN_ALERT_RECEIVED / RESOLVED_ALERT_RECEIVED / ALERT_STATUS_UPDATED) are written to the Activity feed (**F-021**) via the `save(List<ActivityPojo>)` batch path with `is_system_event=true` (per AlertServiceImpl downstream_side_effects + ReactiveActivityRepositoryImpl batch R). So one POST to one unauthenticated URL fans out to: a DB row, a global-tab display, a per-entity display, a per-dataset display, an Activity-feed audit row, AND an outbound Slack/webhook/email message — the compound the feature-flow's headline drift_class names.
 
-Edge cases a product owner would call out in a demo. (1) The endpoint is unauthenticated by design — the docs now say so verbatim and recommend network-perimeter controls — which means in any deployment whose network edge does not gate `/ingestion/alert/alertmanager`, anyone who can reach it can forge alerts on any team's entities. (2) The "All" tab is named "All" but shows only OPEN alerts; a steward looking for a recently-resolved alert on the global page cannot find it and may assume it was purged (the data still exists, reachable only from a single entity's Alerts tab). (3) The Resolve button is shown to everyone, but the permission check fires on click — a viewer who cannot resolve sees the button, clicks, and only then gets "No access!". (4) The tab badges fetch once on mount and never refresh, so after resolving an alert the count stays stale. (5) An alert POSTed without `entity_oddrn` is persisted with a NULL FK — orphaned, invisible everywhere, but counted in the platform-wide totals. The feature has ZERO automated test coverage on the webhook path and ZERO UI-test coverage on the Alerts page (verified across all five sidecars) — every behaviour below is traced from primary source, not from a passing test.
+Edge cases a product owner would call out in a demo. (1) The endpoint is unauthenticated by design — the docs now say so verbatim and recommend network-perimeter controls — which means in any deployment whose network edge does not gate `/ingestion/alert/alertmanager`, anyone who can reach it can forge alerts on any team's entities. (2) The "All" tab is named "All" but shows only OPEN alerts; a steward looking for a recently-resolved alert on the global page cannot find it and may assume it was purged (the data still exists, reachable only from a single entity's Alerts tab). (3) The Resolve button is shown to everyone, but the permission check fires on click — a viewer who cannot resolve sees the button, clicks, and only then gets "No access!". (4) The tab badges fetch once on mount and never refresh, so after resolving an alert the count stays stale. (5) An alert POSTed without `entity_oddrn` is persisted with a NULL FK — orphaned, invisible everywhere, but counted in the platform-wide totals. The feature has NEAR-ZERO automated test coverage: the only F-007 unit test (`AlertServiceImplTest.handleExternalAlerts_emptyBatch_isNoOpTouchingNoRepository`) pins the degenerate empty-batch no-op, and there is ZERO e2e coverage of the Alerts page (verified by Grep across both the platform-api test tree and the Playwright `tests/` tree) — so the webhook HAPPY PATH and every behaviour below is traced from primary source, not from a passing test.
 
 ## hypotheses
 
@@ -129,6 +165,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: HIGH
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: teardown-constraint
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional regression guard: a @WebFluxTest POST under LOGIN_FORM/OAUTH2 (and DISABLED) asserting the path is reachable WITHOUT credentials — pins the current unauthenticated posture so a future fix (or accidental gate) is detected. Pairs with the PLT-014 code fix."
     dedup_note: "Code-fix tracked as PLT-014 (gate-or-shared-secret); doc-caveat shipped as DOC-179 (done). Routed as caveat-candidate because the in-platform fix is the upstream PLT and the operator mitigation is documented."
 
 - id: H-002
@@ -167,8 +207,12 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
       forged content also fans out to every Slack/webhook/email channel via F-009.
     severity: HIGH
     confidence: HIGH
-    probe_id: P-391
+    probe_id: PENDING-F-007-1
     routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "the probe PENDING-F-007-1 IS the verification artefact; a security/integration test (cross-tenant attribution) is the regression guard tied to PLT-014 Defect 1."
     dedup_note: "ALREADY TRACKED as PLT-014 Defect 1 (entity_oddrn existence/ownership check). The probe is convergent confirmation, not a new filing."
 
 - id: H-003
@@ -204,6 +248,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: bug-candidate
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: an integration test POSTing the same payload twice and asserting alert row count == 1 (the intended idempotent behaviour). The regression guard for PLT-014 Defect 3; until the fix lands, a characterization test pinning count == 2 documents the current bug."
     dedup_note: "ALREADY TRACKED as PLT-014 Defect 3 (ON CONFLICT / idempotency-key)."
 
 - id: H-004
@@ -238,6 +286,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: HIGH
     confidence: MEDIUM
     routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: a service-tier test asserting a javascript:-scheme generatorURL is rejected/sanitised at ingestion (PLT-014 Defect 2 regression guard) + a UI render-sink test on AlertItem.tsx. Blocked on the validation_gap (exact render mechanism unpinned)."
     dedup_note: "ALREADY TRACKED as PLT-014 Defect 2 (scheme allow-list + UI sanitisation). Confidence MEDIUM because the exact UI render path of the description (innerHTML vs text node) is not pinned in an enriched AlertItem render sidecar — the XSS upper-bound depends on it."
 
 - id: H-005
@@ -274,6 +326,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: a deserialisation test asserting AlertManagerRequest/ExternalAlert silently drop status/endsAt/fingerprint (pins the lossy-DTO contract so a future field addition is a deliberate, tested change). Distinct from PLT-014."
     dedup_note: "net_new — the lossy-DTO / status:resolved-dropped behaviour is named in the F-007 sidecar bugs but I find no PLT or DOC item tracking 'AlertManager resolved-signal silently dropped' as its own finding. Distinct from PLT-014 (which covers auth/XSS/idempotency, not the dropped resolve-signal)."
 
 - id: H-006
@@ -312,6 +368,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     confidence: HIGH
     probe_id: P-194
     routes_to_finding: bug-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: an e2e (Playwright) test on /alerts/all that creates an OPEN + a RESOLVED alert and asserts the RESOLVED one is absent from All (pins the Category-B drift); the regression guard if the tab is relabelled 'Open' or gains a status filter. P-194 pins the same behaviour at the probe layer."
     dedup_note: "net_new (code-side). The DOC side is closed (live page documents OPEN-only); PLT-050 covers the Alerts UX cluster (redirect / hidden tabs / size-30 / no filter / no bulk) but does NOT cover the 'All'-label-lies name-vs-behaviour drift or a status filter. P-194 already pins the resolved-visibility behaviour."
 
 - id: H-007
@@ -343,6 +403,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: an e2e test as a read-only user asserting the Resolve button is NOT rendered (post-fix) / IS rendered then denied (characterization of current behaviour). Tied to the systemic PLT-034 fix; the /alerts/* AlertItem is a distinct test locus."
     dedup_note: "ALREADY TRACKED as PLT-034 (WithPermissions is a context, not a gate — the systemic fix; PLT-034 explicitly cites F-021 batch-ZL note #6 = this same Resolve-button pattern). The global /alerts/* AlertItem instance is a distinct LOCUS of the same class."
 
 - id: H-008
@@ -372,6 +436,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: LOW
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: an e2e test resolving an alert and asserting the All badge decrements (post-fix re-fetch). Distinct from PLT-050."
     dedup_note: "net_new. PLT-050 is the Alerts UX cluster but does NOT include the stale-badge-after-resolve (useEffect empty-deps) finding; not found in any other PLT. Distinct from PLT-050."
 
 - id: H-009
@@ -412,6 +480,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional (the AUDITED half): an integration test asserting handleExternalAlerts emits an OPEN_ALERT_RECEIVED Activity row per created alert (is_system_event=true) — guards the audit pathway that DOES work. The unaudited ingress half routes to the caveat/backlog."
     dedup_note: "net_new as a SPECIFIC F-007 ingress-audit caveat. The broader audit-silence family is tracked (F-006 + DOC-179 mentions the absence), and the AlertManager-ingress-unaudited facet is in the F-007 sidecar; but I find no standalone PLT/DOC for 'webhook ingress has no request-level audit'. Distinct from PLT-014 (which is auth/XSS/idempotency, not ingress audit)."
 
 - id: H-010
@@ -447,6 +519,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: a service/integration test POSTing an ExternalAlert with no entity_oddrn and asserting the current orphan behaviour (null FK persisted, counted in totals) — pins the silent-accept so a future reject-the-orphan fix is a deliberate change."
     dedup_note: "net_new. The orphan behaviour is doc-acknowledged (config page) but I find no PLT/DOC tracking the count-inflation / silent-204 consequence as a finding. New drift class proposed (all_tab_orphan_alerts_null_entity_oddrn_persisted_but_invisible_everywhere)."
 
 - id: H-011
@@ -481,6 +557,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    test_demand_note: "missing-functional: a render test asserting what identity field surfaces on a cross-owner alert row; corroborates the systemic DOC-GAP-082 read-collaborative posture. Tracked under DOC-GAP-082 — the test is the alerts-list-specific guard."
     dedup_note: "net_new as the F-007 Alerts-list instance; cross-links to DOC-GAP-082 META (the systemic read-collaborative-posture / anonymous-fingerprint stance). Distinct_from DOC-GAP-082 in that it is the specific statusUpdatedBy-username-on-the-global-Alerts-list locus."
 
 - id: H-012
@@ -513,6 +593,10 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
     severity: MEDIUM
     confidence: HIGH
     routes_to_finding: caveat-candidate
+    use_case_kind: grammar
+    coverage: unverified
+    test_demand: none
+    test_demand_note: "no functional test demand — this is a MISSING-CAPABILITY (enhancement) gap, not a behaviour to guard. There is no current behaviour to pin and no fix yet to regress-test; it routes to the PLT-050 enhancement, not a TEST-GAP."
     dedup_note: "ALREADY TRACKED as PLT-050 (Alerts UX cluster: hardcoded size-30 + no filter UI + no bulk-resolve + default-tab redirect + hidden-but-navigable tabs)."
 
 - id: H-013
@@ -540,7 +624,20 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
         cite: "ReactiveAlertRepositoryImpl.java:332-342"
         note: "INSERT ... RETURNING materialises the OPEN alert the read paths surface"
     confidence: HIGH
-    routes_to_finding: none
+    # LSN-030 — THE FIX. v0.2.0 routed this to `none`; a hand-proven happy-path promise had no guard.
+    use_case_kind: happy-path
+    coverage: unverified
+    coverage_evidence: |
+      The ONLY F-007 test is AlertServiceImplTest.handleExternalAlerts_emptyBatch_isNoOpTouchingNoRepository
+      (line 66) — it verifies an EMPTY batch is a no-op (verifyNoInteractions on the repos). It does NOT
+      create an alert from a real ExternalAlert payload, does NOT assert the OPEN/DISTRIBUTION_ANOMALY
+      row, the entity_oddrn mapping, the chunk, or the OPEN_ALERT_RECEIVED activity emission. AlertIngestionTest
+      covers applyAlertActions (the SIBLING path the webhook bypasses), not handleExternalAlerts. There is
+      no /alerts e2e. So the core promise of the feature — "a valid AlertManager POST creates a visible
+      OPEN alert" — is hand-proven from primary source but UNGUARDED by any test.
+    test_demand: functional
+    test_demand_note: "HIGHEST-VALUE functional test on this feature: a @WebFluxTest(AlertManagerController) (or service-tier Mockito+StepVerifier) POSTing a valid single-element ExternalAlert batch and asserting (a) handleExternalAlerts calls createAlerts with a DISTRIBUTION_ANOMALY/OPEN AlertPojo carrying the supplied entity_oddrn, (b) an OPEN_ALERT_RECEIVED activity event is emitted. This guards the feature's whole reason to exist."
+    routes_to_finding: functional-test-demand
 
 - id: H-014
   hypothesis: "When two alerts share the same last_created_at, the global list orders them deterministically so infinite-scroll paging does not skip or duplicate a row at the page boundary."
@@ -568,7 +665,16 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
         cite: "ReactiveAlertRepositoryImpl.java:147, 474-483"
         note: "deterministic order; negative-page is a visible error not a silent skip"
     confidence: HIGH
-    routes_to_finding: none
+    # LSN-030 — THE FIX. v0.2.0 routed this to `none`; the deterministic-order proof had no guard.
+    use_case_kind: render
+    coverage: unverified
+    coverage_evidence: |
+      No test (unit, integration, or e2e) asserts the (LAST_CREATED_AT DESC, ID DESC) ordering on any
+      of the three global tabs, nor the page-boundary stability under a tie. AlertIngestionTest does
+      not page; AlertServiceImplTest does not touch listAll; there is no /alerts e2e.
+    test_demand: functional
+    test_demand_note: "missing-functional: a repository/integration test that inserts >page-size alerts with a tie on last_created_at and asserts the page-1/page-2 boundary neither skips nor duplicates the tied rows (the stable (last_created_at, id) total order). Guards against a future ORDER BY change dropping the id tiebreak."
+    routes_to_finding: functional-test-demand
 
 ## cross_references
 
@@ -638,23 +744,150 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
   dedup_status: already_tracked
   tracked_as: PLT-050
 
+### functional_test_demands
+# LSN-030 (Rule 11) — the bridge the v0.2.0 reflection was missing. Every UNVERIFIED promise (use_case)
+# becomes a missing-functional TEST-GAP candidate. The two confirmed-but-untested happy-path promises
+# (H-013, H-014) are the headline: in v0.2.0 they routed to `none`, discarding the proof. They now demand
+# a regression guard. The contradicted/partial promises ALSO demand a guard for the fix (or a
+# characterization pin of current behaviour). use_case_coverage = 0/14 verified.
+- use_case_id: F-007-UC-13
+  hypothesis_id: H-013
+  kind: happy-path
+  promise: "A valid AlertManager POST (real entity_oddrn, http(s) generatorURL) creates a visible OPEN DISTRIBUTION_ANOMALY alert on that entity and (while OPEN) on the global All tab, with no further operator action."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-13)"
+  proposed_test: "@WebFluxTest(AlertManagerController) or AlertServiceImpl Mockito+StepVerifier: POST a single-element ExternalAlert batch; assert createAlerts receives a DISTRIBUTION_ANOMALY/OPEN AlertPojo with the supplied entity_oddrn + an OPEN_ALERT_RECEIVED activity event is emitted. THE highest-value test on this feature — currently only the empty-batch no-op is pinned."
+  priority: HIGH
+- use_case_id: F-007-UC-14
+  hypothesis_id: H-014
+  kind: render
+  promise: "The global alert list orders by (last_created_at DESC, id DESC) — a stable total order — so infinite-scroll page boundaries never skip or duplicate a row, even on a last_created_at tie."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-14)"
+  proposed_test: "Repository/integration test: insert >30 alerts with a last_created_at tie; fetch page 1 then page 2; assert the boundary neither skips nor duplicates the tied rows. Guards against a future ORDER BY change dropping the id tiebreak."
+  priority: MEDIUM
+- use_case_id: F-007-UC-09
+  hypothesis_id: H-009
+  kind: happy-path
+  promise: "Each created alert emits an OPEN_ALERT_RECEIVED Activity event (is_system_event=true) — the auditable record that an alert was received on an entity."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-09)"
+  proposed_test: "Integration test asserting handleExternalAlerts emits one OPEN_ALERT_RECEIVED activity row per created alert via the batch save path. Guards the audited HALF of the audit story (the ingress half is a separate caveat/backlog item, not a test)."
+  priority: MEDIUM
+- use_case_id: F-007-UC-06
+  hypothesis_id: H-006
+  kind: grammar
+  promise: "The 'All' tab population (what a steward sees vs the 'All' label) — current behaviour is OPEN-only; a resolved alert is absent from every global tab."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-06)"
+  proposed_test: "Playwright e2e on /alerts/all: create an OPEN + a RESOLVED alert; assert the RESOLVED one is absent from All (characterization pin of the Category-B drift; flips RED if relabelled 'Open' or given a status filter). P-194 pins the same at probe layer."
+  priority: MEDIUM
+- use_case_id: F-007-UC-03
+  hypothesis_id: H-003
+  kind: resolve-later
+  promise: "Idempotency on retry — current behaviour: a repeated POST duplicates the alert row (intended: de-duplicate to one)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-03)"
+  proposed_test: "Integration test POSTing the same payload twice; intended assert row count == 1 (PLT-014 Defect 3 regression guard); pre-fix characterization assert count == 2."
+  priority: MEDIUM
+- use_case_id: F-007-UC-04
+  hypothesis_id: H-004
+  kind: render
+  promise: "A javascript:-scheme (or arbitrary-host) generatorURL is sanitised/rejected and not rendered as a live link — current behaviour: it passes."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-04)"
+  proposed_test: "Service-tier test asserting a javascript: generatorURL is rejected/sanitised at ingestion (PLT-014 Defect 2) + a UI render-sink test on AlertItem.tsx description. Blocked on the render-mechanism validation_gap."
+  priority: HIGH
+- use_case_id: F-007-UC-01
+  hypothesis_id: H-001
+  kind: teardown-constraint
+  promise: "Auth posture of the webhook — current behaviour: unauthenticated under every auth.type mode (the documented intended posture, with operator perimeter-control mitigation)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-01)"
+  proposed_test: "@WebFluxTest POST without credentials under LOGIN_FORM/OAUTH2/DISABLED asserting the path is reachable (pins the current posture so an accidental gate or the PLT-014 fix is detected)."
+  priority: LOW
+- use_case_id: F-007-UC-05
+  hypothesis_id: H-005
+  kind: edit-reconcile
+  promise: "AlertManager status=resolved auto-closes the alert — current behaviour: the field is silently dropped by the lossy DTO; the alert stays OPEN."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-05)"
+  proposed_test: "Deserialisation test asserting AlertManagerRequest/ExternalAlert drop status/endsAt/fingerprint (pins the lossy-DTO contract — a future field addition becomes a deliberate, tested change)."
+  priority: LOW
+- use_case_id: F-007-UC-10
+  hypothesis_id: H-010
+  kind: empty/no-match
+  promise: "An alert POSTed without entity_oddrn is handled sanely — current behaviour: silently accepted with 204, persisted with NULL FK, counted in totals but invisible everywhere."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-10)"
+  proposed_test: "Service/integration test POSTing an ExternalAlert with no entity_oddrn; assert the current orphan behaviour (null FK persisted, counted) — pins the silent-accept so a future reject-the-orphan fix is deliberate."
+  priority: LOW
+- use_case_id: F-007-UC-07
+  hypothesis_id: H-007
+  kind: cross-actor
+  promise: "A read-only viewer is not offered a Resolve action they cannot use — current behaviour: the button renders for everyone; permission is checked only post-click."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-07)"
+  proposed_test: "Playwright e2e as a read-only user asserting the Resolve button is not rendered (post-fix) / is rendered then denied (current). Tied to systemic PLT-034; /alerts/* AlertItem is a distinct locus."
+  priority: LOW
+- use_case_id: F-007-UC-08
+  hypothesis_id: H-008
+  kind: edit-reconcile
+  promise: "Resolving an alert decrements the tab badge — current behaviour: the badge is fetched once on mount and stays stale until full reload."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-08)"
+  proposed_test: "Playwright e2e resolving an alert and asserting the All badge decrements (post-fix re-fetch). Distinct from PLT-050."
+  priority: LOW
+- use_case_id: F-007-UC-11
+  hypothesis_id: H-011
+  kind: render
+  promise: "A cross-owner alert row does not leak a colleague's raw OIDC/LDAP username — current behaviour: statusUpdatedBy.identity.username renders verbatim to every reader."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-11)"
+  proposed_test: "Render test asserting which identity field surfaces on a cross-owner alert row; corroborates DOC-GAP-082. The alerts-list-specific guard for the systemic read-collaborative posture."
+  priority: LOW
+# NOTE: H-002 verifies via the emitted probe PENDING-F-007-1 (probe is the verification artefact);
+# H-012 is a missing-CAPABILITY enhancement (PLT-050) with no current behaviour to pin — no functional
+# test demand. So 12 of 14 promises carry a functional_test_demand; 2 (H-002, H-012) route elsewhere.
+
 ### probes_emitted
-- probe_id: P-391
+- probe_id: PENDING-F-007-1
   hypothesis_id: H-002
-  probe_path: "lineage/odd-platform/probes/P-391.yaml"
-  note: "End-to-end forge-and-display + cross-tenant + duplicate-on-retry regression-pin (the feature-flow's named highest-leverage unprobed cell). Confirms PLT-014 Defects 1+3 as one measured artefact. Feature-scoped id used (parallel-batch mode; sequential P-220..P-224 claimed concurrently)."
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_only: true
+  hypothesis_text: "When a caller POSTs an AlertManager payload with labels.entity_oddrn set to a data entity owned by a DIFFERENT team, the platform either rejects it or scopes the alert so it cannot be attributed to an entity the caller has no permission on. (Expected outcome: the forge-and-display compound — POST forged entity_oddrn anonymously under DISABLED AND as a cross-owner authenticated user; assert the alert row is created AND visible to a THIRD user on /alerts/all AND a duplicate-on-retry produces a 2nd row.)"
+  expected_outcome: "CONTRADICTED (static HIGH-confidence) — the forged alert IS created and IS globally visible; the probe pins the end-to-end compound as one measured artefact."
+  local_stack: "docker-compose ODD platform + Postgres, AUTH_TYPE=DISABLED then OAUTH2; curl the forged AlertManager payload; Playwright/curl GET /api/alerts as a second/third user."
+  note: "PARALLEL-SAFE: recorded here ONLY (no P-NNN file minted). Convergent confirmation of PLT-014 Defects 1+3 + the feature-flow's named highest-leverage unprobed cell ('0 of 4 cells PROBED'). On a non-parallel run this would be the P-391/merged-compound probe."
 - probe_id: P-194
   hypothesis_id: H-006
+  status: pre-existing-analyser-emitted
   probe_path: "lineage/odd-platform/probes/P-194.yaml"
   note: "PRE-EXISTING analyser-emitted probe (Alerts.tsx sidecar) — pins the All-tab resolved-alert-visibility (Category-B) drift. Referenced, not re-minted."
 
 ### validation_gaps
 - sidecar: "(AlertItem.tsx render path — no standalone enriched sidecar)"
-  field_insufficient: "The exact render mechanism of the alert chunk description / generatorURL in AlertItem.tsx (text node vs dangerouslySetInnerHTML vs MUI Link) is not pinned in an enriched sidecar — the Alerts component sidecar covers the page shell + list + item behaviour but not a line-level render-sink trace of the description field. This caps H-004's XSS verdict at MEDIUM confidence (stored-XSS upper-bound vs open-redirect lower-bound)."
-  proposed_refresh: "A file-analyser pass on AlertItem.tsx with a Category-render-sink trace of alertChunkList[].description and statusUpdatedBy.identity.username — confirm whether the description is rendered as a text node (escaped) or via innerHTML/Link (XSS-exposed), to settle PLT-014 Defect 2's severity."
+  field_insufficient: "The exact render mechanism of the alert chunk description / generatorURL in AlertItem.tsx (text node vs dangerouslySetInnerHTML vs MUI Link) is not pinned in an enriched sidecar — the Alerts component sidecar covers the page shell + list + item behaviour but not a line-level render-sink trace of the description field. This caps H-004's XSS verdict at MEDIUM confidence (stored-XSS upper-bound vs open-redirect lower-bound) AND blocks the F-007-UC-04 functional test from being authored precisely."
+  proposed_refresh: "A file-analyser pass on AlertItem.tsx with a Category-render-sink trace of alertChunkList[].description and statusUpdatedBy.identity.username — confirm whether the description is rendered as a text node (escaped) or via innerHTML/Link (XSS-exposed), to settle PLT-014 Defect 2's severity AND the F-007-UC-04 test shape."
 - sidecar: "odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md (audit-write hop)"
-  field_insufficient: "The OPEN_ALERT_RECEIVED audit-write half of H-009 is traced THROUGH AlertServiceImpl + the F-007 feature-flow batch-R notes, not re-opened end-to-end here; the partial-commit-under-partition-rotation risk that can drop received-alert audit rows is asserted from the feature-flow drift_class, not re-verified in this reflection."
+  field_insufficient: "The OPEN_ALERT_RECEIVED audit-write half of H-009 / F-007-UC-09 is traced THROUGH AlertServiceImpl + the F-007 feature-flow batch-R notes, not re-opened end-to-end here; the partial-commit-under-partition-rotation risk that can drop received-alert audit rows is asserted from the feature-flow drift_class, not re-verified in this reflection."
   proposed_refresh: "Confirm at ReactiveActivityRepositoryImpl.save(List) (lines ~57-71) whether executeInPartition is transaction-wrapped; if not, the alert-received audit can partially commit under midnight partition rotation — pin it as a probe or strengthen the F-007 alert_activity_partial_commit drift facet."
+- sidecar: "odd-platform__java__service__service__AlertServiceImpl.md"
+  field_insufficient: "tests_coverage_semantic claims `find ... AlertService* returned zero matches` / no dedicated unit test class — this is now STALE. AlertServiceImplTest.java exists (@validates F-007 + F-014) with three tests: two F-014 not-found paths + the F-007 handleExternalAlerts EMPTY-batch no-op. The sidecar's gaps prose should be refreshed so the test-coverage-mapper does not double-count the gap as wholly-uncovered."
+  proposed_refresh: "Refresh AlertServiceImplTest coverage in the sidecar's tests_coverage_semantic.covered_behaviours (add the empty-batch no-op + the two not-found paths) and narrow the gaps prose to the still-uncovered set (the webhook HAPPY PATH, idempotency, cross-tenant, updateStatus, getTotals, listAll)."
 
 ### doc_drift_findings
 - hypothesis_id: H-005
@@ -670,7 +903,7 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
 
 ## maintainer_notes
 
-(none — net-new reflection. Observations for the maintainer:
+(Preserved across the v0.2.0 -> v0.3.0 refresh. Observations for the maintainer:
 
 1. F-007 is a TWO-SURFACE feature (machine-facing webhook INGEST + human-facing global Alerts READ),
    and the senior-PO "from the screen" lens applies to the READ surface, which IS enriched
@@ -680,37 +913,38 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
    rule labelling) + the external-system contract, the right reframing of "from the screen" for a
    webhook.
 
-2. DEDUP is the headline of this reflection. The three F-007 INGEST defects (H-002 forge-and-display
+2. v0.3.0 PROMISE LAYER (LSN-030) is the new spine of this refresh. The single highest-value action
+   on this feature is F-007-UC-13: the webhook HAPPY PATH (a valid POST creates a visible OPEN alert)
+   is hand-proven CONFIRMED but the ONLY test pins the empty-batch no-op. v0.2.0 routed H-013 + H-014
+   to routes_to_finding: none — discarding two hand-proven promises. They are now functional_test_demands.
+   use_case_coverage = 0/14 verified — a user-facing feature with ZERO guarded promises.
+
+3. DEDUP is still the security-side headline. The three F-007 INGEST defects (H-002 forge-and-display
    + cross-tenant entity_oddrn, H-004 generatorURL XSS, H-003 no-idempotency) are ALL already tracked
    as PLT-014 (+ DOC-179, done). This reflection is therefore mostly CONVERGENT VALIDATION on the
-   ingest side — the top-down PO pass independently re-derived the same three defects PLT-014 filed
-   from the scanner pipeline. That agreement is a high-confidence signal, captured (not re-filed) via
-   dedup_status: already_tracked. The NET-NEW value is on the READ surface + the contract edges:
-   H-006 (All-tab name-vs-behaviour / no status filter — net_new, distinct from PLT-050), H-005
-   (status:resolved silently dropped — net_new), H-008 (stale badges — net_new, distinct from PLT-050),
-   H-009 (ingress unaudited — net_new), H-010 (orphan inflates totals — net_new), H-011 (username PII
-   on the cross-owner list — corroborates DOC-GAP-082 META).
+   ingest side. The NET-NEW value is on the READ surface + the contract edges: H-006 (All-tab
+   name-vs-behaviour / no status filter — net_new, distinct from PLT-050), H-005 (status:resolved
+   silently dropped — net_new), H-008 (stale badges — net_new), H-009 (ingress unaudited — net_new),
+   H-010 (orphan inflates totals — net_new), H-011 (username PII — corroborates DOC-GAP-082 META).
 
-3. The live doc has been MATERIALLY improved since the sidecars were enriched: it now documents the
+4. STALE-FACT CORRECTION surfaced as a validation_gap: the AlertServiceImpl sidecar's
+   tests_coverage_semantic says no AlertServiceImpl unit test exists. It now does
+   (AlertServiceImplTest.java, @validates F-007 + F-014) — but covers only the empty-batch no-op for
+   F-007. The sidecar gaps prose should be refreshed so the test-coverage-mapper does not treat the
+   service as wholly-untested.
+
+5. The live doc has been MATERIALLY improved since the sidecars were enriched: it now documents the
    unauthenticated posture, the cross-tenant write, the idempotency gap, the All-tab OPEN-only
    behaviour, AND the halt-toggle no-op. Several sidecar doc_drift_findings are therefore STALE
-   (closed on the doc side). The CODE gaps all remain. A file-analyser refresh of the postAlerts +
-   ReactiveAlertRepositoryImpl + Alerts sidecars should re-verify against the current live page and
-   downgrade the closed doc-drifts (this matches the F-009 reflection's note 3 about the doc improving
-   under the same window).
+   (closed on the doc side). The CODE gaps all remain.
 
-4. Two new drift classes proposed (not yet in the F-007 feature-flow drift_class_summary):
+6. Two new drift classes proposed (not yet in the F-007 feature-flow drift_class_summary):
    statusUpdatedBy_oidc_username_rendered_verbatim_on_cross_owner_All_tab_pii_leak (H-011) and
    all_tab_orphan_alerts_null_entity_oddrn_persisted_but_invisible_everywhere (H-010).
 
-5. Contradiction density: 10 of 14 contradicted + 1 partial + 1 probe-needed (2 confirmed). The two
-   HIGH-severity headlines (H-001 unauthenticated-under-every-mode, H-002 forge-and-display) are the
-   security spine PLT-014 already owns; the highest NET-NEW finding is H-006 (the 'All' tab silently
-   hides resolved alerts), which is the same operator-trust failure class (the UI promises a population
-   it does not deliver) as the F-022 soft-deleted-DQ-tab and F-009 email-payload-parity contradictions
-   in this batch.
-
-6. Bug-candidate dedup tally: 5 bug_candidates — 4 already_tracked (H-002/H-003/H-004 -> PLT-014;
-   H-007 -> PLT-034), 1 net_new (H-006, distinct_from PLT-050). Caveat-candidate tally: 7 caveats —
-   3 already_tracked (H-001 -> DOC-179; H-011 -> DOC-GAP-082; H-012 -> PLT-050), 4 net_new
-   (H-005, H-008 [distinct_from PLT-050], H-009, H-010).)
+7. Contradiction density: 10 of 14 contradicted + 1 partial + 1 probe-needed (2 confirmed). Bug-candidate
+   dedup tally: 5 bug_candidates — 4 already_tracked (H-002/H-003/H-004 -> PLT-014; H-007 -> PLT-034),
+   1 net_new (H-006, distinct_from PLT-050). Caveat-candidate tally: 7 caveats — 3 already_tracked
+   (H-001 -> DOC-179; H-011 -> DOC-GAP-082; H-012 -> PLT-050), 4 net_new (H-005, H-008 [distinct_from
+   PLT-050], H-009, H-010). functional_test_demands: 12 (all promises except H-002 [probe-verified] and
+   H-012 [enhancement, no behaviour to pin]).)

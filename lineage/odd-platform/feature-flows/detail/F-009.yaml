@@ -264,9 +264,8 @@ batch_extensions:
         subscriber is gone for the rest of the JVM lifetime. The
         platform continues to INSERT alert rows, Postgres continues
         to retain WAL on the slot, and NO notifications fire —
-        silently. No log line tracks the dead subscriber; operators
-        discover the failure only when an expected alert fails to
-        deliver. NEW drift facet:
+        silently. No log line tracks the dead subscriber. NEW drift
+        facet:
         `thread_death_not_detected_no_future_retention_silent_subscriber_loss`.
 
     **Bridge-tier (PostgresWALMessageProcessor.java — the SPI seam)
@@ -901,6 +900,143 @@ observed_vs_expected:
     provenance: STATIC — primary-source in NotificationsDispatcher sidecar
       bugs_limitations_corner_cases[9] + AlertNotificationMessageProcessor.java:27 +
       AlertNotificationMessage.java:21
+use_cases:
+# LSN-030 promise layer — projected from feature-reflections/detail/F-009.yaml (feature-reflector/0.3.0).
+# Each uc_id == the reflection hypothesis id. The full hypothesis + validation lives in the reflection;
+# this is the compact projection the test-coverage-mapper Step 2b reads. coverage is verified ONLY when
+# a REAL test guards the promise (checked against the three notification tests + IT-011/IT-012 + the
+# contributing sidecars' tests_coverage_semantic).
+- uc_id: H-001
+  kind: happy-path
+  promise: "Enable notifications + configure one channel: an ALERT row is delivered to that channel with no further operator action (channel turns on by key presence; WAL slot/publication created when enabled)."
+  actor: platform-operator
+  trace: "NotificationSubscriber.java:68-84 -> AlertNotificationMessageProcessor.java:23-36; activation ADR-0041; WAL lifecycle IT-011"
+  coverage: verified
+  test_ref: "AdrNotificationChannelContractTest (activation) + IT-011 (WAL lifecycle); end-to-end delivery flaky per PLT-139"
+  test_demand: none
+- uc_id: H-002
+  kind: cross-actor
+  promise: "With all three channels enabled, one channel's failure does not stop the others — every enabled channel receives the alert."
+  actor: notification-recipient
+  trace: "AlertNotificationMessageProcessor.java:31 (NotificationSenderException-only catch) + EmailNotificationSender.java:58-60 (raw RuntimeException escapes)"
+  coverage: unverified
+  test_ref: "NotificationFailSoftContractTest (source-scan pins: fail-soft loop verified + email-escape characterization-pinned; NOT a behavioural multi-channel run)"
+  test_demand: functional
+  verdict: partial
+  tracked_as: PLT-016
+- uc_id: H-003
+  kind: render
+  promise: "Per-channel / per-severity / per-owner routing (Critical to Slack, routine to email) is configurable."
+  actor: platform-operator
+  trace: "AlertNotificationMessageProcessor.java:25-36 (unconditional fan-out, no predicate)"
+  coverage: unverified
+  test_ref: null
+  test_demand: none
+  verdict: contradicted
+  tracked_as: DOC-180
+  note: "Contradicted-by-design (no routing); routed to caveat, not a functional test demand."
+- uc_id: H-004
+  kind: render
+  promise: "The generic webhook POST is verifiable as genuinely from ODD (HMAC / X-ODD-Signature / shared secret) so a third party who learns the URL cannot forge alerts."
+  actor: notification-recipient
+  trace: "WebhookNotificationSender.java:20-22 (no header, no signing, no secret config)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  verdict: contradicted
+  tracked_as: PLT-016
+- uc_id: H-005
+  kind: render
+  promise: "A webhook receiver returning 201/202/204 is treated as a successful delivery."
+  actor: notification-recipient
+  trace: "AbstractNotificationSender.java:26-29 (exactly-200 check)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  verdict: contradicted
+- uc_id: H-006
+  kind: empty/no-match
+  promise: "A burst of N alerts all reach Slack — 429 + Retry-After is honoured (bounded rate-limit), not silently dropped."
+  actor: notification-recipient
+  trace: "SlackNotificationSender.java:43-48 + AbstractNotificationSender.java:24-29 (429 undifferentiated, Retry-After ignored)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  verdict: contradicted
+  cross_link: REFACTOR-129
+- uc_id: H-007
+  kind: resolve-later
+  promise: "A single malformed/poison alert row is skipped; subsequent alerts still deliver and the WAL LSN advances past it."
+  actor: notification-recipient
+  trace: "NotificationSubscriber.java:77-91 (no try/catch around process; LSN advances only on success) + PostgresWALMessageProcessor.java:6 (void SPI)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  verdict: contradicted
+  tracked_as: PLT-016
+  priority: HIGHEST
+- uc_id: H-008
+  kind: resolve-later
+  promise: "When the subscriber thread dies in-process (JVM alive), the platform detects it, surfaces a liveness signal, and resumes delivery (or releases the lock so a standby promotes)."
+  actor: platform-operator
+  trace: "NotificationSubscriber.java:87-100 + NotificationSubscriberStarter.java:33-35 (no Future retained, no death detection)"
+  coverage: unverified
+  test_ref: "IT-012 covers CRASH failover only — a DIFFERENT mode; does NOT cover in-process thread death (lock stays held)"
+  test_demand: functional
+  verdict: contradicted
+  distinct_from: PLT-139
+- uc_id: H-009
+  kind: render
+  promise: "Setting protocol SMTP (uppercase, the JavaMail convention) still engages STARTTLS + SMTP AUTH."
+  actor: platform-operator
+  trace: "NotificationConfiguration.java:63 (case-sensitive lowercase .equals('smtp'))"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  verdict: contradicted
+- uc_id: H-010
+  kind: render
+  promise: "An alert EMAIL renders the attached owners and the affected downstream entities (channel parity with Slack), matching the doc claim."
+  actor: notification-recipient
+  trace: "EmailNotificationSender.java:64-78 + templates/email.ftlh:1-46 (nine fields, no owners/downstream) vs SlackMessageGenerator.java:128-140"
+  coverage: unverified
+  test_ref: "SlackMessageGeneratorTest covers the SLACK render of owners+downstream; the EMAIL omission is untested"
+  test_demand: functional
+  verdict: contradicted
+- uc_id: H-011
+  kind: grammar
+  promise: "An alert-chunk description containing @channel / a fake link renders as escaped plain text in Slack — no broadcast, no fake link."
+  actor: notification-recipient
+  trace: "SlackMessageGenerator.java:77 + MrkdwnUtils.java:1-14 (no escape) + AlertActionResolverImpl.java:162 (ingestion-supplied)"
+  coverage: unverified
+  test_ref: "SlackMessageGeneratorTest exercises the render path but with a benign description; does NOT assert escaping"
+  test_demand: functional
+  verdict: contradicted
+  tracked_as: PLT-015
+- uc_id: H-012
+  kind: render
+  promise: "A delivered alert leaves an audit trail (delivery row or NOTIFICATION_* Activity-feed event) answerable by an operator/compliance reviewer."
+  actor: platform-operator
+  trace: "ActivityEventTypeDto.java:3-31 (26 constants, none NOTIFICATION_*) + AlertNotificationMessageProcessor.java:30-35 (catch-and-log only)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  verdict: contradicted
+  tracked_as: PLT-016
+- uc_id: H-013
+  kind: edit-reconcile
+  promise: "Updating the email recipient list (or rotating a Slack/webhook URL) on a running platform takes effect for subsequent alerts."
+  actor: platform-operator
+  trace: "EmailNotificationSender.java:36 + NotificationConfiguration.java:104,118 (bound at construction; @Value, /refresh not covered)"
+  coverage: unverified
+  test_ref: null
+  test_demand: functional
+  verdict: partial
+  note: "True after restart, false live; routed to caveat. Functional demand is LOW priority (only if live-reload is implemented)."
+use_case_coverage:
+  verified: 3
+  total: 13
+  note: "SECOND COVERAGE FRONTIER (verified promises / total promises) — distinct from the test_matrix cells below. 3/13 promises guarded by a real test (UC-1 channel-activation+WAL-lifecycle, UC-2 fail-soft-loop-half, UC-10 Slack-render-half). The other 10 are unverified; 7 are CONTRADICTED. Every failure-mode promise (poison survival, cross-channel isolation on email failure, burst delivery, thread-death recovery, secure SMTP, signed webhook, delivery audit) is unverified. Source: feature-reflections/detail/F-009.yaml (feature-reflector/0.3.0)."
 test_matrix:
   unit:
     state: GAP
@@ -949,6 +1085,15 @@ control_summary: |-
   stack is sufficient: ODD platform + Postgres with logical replication + a
   mock-Slack endpoint (WireMock) + a SMTP capture server (e.g. MailHog) + an
   injected ALERT row to drive the WAL stream.
+  NOTE (2026-06-04, feature-reflector/0.3.0): the "ZERO test coverage" claim above
+  is now STALE. Three notification tests exist (SlackMessageGeneratorTest @validates
+  F-009; NotificationFailSoftContractTest @enforces ADR-0042 @pins PLT-016;
+  AdrNotificationChannelContractTest @enforces ADR-0041) plus two integration
+  protocols (IT-011 WAL lifecycle, IT-012 leader failover). The use_case_coverage
+  block above (3/13 verified promises) is the refreshed honest axis. The 0-of-4
+  test_matrix cells should move unit + integration to PARTIAL on the next reducer
+  refresh (the failure-mode behaviours remain GAP). See the reflection's
+  validation_gaps for the precise refresh instruction.
 related_refactoring_scopes:
 - REFACTOR-145
 - REFACTOR-129  # batch-C 'no rate-limiting at any layer' — Slack 429 Retry-After ignored facet is one invocation site

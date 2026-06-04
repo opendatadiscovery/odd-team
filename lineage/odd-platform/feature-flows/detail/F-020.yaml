@@ -1093,6 +1093,135 @@ observed_vs_expected:
       SecurityConstants.java:127-137 + REFACTOR-185.md cross-link.
       Severity: LOW (corollary of REFACTOR-185 — DISABLED is
       dev-only per docs).
+use_cases:
+# LSN-030 promise layer — projected from the F-020 feature-reflection (feature-reflector/0.3.0).
+# uc_id == reflection hypothesis id. coverage 'verified' ONLY where a REAL test guards the promise
+# (cross-ref each contributing sidecar tests_coverage_semantic.covered_behaviours + a Grep of the
+# odd-platform test tree). A known-bug characterization pin (LSN-029 @pins) COUNTS as 'verified'
+# coverage of a CONTRADICTED promise — it RED-flips the instant the behaviour is fixed.
+# Full hypothesis text + validation + operator-visible failure live in the reflection detail file
+# (feature-reflections/detail/F-020.yaml).
+- uc_id: H-001
+  kind: cross-actor
+  promise: "An operator holding a COLLECTOR_* permission under a real auth mode (LOGIN_FORM/OAUTH2/LDAP) can perform the matching mutation; a user lacking it neither sees the button nor (calling the endpoint directly) succeeds (403)."
+  actor: platform-operator
+  trace: "CollectorsList.tsx:91-101 + CollectorItem.tsx:39,:52 + CollectorItemToken.tsx:36 (UI gates) MIRROR SecurityConstants.java:127-137 (backend SECURITY_RULES, one per verb)"
+  coverage: unverified
+  test_demand: "functional — no @WebFluxTest authz test: a policy-scoped user without each COLLECTOR_* permission gets 403 on the matching endpoint (the four UI gates are unguarded against backend drift)"
+- uc_id: H-002
+  kind: cross-actor
+  promise: "What the Collectors tab SHOWS reflects what the platform ALLOWS — no mutation buttons means mutations are not permitted."
+  actor: platform-operator
+  trace: "WithPermissions.tsx:11-32 (empty permissions under DISABLED hide buttons) vs DisabledAuthSecurityConfiguration.java:11-19 ('.anyExchange().permitAll()' bypasses SECURITY_RULES) — UI quieter than API"
+  coverage: unverified
+  test_demand: "functional — regression-pin: under auth.type=DISABLED the UI renders no action buttons AND a direct POST/PUT/DELETE/token-rotate succeeds with no auth (pins the REFACTOR-185 19th-surface asymmetry so a future fix to either side surfaces)"
+- uc_id: H-003
+  kind: happy-path
+  promise: "On register, the operator is shown the full 40-char bearer token once, immediately, so they can copy it into the collector config before deploying."
+  actor: platform-operator
+  trace: "ReactiveTokenRepositoryImpl.create/updateToken set showToken=true -> TokenMapper.java:15-18 returns raw value; CollectorItemToken.tsx:25-27,:34 reveals + CollectorItem.tsx:87-98 save-it-now warning"
+  coverage: unverified
+  coverage_note: "the MASKED-on-read half is covered (CollectorRepositoryImplTest.getDtoTest asserts showToken=false); the PLAINTEXT-on-MINT half — the actual promise — is asserted by NO test"
+  test_demand: "functional — @WebFluxTest: POST /api/collectors (and PUT /{id}/token) response body carries the full 40-char Token.value; GET /list + PUT /{id} carry the masked '******{last6}'"
+- uc_id: H-004
+  kind: edit-reconcile
+  promise: "Clicking Regenerate swaps the token cleanly so a running collector is not knocked offline (the credential-rotation overlap an operator expects)."
+  actor: platform-operator
+  trace: "TokenGeneratorImpl in-place mutate + ReactiveTokenRepositoryImpl.java:30-39 single-statement UPDATE; IngestionDataEntitiesFilter.java:55-58 equals() fails for the old token on next request — CONTRADICTED (no grace window)"
+  coverage: unverified
+  test_demand: "functional — integration: rotate a token while an in-flight ingestion call uses the prior token; assert the next request 401s immediately (pins no-grace; RED-flips if a grace window is added). Also the regression guard for the PLT-108 fix."
+- uc_id: H-005
+  kind: cross-actor
+  promise: "Rotating a leaked token meaningfully reduces the attack surface on a default deployment — the rotated credential is what gates ingestion."
+  actor: platform-operator
+  trace: "IngestionDataSourceFilter (always-on) honours rotation; IngestionDataEntitiesFilter @ConditionalOnProperty auth.ingestion.filter.enabled=false (application.yml:48) — bean unregistered, /ingestion/entities anonymous regardless — PARTIAL"
+  coverage: unverified
+  test_demand: "functional — integration: under default auth.ingestion.filter.enabled=false, rotate a token and assert /ingestion/entities STILL accepts the OLD token (pins the no-security-effect-on-default half)"
+- uc_id: H-006
+  kind: render
+  promise: "An operator/auditor can answer 'who registered/rotated/deleted this collector and when' — the credential desk records its own mutations."
+  actor: platform-operator
+  trace: "CollectorController.java:1-52 + CollectorServiceImpl.java:1-110 + TokenGeneratorImpl: zero log statements, no @ActivityLog; activity.data_entity_id NOT NULL bars non-data-entity events — CONTRADICTED (schema-rooted, PLT-062)"
+  coverage: unverified
+  test_demand: "functional — regression-pin: no activity event is emitted on any of the four COLLECTOR_* verbs (pins the current audit-silence contract; RED-flips when an audit pathway is added)"
+- uc_id: H-007
+  kind: teardown
+  promise: "Deleting a collector destroys its credential too, so a leaked backup cannot resurrect it."
+  actor: platform-operator
+  trace: "ReactiveAbstractSoftDeleteCRUDRepository.delete UPDATEs only collector.deleted_at; CollectorServiceImpl.java:71-80 issues no tokenRepository.delete; TOKEN has no soft-delete column (V0_0_28) — CONTRADICTED (orphan token row persists)"
+  coverage: unverified
+  coverage_note: "CollectorServiceImplTest covers cascade-block + delete-returns-id + not-found; it does NOT pin the orphaned-token-row survival after delete"
+  test_demand: "functional — integration: after DELETE /api/collectors/{id}, the TOKEN row referenced by the deleted collector's token_id still exists in the table (pins the orphan; regression guard for PLT-085)"
+- uc_id: H-008
+  kind: teardown-constraint
+  promise: "A collector token at rest is hashed/encrypted so a DB read or backup does not hand an attacker every live collector secret."
+  actor: platform-operator
+  trace: "V0_0_28__add_token.sql:4 value varchar(40) no-hash; ReactiveCollectorRepositoryImpl.java:94 TOKEN.VALUE.eq(token) plaintext SQL equality; IngestionDataEntitiesFilter.java:55-58 non-constant-time equals() — CONTRADICTED (plaintext at rest end-to-end)"
+  coverage: verified
+  test_ref: "CollectorTokenStorageKnownBugTest.collectorTokenLookedUpByPlaintextEquality_knownBug_PLT085 (@pins PLT-085 — GREEN while plaintext, RED on hash-at-rest)"
+  test_demand: none
+- uc_id: H-009
+  kind: edit-reconcile
+  promise: "Editing only a collector's name preserves the fields not touched (description, namespace)."
+  actor: platform-operator
+  trace: "CollectorServiceImpl.update (lines 50-69) applyToDto + CollectorMapper.java:41-47 MapStruct @MappingTarget whole-pojo overwrite — CONTRADICTED (full-replace; null form fields null the columns)"
+  coverage: unverified
+  coverage_note: "CollectorMapperImplTest covers FK-id null-safety, NOT the destructive full-replace of description/namespace on a partial PUT"
+  test_demand: "functional — service/mapper test: a PUT carrying only name nulls description + namespace on the persisted pojo (pins full-replace; documents the PUT-is-replace contract)"
+- uc_id: H-010
+  kind: empty/no-match
+  promise: "After the page reloads, an operator who missed copying a freshly-issued token can view it again from the Collectors tab."
+  actor: platform-operator
+  trace: "GET /api/collectors/list returns the masked '******{last6}' (TokenMapper.java:15-18 showToken=false); CollectorItemToken.tsx:25-27 detects the six-star prefix and flips to hidden — CONFIRMED-negative (no re-reveal by design; one-shot pattern)"
+  coverage: verified
+  test_ref: "CollectorRepositoryImplTest.getDtoTest (asserts dto.tokenDto().showToken() == false on read — the masked-read behaviour that makes re-reveal impossible)"
+  test_demand: none
+- uc_id: H-011
+  kind: cross-actor
+  promise: "A read-only auditor with no Management permission cannot enumerate the platform's collector inventory."
+  actor: platform-operator
+  trace: "GET /api/collectors/list has NO SecurityRule (SecurityConstants.java:127-137 — only the 4 mutation verbs); read-collaborative (REFACTOR-024) — CONTRADICTED (any authenticated user, anonymous under DISABLED, lists every collector + last-6 token chars)"
+  coverage: unverified
+  test_demand: "functional — @WebFluxTest: a user with zero MANAGEMENT permissions gets 200 on GET /api/collectors/list (pins the read-collaborative posture for the credential table; RED-flips if the read is gated)"
+- uc_id: H-012
+  kind: happy-path
+  promise: "A collector authenticating with its bearer token resolves to exactly one collector identity deterministically."
+  actor: odd-collector-runtime
+  trace: "ReactiveCollectorRepositoryImpl.getByToken (lines 89-94) TOKEN.VALUE.eq(token) — PARTIAL (happy single-match resolves; unguarded windows: no UNIQUE on TOKEN.value + no ORDER BY on collision; WebSession identity bridge needs sticky sessions on multi-replica IN_MEMORY)"
+  coverage: verified
+  test_ref: "CollectorRepositoryImplTest.getByTokenTest (asserts getByToken resolves to the correct single collector among two)"
+  coverage_note: "the happy-path resolution is verified; the collision-non-determinism + cluster-stickiness windows are unguarded and routed to caveat (PLT-085 / REFACTOR-419), not a functional demand (cluster behaviour needs a multi-replica probe stack)"
+  test_demand: none
+- uc_id: H-013
+  kind: teardown-constraint
+  promise: "A collector token value is produced by a cryptographically-secure random source so it cannot be predicted from other tokens."
+  actor: platform-operator
+  trace: "TokenGeneratorImpl.java:39,:49 RandomStringUtils.randomAlphanumeric(40) -> ThreadLocalRandom (commons-lang >=3.16), not SecureRandom — CONTRADICTED (non-CSPRNG); the v0.2.0 probe-needed verdict is now resolved by a characterization pin"
+  coverage: verified
+  test_ref: "TokenEntropyKnownBugTest.tokenValueIsNotFromACsprng_knownBug_PLT126 (@pins PLT-126 — asserts randomAlphanumeric( present AND SecureRandom absent; RED-flips on CSPRNG switch)"
+  test_demand: none
+- uc_id: H-014
+  kind: teardown-constraint
+  promise: "Deleting a collector that still has associated data sources is refused (the collector is never removed while producers depend on it)."
+  actor: platform-operator
+  trace: "CollectorServiceImpl.delete (lines 71-80) checks dataSourceRepository.existsByCollector(id) -> CascadeDeleteException before collectorRepository.delete — CONFIRMED"
+  coverage: verified
+  test_ref: "CollectorServiceImplTest.delete_collectorWithAssociatedDataSources_errorsCascadeDeleteAndNeverDeletes (poison-Mono asserts the delete never subscribes on the blocked path) + delete_collectorWithoutDataSources_deletesAndReturnsId"
+  test_demand: none
+use_case_coverage:
+  verified: 5
+  total: 14
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises) — distinct from the
+    test_matrix cells (all four GAP) and from line/method coverage. 5/14 user-facing promises
+    are guarded by a real test: H-008 + H-013 by LSN-029 known-bug characterization pins
+    (PLT-085 plaintext-at-rest, PLT-126 non-CSPRNG entropy — both RED-flip on fix), H-010 by
+    the masked-on-read repository assertion, H-012 by the getByToken happy-path resolution, and
+    H-014 by the cascade-block service test. The remaining 9 promises are unverified and routed
+    to functional_test_demands in the reflection — the HIGHEST-leverage being H-003 (plaintext-
+    on-mint is hand-proven real but asserted by no test) and H-001 (no @WebFluxTest guards the
+    four COLLECTOR_* authz gates against backend-rule drift). This is a credential-minting
+    Management surface sitting at 5/14 verified promises — a finding in itself.
 test_matrix:
   unit:
     state: GAP

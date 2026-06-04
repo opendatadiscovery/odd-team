@@ -1245,8 +1245,8 @@ discovered_from_entry_point: webhook:POST /ingestion/entities
 description: "The platform's primary S2S ingestion endpoint `POST /ingestion/entities` accepts a\n`DataEntityList` payload\
   \ from collectors and writes the entities, their metadata,\ntheir lineage edges, their group bindings, and their DQ-test\
   \ relations into the\nnamed datasource's namespace. The user-observable promise (per the live Catalog\nOverview page + the\
-  \ live integration docs) is \"merge\" semantics: a collector\nre-publishes a SUBSET of fields per tick and the platform\
-  \ integrates them with\nwhat it already knew.\n\nThe user-observable reality, per batch-I primary-source code-walk of IngestionServiceImpl\n\
+  \ live integration docs) is \"merge\" semantics: a collector\nre-publishes a SUBSET of fields per tick and the platform integrates\
+  \ them with\nwhat it already knew.\n\nThe user-observable reality, per batch-I primary-source code-walk of IngestionServiceImpl\n\
   + MetadataIngestionRequestProcessor + LineageIngestionRequestProcessor: the\ningestion path is REPLACE, not merge.\n\nTWO\
   \ destructive surfaces are confirmed PRIMARY-SOURCE:\n\n1. METADATA DELETE-ON-ABSENCE — MetadataIngestionRequestProcessor.java:72-74\
   \ computes\n   `bindingsToDelete = existingMetadataBindings.difference(currentBindings)` and\n   deletes the omitted bindings\
@@ -1969,6 +1969,132 @@ observed_vs_expected:
       destruction call sites; ReactiveCollectorRepositoryImpl getByToken
       with no UNIQUE constraint visible at code level). System-mission
       file flags this surface as elevation-worthy.
+use_cases:
+  # LSN-030 / Rule 11 — the PROMISE LAYER, projected from feature-reflections/detail/F-008.yaml
+  # (feature-reflector/0.3.0, reflected 2026-06-04). Each use_case = one falsifiable user/security
+  # promise (uc_id = hypothesis id). The full hypothesis + validation lives in the reflection file;
+  # this is the compact projection the test-coverage-mapper Step 2b reads. coverage is `unverified`
+  # for ALL 14 — Grep of the odd-platform test tree confirmed the existing tests
+  # (DataSourceIngestionServiceTest / MetadataIngestionTest / LineageIngestionTest) stop at the happy
+  # path and assert NONE of these promises; IT-026 covers F-031's READ surface, not F-008's write.
+  # Because 0 hypotheses confirmed, every test_demand is a REGRESSION GUARD (pin the documented-wrong
+  # behaviour) and/or a fix-guard — not a happy-path verification.
+  - uc_id: F-008-UC-13
+    kind: edit-reconcile
+    promise: "A partial re-ingest preserves the omitted metadata fields + lineage edges (merge) — a transient partial scrape does not lose catalog state."
+    actor: collector
+    trace: "hop-2 IngestionServiceImpl.ingest:66 -> hop-3a MetadataIngestionRequestProcessor:72-80 (difference-then-delete) + hop-3b/4a LineageIngestionRequestProcessor:17 -> LineageServiceImpl.replaceLineagePaths:124-133"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — integration: ingest {a,b}+lineage{A,B}, re-ingest {a}+lineage{A}, assert b GONE + B-edge GONE. The headline guard the F-008 suite lacks. Sibling to probe P-224."
+  - uc_id: F-008-UC-01
+    kind: cross-actor
+    promise: "A write endpoint requires a credential — an unauthenticated network caller cannot write to (or destroy) a datasource by naming its ODDRN."
+    actor: anonymous-network-caller
+    trace: "hop-0 IngestionDataEntitiesFilter:20 (@ConditionalOnProperty default-false) -> hop-2 IngestionServiceImpl.ingest:68,95-151 (no principal check)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — security: bundled defaults, POST /ingestion/entities with no Authorization header -> assert it succeeds. Pin the anonymous-write posture."
+  - uc_id: F-008-UC-06
+    kind: empty/no-match
+    promise: "A batch with one bad row isolates the failure (the other rows persist) and identifies which row failed."
+    actor: collector
+    trace: "hop-2 IngestionServiceImpl.ingest:66 (single @ReactiveTransactional) + :83-86 (Collectors.toMap throwing merger on duplicate ODDRN)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — unit StepVerifier + integration: one bad entity in N-entity payload -> ALL rolled back; duplicate ODDRN -> 5xx not partial. test_matrix unit.uncovered names this."
+  - uc_id: F-008-UC-04
+    kind: edit-reconcile
+    promise: "An operator's UI rename/description edit on a datasource persists across collector ticks."
+    actor: platform-operator
+    trace: "hop-2-sibling DataSourceIngestionServiceImpl.prepareForUpdate:86-88 (.setName(i.getName()) overwrites, no audit)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — unit (extend DataSourceIngestionServiceTest): existing name=Y, re-register name=X same ODDRN -> resulting name=X (collector wins), connection_url unchanged. Pins REFACTOR-423 + H-003 in one test."
+  - uc_id: F-008-UC-03
+    kind: edit-reconcile
+    promise: "A collector can update a datasource's connection_url via re-registration when the source hostname moves."
+    actor: collector
+    trace: "hop-2-sibling DataSourceIngestionServiceImpl.prepareForUpdate:74-92 (copy-construct + 2 setters; connection_url never written) + DataSourceIngestionMapperImpl:9-19"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — unit: re-register existing ODDRN with changed connection_url -> stored connection_url UNCHANGED. May fold into F-008-UC-04's test."
+  - uc_id: F-008-UC-05
+    kind: edit-reconcile
+    promise: "A collector author's payload namespace_name controls the registered datasource's namespace."
+    actor: custom-collector-author
+    trace: "hop-2-sibling DataSourceIngestionServiceImpl.mapDataSources:99-111 (namespace_id from CollectorDto.namespace() at :106; payload namespace_name never read)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — unit: Collector namespace=Y, register payload namespace_name=X -> datasource namespace_id resolves to Y (collector-scoped-tenancy SECURITY invariant). Extends DataSourceIngestionServiceTest fixtures."
+  - uc_id: F-008-UC-12
+    kind: cross-actor
+    promise: "Every ingestion-driven mutation (create/update/restore/destroy) is recorded in an audit trail."
+    actor: security-investigator
+    trace: "hop-2 IngestionServiceImpl:53 (@Slf4j unused),135-136 (silent restore) + ActivityIngestionRequestProcessor (DATA_ENTITY_CREATED only)"
+    verdict: partial
+    coverage: unverified
+    test_demand: "functional (missing-functional) — integration: ingest NEW entity -> DATA_ENTITY_CREATED event exists; re-ingest/restore/metadata-delete -> NO event. Pins the audit-scope asymmetry."
+  - uc_id: F-008-UC-07
+    kind: cross-actor
+    promise: "A token for datasource A cannot be used to write to datasource B (filter ON)."
+    actor: collector
+    trace: "hop-0 IngestionDataEntitiesFilter:43-58 (token resolved for the BODY's datasource; mismatch -> 401)"
+    verdict: partial
+    coverage: unverified
+    test_demand: "functional (missing-functional) — security/integration: filter ON, token-for-A + payload-names-B -> 401. Pins the token-to-datasource binding. IngestionCrossCollectorPollutionTest does not exist."
+  - uc_id: F-008-UC-02
+    kind: cross-actor
+    promise: "Enabling auth.ingestion.filter.enabled authenticates all /ingestion/* endpoints."
+    actor: platform-operator
+    trace: "hop-0 IngestionDataEntitiesFilter:28 (exact-literal /ingestion/entities matcher) + IngestionController:31-103 (5 endpoints) + SecurityConstants:95-96"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — security: filter ON, iterate 5 /ingestion/* endpoints -> assert per-endpoint coverage matrix (only /ingestion/entities 401s). Becomes the guard for the PLT-003 matcher-widening fix."
+  - uc_id: F-008-UC-10
+    kind: cross-actor
+    promise: "Hidden mutation buttons under DISABLED mean the mutations are unavailable."
+    actor: platform-operator
+    trace: "UI CollectorsList:91-101 (WithPermissions hides buttons) vs DisabledAuthSecurityConfiguration:11-19 (.anyExchange().permitAll()) + SecurityConstants:127-137 (COLLECTOR_* rules bypassed)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — e2e (Playwright, AUTH_TYPE=DISABLED) + API: Collectors tab hides Add/Edit/Delete/Regenerate AND raw POST /api/collectors succeeds anonymously returning a usable token. Pins the UI-vs-API asymmetry (PLT-103)."
+  - uc_id: F-008-UC-11
+    kind: cross-actor
+    promise: "POST /ingestion/datasources works on a non-sticky cluster regardless of which node serves each request."
+    actor: collector
+    trace: "IngestionDataSourceFilter:36-38 (session write) + IngestionController:50-58 (session read) + application.yml:28-30 (IN_MEMORY default)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — integration (single node): createDataSource reads COLLECTOR_ID_SESSION_KEY and 500s when absent (session-bridge contract pin). Cross-node 5xx is probe territory (PLT-074)."
+  - uc_id: F-008-UC-09
+    kind: render
+    promise: "Token rotation has a meaningful, immediate, safe security effect."
+    actor: platform-operator
+    trace: "UI CollectorItemToken.tsx:38-49 (rotation dialog) + application.yml:48 (filter off default) -> rotation has no effect on the entities path; in-place rotation has no grace window"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional) — integration: filter ON, rotate token -> OLD token immediately 401s on /ingestion/entities (no grace window). Pins PLT-108."
+  - uc_id: F-008-UC-08
+    kind: cross-actor
+    promise: "Collector tokens are hashed at rest and compared in constant time."
+    actor: db-side-reader
+    trace: "V0_0_28__add_token.sql:4 (varchar(40), no hash) + TokenGeneratorImpl:39 + ReactiveCollectorRepositoryImpl (TOKEN.VALUE.eq) + IngestionDataEntitiesFilter:56 (String.equals)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: "functional (missing-functional, lowest leverage) — security/repository: issue token, SELECT value FROM token -> stored value EQUALS issued plaintext. Pins plaintext-at-rest (PLT-085) so a future hashing fix flips this test deliberately."
+  - uc_id: F-008-UC-14
+    kind: cross-actor
+    promise: "Concurrent same-ODDRN datasource registration (collector restart) tolerates the race without a 5xx."
+    actor: collector
+    trace: "DataSourceIngestionServiceImpl:47 (getDtosByOddrns — no forUpdate),57,66 + V0_0_31:29 (partial unique index data_source_oddrn_unique)"
+    verdict: probe-needed
+    coverage: unverified
+    test_demand: "probe (P-240 / PENDING-F-008-2) — local docker-compose, 2 concurrent registration ticks for the same ODDRN, measure whether the partial-unique-index violation rolls back the losing batch. Functional test deferred until the race width is measured."
+use_case_coverage:
+  verified: 0
+  total: 14
+  note: "SECOND COVERAGE FRONTIER (LSN-030) — verified PROMISES / total promises, distinct from the test_matrix's test-TYPE cells and from line/method coverage. 0/14: F-008 is the platform's largest write surface and its single most destructive one, and NOT ONE of its 14 user/security promises has a behavioural guard. The existing happy-path tests (DataSourceIngestionServiceTest, MetadataIngestionTest, LineageIngestionTest) stop short of every promise; IT-026 covers F-031's READ surface, not F-008's write. This 0/14 is the headline finding of the feature-reflector/0.3.0 refresh and the reason `related_test_gaps` should no longer be empty: see feature-reflections/detail/F-008.yaml cross_references.functional_test_demands (14 missing-functional demands, ranked; F-008-UC-13 the destruction-contract guard + F-008-UC-01 the anonymous-write guard lead)."
 test_matrix:
   unit:
     state: GAP
@@ -2068,7 +2194,24 @@ related_refactoring_scopes:
 - REFACTOR-422  # batch-S PRIMARY SOURCE — silent no-propagation of connection_url/type/active at the SERVICE-TIER copy-construct lines 86-88
 - REFACTOR-423  # batch-S PRIMARY SOURCE — silent overwrite of operator UI edits at the SERVICE-TIER lines 86-88
 - REFACTOR-424  # batch-S PRIMARY SOURCE — silent namespace drop at SERVICE-TIER line 106
-related_test_gaps: []
+related_test_gaps:
+# LSN-030 / Rule 11 — this list was [] in the v0.2.0 era. The feature-reflector/0.3.0 refresh
+# (2026-06-04) surfaced 14 use-case promises, ALL coverage: unverified, each routed to a
+# missing-functional TEST-GAP candidate in feature-reflections/detail/F-008.yaml
+# cross_references.functional_test_demands. Pending mint as TEST-GAP-NNN by the
+# test-coverage-mapper / maintainer (category: missing-functional, use_case_id set). Listed by leverage.
+- TEST-GAP-NNN (pending mint) — F-008-UC-13 metadata+lineage delete-on-absence (the destruction-contract guard; integration)
+- TEST-GAP-NNN (pending mint) — F-008-UC-01 anonymous-write under bundled defaults (the headline security regression-pin)
+- TEST-GAP-NNN (pending mint) — F-008-UC-06 all-or-nothing batch + duplicate-ODDRN crash (unit StepVerifier + integration)
+- TEST-GAP-NNN (pending mint) — F-008-UC-04 operator-edit overwrite + F-008-UC-03 connection_url not propagated (unit, extends DataSourceIngestionServiceTest)
+- TEST-GAP-NNN (pending mint) — F-008-UC-05 namespace-from-Collector tenancy invariant (unit, security)
+- TEST-GAP-NNN (pending mint) — F-008-UC-12 audit-scope asymmetry (integration)
+- TEST-GAP-NNN (pending mint) — F-008-UC-07 filter-ON cross-datasource rejection (security/integration)
+- TEST-GAP-NNN (pending mint) — F-008-UC-02 5-endpoint filter-coverage matrix (security; guard for PLT-003 fix)
+- TEST-GAP-NNN (pending mint) — F-008-UC-10 UI-vs-API asymmetry under DISABLED (e2e + API)
+- TEST-GAP-NNN (pending mint) — F-008-UC-11 session-bridge contract single-node (integration)
+- TEST-GAP-NNN (pending mint) — F-008-UC-09 token rotation no-grace-window (integration)
+- TEST-GAP-NNN (pending mint) — F-008-UC-08 plaintext-at-rest posture pin (security/repository, lowest leverage)
 related_doc_gaps: []
 related_concepts:
 - Ingestion (External Webhook)
@@ -2085,6 +2228,7 @@ related_retrospectives:
 - LSN-017
 - LSN-001
 - LSN-018  # batch-X REFACTOR-419 3-sidecar triangulation closed at config-tier vertex (SessionConfiguration) — strengthens existing batch-P controller+filter primary source; coherence-strengthens not supersedes
+- LSN-030  # feature-reflector/0.3.0 promise layer — the use_cases + use_case_coverage (0/14) blocks above; the related_test_gaps list was [] before this refresh
 related_features:
 - F-007
 - F-019  # batch-P Owner Lifecycle Management — uses the same partial-merge / no-audit / no-per-Owner-scope patterns surfaced by createDataSourceEntity

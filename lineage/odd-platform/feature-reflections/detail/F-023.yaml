@@ -1,0 +1,599 @@
+---
+feature_id: F-023
+pillar_anchored_id: P-01:F-007
+pillar: P-01 Data Discovery
+feature_name: "Directory — hierarchy-driven catalog browse via ODDRN-prefix grouping + 4-level drill-down with paged level-4 entities"
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+substrate_commit: ede5d277
+prompt_version: feature-reflector/0.3.0
+maintainer_curated: false
+contributing_sidecars_read:
+  - odd-platform__java__DirectoryController__controller-class__DirectoryController.md
+  - odd-platform__ts__routes__route__directory.md
+  - odd-platform__ts__react-component__component__Directory.md
+  # service/repository tiers consumed transitively via the controller-class sidecar's
+  # cited line ranges (DirectoryServiceImpl, DataEntityServiceImpl, ReactiveDataEntityRepositoryImpl)
+  # — those nodes are referenced-not-standalone-enriched in the chain (hops 2a/2b/3a/3b unresolved-or-referenced).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/directory"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: "via contributing-sidecar fetched_excerpts (route sidecar 2026-05-26 + controller/component sidecars 2026-05-20); not re-fetched this reflection session"
+  - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/directory"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: "via contributing-sidecar fetched_excerpts; not re-fetched this reflection session"
+hypothesis_summary:
+  total: 12
+  confirmed: 5
+  contradicted: 2
+  partial: 3
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-006
+    severity: HIGH
+    one_line: "Level-4 'X of Y' header lies whenever the datasource has EXCLUDE_FROM_SEARCH=TRUE entities — the page returns rows the count omits, so the operator scrolls past entities the count claims do not exist."
+related_feature_flows: [F-008, F-017, F-005, F-016, F-014, F-007, F-001, F-003]
+related_concepts: ["directory", "oddrn", "read-collaborative-catalog-posture", "exclude-from-search"]
+related_drift_classes:
+  - cross_owner_datasource_inventory_enumeration
+  - oddrn_reflection_infrastructure_property_leak
+  - page_vs_count_predicate_divergence_directory_level_4
+  - no_pagination_levels_1_2_3_unbounded_response_size
+  - disabled_mode_anonymous_reach_directory
+  - unknown_oddrn_silent_bucket_to_other
+  - doc_silence_on_directory_authorization_owner_scoping
+new_drift_classes_proposed:
+  - directory_level1_grid_stale_after_management_datasource_registration   # negative-space — UI singleton cache never invalidated
+  - directory_type_filter_no_breadcrumb_back_to_all_types                  # UX — convenience/intuitiveness seed
+---
+
+# Directory — hierarchy-driven catalog browse — product-owner reflection
+
+## product_owner_narrative
+
+The Directory is ODD Platform's hierarchy-driven way to find data when you don't have a search term in mind — the complement to query-driven Search inside the Data Discovery pillar (per `system-mission.md` P-01; per `odd-platform__java__DirectoryController__controller-class__DirectoryController.md:understanding`). Where Search asks "what are you looking for?", the Directory answers "what is registered here, and how is it organised?". You reach it from the global toolbar's unconditional "Directory" tab (per `odd-platform__ts__routes__route__directory.md:couples-to` — `ToolbarTabs.tsx:42`), landing on a grid of cards — one card per kind of data source the platform has ingested (PostgreSQL, Snowflake, Kafka, Airflow, …), each card showing how many entities that kind holds (per `odd-platform__ts__react-component__component__Directory.md:understanding` — `Directory.tsx:38-45` + `DirectoryItem.tsx:23-25`).
+
+A user drills in four levels: pick a source TYPE (level 1, the card grid) → see the registered INSTANCES of that type with their connection properties and per-instance entity counts (level 2) → see the entity TYPES present in one instance (level 3) → see the paged list of ENTITIES of a chosen type within that instance (level 4) (per the live doc page, WebFetched 2026-05-26 status 200, via `odd-platform__ts__routes__route__directory.md:docs_link_semantic`; backed by the four GET endpoints at `DirectoryController.java:23-51`). Each UI level maps to exactly one backend call — navigation is on-demand, not a single tree fetch (per `DirectoryController.md:implicit_adrs[1]`). The level-1/2/3 lists are unpaginated; only level 4 paginates, with `page` and `size` mandatory (per `DirectoryController.md:implicit_adrs[3]` + `openapi.yaml:3810-3811`).
+
+The working parts a product owner would demo: the ODDRN-prefix grouping that turns a flat datasource table into a type taxonomy; the per-bucket and per-source entity counts that let an operator audit "did the collector actually pull from this source?"; the level-2 properties panel that shows each instance's host / database / port (PostgreSQL) or account / warehouse (Snowflake) or cluster / topic (Kafka), derived at request time by reflecting over the registered ODDRN (per `DirectoryController.md:understanding` + `DirectoryServiceImpl.java:138-171`); and the `Other` bucket that catches any datasource whose ODDRN failed to parse (per `DirectoryController.md:implicit_adrs[2]`). The level-4 type tabs (`All` + one tab per entity type) let a user narrow to just Tables, just Jobs, etc. (per the batch-extension notes — `EntitiesTabs.tsx`).
+
+Integration story: the Directory is the READ counterpart of Batch Ingestion (F-008 / P-10) — it surfaces what producers populate; it is a sibling browse surface to Search (F-017) and to the lineage graph (F-005) within Discovery (per the feature-flow `cross_pillar_relationships`). It shares the read-collaborative posture of Security (P-09): the four endpoints carry no `@PreAuthorize` and no `SecurityConstants` rule, so they fall to the global `.authenticated()` gate, and clicking any level-4 entity navigates to that entity's detail page — the same path that closes the F-001 view-count inflation loop (per the batch ui-review-2026-05-26 note D).
+
+Edge cases a careful demo would flag: the level-1 grid is a stale-while-revalidate singleton — a datasource registered in Management does not refresh the Directory for a user already on the page (per `Directory.md:downstream_side_effects` — no `invalidateQueries`); the `Other` bucket renders as an ordinary card with no signal that it represents a parse failure (per `Directory.md:bugs_limitations_corner_cases[1]`); a deployment with thousands of same-type sources returns all of them in one unbounded level-2 response (per `DirectoryController.md:bugs_limitations_corner_cases[6]`); and the level-4 count and page queries use different predicate sets, so the "X of Y" header can disagree with the rows actually returned (per `DirectoryController.md:coherence_check.conflicts_surfaced[0]`).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens the Directory landing page, the level-1 grid shows one card per distinct kind of registered data source (PostgreSQL, Snowflake, Kafka, …), each card showing the total number of entities of that kind across the whole catalog."
+  derivation: "Endpoint GET /api/directory returns DataSourceTypeList grouped by ODDRN prefix; the level-1 component maps each item to a card with prefix/name/entitiesCount; pillar P-01 names 'drill the source-type → datasource → entity-type → entity Directory' as a primary user action."
+  seed_source: endpoint-shape + pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `DirectoryServiceImpl.getDataSourceTypes` loads all data sources via unfiltered
+      `dataSourceRepository.list()`, groups in memory by ODDRN prefix, and zips a
+      catalog-wide per-source entity count (DirectoryServiceImpl.java:46-63, cited from
+      the controller-class sidecar). The level-1 UI renders one DirectoryItem per returned
+      bucket with the verbatim entitiesCount (Directory.tsx:38-45 + DirectoryItem.tsx:23-25).
+      DirectoryTest asserts exactly this — two Postgres sources (5+10 entities) collapse to
+      one "PostgreSql" card with entitiesCount=15, and the type list has the expected shape.
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: understanding + concepts.operations
+        cite: "DirectoryServiceImpl.java:46-63; DirectoryController.java:23-26"
+        note: "level-1 grouping + count composition"
+      - sidecar: odd-platform__ts__react-component__component__Directory
+        section: concepts.operations (render loop)
+        cite: "Directory.tsx:38-45; DirectoryItem.tsx:23-25"
+        note: "one card per bucket, entitiesCount rendered verbatim"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/src/test/java/.../api/DirectoryTest.java:57-67"
+        note: "DirectoryTest.directoriesTest asserts the level-1 grouped type list + per-bucket counts"
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "DirectoryTest.directoriesTest (lines 57-67)"
+
+- id: H-002
+  hypothesis: "When a user drills into a source TYPE (level 2), they see each registered instance of that type with its connection properties — host/database/port for PostgreSQL, account/warehouse for Snowflake — and a per-instance entity count."
+  derivation: "Endpoint GET /api/directory/datasources?prefix=; live doc level-2 copy promises 'name, ODDRN-derived properties (host, port, database, ...), and per-source entity count'; DirectoryServiceImpl.getOddrnProperties reflects @PathField fields."
+  seed_source: endpoint-shape + doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `getDirectoryDatasourceList(prefix)` returns every datasource matching the prefix with
+      per-source entitiesCount, and `getOddrnPathProperties` (DirectoryServiceImpl.java:138-171)
+      reflects every @PathField-annotated property off the ODDRN subclass into the response
+      `properties` map. DirectoryTest pins the level-2 PostgreSQL response to
+      `properties = {host, database}` and the correct per-source count — confirming the
+      reflected properties ARE the intended payload shape.
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: security.data_exposure + understanding
+        cite: "DirectoryServiceImpl.java:65-82, 138-171"
+        note: "level-2 per-source list + reflection-based property extraction"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/src/test/java/.../api/DirectoryTest.java:70-77, 141-149"
+        note: "asserts properties={host, database} + entitiesCount per source"
+    confidence: HIGH
+    routes_to_finding: none
+    use_case_kind: render
+    coverage: verified
+    test_ref: "DirectoryTest.directoriesTest (lines 70-77, 141-149)"
+
+- id: H-003
+  hypothesis: "When a registered data source's ODDRN cannot be parsed, the user still sees it in the Directory — bucketed under an 'Other' card — rather than the source silently disappearing from the catalog browse."
+  derivation: "Negative-space (a browse surface that drops un-parseable sources would lose inventory the operator registered); ODDRN-prefix grouping with the UNKNOWN_DATASOURCE_TYPE='other' sentinel; implicit ADR catches all Exception → 'other'."
+  seed_source: negative-space + endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `getDataSourcePrefix` and `getDataSourceName` catch ALL Exception and return
+      UNKNOWN_DATASOURCE_TYPE='other' (DirectoryServiceImpl.java:101-122; OddrnUtils.java:7),
+      so an un-parseable source is bucketed, not dropped. DirectoryTest seeds two sources
+      with malformed ODDRNs (`//oddplatform/host/...`, `//unknown/odd`) and asserts they both
+      appear under the `other` bucket with combined entitiesCount and per-source
+      `properties = {oddrn: <raw>}`.
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: implicit_adrs[2] + concepts.invariants
+        cite: "DirectoryServiceImpl.java:101-122; OddrnUtils.java:7"
+        note: "exception-tolerant fallback to 'other' bucket"
+      - source_read_for_validation: true
+        cite: "odd-platform-api/src/test/java/.../api/DirectoryTest.java:79-85, 151-158"
+        note: "asserts both unparseable sources land in 'other' with raw-oddrn property"
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: empty/no-match
+    coverage: verified
+    test_ref: "DirectoryTest.directoriesTest (lines 79-85, 151-158)"
+    note: "The behaviour (bucketing) is tested; the SILENCE of the bucket (no UI signal, no doc mention) is a separate caveat — see caveat_candidates."
+
+- id: H-004
+  hypothesis: "Any authenticated user — even one with no Permissions and no Owner association — can open the Directory and enumerate every registered data source's connection metadata (host, database, port, cluster, account), because the Directory is a non-owner-scoped inventory view."
+  derivation: "Security seed — controller has no @PreAuthorize, no SecurityConstants rule; owner_scoping=BYPASSES; cross-owner read-collaborative posture (ADR-CANDIDATE-003); P-09 mission states reads bypass per-owner scoping."
+  seed_source: cross-pillar + pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The four endpoints have no @PreAuthorize, no SecurityConstants.SECURITY_RULES entry
+      (grep returns zero matches), and SECURITY_RULES gates only mutating methods — so all
+      four GETs fall through to the global authenticated() rule (DirectoryController.java:1-52).
+      No level applies an owner-derived predicate (DirectoryServiceImpl.java:48, 91-99, 86;
+      DirectoryController.java:42 passes no principal to the level-4 delegate). The UI tier
+      mirrors this: the route mounts BARE at App.tsx:72 (no WithPermissionsProvider), the
+      toolbar tab is unconditional, and the level-1 component reads no identity / permission /
+      authType. This is the documented read-collaborative posture confirmed end-to-end.
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: security.owner_scoping + security.authorization_assertions
+        cite: "DirectoryController.java:1-52; SecurityConstants.java (no /api/directory match); DirectoryServiceImpl.java:48,91-99,86"
+        note: "no per-route gate, no owner predicate at any level"
+      - sidecar: odd-platform__ts__routes__route__directory
+        section: bugs_limitations_corner_cases[0] + auth_gates
+        cite: "App.tsx:72 (bare mount); ToolbarTabs.tsx:40-44 (unconditional tab)"
+        note: "UI tier imposes no client-side gate"
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    note: "Behaviour confirmed by code + the read-collaborative ADR, but NO test pins the minimum-privilege-user-can-enumerate contract (DirectoryTest does not exercise authorization). The leak severity is the subject of bug PLT-093 (Defect 1); the doc-side silence is DOC-187/DOC-GAP-252."
+
+- id: H-005
+  hypothesis: "When a user passes type_id at level 4, the response is filtered to entities of that one entity type within the chosen data source; passing the 'all' segment returns entities of every type."
+  derivation: "Endpoint GET /api/directory/datasources/{id}?type_id=; the 'all' UI sentinel translates to undefined typeId in useDirectoryRouteParams; level-3 type tabs build typeId-scoped URLs."
+  seed_source: endpoint-shape + view-mode + ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The page query `listByDatasourceAndType(datasourceId, typeId, page, size)` adds the
+      optional `TYPE_ID = ?` predicate to its CTE conditions only when a typeId is supplied
+      (ReactiveDataEntityRepositoryImpl.java:595-613, cited from the controller sidecar). The
+      UI hook coerces the literal 'all' segment to `undefined typeId` (directoryRoutes.ts:34),
+      so the 'All' tab drops the type predicate. The mechanism (typeId optional; 'all' ->
+      undefined) is consistent end-to-end and type-system-enforced (the builder accepts
+      `number | 'all'`).
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__directory
+        section: implicit_adrs[2] + concepts.operations
+        cite: "directoryRoutes.ts:34, 47; EntitiesTabs.tsx:26"
+        note: "'all' sentinel -> undefined typeId; per-type tabs pass numeric typeId"
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: bugs_limitations_corner_cases[0] (cites the page-query predicate set)
+        cite: "ReactiveDataEntityRepositoryImpl.java:595-613"
+        note: "TYPE_ID predicate optional on the page query"
+    confidence: MEDIUM
+    routes_to_finding: functional-test-demand
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    note: "Confidence MEDIUM because the level-4 chain hops (2b/3a) are referenced-not-standalone-enriched; the type-filter behaviour has NO test at any layer (DirectoryTest covers levels 1-2 only). A confirmed-but-untested promise -> functional test demand."
+
+- id: H-006
+  hypothesis: "When a user views a level-4 entity list, the 'X of Y' total in the header equals the number of entities they can actually page through — paginating to the last page does not surface entities the count said were not there, and the count does not claim more entities than exist."
+  derivation: "Response-shape — level-4 returns both a paged items list and a separate total; a user reads 'X of Y' as a truthful claim about how many entities they can scroll. Negative-space: count/page predicate parity is a default user expectation."
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The page query and the count query use DIFFERENT predicate sets.
+      `listByDatasourceAndType` (PAGE path via cteDataEntitySelect) applies soft-delete +
+      HOLLOW.isFalse() only (ReactiveDataEntityRepositoryImpl.java:595-613, 909-939).
+      `countByDatasourceAndType` (COUNT path via getDataEntityDefaultConditions) applies
+      THREE conditions: HOLLOW + STATUS != DELETED + EXCLUDE_FROM_SEARCH IS NULL or = FALSE
+      (lines 616-627, 970-976). Entities with EXCLUDE_FROM_SEARCH=TRUE are RETURNED by the
+      page query but NOT COUNTED — so for any datasource that uses EXCLUDE_FROM_SEARCH to hide
+      intermediate entities (transformer runs, transient inputs, hollow placeholders), the
+      page returns more rows than the count reports. The UI compounds it: Entities.tsx reads
+      `total` from pageInfo.total while `entities.length` derives from the flatMapped items,
+      and `isContentEmpty={!total}` hides the empty placeholder on total>0 — but if total=0
+      while items>0 the operator sees BOTH the empty-state placeholder AND populated rows
+      (per the batch ui-review note C).
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: coherence_check.conflicts_surfaced[0] + bugs_limitations_corner_cases[0]
+        cite: "DataEntityServiceImpl.java:164-179; ReactiveDataEntityRepositoryImpl.java:595-613, 616-627, 909-939, 970-976"
+        note: "page predicate set != count predicate set; EXCLUDE_FROM_SEARCH only on count"
+      - sidecar: (feature-flow batch ui-review-2026-05-26 note C)
+        section: batch_extensions notes (C)
+        cite: "Entities.tsx:50-55, 85"
+        note: "UI total vs items.length divergence + empty-placeholder-with-rows edge"
+    operator_visible_failure: |
+      (1) The header "30 of 28 entities" or "0 entities" with rows visible below it — a
+      self-contradicting count the operator cannot trust. (2) Infinite-scroll loads more rows
+      than the count claimed exist, so pagination math (page count, "load more" cut-off) is
+      wrong and a user scrolling to the bottom passes entities the header said were absent.
+      (3) The empty-state placeholder ("No information to display") can render ABOVE populated
+      rows when total=0 but the page returns EXCLUDE_FROM_SEARCH=TRUE entities. The bug is
+      invisible for the common case (all entities EXCLUDE_FROM_SEARCH=FALSE) and only bites
+      deployments that use EXCLUDE_FROM_SEARCH — exactly the production deployments with
+      heavy transformer-run volume, the least likely to be caught in a demo.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: "Already tracked as PLT-093 Defect 2. A regression-guard test is the functional demand."
+
+- id: H-007
+  hypothesis: "When a user registers a new data source in Management and then opens (or is already on) the Directory, the new source's type bucket and entity counts reflect the registration."
+  derivation: "Cross-pillar (P-08 Management feeds P-01 Discovery — 'tags + namespaces + datasources feed Discovery'); negative-space — an operator expects a freshly-registered source to appear in the browse surface they use to audit coverage."
+  seed_source: cross-pillar + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The level-1 query IS unscoped and catalog-wide, so a NEW navigation to /directory after
+      registration shows the new source. BUT the UI level-1 data is a TanStack singleton with
+      a static queryKey ['dataSourceTypes'], NO staleTime, and NO invalidation: there is no
+      `queryClient.invalidateQueries(['dataSourceTypes'])` anywhere (Directory.md:downstream_side_effects;
+      implicit_adrs[0]). A user already on /directory, or who navigates back within the gcTime
+      window (5 min), sees the CACHED pre-registration grid until hard reload or cache eviction.
+      So the promise holds on a cold mount but fails on a warm one.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Directory
+        section: downstream_side_effects + implicit_adrs[0] + bugs_limitations_corner_cases[5]
+        cite: "directory.ts:13-14 (static queryKey, no staleTime); grep invalidateQueries -> empty"
+        note: "stale-while-revalidate singleton; no invalidation path"
+    operator_visible_failure: |
+      An operator who registers a datasource in another tab/Management surface and switches to
+      an already-open Directory tab does not see the new source — they may conclude registration
+      failed and re-register, or file a false "datasource missing" report. The staleness window
+      is bounded by gcTime (5 min) OR persists indefinitely while the Directory tab stays mounted
+      and the query stays subscribed.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
+    note: "New drift class proposed: directory_level1_grid_stale_after_management_datasource_registration. Net-new (not in PLT-093, which covers leak/page-count/NaN)."
+
+- id: H-008
+  hypothesis: "When an operator with a hostname-sensitivity policy deploys ODD, internal infrastructure details (database hostnames, ports, Snowflake account ids, Kafka cluster ids) are not exposed to users who merely have catalog access."
+  derivation: "Negative-space + security — an operator in a regulated environment expects connection internals to be redactable; the reflection extractor emits every @PathField property with no allow-list."
+  seed_source: negative-space + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `getOddrnPathProperties` (DirectoryServiceImpl.java:138-171) reflects EVERY
+      @PathField-annotated property off the ODDRN subclass with NO redaction, NO allow-list,
+      NO per-property visibility gate, NO operator opt-out — PostgreSQL emits host+database+port,
+      Snowflake adds account+warehouse, Kafka adds cluster+topic. Combined with the
+      read-collaborative posture (H-004) and DISABLED-mode reach (H-009), any authenticated user
+      (or any anonymous caller under DISABLED) pulls the full ODDRN-derived infrastructure map.
+      There is no configuration knob to suppress it.
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: security.known_security_gaps[2] + coherence_check.strengthens[REFACTOR-024 directory_reflection_oddrn_property_leak]
+        cite: "DirectoryServiceImpl.java:138-171; DirectoryTest.java:141-149 (host+database ARE the asserted payload)"
+        note: "unredacted reflection; the leak is the intended payload shape"
+    operator_visible_failure: |
+      A deployment that intentionally keeps internal hostnames out of the UI still leaks
+      pg-prod-01.internal / database names / ports / Snowflake account identifiers to any
+      authenticated principal via the level-2 Directory response (and to anyone at all under
+      auth.type=DISABLED). For a security reviewer this is a reconnaissance surface: an
+      authenticated low-privilege user enumerates the platform's entire data-infrastructure
+      topology — hostnames, ports, cluster ids — with no fix available short of a code change.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    note: "Already tracked as PLT-093 Defect 1 (proposed fixes a1 RBAC-gate / a2 directory.reflect-infrastructure-properties feature-flag). Regression-guard test is the functional demand."
+
+- id: H-009
+  hypothesis: "When an operator runs auth.type=DISABLED (the dev-only mode) on a network-reachable port, the Directory and its ODDRN-property payload are reachable without authentication."
+  derivation: "Auth-mode seed — DISABLED skips the authenticated() chain; the controller has no @ConditionalOnProperty fail-closed gate; the UI route renders with no authType check (unlike Overview's Recommended panel)."
+  seed_source: cross-pillar (P-09) + negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Under auth.type=DISABLED the SecurityFilterChain permits all exchanges
+      (DisabledAuthSecurityConfiguration — anyExchange().permitAll(), cited in the shoebox
+      SHB-013 evidence), and DirectoryController has no @ConditionalOnProperty / fail-closed
+      second-line gate. The UI level-1 component reads no appInfo.authType (contrast Overview.tsx:53-59
+      which gates the Recommended panel on authType != 'DISABLED') and the route mounts
+      unconditionally, so the level-1 grid AND the level-2 property payload render for any
+      anonymous caller able to reach the HTTP port.
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: security.auth_mode_relevance + security.known_security_gaps[3]
+        cite: "DirectoryController.java:17-52 (no @ConditionalOnProperty); SecurityConstants.java (no whitelist)"
+        note: "no fail-closed gate; DISABLED skips the only gate"
+      - sidecar: odd-platform__ts__react-component__component__Directory
+        section: bugs_limitations_corner_cases[2] + invariants
+        cite: "Directory.tsx:14-55 (no authType gate); Overview.tsx:53-59 (the counter-example)"
+        note: "UI renders for anonymous caller under DISABLED"
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
+    note: "DISABLED-mode is documented dev-only (LSN-001 family). The actionable item is doc disclosure (DOC-187) + the H-008 leak severity (PLT-093). Net-new caveat distinct from PLT-093's three defects."
+
+- id: H-010
+  hypothesis: "When a user deep-links to a level-3/4 Directory URL with a non-numeric data-source id (e.g. /directory/postgresql/abc/all), the UI tells them the URL is malformed rather than showing an error indistinguishable from 'this data source does not exist'."
+  derivation: "Endpoint-shape — useDirectoryRouteParams coerces dataSourceId via parseInt with no isNaN guard; negative-space (a user editing a URL expects a distinguishable error)."
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      `useDirectoryRouteParams` runs `parseInt(dataSourceId, 10)` at directoryRoutes.ts:37 with
+      NO isNaN guard. A non-numeric segment yields dataSourceId=NaN, propagated to all six
+      consumers (DataSourceList, Entities, DirectoryBreadCrumbs, EntitiesTabs, EntityItem,
+      TableHeader) without guard; the level-4 fetch calls getDatasourceEntities({dataSourceId: NaN}),
+      the backend responds 400/404, and the UI surfaces a generic AppErrorPage. So the user DOES
+      get an error (not a crash, not silent data) — but it is INDISTINGUISHABLE from a genuinely
+      missing data source; the "invalid URL" vs "no such source" distinction is lost.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__directory
+        section: bugs_limitations_corner_cases[1] + invariants[2]
+        cite: "directoryRoutes.ts:37 (no isNaN); Entities.tsx:36-41, 60-64"
+        note: "NaN propagates to 6 consumers; generic error page"
+    operator_visible_failure: |
+      A user who fat-fingers or shares a malformed Directory link sees the same AppErrorPage as
+      a user whose data source was deleted — no signal that the URL itself is the problem, so
+      troubleshooting time is wasted chasing a non-existent data issue.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
+    note: "Already tracked as PLT-093 Defect 3 (and corroborates DOC-GAP-252 per the feature-flow scanner_reviews F-023a). Partial because the error IS surfaced — only the distinguishability is the defect."
+
+- id: H-011
+  hypothesis: "When a user has narrowed to one entity-type tab at level 4 (e.g. the 'Tables' tab), the breadcrumb lets them navigate back to the all-types view of that data source."
+  derivation: "Senior-PO UX seed (intuitive / consistent navigation) — the breadcrumb is the platform's standard back-navigation affordance; a level-4 type filter is a navigation state a user expects to back out of via breadcrumb."
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `DirectoryBreadCrumbs.tsx:13-23` renders a three-level breadcrumb
+      (directory / {prefix} / {dataSourceId}) with NO breadcrumb segment for the level-4 type
+      filter (per batch ui-review note F). Once on the 'Tables' tab the URL is
+      /directory/postgresql/123/45 but the breadcrumb still reads only
+      Directories > PostgreSQL > {dsName}; there is no breadcrumb affordance to return to the
+      all-types view — the user must click the 'All' tab instead.
+    evidence:
+      - sidecar: (feature-flow batch ui-review-2026-05-26 note F)
+        section: batch_extensions notes (F)
+        cite: "DirectoryBreadCrumbs.tsx:13-23"
+        note: "breadcrumb omits the level-4 type-filter segment"
+    operator_visible_failure: |
+      A user deep on a type tab has no breadcrumb path back to the all-types entity list of the
+      same source; the only route back is the (visually separate) 'All' tab. Minor but real
+      navigation inconsistency versus the rest of the platform where breadcrumbs reflect the
+      full drill state. Low severity (a workaround exists), cosmetic-leaning.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    note: "MEDIUM confidence because the level-2/3/4 UI components (DirectoryBreadCrumbs, EntitiesTabs) are referenced-not-standalone-enriched — the finding is sourced from the feature-flow batch-extension note, not a primary-source UI sidecar. New drift class: directory_type_filter_no_breadcrumb_back_to_all_types."
+
+- id: H-012
+  hypothesis: "When a platform has thousands of data sources of one type (e.g. 5K Postgres instances), opening that type's level-2 list returns a usable, bounded response — the user is not handed all 5K rows in one payload, each with per-row reflection cost."
+  derivation: "Negative-space + performance seed — a browse surface at scale is expected to paginate; levels 1-3 declare no page/size; the level-2 list runs unmemoised reflection per row."
+  seed_source: negative-space + pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Statically: openapi.yaml:3745-3779 declares NO page/size on levels 1-2-3, so the level-2
+      response carries every matching datasource in one payload, and getOddrnPathProperties runs
+      unmemoised reflection per row (DirectoryServiceImpl.java:138-171). What this DOES to the
+      operator at 5K sources — response latency, payload size, browser render stall, server
+      in-memory grouping cost — requires running the system to know the actual breaking point and
+      whether the UI degrades gracefully or hangs. The static facts confirm the unbounded shape;
+      the operator-visible severity is a measurement.
+    evidence:
+      - sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController
+        section: bugs_limitations_corner_cases[6] + performance.known_performance_gaps[1]
+        cite: "openapi.yaml:3745-3779; DirectoryServiceImpl.java:138-171"
+        note: "no pagination at levels 1-3; unmemoised per-row reflection"
+    operator_visible_failure: |
+      Probable (unmeasured): a multi-second level-2 load and a large DOM for high-cardinality
+      prefixes; the level-1 in-memory grouping cost is paid on every navigation (no staleTime,
+      no HTTP cache). Magnitude is the open question the probe resolves.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: PENDING-F-023-1
+    routes_to_finding: functional-test-demand
+    use_case_kind: render
+    coverage: unverified
+    test_demand: "probe PENDING-F-023-1"
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Level-4 page-vs-count predicate divergence — EXCLUDE_FROM_SEARCH applied only on the count query, so 'X of Y' lies and infinite-scroll loads rows the count omits."
+  dedup_status: already_tracked
+  tracked_as: PLT-093
+  proposed_fix_anchor: "Add EXCLUDE_FROM_SEARCH IS NULL OR = FALSE to cteDataEntitySelect (page path), matching getDataEntityDefaultConditions (PLT-093 Defect 2 fix shape)."
+- hypothesis_id: H-008
+  severity: HIGH
+  one_line: "ODDRN reflection emits host/database/port/account/cluster to every authenticated caller (and anonymous under DISABLED) with no redaction, allow-list, or opt-out."
+  dedup_status: already_tracked
+  tracked_as: PLT-093
+  proposed_fix_anchor: "PLT-093 Defect 1 — either RBAC-gate /api/directory/** with an ownership-joined call (a1) OR a directory.reflect-infrastructure-properties feature flag defaulting to redacted (a2)."
+- hypothesis_id: H-010
+  severity: LOW
+  one_line: "useDirectoryRouteParams parseInt(dataSourceId) has no isNaN guard — malformed deep-link yields an error page indistinguishable from a genuinely missing data source."
+  dedup_status: already_tracked
+  tracked_as: PLT-093
+  proposed_fix_anchor: "PLT-093 Defect 3 — guard parseInt with isNaN and surface a distinct 'invalid URL' state (also corroborates DOC-GAP-252 / scanner finding F-023a)."
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: "The 'Other' bucket renders as a normal card with no UI signal that it represents an ODDRN parse failure; the live doc page never mentions it — operators have only the server error log to diagnose 'why is my Postgres source under Other?'."
+  dedup_status: net_new
+  recommended_log_as: "doc-gap (add an 'Other' bucket explainer + a UI signal proposal) — distinct from PLT-093's three defects; relates to the deferred DOC-GAP-NNN 'Other bucket explainer' on the feature-flow."
+- hypothesis_id: H-004
+  one_line: "The Directory is a non-owner-scoped, infrastructure-revealing inventory reachable by any authenticated user; the live feature page and api-reference page are both silent on authorization / owner-scoping / visibility."
+  dedup_status: already_tracked
+  tracked_as: DOC-187
+  note: "DOC-187 (Owner-directory read-collaborative posture doc caveat, ACCEPTED commit 3d30b54) + DOC-GAP-252 family cover the doc-side disclosure. Reflection corroborates from the product-owner seat."
+- hypothesis_id: H-007
+  one_line: "The level-1 grid is a stale-while-revalidate singleton (static queryKey, no staleTime, no invalidation) — a datasource registered in Management does not refresh an already-open Directory until hard reload or 5-min gcTime eviction."
+  dedup_status: net_new
+  distinct_from: PLT-093
+  recommended_log_as: "caveat in the Directory doc page OR a small UI fix (staleTime + invalidate-on-datasource-mutation); new drift class directory_level1_grid_stale_after_management_datasource_registration."
+- hypothesis_id: H-009
+  one_line: "Under auth.type=DISABLED the entire Directory + ODDRN-property payload is anonymously reachable on any network-reachable port — the dev-only caveat is not disclosed on the Directory page."
+  dedup_status: net_new
+  distinct_from: PLT-093
+  recommended_log_as: "caveat on the Directory doc page (pairs with DOC-187 read-collaborative disclosure + the LSN-001 DISABLED-default family)."
+- hypothesis_id: H-011
+  one_line: "No breadcrumb back to the all-types view once a user is on a level-4 entity-type tab — inconsistent with platform breadcrumb navigation; user must click the 'All' tab."
+  dedup_status: net_new
+  recommended_log_as: "small UI follow-up (add the type-filter breadcrumb segment); new drift class directory_type_filter_no_breadcrumb_back_to_all_types."
+
+### functional_test_demands
+# LSN-030 / Rule 11 — every UNVERIFIED promise (confirmed / partial / contradicted / probe-needed
+# with no real test) becomes a missing-functional TEST-GAP candidate carrying its use_case_id.
+# The whole point of v0.3.0: hand-proven promises with no guard surface HERE, not silently dropped.
+- use_case_id: F-023-UC-4
+  hypothesis_id: H-004
+  kind: cross-actor
+  promise: "A minimum-privilege authenticated user (no Permissions, no Owner association) can browse the full Directory inventory — the read-collaborative posture holds for every authenticated principal."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-023-UC-4)"
+  proposed_test: "@WebFluxTest/integration: authenticate as a zero-permission user, GET /api/directory + /api/directory/datasources?prefix=postgresql, assert 200 + every seeded source visible. Pins the read-collaborative contract so a future @PreAuthorize is a deliberate breaking change."
+- use_case_id: F-023-UC-5
+  hypothesis_id: H-005
+  kind: happy-path
+  promise: "Level-4 type_id filters entities to that one type within the data source; the 'all' segment returns all types."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-023-UC-5)"
+  proposed_test: "Integration: ingest a datasource with TABLE + JOB entities, GET /api/directory/datasources/{id}?type_id={tableTypeId}&page=1&size=10 -> only tables; GET ...?page=1&size=10 (no type_id, the 'all' path) -> all types. The level-4 happy path is entirely untested today (DirectoryTest stops at level 2)."
+- use_case_id: F-023-UC-6
+  hypothesis_id: H-006
+  kind: render
+  promise: "The level-4 'X of Y' total equals the number of entities the user can actually page through."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-023-UC-6) — regression guard for PLT-093 Defect 2"
+  proposed_test: "Integration: seed a datasource with 3 entities, mark 1 EXCLUDE_FROM_SEARCH=TRUE, GET level-4 page=1&size=10, assert page-items.size == count.total (currently 3 vs 2 — RED until PLT-093 Defect 2 ships, then GREEN)."
+- use_case_id: F-023-UC-7
+  hypothesis_id: H-007
+  kind: edit-reconcile
+  promise: "A datasource registered in Management appears in the Directory the operator is auditing."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-023-UC-7)"
+  proposed_test: "UI/e2e (Playwright, reusing odd-platform/tests harness): mount /directory, register a datasource via API, assert the level-1 grid does NOT auto-refresh (pins current stale-while-revalidate behaviour); flips to GREEN-on-fix if a staleTime/invalidate is added."
+- use_case_id: F-023-UC-8
+  hypothesis_id: H-008
+  kind: cross-actor
+  promise: "Internal infrastructure properties (host/port/database/account/cluster) are not exposed to users who merely have catalog access."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-023-UC-8) — regression guard for PLT-093 Defect 1"
+  proposed_test: "Integration: register a Snowflake datasource with account+warehouse ODDRN, GET level-2, assert the properties currently appear unredacted (RED-on-fix once a1/a2 ships, documenting the security contract change)."
+- use_case_id: F-023-UC-9
+  hypothesis_id: H-009
+  kind: cross-actor
+  promise: "Under auth.type=DISABLED the Directory's reachability is a disclosed, understood dev-only posture."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-023-UC-9)"
+  proposed_test: "Integration with auth.type=DISABLED: GET all four /api/directory* endpoints unauthenticated, assert 200. Pins DISABLED-mode anonymous reach as a known posture (cross-link REFACTOR-185 family)."
+- use_case_id: F-023-UC-12
+  hypothesis_id: H-012
+  kind: render
+  promise: "A high-cardinality level-2 list (thousands of same-type sources) returns a usable bounded response."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-023-UC-12) — depends on probe PENDING-F-023-1"
+  proposed_test: "Performance probe (local docker-compose, k6/wrk): seed N=5000 Postgres datasources, measure GET /api/directory/datasources?prefix=postgresql latency + payload size + UI render; establish the breaking point and whether pagination is required."
+
+### probes_emitted
+- probe_id: PENDING-F-023-1
+  hypothesis_id: H-012
+  status: pending-reflection-verification
+  local_execution_blocked: false
+  expected_outcome: "When a platform has thousands of data sources of one type (5K Postgres instances), opening that type's level-2 list returns a usable, bounded response — the user is not handed all 5K rows in one payload, each with per-row reflection cost."
+  probe_shape: |
+    Local docker-compose: ODD platform + Postgres. Seed 5000 Postgres datasources
+    (distinct ODDRNs sharing the postgresql prefix), each with a small entity count.
+    k6/wrk: GET /api/directory/datasources?prefix=postgresql; record p50/p95 latency,
+    response byte size, and server CPU. Separately load /directory level-2 in a headless
+    browser (Playwright) and record time-to-interactive + DOM node count. PASS if the
+    response is paginated or bounded and TTI < 2s; FAIL (confirms unbounded shape hurts)
+    if latency/DOM grows linearly past a usable threshold. Note: confirms the MAGNITUDE
+    of the statically-known no-pagination facet (bugs_limitations_corner_cases[6]).
+
+### validation_gaps
+- sidecar: odd-platform__java__service__service__DirectoryServiceImpl
+  field_insufficient: "standalone sidecar absent — DirectoryServiceImpl is referenced-not-enriched (chain hop 2a unresolved: true). All level-1/2/3 service-tier line citations (grouping, findByPrefix, reflection, getFirstDataSource 500 path) are sourced from the DirectoryController sidecar's bugs/implicit_adrs blocks, not a primary-source service sidecar."
+  proposed_refresh: "Enrich DirectoryServiceImpl as a standalone sidecar so the level-1 grouping cost, the empty-prefix-group IllegalArgumentException (H-003-adjacent 500 path), and the reflection extractor get primary-source Category-F + stress treatment independent of the controller."
+- sidecar: odd-platform__ts__react-component (Entities / EntitiesList / EntityItem / EntitiesTabs / DataSourceList / DirectoryBreadCrumbs / TableHeader)
+  field_insufficient: "level-2/3/4 UI components are referenced via the feature-flow batch-extension notes (ui-review-2026-05-26) but have NO standalone sidecars. H-006's UI-tier manifestation (total vs items.length, empty-placeholder-with-rows), H-010's six NaN consumers, and H-011's breadcrumb gap are sourced from those batch notes, not primary-source UI sidecars."
+  proposed_refresh: "Enrich the level-2/3/4 Directory UI components as standalone sidecars; the level-4 EntitiesList is the densest list-rendering surface in the SPA and the page-vs-count UI manifestation (H-006) deserves primary-source confirmation rather than a batch-note citation."
+
+### doc_drift_findings
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/directory"
+  doc_says: "Describes the four levels and their data; makes NO statement about authorization, owner-scoping, or who can view Directory content (verbatim absence verified 2026-05-26 status 200 via route sidecar)."
+  code_does: "Non-owner-scoped, infrastructure-revealing inventory reachable by any authenticated user (and anonymous under DISABLED)."
+  recommended_log_as: "DOC-187 (already accepted) + DOC-GAP-252 family — add the Visibility section the controller sidecar's maintainer note already flags."
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/directory"
+  doc_says: "Level 3 copy: 'distinct Data Entity CLASSES present in the chosen data source'."
+  code_does: "Returns DataEntityType (TABLE/FILE/STREAM/JOB/...), NOT DataEntityClass (Set/Transformer/Quality Test/...) — type and class are distinct dimensions in ODD vocabulary."
+  recommended_log_as: "doc copy edit (type vs class) — carried drift facet type_vs_class_dimension_doc_drift; deferred DOC-GAP-NNN on the feature-flow."
+
+## maintainer_notes
+
+(none — net-new reflection; no maintainer-curated entries to preserve)

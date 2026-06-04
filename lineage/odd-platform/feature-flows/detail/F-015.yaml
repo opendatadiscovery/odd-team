@@ -454,19 +454,30 @@ observed_vs_expected:
       rely entirely on user-owner-association, not the RBAC catalogue.
       An operator auditing "which endpoints are owner-scoped vs cross-owner?"
       has no doc path that names this endpoint family.
+      UPDATE 2026-06-04 (feature-reflector F-015): RESOLVED IN LIVE DOC —
+      documentation/docs/data-lineage.md now carries a full "My-objects
+      triplet — composition + anchor architecture" section (lines 24-67)
+      documenting the triplet, the non-owned-but-reachable semantic, the
+      OpenAPI-summary inversion as a known bug, the single-point-of-failure
+      anchor architecture, the unbounded fan-out, and the four-way silent
+      empty (with the /api/identity/whoami + /api/dataentities/my
+      cross-check workaround). The doc-silence is closed; the OpenAPI spec
+      inversion (DOC-GAP-099) remains live.
     expected: |-
       Add a Data Lineage subsection or Permissions subsection that names
       the `/my*` triplet, explains the anchor-set-defended posture,
       documents the OpenAPI-summary inversion as a known doc bug under
       maintenance, and disambiguates "owned by current user" from
       "in the lineage neighbourhood of the current user's owned set".
+      [Largely satisfied as of 2026-06-04 — see observed UPDATE.]
     drift_class: doc_silent_on_owner_anchored_lineage_view
     provenance: |-
       STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
       docs_link_semantic.inferred_docs[0,1,2] + doc_drift_findings[1,2]
       + live `permissions.md` WebFetched 2026-05-19 status 200 + local
       `data-lineage.md:5-29`. Severity: MEDIUM (P-09 + P-05 doc-coverage
-      gap).
+      gap). [Re-verified 2026-06-04: data-lineage.md:24-67 now documents
+      the triplet — facet RESOLVED IN LIVE DOC.]
   - facet: LineageDepth.empty() fragile sentinel encoding
     observed: |-
       `DataEntityRelationsServiceImpl.java:34` passes `LineageDepth.empty()`
@@ -523,6 +534,133 @@ observed_vs_expected:
       `getMyObjectsWithDownstream` sibling per batch-M's second sidecar
       bugs_limitations_corner_cases[0]. Severity: HIGH (latent — paired
       with the anchor-set-single-point-of-failure facet above).
+use_cases:
+# LSN-030 / feature-reflector v0.3.0 — the promise layer (projection of feature-reflections/detail/F-015.yaml
+# hypotheses H-001..H-013). uc_id = hypothesis id. coverage 'verified' ONLY if a real test exists; here ALL
+# are 'unverified' (Grep of odd-platform-api/src/test for getMyObjectsWith*/listAssociated/getDependentDataEntityOddrns
+# in the DataEntity context = 0 hits; the sole getDependentDataEntityOddrns reference is ActivityServiceImplTest
+# mocking it for the Activity MY_OBJECTS path, NOT exercising these endpoints).
+- uc_id: F-015-UC-1
+  hypothesis_id: H-001
+  kind: happy-path
+  promise: "A signed-in user's 'Upstream dependents' tile shows up to 5 entities their owned set depends on (upstream lineage neighbours)."
+  actor: signed-in platform user with a bound Owner
+  trace: "OwnerEntitiesList.tsx:61 -> getMyObjectsWithUpstream (DataEntityController.java:299-305) -> getDependentDataEntityOddrns(UPSTREAM) (DataEntityRelationsServiceImpl.java:25-39) -> listByOddrns(derived,false,false,1,5)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: confirmed
+- uc_id: F-015-UC-2
+  hypothesis_id: H-002
+  kind: grammar
+  promise: "GET /api/dataentities/my/upstream returns the NON-owned lineage-neighbour set (the OpenAPI summary's literal inverse); pin so a future 'fix to match the summary' breaks the build."
+  actor: third-party API / SDK consumer
+  trace: "openapi.yaml:843-844 (summary) vs DataEntityRelationsServiceImpl.java:37 (Predicate.not(oddrns::contains) exclusion)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: contradicted
+- uc_id: F-015-UC-3
+  hypothesis_id: H-003
+  kind: happy-path
+  promise: "'Downstream dependents' returns the entities that depend ON the user's owned set (downstream consumers), not the upstream sources."
+  actor: signed-in platform user with a bound Owner
+  trace: "DataEntityController.java:291-297 (DOWNSTREAM) -> ReactiveLineageRepositoryImpl.java:150-176 (parent->child seed)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: confirmed
+- uc_id: F-015-UC-4
+  hypothesis_id: H-004
+  kind: grammar
+  promise: "An entity that is both owned AND a lineage neighbour of another owned entity is excluded from the dependents tiles (appears only in My Objects)."
+  actor: signed-in platform user with a bound Owner
+  trace: "DataEntityRelationsServiceImpl.java:37 (anchor-exclusion filter)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: confirmed
+- uc_id: F-015-UC-5
+  hypothesis_id: H-005
+  kind: grammar
+  promise: "The dependents tiles show only IMMEDIATE one-hop neighbours, no transitive expansion (LineageDepth.empty() seed-only)."
+  actor: signed-in platform user with a bound Owner
+  trace: "DataEntityRelationsServiceImpl.java:34 + ReactiveLineageRepositoryImpl.java:174 + LineageDepth.java:16-18"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: confirmed
+- uc_id: F-015-UC-6
+  hypothesis_id: H-006
+  kind: cross-actor
+  promise: "User A's dependents tiles never leak owner B's lineage neighbourhood (anchor isolation); REFACTOR-225 regression-vector pin."
+  actor: two distinct owners A and B in one deployment
+  trace: "DataEntityRelationsServiceImpl.java:26 (sole scoping site) + ReactiveDataEntityRepositoryImpl.java:228-253 (no owner JOIN) vs :515-534 (the JOIN-defended contrast)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: partial
+- uc_id: F-015-UC-7
+  hypothesis_id: H-007
+  kind: empty/no-match
+  promise: "An unassociated first-login user gets a clear on-screen path to request an owner association from the empty Recommended tiles."
+  actor: brand-new OAUTH2/LDAP user with no USER_OWNER_MAPPING row
+  trace: "AuthIdentityProviderImpl.java:50-53 (empty Mono) + DataEntityList.tsx:65-66 (bare EmptyContentPlaceholder, no affordance)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: contradicted
+- uc_id: F-015-UC-8
+  hypothesis_id: H-008
+  kind: empty/no-match
+  promise: "An empty dependents result is diagnosable to a single root cause."
+  actor: signed-in platform user / operator
+  trace: "DataEntityRelationsServiceImpl.java:26-30 + DataEntityServiceImpl.java:218-225 (no switchIfEmpty) — four causes collapse to 200 + []"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: contradicted
+- uc_id: F-015-UC-9
+  hypothesis_id: H-009
+  kind: render
+  promise: "A size=5 dependents tile is cheap regardless of owned-set size."
+  actor: admin / CI-bot owner of thousands of entities
+  trace: "DataEntityRelationsServiceImpl.java:27 (unpaginated listByOwner) + :34 (unbounded IN) + :35-38 (in-memory dedup before SQL LIMIT)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: contradicted
+- uc_id: F-015-UC-10
+  hypothesis_id: H-010
+  kind: render
+  promise: "Dependents pagination is stable across page loads (no duplicate, no skip)."
+  actor: direct-API consumer paging /my/upstream
+  trace: "ReactiveDataEntityRepositoryImpl.java:247-250 (no .orderBy before limit/offset)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: partial
+- uc_id: F-015-UC-11
+  hypothesis_id: H-011
+  kind: empty/no-match
+  promise: "Hollow stubs and soft-deleted neighbours are either shown or explicitly signalled as elided."
+  actor: signed-in platform user reasoning about dependencies
+  trace: "DataEntityServiceImpl.java:223 (includeHollow=false, includeDeleted=false) + ReactiveDataEntityRepositoryImpl.java:228-253"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: contradicted
+- uc_id: F-015-UC-12
+  hypothesis_id: H-012
+  kind: cross-actor
+  promise: "No caller can request another user's dependents (no owner/user parameter exists) and the endpoint requires authentication."
+  actor: any authenticated caller; anonymous caller under DISABLED
+  trace: "DataEntityController.java:299-305 (no owner param, no @PreAuthorize) + AuthIdentityProviderImpl.java:24-35 (empty context -> empty under DISABLED)"
+  coverage: unverified
+  test_demand: missing-functional
+  verdict: partial
+- uc_id: F-015-UC-13
+  hypothesis_id: H-013
+  kind: render
+  promise: "The 4-parallel Recommended panel stays within latency + R2DBC pool budget under concurrent large-anchor load."
+  actor: many concurrent users mapped to large-ownership owners
+  trace: "DataEntityRelationsServiceImpl.java:27,34,35-38 + OwnerEntitiesList.tsx:58-64 (4 parallel uncached endpoints per mount)"
+  coverage: unverified
+  test_demand: "probe PENDING-F-015-1"
+  verdict: probe-needed
+use_case_coverage:
+  verified: 0
+  total: 13
+  note: "SECOND COVERAGE FRONTIER (verified promises / total promises). 0/13 — a user-facing P-09 owner-scoped feature with ZERO verified promises. 4 confirmed + 5 contradicted + 3 partial + 1 probe-needed, all coverage:unverified. Highest-value missing test is F-015-UC-6 (anchor-isolation / REFACTOR-225 regression vector); F-015-UC-2 is the DOC-GAP-099 inversion pin. Full hypotheses + validations: lineage/odd-platform/feature-reflections/detail/F-015.yaml. test_matrix below remains the per-test-type cell view; this block is the promise-coverage view."
 test_matrix:
   unit:
     state: GAP

@@ -204,6 +204,159 @@ observed_vs_expected:
         - "DataEntityMapperImpl.java:242-253"
       severity: HIGH
       seeded_from: SHB-003+SHB-004
+use_cases:
+  # PROMISE LAYER (feature-reflector/0.3.0, LSN-030 / Rule 11). Projection of the
+  # F-044 reflection's falsifiable hypotheses to user-facing promises. Full hypothesis
+  # text + validation lives in lineage/odd-platform/feature-reflections/detail/F-044.yaml.
+  # coverage == verified ONLY where a REAL test exists (sidecar covered_behaviours +
+  # Grep of the odd-platform test tree / integration-tests). uc_id == hypothesis id.
+  - uc_id: F-044-UC-1
+    hypothesis_id: H-001
+    kind: happy-path
+    promise: "An entity with an elapsed status_switch_time is auto-flipped to DELETED by the scheduled job within one tick (<=10 min)."
+    actor: platform-operator
+    trace: "DataEntityStatusSwitchJob.run() (fixedRate=10min) -> getPojosForStatusSwitch (elapsed switch-time) -> changeStatusForDataEntities(pojos, DELETED)"
+    verdict: confirmed
+    coverage: unverified
+    test_demand: missing-functional
+    note: "switch-time PERSISTS on a DEPRECATED PUT is verified (DataEntityStatusChangeTest:42-48); the scheduler-FLIPS-it half is untested (sidecar uncovered_behaviours)."
+  - uc_id: F-044-UC-2
+    hypothesis_id: H-002
+    kind: teardown
+    promise: "A DELETED entity is hard-deleted (row + cascade) after housekeeping.ttl.data_entity_delete_days, reclaiming storage."
+    actor: platform-operator
+    trace: "DataEntityMapperImpl.applyStatus (status_updated_at never written) -> DataEntityHousekeepingJob STATUS_UPDATED_AT.lessOrEqual(cutoff) never matches NULL"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: missing-functional
+    note: "Broken behaviour PINNED GREEN by DataEntityStatusKnownBugTest (@pins PLT-027). FLIP-TARGET test (assert status_updated_at IS set, then reaped) does not exist."
+  - uc_id: F-044-UC-3
+    hypothesis_id: H-003
+    kind: teardown
+    promise: "A manually-PUT DELETE (operator clicks Delete) is reaped after 30 days, same as a scheduled flip."
+    actor: platform-operator
+    trace: "DataEntityController.updateStatus -> changeStatusForDataEntities -> applyStatus (same mapper locus as the scheduler)"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: missing-functional
+    note: "Shared mapper locus; the one PLT-027 pin covers both entry points. Manual-path flip-target test absent."
+  - uc_id: F-044-UC-4
+    hypothesis_id: H-004
+    kind: teardown-constraint
+    promise: "A large backlog maturing in one window is processed inside the 9-minute ShedLock window without skipping the next tick."
+    actor: platform-operator
+    trace: "getPojosForStatusSwitch (no LIMIT) -> collectList -> single bulk flip; timing vs lockAtMostFor=9min unknown statically"
+    verdict: probe-needed
+    coverage: unverified
+    test_demand: "probe P-390 (pending-reflection-verification)"
+    note: "No-cap STRUCTURE confirmed; TIMING outcome requires measurement. Probe P-390 on disk."
+  - uc_id: F-044-UC-5
+    hypothesis_id: H-005
+    kind: cross-actor
+    promise: "propagate=true on a DEG flips all immediate members + parent; on a non-group entity it is a silent no-op."
+    actor: platform-operator
+    trace: "DataEntityServiceImpl.updateStatus -> getDEGEntitiesOddrns (non-recursive, single-hop) + needToPropagateStatus requires DATA_ENTITY_GROUP"
+    verdict: partial
+    coverage: unverified
+    test_demand: missing-functional
+    note: "Honoured for groups (single-hop only), silently ignored for non-groups. Entirely untested (sidecar uncovered_behaviours)."
+  - uc_id: F-044-UC-6
+    hypothesis_id: H-006
+    kind: grammar
+    promise: "Only DRAFT and DEPRECATED accept a status_switch_time; a switchable status without one is rejected (400)."
+    actor: platform-operator
+    trace: "DataEntityStatusDto isSwitchable(DRAFT,DEPRECATED) + DataEntityServiceImpl:462-465 BadUserRequestException guard"
+    verdict: confirmed
+    coverage: verified
+    test_ref: "org.opendatadiscovery.oddplatform.api.DataEntityStatusChangeTest.statusChangeTest (lines 50-51, DRAFT without switch_time -> 4xx)"
+    test_demand: none
+  - uc_id: F-044-UC-7
+    hypothesis_id: H-007
+    kind: teardown
+    promise: "With housekeeping on (shipped default), DELETED entities from this feature ARE eventually purged (cross-pillar F-044->F-010 holds)."
+    actor: platform-operator
+    trace: "DataEntityHousekeepingJob runs but matches zero rows because status_updated_at is NULL (H-002 root); data_entity_delete_days knob inert"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: missing-functional
+    note: "Cross-pillar reap; flip-target of PLT-027. Adjacent PLT-083 (TTL int-default-0, pinned by HousekeepingTtlKnownBugsTest) is DISTINCT."
+  - uc_id: F-044-UC-8
+    hypothesis_id: H-008
+    kind: resolve-later
+    promise: "status_updated_at is written on EVERY transition (restore, non-delete), so the lifecycle clock is usable platform-wide."
+    actor: platform-operator
+    trace: "restore branch (DELETED->STABLE) routes through the same applyStatus -> status_updated_at uniformly NULL across the lifecycle"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: missing-functional
+    note: "Scope extension of PLT-027: the flip-target test should assert status_updated_at on a NON-delete + a restore, not only on delete."
+  - uc_id: F-044-UC-9
+    hypothesis_id: H-009
+    kind: render
+    promise: "An operator can preview which entities will auto-flip to DELETED before the reaper acts."
+    actor: platform-operator
+    trace: "getPojosForStatusSwitch upstream_callers == DataEntityStatusSwitchJob ONLY; no controller exposes the pending-flip set"
+    verdict: contradicted
+    coverage: unverified
+    test_demand: missing-functional
+    note: "LOW; feature-shaped (no read surface exists to test yet). Dampened while H-002 makes flips recoverable."
+  - uc_id: F-044-UC-10
+    hypothesis_id: H-010
+    kind: cross-actor
+    promise: "A caller lacking DATA_ENTITY_STATUS_UPDATE is rejected (403) on the status PUT under a non-DISABLED auth mode."
+    actor: odd-platform-ui-end-user
+    trace: "SecurityConstants SECURITY_RULES gates the endpoint (LOGIN_FORM/OAUTH2/LDAP); DISABLED bypasses via anyExchange().permitAll()"
+    verdict: partial
+    coverage: unverified
+    test_demand: missing-functional
+    note: "Holds under the three non-DISABLED modes; does not fail-closed under DISABLED (platform-wide posture, suite-level IT-009). Endpoint-specific 403 test absent."
+  - uc_id: F-044-UC-11
+    hypothesis_id: H-011
+    kind: cross-actor
+    promise: "A manual status transition emits a DATA_ENTITY_STATUS_UPDATED activity event with correct oldState/newState."
+    actor: platform-operator
+    trace: "DataEntityInternalStateServiceImpl:155-182 programmatic event emission (manual path); scheduled path is system-principal, no human actor"
+    verdict: partial
+    coverage: unverified
+    test_demand: missing-functional
+    note: "Manual-path emission is a positive finding but untested (sidecar uncovered); scheduled-path attribution is system-only."
+  - uc_id: F-044-UC-12
+    hypothesis_id: H-012
+    kind: render
+    promise: "The live statuses doc accurately describes the (broken) retention behaviour an operator will experience."
+    actor: platform-operator
+    trace: "WebFetch statuses page (2026-06-04, status 200) renders two Known-limitation admonitions verbatim; DOC-191 done"
+    verdict: confirmed
+    coverage: verified
+    test_ref: "DOC-191 (done; both Known-limitation admonitions live-verified 2026-05-28) + WebFetch 2026-06-04 status 200"
+    test_demand: none
+  - uc_id: F-044-UC-13
+    hypothesis_id: IT-021
+    kind: render
+    promise: "The detail-page header renders the entity's lifecycle status as a data-driven badge (a different status name is NOT shown)."
+    actor: odd-platform-ui-end-user
+    trace: "DataEntityDetailsHeader.tsx <- GET /api/dataentities/{id}.status (DataEntityStatusDto id -> label)"
+    verdict: confirmed
+    coverage: verified
+    test_ref: "IT-021 (integration-tests/e2e/specs/entity-status-display.spec.ts; run 2026-06-03 PASS at stack 596ffa98) — STABLE/DEPRECATED render verbatim, badge is data-driven"
+    test_demand: none
+    note: "READ/DISPLAY contract only. The DESTRUCTIVE WRITE journey (pick DELETED -> cascade -> vanish -> never reaped) is e2e-dark — see reflection validation_gaps."
+use_case_coverage:
+  verified: 4
+  total: 13
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises), distinct from
+    line/method coverage and from the test_matrix cells. 4/13 verified: UC-6
+    (switchable-status 400 guard, DataEntityStatusChangeTest), UC-12 (doc-vs-code
+    agreement, DOC-191 + WebFetch), UC-13 (READ/display badge, IT-021 e2e PASS), and
+    the switch-time-persists half of UC-1 (DataEntityStatusChangeTest). The other 9
+    promises are unverified — the ENTIRE WRITE-side correctness story (auto-flip-then-
+    reap, manual-delete-then-reap, restore clock, cross-pillar housekeeping contract,
+    propagation, authz, audit emission). PLT-027's broken behaviour is GUARDED by a
+    characterization pin (DataEntityStatusKnownBugTest), but the CORRECT behaviour has
+    no test — that flip-target functional test (UC-2/UC-7/UC-8) is the highest-value
+    demand in this feature. A user-facing catalog-hygiene feature sitting at <1/3
+    verified promises with its write-side correctness behind a single three-line fix.
 test_matrix:
   unit:
     state: GAP

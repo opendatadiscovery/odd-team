@@ -3,15 +3,18 @@ feature_id: F-024
 pillar_anchored_id: P-06:F-002
 pillar: P-06 Data Glossary
 feature_name: "Term Search & Browse — Dictionary tab catalog-wide term enumeration via faceted search with URL-backed server-side sessions"
-reflected_at: 2026-06-01T00:00:00Z
-reflected_at_commit: 43d13eb
-prompt_version: feature-reflector/0.2.0
+reflected_at: 2026-06-04T00:00:00Z
+reflected_at_commit: 107c9aa
+prompt_version: feature-reflector/0.3.0
 contributing_sidecars_read:
   - odd-platform__ts__react-component__component__TermSearch.md
   - odd-platform__java__TermController__controller-class__TermController.md
   - odd-platform__java__service__service__TermServiceImpl.md
   - odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
   - odd-platform__java__repository__reactive__repository__ReactiveTermSearchEntrypointRepositoryImpl.md
+source_reads_for_validation:
+  - "odd-platform-api/.../service/term/TermSearchServiceImpl.java:99-111 — the previously-un-enriched session-orchestration hop now EXISTS in source; fetchFacetState (108-111) errors NotFound on a stale/unknown searchId; getSearchResults (99-106) routes the session state through findByState. Resolves H-008 backend half + the prior validation_gap. (Sidecar refresh of this node is now warranted — recorded in validation_gaps.)"
+  - "odd-platform-api/.../repository/reactive/ReactiveTermRepositoryImpl.java:257,279,367 — findByState (279) + countByState (367) + getQuerySuggestions (257) all add TERM.DELETED_AT.isNull(); confirms the protective JOIN is on the user-visible Dictionary search + suggestions path. Resolves H-010."
 docs_cross_referenced:
   - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
     last_verified_at: "2026-05-28T00:00:00Z"
@@ -23,24 +26,26 @@ docs_cross_referenced:
       with empty-first-view + session-share-URL caveats + a 13-caveat operator
       section. This reflection therefore cross-references the CORRECTED live page;
       several doc-claim hypotheses below were already remediated doc-side.
+      Live-URL NOT re-fetched this v0.3.0 refresh (parallel-safe mode); status
+      carried forward from the 2026-05-28 doc-pillar verification.
   - url: "https://docs.opendatadiscovery.org/features/data-glossary"
     last_verified_at: "2026-05-28T00:00:00Z"
     last_verified_status: 200
 hypothesis_summary:
   total: 13
-  confirmed: 4
-  contradicted: 4
+  confirmed: 5
+  contradicted: 5
   partial: 2
-  probe_needed: 3
+  probe_needed: 1
   highest_severity_contradiction:
-    hypothesis_id: H-005
-    severity: MEDIUM
-    one_line: "The 1500ms facet debounce rate-limits nothing — the debouncer is rebuilt on every facet click, so each click fires its own PUT (5 clicks = 5 PUTs, not 1)."
+    hypothesis_id: H-008
+    severity: HIGH
+    one_line: "Backend returns NotFound on an evicted 30-day session (verified by TermSearchServiceImplTest), but the UI has no getTermsSearch.rejected reducer — a stale bookmark shows a frozen empty page that no refresh recovers."
 related_feature_flows: [F-002, F-017, F-010]
 related_concepts:
   - "Term Search Session (Dictionary tab)"
   - "Search Facets Housekeeping (TTL eviction)"
-  - "Read-collaborative Catalog Posture"
+  - "Read-collaborative cross-owner enumeration"
 related_drift_classes:
   - ui_amplification_via_facet_debouncer_recreate
   - cross_namespace_term_enumeration_unscoped
@@ -53,6 +58,34 @@ new_drift_classes_proposed:
   - term_search_create_session_unhandled_rejection_no_user_facing_error
   - term_search_tsquery_injection_persistent_session_dos_second_surface
   - term_delete_stale_fts_vector_latent_until_direct_entrypoint_query
+v030_refresh_delta: |
+  Refreshed from v0.2.0 (2026-06-01). Two test artefacts that did NOT exist at
+  the prior reflection now resolve the v0.2.0 central validation gap (the
+  un-enriched TermSearchService) and move TWO probe-needed verdicts to definite:
+
+  (1) integration-tests/protocols/IT-019-term-search.md + e2e/specs/term-search.spec.ts
+      (validates: [F-024]) — exercises the real UI->backend->DB term-search path:
+      SUCCESS (seeded term findable by name AND the OTHER seeded term filtered out,
+      proving the search actually filters) + NEGATIVE (a non-matching query returns
+      nothing). This VERIFIES H-001 (search-by-name happy path) + the empty/no-match
+      promise. It is the first verified promise on this feature.
+  (2) odd-platform-api/.../service/term/TermSearchServiceImplTest.java (validates: [F-024])
+      + the now-present TermSearchServiceImpl.java source — the session orchestration
+      hop is enriched-in-source: fetchFacetState errors NotFound("Search not found")
+      on an unknown/evicted searchId. This settles the BACKEND half of H-008
+      (stale-session): the server returns 404, NOT 200-empty. The frontend recovery
+      (no getTermsSearch.rejected reducer) is still the operator-visible defect, so
+      H-008 moves probe-needed -> CONTRADICTED (HIGH confidence), no longer LOW.
+  (3) Source read of ReactiveTermRepositoryImpl.findByState:279 / countByState:367 /
+      getQuerySuggestions:257 (all add TERM.DELETED_AT.isNull()) moves H-010
+      (deleted-term leak) probe-needed -> CONFIRMED (the protective JOIN masks the
+      stale FTS vector on the Dictionary search + suggestions path; latent landmine
+      preserved as a caveat). Net: probe_needed 3 -> 1 (only H-009 tsquery remains).
+
+  LSN-030 promise layer (Rule 11) added: all 13 hypotheses project to use_cases on
+  the feature-flow; use_case_coverage 1/13 verified (only H-001/IT-019). 12 unverified
+  promises become missing-functional test demands — including the 5 confirmed/partial
+  promises that v0.2.0 silently routed to routes_to_finding: none.
 ---
 
 # Term Search & Browse (Dictionary tab) — product-owner reflection
@@ -61,70 +94,86 @@ new_drift_classes_proposed:
 
 The **Dictionary tab** is the Data Glossary pillar's front door for finding terms. An operator who has built up a business glossary — `finance/Customer`, `marketing/PII Tracking`, `compliance/Restricted Data Class` — comes here to locate a term across the whole catalog, read who owns it and how widely it is used, and click through to its detail page to edit it or link it to data entities. It is the "I want to find a term" surface, the sibling of F-002's "I want to link a term" surface; the two share the same controller, service, and repository tiers but answer different operator questions (per F-024 feature-flow `description` + `system-mission.md` P-06 primary user actions "search Terms; reverse-look-up every entity tied to a Term").
 
-A user reaches the tab from the top navigation "Dictionary" item, which routes to `/termsearch` (per ToolbarTabs → `termsSearchPath()` → `termsRoutes.ts:5 TERMS_SEARCH_PATH`, recorded in the F-024 batch-ZH/ZJ entry points). On first arrival the React shell `TermSearch.tsx` silently creates a **server-side search session** (`POST /api/termsearch`), captures its UUID in the URL (`/termsearch/{uuid}`), and from then on every filter change is a `PUT` against that session and every page of results is a `GET` against it (per TermSearch.md understanding + operations; TermController.java:166-216 owns the six search-state endpoints). The session living on the server, keyed by a URL UUID, is the load-bearing design choice: it makes a filtered Dictionary view **deep-link-shareable** and **reload-survivable**, and it hands the cleanup problem to the shared `SearchFacetsHousekeepingJob` TTL (default 30 days, per F-010 / LSN-018 cross-link in TermSearch.md implicit_adrs[0]).
+A user reaches the tab from the top navigation "Dictionary" item, which routes to `/termsearch` (per ToolbarTabs -> `termsSearchPath()` -> `termsRoutes.ts:5 TERMS_SEARCH_PATH`, recorded in the F-024 batch-ZH/ZJ entry points). On first arrival the React shell `TermSearch.tsx` silently creates a **server-side search session** (`POST /api/termsearch`), captures its UUID in the URL (`/termsearch/{uuid}`), and from then on every filter change is a `PUT` against that session and every page of results is a `GET` against it (per TermSearch.md understanding + operations; TermController.java:166-216 owns the six search-state endpoints, all delegating to `TermSearchServiceImpl`). The session living on the server, keyed by a URL UUID, is the load-bearing design choice: it makes a filtered Dictionary view **deep-link-shareable** and **reload-survivable**, and it hands the cleanup problem to the shared `SearchFacetsHousekeepingJob` TTL (default 30 days, per F-010 / LSN-018 cross-link in TermSearch.md implicit_adrs[0]).
 
-The working parts the operator interacts with are: a **free-text search box** (TermSearchInput — fires synchronously on Enter), a **left-sidebar facet filter** across three axes — namespace, tag, owner (TermSearchFilters; the facet axes are confirmed by `FTSConstants.TERM_CONDITIONS` = NAMESPACES/OWNERS/TAGS per ReactiveTermRepositoryImpl.md dependencies), an **infinite-scroll results table** at a fixed `pageSize=30` (TermSearchResults; the literal `30` is hardcoded in two places per TermSearch.md invariants[4]), and a permission-gated **"Add term" button** (gated UI-only by `TERM_CREATE` per TermSearch.md invariants[1]). Each result row shows the term name, its namespace, its owners, a flattened usage count, and created/updated timestamps (TermSearchResultItem per TermSearch.md concepts).
+The working parts the operator interacts with are: a **free-text search box** (TermSearchInput — fires synchronously on Enter only; `onChange` just tracks local text per IT-019 + TermSearchInput.tsx:25-46), a **left-sidebar facet filter** across three axes — namespace, tag, owner (TermSearchFilters; the facet axes are confirmed by `FTSConstants.TERM_CONDITIONS` = NAMESPACES/OWNERS/TAGS per ReactiveTermRepositoryImpl.md dependencies; `TermSearchServiceImpl.createFacetFetchOperation` wires only TAGS/OWNERS facet-option fetchers, NAMESPACES default-empty — TermSearchServiceImpl.java:128-132), an **infinite-scroll results table** at a fixed `pageSize=30` (TermSearchResults; the literal `30` is hardcoded in two places per TermSearch.md invariants[4]), and a permission-gated **"Add term" button** (gated UI-only by `TERM_CREATE` per TermSearch.md invariants[1]). Each result row shows the term name, its namespace, its owners, a flattened usage count, and created/updated timestamps (TermSearchResultItem per TermSearch.md concepts).
 
-The integration story: the Dictionary tab is downstream of every term-authoring path (F-002 create/link), it indexes through the `term_search_entrypoint` materialised FTS table maintained by `ReactiveTermSearchEntrypointRepositoryImpl`, and it shares the `search_facets` session table + the `SearchFacetsHousekeepingJob` TTL infrastructure with the Discovery pillar's `/search/*` surface (F-017) — the two faceted-search features are structural twins (per F-024 description + the F-017 sibling reflection). Crucially, the read tier applies the platform-wide **read-collaborative posture**: there is no per-namespace or per-owner scoping at any layer (ReactiveTermRepositoryImpl.md invariants; `system-mission.md:267`), so every authenticated user sees every term in every namespace.
+The integration story: the Dictionary tab is downstream of every term-authoring path (F-002 create/link), it indexes through the `term_search_entrypoint` materialised FTS table maintained by `ReactiveTermSearchEntrypointRepositoryImpl`, and it shares the `search_facets` session table + the `SearchFacetsHousekeepingJob` TTL infrastructure with the Discovery pillar's `/search/*` surface (F-017) — the two faceted-search features are structural twins (per F-024 description + the F-017 sibling reflection; `TermSearchServiceImpl` even injects the shared `ReactiveSearchFacetRepository` per TermSearchServiceImpl.java:39). Crucially, the read tier applies the platform-wide **read-collaborative posture**: there is no per-namespace or per-owner scoping at any layer (ReactiveTermRepositoryImpl.md invariants; `system-mission.md:267`), so every authenticated user sees every term in every namespace.
 
-For a demo, the product owner would flag four edges: the tab opens to an **empty results table** on a fresh catalog (the search session's default query is empty — the page does not pre-list all terms); a **broken bookmark** to a 30-day-old session shows a stuck empty page; sharing a `/termsearch/{uuid}` URL **shares the session's filter state, not just a link**; and the search index can retain a **deleted term's vector** until a read happens to mask it. These edges are exactly where the user-facing promise and the assembled chain diverge, and they are the load-bearing findings below.
+For a demo, the product owner would flag four edges: the tab opens to an **empty results table** on a fresh catalog (the search session's default query is empty — the page does not pre-list all terms); a **broken bookmark** to a 30-day-old session shows a stuck empty page (the backend now provably 404s the evicted session — TermSearchServiceImpl.java:108-111 + TermSearchServiceImplTest — but the UI never catches that rejection); sharing a `/termsearch/{uuid}` URL **shares the session's filter state, not just a link**; and the search index can retain a **deleted term's vector** that is masked on the standard search path (the protective `DELETED_AT IS NULL` JOIN is present — ReactiveTermRepositoryImpl.java:279,367) but is a landmine for any future direct-entrypoint reader. These edges are exactly where the user-facing promise and the assembled chain diverge, and they are the load-bearing findings below.
 
 ## hypotheses
 
 - id: H-001
-  hypothesis: "When a user types a term name (e.g. 'Customer') into the Dictionary search box and presses Enter, the results table shows terms whose name/namespace/tag/owner full-text-matches that query, ranked by relevance."
-  derivation: "Endpoint shape — TermSearchInput dispatches updateTermSearch with the query; the search-results read goes through findByState which applies an FTS condition over term_search_entrypoint.search_vector."
+  hypothesis: "When a user types a term name (e.g. 'Customer') into the Dictionary search box and presses Enter, the results table shows terms whose name/namespace/tag/owner full-text-matches that query, and excludes terms that do not match."
+  derivation: "Endpoint shape — TermSearchInput dispatches updateTermSearch with the query on Enter; the search-results read goes through findByState which applies an FTS condition over term_search_entrypoint.search_vector and filters non-matches."
   seed_source: endpoint-shape
   validation:
     verdict: confirmed
     actual_behavior: |
       The text-query Enter path dispatches `updateTermSearch({query, filters:{}})`
       synchronously (TermSearch.md operations + invariants[3]); the server session's
-      results are read via findByState, which layers an FTS condition (ftsCondition
-      over TERM_SEARCH_ENTRYPOINT.SEARCH_VECTOR) when a query is present and otherwise
-      skips the FTS join (ReactiveTermRepositoryImpl.md operations findByState lines
-      272-355). The search_vector is the GENERATED ALWAYS concat of term/tag/namespace/
-      owner vectors (ReactiveTermSearchEntrypointRepositoryImpl.md), so a query matches
-      across all four axes — consistent with the user's mental model of "search finds
-      the term by what it is."
+      results are read via `TermSearchServiceImpl.getSearchResults` -> `findByState`,
+      which layers `jooqFTSHelper.facetStateConditions(state, TERM_CONDITIONS)` over
+      TERM_SEARCH_ENTRYPOINT.SEARCH_VECTOR when a query is present (ReactiveTermRepositoryImpl.java:278
+      + 369 query branch). The search_vector is the GENERATED ALWAYS concat of
+      term/tag/namespace/owner vectors (ReactiveTermSearchEntrypointRepositoryImpl.md),
+      so a query matches across all four axes. IT-019 EMPIRICALLY proves both halves:
+      a seeded term is findable by name AND a second seeded term is filtered out
+      (count 0) AND a non-matching query returns neither — the real UI->backend->DB path.
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: concepts.operations
         cite: "TermSearchInput.tsx:25-46"
-        note: "Enter dispatches updateTermSearch with the typed query."
+        note: "Enter dispatches updateTermSearch with the typed query (onChange only tracks text)."
       - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
         section: operations
-        cite: "ReactiveTermRepositoryImpl.java:272-355"
-        note: "findByState applies ftsCondition over search_vector when query present."
+        cite: "ReactiveTermRepositoryImpl.java:272-355 (findByState)"
+        note: "findByState applies facetStateConditions over search_vector when query present."
+      - sidecar: "(test) integration-tests/protocols/IT-019-term-search.md + e2e/specs/term-search.spec.ts"
+        section: assertions
+        cite: "term-search.spec.ts:44-66"
+        note: "VERIFIED — search returns the match, filters the other term, negative returns nothing."
     confidence: HIGH
+    use_case_kind: happy-path
+    coverage: verified
+    test_ref: "e2e/specs/term-search.spec.ts (IT-019)"
     routes_to_finding: none
 
 - id: H-002
   hypothesis: "When a user selects a namespace, tag, or owner in the left filter sidebar, the results table narrows to terms matching that facet selection."
-  derivation: "UI label / view-mode — the facet sidebar exposes three axes; findByState/countByState add namespace/tag/owner joins conditionally on the facet state."
+  derivation: "UI label / view-mode — the facet sidebar exposes three axes; findByState/countByState add namespace/tag/owner conditions conditionally on the facet state."
   seed_source: ui-label
   validation:
     verdict: confirmed
     actual_behavior: |
       A facet click mutates termSearchFacetParams; the synced state diff triggers a
-      PUT that writes the facet selection into the server session; the results read
-      (findByState) adds the namespace/tag/owner facet joins for the selected axes
-      (ReactiveTermRepositoryImpl.md operations findByState — "namespace facet, tag
-      facet, owner facet branches add their respective joins independently"). The
-      facet axes available are exactly NAMESPACES/OWNERS/TAGS (FTSConstants.TERM_
-      CONDITIONS) — no STATUS / GROUP / class facets (a deliberate narrower scope vs
-      the data-entity search), which matches what the sidebar renders.
+      PUT that writes the facet selection into the server session via
+      `TermSearchServiceImpl.updateFacets` (merges the delta into the persisted
+      FacetStateDto — TermSearchServiceImpl.java:82-90); the results read (findByState)
+      applies `facetStateConditions(state, TERM_CONDITIONS)` for the selected axes
+      (ReactiveTermRepositoryImpl.java:278). The facet axes available are exactly
+      NAMESPACES/OWNERS/TAGS (FTSConstants.TERM_CONDITIONS). NOTE a partial-coverage
+      seam: the facet-OPTION dropdown fetcher (createFacetFetchOperation,
+      TermSearchServiceImpl.java:128-132) wires fetchers only for TAGS + OWNERS;
+      NAMESPACES falls to the `default -> Mono.just(Map.of())` branch — namespace
+      facet-OPTION enumeration returns empty, though namespace FILTERING still applies
+      via facetStateConditions. The narrowing promise holds; the namespace-option
+      picker is a separate (untested) seam worth a probe-or-test.
     evidence:
       - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
         section: dependencies_semantic
         cite: "FTSConstants.java:120-124"
         note: "TERM_CONDITIONS = NAMESPACES/OWNERS/TAGS — the three facet axes."
-      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
-        section: operations
-        cite: "ReactiveTermRepositoryImpl.java:272-355"
-        note: "findByState adds per-facet joins conditioned on facet state."
+      - sidecar: "(source) odd-platform-api/.../service/term/TermSearchServiceImpl.java"
+        section: createFacetFetchOperation
+        cite: "TermSearchServiceImpl.java:128-132"
+        note: "Facet-option fetchers wired for TAGS+OWNERS only; NAMESPACES -> empty map."
     confidence: HIGH
-    routes_to_finding: none
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
 
 - id: H-003
   hypothesis: "When a user scrolls to the bottom of the Dictionary results, the next page of terms loads automatically (infinite scroll), 30 at a time, without losing already-loaded rows."
@@ -138,16 +187,25 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       page>1 path and replaces on page===1 (TermSearch.md downstream_side_effects).
       pageSize=30 is consistent at session-create and at the scroll increment
       (TermSearch.md invariants[4]). The per-page read is the paginated findByState
-      with countByState as the total — pagination is honoured on this surface (unlike
-      the listByTerm path used by F-002's Term Detail, which has a broken hard-coded
-      paginator — that defect is NOT on the Dictionary tab; see H-007 note).
+      with `countByState` as the total — `getSearchResults` -> findByState(state, page,
+      size) (TermSearchServiceImpl.java:99-106) returns a real Page with the count, so
+      the pagination ceiling is honoured (unlike the listByTerm path used by F-002's
+      Term Detail linked-terms tab, which has hard-coded hasNext=false — that defect is
+      NOT on the Dictionary tab).
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: downstream_side_effects
         cite: "TermSearchResults.tsx:40-61"
-        note: "InfiniteScroll → fetchTermsSearchResults page+1 size=30; slice appends."
+        note: "InfiniteScroll -> fetchTermsSearchResults page+1 size=30; slice appends."
+      - sidecar: "(source) odd-platform-api/.../service/term/TermSearchServiceImpl.java"
+        section: getSearchResults
+        cite: "TermSearchServiceImpl.java:99-106"
+        note: "getSearchResults -> findByState(state, page, size); real Page + countByState total."
     confidence: HIGH
-    routes_to_finding: none
+    use_case_kind: render
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
 
 - id: H-004
   hypothesis: "When a new operator clicks the 'Dictionary' tab for the first time, they see the catalog-wide LIST of all terms (the tab's name + the historical doc framing both promise a browseable list)."
@@ -160,19 +218,21 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       results table until the user types or applies a facet (TermSearch.md
       downstream_side_effects: createTermSearch with query:'' + filters:{}; the empty
       state lives in TermSearchResults rendering EmptyContentPlaceholder when
-      !total). The user clicking 'Dictionary' on a populated catalog does NOT get a
-      flat list — they get a search box over an empty default result set. This is the
-      drift class `doc_calls_dictionary_tab_a_list_code_renders_search_with_facets_
-      empty_first_view` recorded on the feature flow.
+      !total). IT-019's own preamble documents this drift verbatim ("the Business
+      Glossary doc calls the Dictionary tab a flat 'list', but the code renders an
+      empty search-with-facets view until a query/facet is applied"). The user clicking
+      'Dictionary' on a populated catalog does NOT get a flat list — they get a search
+      box over an (often empty-default) result set. Drift class
+      `doc_calls_dictionary_tab_a_list_code_renders_search_with_facets_empty_first_view`.
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: concepts.operations
         cite: "TermSearch.tsx:34-42"
         note: "First mount creates a session with query:'' filters:{} — empty default."
-      - sidecar: odd-platform__ts__react-component__component__TermSearch.md
-        section: docs_link_semantic
-        cite: "business-glossary.md (WebFetched 2026-05-20) line 28"
-        note: "Doc said 'the catalog-wide list of all terms' — implied a flat list."
+      - sidecar: "(test) integration-tests/protocols/IT-019-term-search.md"
+        section: "section 1 Note"
+        cite: "IT-019 section 1"
+        note: "IT protocol documents the list-vs-search drift as the reason it exercises actual search."
     operator_visible_failure: |
       A new ODD operator who has just ingested a catalog (or hand-created a few terms)
       clicks 'Dictionary' expecting to browse what exists and sees an EMPTY table —
@@ -182,6 +242,9 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       itself connotes a browseable reference, not a search box.
     severity: MEDIUM
     confidence: HIGH
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
     routes_to_finding: caveat-candidate
 
 - id: H-005
@@ -205,17 +268,20 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: bugs_limitations_corner_cases
         cite: "TermSearch.tsx:50-64"
-        note: "useCallback deps include termSearchFacetParams → debouncer rebuilt per click."
+        note: "useCallback deps include termSearchFacetParams -> debouncer rebuilt per click."
     operator_visible_failure: |
       A user doing the canonical faceted-exploration workflow — clicking through five
       facets in two seconds to narrow the catalog — fires five PUT /api/termsearch/
       {id} round-trips instead of the intended one. On a slow connection this shows up
       as five in-flight requests and laggy facet toggling; on a busy term catalog the
-      server-side per-PUT facet recompute cost is multiplied across the click burst.
-      No correctness loss (the slice's merge handles racing PUTs) but the rate-limit
-      guarantee the operator's UX implies is silently absent.
+      server-side per-PUT facet recompute cost (updateFacets merges + re-counts) is
+      multiplied across the click burst. No correctness loss (updateFacets merges the
+      delta) but the rate-limit guarantee the operator's UX implies is silently absent.
     severity: MEDIUM
     confidence: HIGH
+    use_case_kind: happy-path
+    coverage: unverified
+    test_demand: functional
     routes_to_finding: bug-candidate
 
 - id: H-006
@@ -225,20 +291,29 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
   validation:
     verdict: confirmed
     actual_behavior: |
-      The session (query + facet state + result page info) is persisted server-side
-      keyed by UUID and surfaced in the URL; on deep-link the shell restores it via
-      GET /api/termsearch/{searchId} (TermSearch.md implicit_adrs[0] + operations).
-      A recipient landing on the same UUID restores the same facet state. (Caveat: a
-      typed-but-not-yet-submitted query is NOT in the URL — only the last server-saved
-      state restores — per TermSearch.md invariants[3]; and the share transfers
-      mutate-able session state, see H-012-adjacent / DOC-178 Caveat 3.)
+      The session (query + facet state) is persisted server-side in `search_facets`
+      keyed by UUID (TermSearchServiceImpl.search -> reactiveSearchFacetRepository.create,
+      TermSearchServiceImpl.java:72-79) and surfaced in the URL; on deep-link the shell
+      restores it via GET /api/termsearch/{searchId} -> getFacets -> fetchFacetState
+      (TermSearchServiceImpl.java:67-69). A recipient landing on the same UUID restores
+      the same persisted facet state. (Caveat: a typed-but-not-yet-submitted query is
+      NOT in the URL — only the last server-saved state restores — per TermSearch.md
+      invariants[3]; and the share transfers MUTATE-able session state, see H-007 + the
+      hijack drift facet on the feature flow.)
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: implicit_adrs
         cite: "TermSearch.tsx:34-48 + termsRoutes.ts:5,8"
         note: "create+navigate writes the UUID URL; restore-from-URL re-hydrates the session."
+      - sidecar: "(source) odd-platform-api/.../service/term/TermSearchServiceImpl.java"
+        section: "search + getFacets"
+        cite: "TermSearchServiceImpl.java:72-79, 67-69"
+        note: "Session persisted to search_facets by UUID; getFacets restores it."
     confidence: HIGH
-    routes_to_finding: none
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
 
 - id: H-007
   hypothesis: "When a user clicks a facet and then immediately presses Enter on a new text query (or vice versa), the final Dictionary view reflects both intentions and does not silently drop the facet selection."
@@ -249,27 +324,38 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
     actual_behavior: |
       Both dispatches hit PUT /api/termsearch/{searchId} with DIFFERENT payloads —
       the facet PUT carries filters:mapValues(termSearchFacetParams), the text-query
-      PUT carries filters:{} (it RESETS filters). Whichever resolves second wins via
-      the slice's updateTermsSearchState merge (TermSearch.md bugs_limitations_corner_
-      cases[4]). In the steady state the slice's merge preserves local divergences and
-      is eventually-consistent, BUT in the specific facet-then-Enter race the text
-      query's filters:{} can overwrite the just-clicked facet — the user sees their
-      facet selection vanish. It works correctly when the two actions are not
-      interleaved within the round-trip window; it loses the facet when they are.
+      PUT carries filters:{} (it RESETS filters). On the SERVER, updateFacets does NOT
+      blindly overwrite — it merges the form delta into the current persisted state
+      (FacetStateDto.merge, TermSearchServiceImpl.java:84-86) — but a text PUT whose
+      mapped form carries an empty/cleared filter set can still clear the just-applied
+      facet depending on the merge semantics of an explicitly-empty facet group, and
+      the client slice's updateTermsSearchState is last-write-wins on the round-trip
+      (TermSearch.md bugs[4]). Works correctly when the two actions are not interleaved
+      within the round-trip window; can lose the facet when they are.
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: bugs_limitations_corner_cases
         cite: "TermSearch.tsx:50-58 + TermSearchInput.tsx:25-28"
-        note: "Facet PUT carries filters; text PUT carries filters:{} — last-write-wins."
+        note: "Facet PUT carries filters; text PUT carries filters:{} — last-write-wins on the client."
+      - sidecar: "(source) odd-platform-api/.../service/term/TermSearchServiceImpl.java"
+        section: updateFacets
+        cite: "TermSearchServiceImpl.java:82-90"
+        note: "Server merges delta into persisted state (FacetStateDto.merge) — not a blind overwrite."
     operator_visible_failure: |
       An operator who clicks the 'compliance' namespace facet and then immediately
       types a term name and hits Enter can have the facet silently cleared (the text
-      submit ships filters:{} and resolves second). The user perceives "I filtered to
-      compliance and searched, but I'm getting results from every namespace" — a
-      confusing, intermittent loss of intent. Rare in practice (requires interleaving
-      within the PUT round-trip) but reproducible on a slow connection.
+      submit ships an empty filter group and resolves second on the client). The user
+      perceives "I filtered to compliance and searched, but I'm getting results from
+      every namespace" — a confusing, intermittent loss of intent. Rare in practice
+      (requires interleaving within the PUT round-trip) but reproducible on a slow
+      connection. The exact server merge behaviour for an explicitly-empty facet group
+      is the part that should be probed/tested to settle whether this is server- or
+      client-side.
     severity: LOW
     confidence: MEDIUM
+    use_case_kind: edit-reconcile
+    coverage: unverified
+    test_demand: functional
     routes_to_finding: caveat-candidate
 
 - id: H-008
@@ -277,107 +363,124 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
   derivation: "Negative-space + cross-pillar (F-010 housekeeping) — the SearchFacetsHousekeepingJob evicts sessions at 30 days; the shell restores from URL with no .rejected handling."
   seed_source: negative-space
   validation:
-    verdict: probe-needed
+    verdict: contradicted
     actual_behavior: |
-      Static reading points to contradicted: the slice has NO getTermsSearch.rejected
-      reducer, so an evicted-session GET that fails leaves the state empty, the URL
-      keeps the dead UUID, and a reload repeats the failure with no fallback to create
-      a fresh session (TermSearch.md bugs_limitations_corner_cases[5] + downstream_
-      side_effects "URL :termSearchId present, no cached session" row). HOWEVER the
-      server-side eviction contract (404 vs 200-empty) and the actual end-to-end
-      browser experience are owned by the un-enriched TermSearchService and the SPA
-      runtime — settling the operator-visible verdict requires running it. Emitted
-      P-361 (eviction-recovery probe).
+      The BACKEND contract is now settled in source: `TermSearchServiceImpl.fetchFacetState`
+      (TermSearchServiceImpl.java:108-111) does `reactiveSearchFacetRepository.get(searchId)
+      .switchIfEmpty(Mono.error(new NotFoundException("Search not found")))` — so an
+      evicted-session GET/PUT returns 404, NOT 200-empty. TermSearchServiceImplTest
+      VERIFIES this for getFacets / getSearchResults / getFilterOptions (verifyError
+      NotFoundException). The CONTRADICTION is on the FRONTEND: the slice has NO
+      getTermsSearch.rejected reducer (TermSearch.md downstream_side_effects + bugs[5]),
+      so the 404 lands nowhere, the state stays empty, the URL keeps the dead UUID, and
+      a reload repeats the 404 with no fallback to create a fresh session. The static
+      read that was LOW-confidence at v0.2.0 is now HIGH: the backend definitively 404s
+      and the frontend definitively does not handle it — no probe needed.
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: bugs_limitations_corner_cases
         cite: "TermSearch.tsx:45-48 + slice.ts:193-228 (no .rejected reducer)"
         note: "Restore-from-URL has no rejection handling; URL keeps the dead UUID."
+      - sidecar: "(source) odd-platform-api/.../service/term/TermSearchServiceImpl.java"
+        section: fetchFacetState
+        cite: "TermSearchServiceImpl.java:108-111"
+        note: "Evicted/unknown searchId -> NotFoundException 'Search not found' (404), not 200-empty."
+      - sidecar: "(test) odd-platform-api/.../service/term/TermSearchServiceImplTest.java"
+        section: "getFacets/getSearchResults/getFilterOptions_unknownSearchId_errorsNotFound"
+        cite: "TermSearchServiceImplTest.java:50-67"
+        note: "VERIFIES the backend 404 contract on an unknown session (the half the UI ignores)."
     operator_visible_failure: |
-      (Pending P-361 confirmation.) If contradicted as the static read indicates: an
-      operator following a 30-day-old Slack link or bookmark to a filtered Dictionary
-      view lands on a frozen empty page, the URL still shows the dead UUID, and
-      refreshing does nothing — the only escape is to manually delete the UUID from
-      the address bar. A shared/bookmarked Dictionary link is functionally a
-      time-bomb that breaks silently at the TTL boundary.
-    severity: MEDIUM
-    confidence: LOW
-    probe_id: P-361
+      An operator following a 30-day-old Slack link or bookmark to a filtered
+      Dictionary view lands on a frozen empty page: the backend returns 404 "Search
+      not found", but the UI swallows it (no .rejected reducer, no error boundary on
+      the route per App.tsx), the URL still shows the dead UUID, and refreshing repeats
+      the 404 — the only escape is to manually delete the UUID from the address bar. A
+      shared/bookmarked Dictionary link is functionally a time-bomb that breaks
+      silently at the TTL boundary. The backend already does the right thing (a clean
+      404); the fix is purely a frontend getTermsSearch.rejected reducer that navigates
+      to bare /termsearch and creates a fresh session.
+    severity: HIGH
+    confidence: HIGH
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
     routes_to_finding: bug-candidate
 
 - id: H-009
   hypothesis: "When a user types a query containing PostgreSQL tsquery operator characters (e.g. 'foo )(') into the Dictionary search box, the platform returns a graceful empty result, not a persistent HTTP 500 that breaks the session for everyone who later opens its URL."
-  derivation: "Negative-space + cross-feature (F-017 PLT-090) — the Term FTS reads use the same JooqFTSHelper that PLT-090 proved does not escape tsquery operators on the data-entity search surface."
+  derivation: "Negative-space + cross-feature (F-017 PLT-090) — the Term FTS reads use the same JooqFTSHelper that PLT-090 proved does not escape tsquery operators on the data-entity search surface; the session persists the query so a 500 is sticky."
   seed_source: negative-space
   validation:
     verdict: probe-needed
     actual_behavior: |
-      The Term-side FTS reads (getQuerySuggestions, findByState, countByState) couple
-      to the SAME JooqFTSHelper as the data-entity SearchController
-      (ReactiveTermRepositoryImpl.md dependencies — JooqFTSHelper used at lines
-      246,256,283,289,370). PLT-090 Defect 3 (F-017c) empirically established that
-      JooqFTSHelper.tsQuery (JooqFTSHelper.java:164-168) does NOT escape tsquery
-      operators, persists the malformed string to the session row, and DoSes that
-      session for the housekeeping TTL on the /api/search surface. Whether the Term
-      write path (TermSearchService → search_facets keyed by the Term session UUID)
-      persists the raw query the same way — and thus reproduces the persistent-500 on
-      /api/termsearch/{id}/results — cannot be settled statically because
-      TermSearchService is un-enriched. Emitted P-360.
+      The session orchestration is now visible: `TermSearchServiceImpl.search`
+      persists the FacetStateDto (which carries the raw query) to search_facets BEFORE
+      any FTS evaluation (TermSearchServiceImpl.java:72-79), and getSearchResults reads
+      it back and runs findByState -> `jooqFTSHelper.facetStateConditions` /
+      `ftsCondition` (ReactiveTermRepositoryImpl.java:256,278). So the "malformed query
+      persists in the session row, then 500s on every later open" MECHANISM is now
+      confirmed-plausible end-to-end. What remains genuinely unsettled is whether
+      JooqFTSHelper.tsQuery (JooqFTSHelper.java:164-168) throws on a malformed tsquery
+      on THIS path (PLT-090 / IT-003 empirically established the throw on the
+      data-entity /api/search surface, NOT on /api/termsearch). Local execution is
+      possible (DISABLED-mode docker + a crafted query). Recorded as a pending probe.
     evidence:
       - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
         section: dependencies_semantic
         cite: "ReactiveTermRepositoryImpl.java:246,256,283,289,370 (JooqFTSHelper)"
         note: "Term FTS reads share the unescaped-tsquery helper PLT-090 flagged."
+      - sidecar: "(source) odd-platform-api/.../service/term/TermSearchServiceImpl.java"
+        section: search
+        cite: "TermSearchServiceImpl.java:72-79"
+        note: "search persists the raw-query FacetStateDto to search_facets BEFORE FTS eval -> sticky-500 mechanism plausible."
     operator_visible_failure: |
-      (Pending P-360 confirmation.) If contradicted: a user typing a stray
-      parenthesis or boolean operator into the Dictionary search box gets an HTTP 500;
-      worse, because the malformed query persists in the session row, every
-      subsequent open of that session URL (theirs or a shared colleague's) returns 500
-      until the row is manually mutated or evicted at the 30-day TTL — a persistent,
-      self-inflicted, shareable denial of the Dictionary tab.
+      (Pending probe confirmation.) If contradicted: a user typing a stray parenthesis
+      or boolean operator into the Dictionary search box gets an HTTP 500; worse,
+      because the malformed query persists in the session row, every subsequent open of
+      that session URL (theirs or a shared colleague's) returns 500 until the row is
+      evicted at the 30-day TTL — a persistent, self-inflicted, shareable denial of the
+      Dictionary tab.
     severity: HIGH
     confidence: LOW
-    probe_id: P-360
+    probe_id: PENDING-F-024-1
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: "probe PENDING-F-024-1"
     routes_to_finding: bug-candidate
 
 - id: H-010
   hypothesis: "When a user deletes a term, it immediately disappears from the Dictionary-tab search results and the search-suggestions dropdown — a deleted term never shows up in catalog browse/search."
-  derivation: "Negative-space + response-shape — term DELETE soft-deletes the term but TermServiceImpl.delete never clears the term_search_entrypoint FTS vector."
+  derivation: "Negative-space + response-shape — term DELETE soft-deletes the term but TermServiceImpl.delete never clears the term_search_entrypoint FTS vector; the question is whether the read path JOINs term to mask the stale vector."
   seed_source: negative-space
   validation:
-    verdict: probe-needed
+    verdict: confirmed
     actual_behavior: |
-      Two competing static signals. (a) TermServiceImpl.delete soft-deletes the term
-      but never calls any vector-clear method — the term_search_entrypoint row
-      persists indefinitely (ReactiveTermSearchEntrypointRepositoryImpl.md bugs[0]:
-      "Term DELETE leaves stale vectors"). (b) Every term read filters
-      TERM.DELETED_AT IS NULL and findByState JOINs term → entrypoint, which would
-      MASK the stale vector IF the join is present on the user-visible path. The
-      entrypoint sidecar explicitly flags the open risk: "any reader that queries
-      term_search_entrypoint directly without joining term would surface deleted
-      terms." Whether the live findByState / getQuerySuggestions on the Dictionary
-      tab does the protective join — settling whether deleted terms leak to the user —
-      requires running it (TermSearchService un-enriched). Emitted P-362.
+      Resolved by source read. The Dictionary search path (`getSearchResults` ->
+      findByState) adds `TERM.DELETED_AT.isNull()` (ReactiveTermRepositoryImpl.java:279),
+      the count path (countByState) adds it too (line 367), and the suggestions
+      dropdown (getQuerySuggestions, line 257) adds it as well — the protective JOIN
+      IS present on EVERY user-visible read on this surface. So even though
+      TermServiceImpl.delete never clears the stale term_search_entrypoint vector
+      (ReactiveTermSearchEntrypointRepositoryImpl.md bugs[0]), a deleted term does NOT
+      appear in Dictionary search results or suggestions — the soft-delete filter masks
+      the stale vector. The v0.2.0 probe-needed is settled CONFIRMED for the
+      user-visible promise; the latent landmine (a future reader querying
+      term_search_entrypoint directly WITHOUT re-joining term) is preserved as a caveat
+      + a proposed defence-in-depth (clear the vector on delete).
     evidence:
+      - sidecar: "(source) odd-platform-api/.../repository/reactive/ReactiveTermRepositoryImpl.java"
+        section: "findByState / countByState / getQuerySuggestions"
+        cite: "ReactiveTermRepositoryImpl.java:257,279,367"
+        note: "All three user-visible read paths add TERM.DELETED_AT.isNull() — stale vector masked."
       - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermSearchEntrypointRepositoryImpl.md
         section: bugs_limitations_corner_cases
         cite: "TermServiceImpl.java:153-165 (no vector-clear on delete)"
-        note: "Term DELETE leaves the stale FTS vector in term_search_entrypoint."
-      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
-        section: invariants
-        cite: "ReactiveTermRepositoryImpl.java:279 (findByState adds TERM.DELETED_AT.isNull)"
-        note: "If the protective join is on the search path, the stale vector is masked."
-    operator_visible_failure: |
-      (Pending P-362 confirmation.) If contradicted: a curator who deletes
-      'compliance/Restricted Trade Data' still sees it in Dictionary search results
-      and the autocomplete dropdown, can click through to a soft-deleted term, and
-      loses trust that delete means gone. Even if confirmed (the join masks it today),
-      the un-cleared term_search_entrypoint row is a latent landmine for any future
-      query that hits the entrypoint table without re-joining term — worth a caveat.
-    severity: MEDIUM
-    confidence: LOW
-    probe_id: P-362
-    routes_to_finding: bug-candidate
+        note: "Term DELETE leaves the stale FTS vector — latent, masked by the JOIN today."
+    confidence: HIGH
+    use_case_kind: teardown
+    coverage: unverified
+    test_demand: functional
+    routes_to_finding: functional-test-demand
 
 - id: H-011
   hypothesis: "When a user browses the Dictionary tab, they see the terms in THEIR namespace(s) — the namespace concept isolates one team's glossary from another's, as the doc's 'resolve within the namespace by default' framing implies."
@@ -414,6 +517,9 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       but contradicts the operator expectation the term 'namespace' sets.
     severity: MEDIUM
     confidence: HIGH
+    use_case_kind: cross-actor
+    coverage: unverified
+    test_demand: functional
     routes_to_finding: caveat-candidate
 
 - id: H-012
@@ -426,11 +532,12 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       The create-session chain is `.unwrap().then(navigate)` with NO `.catch`
       (TermSearch.tsx:37-41), the slice has no createTermSearch.rejected /
       getTermsSearch.rejected reducer (slice.ts:193-228), and App.tsx wraps the route
-      in no ErrorBoundary (TermSearch.md bugs_limitations_corner_cases[3] +
-      security.known_security_gaps[4]). On any rejection the rejection lands in the
-      console / a missing error boundary, the slice stays empty, and the user sees a
-      frozen empty page with no message. Auth-token-expired-mid-session is the
-      canonical reproducer.
+      in no ErrorBoundary (TermSearch.md bugs[3] + security.known_security_gaps[4]). On
+      any rejection the rejection lands in the console / a missing error boundary, the
+      slice stays empty, and the user sees a frozen empty page with no message.
+      Auth-token-expired-mid-session is the canonical reproducer. (Distinct from H-008,
+      which is the RESTORE-of-stale-session path; this is the CREATE-on-mount path and
+      the generic any-rejection path.)
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: bugs_limitations_corner_cases
@@ -447,6 +554,9 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       (TermsForm.tsx:100-111).
     severity: MEDIUM
     confidence: HIGH
+    use_case_kind: resolve-later
+    coverage: unverified
+    test_demand: functional
     routes_to_finding: bug-candidate
 
 - id: H-013
@@ -457,16 +567,16 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
     verdict: partial
     actual_behavior: |
       Consistency: GOOD — the Dictionary tab uses the SAME PageWithLeftSidebar layout,
-      the SAME URL-backed server-session model, and the SAME facet-sidebar +
-      infinite-scroll pattern as the Discovery /search surface (TermSearch.md concepts
-      + invariants[0]; sibling Search.tsx). An operator who learned /search transfers
-      the mental model directly. Understandability: WEAK — the single empty-state copy
-      'No matches found' is shown for BOTH "fresh catalog, zero terms" AND "your
-      filter returned nothing" (TermSearch.md bugs_limitations_corner_cases[8]); a
-      day-one operator cannot distinguish "glossary is empty, go create a term" from
-      "my search missed", and the empty state does not point at the 'Add term' button.
-      Combined with H-004 (empty-first-view) the first-run experience actively
-      misleads.
+      the SAME URL-backed server-session model (the very same ReactiveSearchFacetRepository
+      shared with Discovery /search — TermSearchServiceImpl.java:39), and the SAME
+      facet-sidebar + infinite-scroll pattern as the Discovery /search surface
+      (TermSearch.md concepts + invariants[0]; sibling Search.tsx). An operator who
+      learned /search transfers the mental model directly. Understandability: WEAK —
+      the single empty-state copy 'No matches found' is shown for BOTH "fresh catalog,
+      zero terms" AND "your filter returned nothing" (TermSearch.md bugs[8]); a day-one
+      operator cannot distinguish "glossary is empty, go create a term" from "my search
+      missed", and the empty state does not point at the 'Add term' button. Combined
+      with H-004 (empty-first-view) the first-run experience actively misleads.
     evidence:
       - sidecar: odd-platform__ts__react-component__component__TermSearch.md
         section: bugs_limitations_corner_cases
@@ -481,10 +591,13 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
       new operator's first encounter with the glossary is an empty table labelled
       "No matches found" with no guidance — they cannot tell the catalog is simply
       empty, and nothing routes them to 'Add term'. The fix is to distinguish the two
-      empty states (onboarding: !total && !query && empty(filters) → "No terms yet —
-      add your first" pointing at the CTA; vs filtered-zero → "No matches found").
+      empty states (onboarding: !total && !query && empty(filters) -> "No terms yet —
+      add your first" pointing at the CTA; vs filtered-zero -> "No matches found").
     severity: LOW
     confidence: HIGH
+    use_case_kind: empty/no-match
+    coverage: unverified
+    test_demand: functional
     routes_to_finding: caveat-candidate
 
 ## cross_references
@@ -497,43 +610,42 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
   tracked_as: PLT-017
   proposed_fix_anchor: "TermSearch.tsx:50-64 — lift useDebouncedCallback out of useCallback / use a ref for latest params; mirror at MultipleFilterItemAutocomplete.tsx:97-116 (PLT-017 already prescribes the ref pattern)."
 - hypothesis_id: H-008
-  severity: MEDIUM
-  one_line: "Stale 30-day session bookmark shows a frozen empty page with no recovery (slice has no getTermsSearch.rejected reducer) — pending P-361."
+  severity: HIGH
+  one_line: "Stale 30-day session bookmark: backend cleanly 404s (verified by TermSearchServiceImplTest) but the UI has no getTermsSearch.rejected reducer, so it shows a frozen empty page no refresh recovers."
   dedup_status: net_new
   recommended_log_as: BUG-NNN
-  proposed_fix_anchor: "termSearch.slice.ts extraReducers — add getTermsSearch.rejected that navigates to bare /termsearch and creates a fresh session; OR render a 'session expired, start fresh' banner. Confirm via P-361 first."
+  proposed_fix_anchor: "termSearch.slice.ts extraReducers — add getTermsSearch.rejected that navigates to bare /termsearch and creates a fresh session; OR render a 'session expired, start fresh' banner. The backend half is already correct (NotFound at TermSearchServiceImpl.java:108-111); this is a pure FRONTEND fix. No probe needed — the contradiction is now statically confirmed on both halves."
 - hypothesis_id: H-009
   severity: HIGH
-  one_line: "Malformed tsquery in the Dictionary search box may persist a poisoned session row → persistent HTTP 500 on every later open of that URL (PLT-090-class, Term-search surface) — pending P-360."
+  one_line: "Malformed tsquery in the Dictionary search box may persist a poisoned session row (search persists the raw query before FTS eval) -> persistent HTTP 500 on every later open of that URL (PLT-090-class, Term-search surface) — pending probe."
   dedup_status: net_new
   distinct_from: PLT-090
   recommended_log_as: upstream-issue
-  proposed_fix_anchor: "JooqFTSHelper.tsQuery (JooqFTSHelper.java:164-168) — escape tsquery operators / use websearch_to_tsquery; the consolidated JooqFTSHelper fix closes BOTH the F-017 SearchController surface (PLT-090) and this F-024 Term-search surface. File as a Term-search extension of PLT-090, not a fresh root cause. Confirm via P-360 first."
-- hypothesis_id: H-010
-  severity: MEDIUM
-  one_line: "Deleted term may still appear in Dictionary search/suggestions — TermServiceImpl.delete never clears term_search_entrypoint; protective join unverified — pending P-362."
-  dedup_status: net_new
-  recommended_log_as: BUG-NNN
-  proposed_fix_anchor: "TermServiceImpl.delete (TermServiceImpl.java:153-165) — add a term_search_entrypoint vector-clear on delete; OR (defence-in-depth) ensure every search/suggestion read JOINs term with DELETED_AT IS NULL. Confirm leak vs mask via P-362 first."
+  proposed_fix_anchor: "JooqFTSHelper.tsQuery (JooqFTSHelper.java:164-168) — escape tsquery operators / use websearch_to_tsquery; the consolidated JooqFTSHelper fix closes BOTH the F-017 SearchController surface (PLT-090) and this F-024 Term-search surface. Mechanism now confirmed-plausible end-to-end (TermSearchServiceImpl.search persists raw query before eval); file as a Term-search extension of PLT-090. Confirm the throw on the /termsearch path via PENDING-F-024-1 first."
 - hypothesis_id: H-012
   severity: MEDIUM
-  one_line: "Dictionary-tab create/restore-session failure (incl. auth-expiry) shows a silent frozen empty page — no .catch, no .rejected reducer, no error boundary on the route."
+  one_line: "Dictionary-tab create/restore-session failure (incl. auth-expiry, transient 5xx on mount) shows a silent frozen empty page — no .catch, no .rejected reducer, no error boundary on the route."
   dedup_status: net_new
   distinct_from: PLT-059
   recommended_log_as: BUG-NNN
-  proposed_fix_anchor: "TermSearch.tsx:37-41 add .catch + termSearch.slice.ts add .rejected reducers that surface an error/retry. Distinct locus from PLT-059 Defect 4 (TermsForm.tsx:100-111 authoring dialog) — same silent-rejection CLASS, different component; could be folded into one 'Terms subsystem .catch hardening' epic with PLT-059."
+  proposed_fix_anchor: "TermSearch.tsx:37-41 add .catch + termSearch.slice.ts add .rejected reducers that surface an error/retry. Distinct locus from PLT-059 Defect 4 (TermsForm.tsx:100-111 authoring dialog) — same silent-rejection CLASS, different component; could be folded into one 'Terms subsystem .catch hardening' epic with PLT-059. Overlaps the H-008 fix (the .rejected reducer serves both)."
 
 ### caveat_candidates
 - hypothesis_id: H-004
   one_line: "Dictionary tab opens to an EMPTY search-results table, not a flat list — the name + historical doc imply a browseable list."
   dedup_status: already_tracked
   tracked_as: DOC-178
-  note: "DOC-178 (done, commit b8df76a) rewrote the live Dictionary-tab framing to 'server-side faceted-search session' with the empty-first-view caveat. Reflection corroborates; no re-filing."
+  note: "DOC-178 (done, commit b8df76a) rewrote the live Dictionary-tab framing to 'server-side faceted-search session' with the empty-first-view caveat. IT-019 also documents the drift. Reflection corroborates; no re-filing. The use_case still demands a regression test (functional_test_demands)."
 - hypothesis_id: H-007
-  one_line: "Facet-then-Enter race can silently drop the just-clicked facet (text submit ships filters:{} and can resolve second)."
+  one_line: "Facet-then-Enter race can silently drop the just-clicked facet (text submit ships an empty filter group; client is last-write-wins) — exact server merge of an empty facet group worth a test."
   dedup_status: net_new
   recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-glossary/business-glossary
-  note: "Low-severity intermittent intent-loss; document alongside the DOC-178 Dictionary-tab caveats OR fix the text-submit to preserve current filters."
+  note: "Low-severity intermittent intent-loss; document alongside the DOC-178 Dictionary-tab caveats OR fix the text-submit to preserve current filters. The server updateFacets merges (does NOT blind-overwrite), so the loss may be purely client-side — settle with the functional test."
+- hypothesis_id: H-010
+  one_line: "Stale term_search_entrypoint vector is left on term delete; masked today by the DELETED_AT JOIN on every user-visible read, but a latent landmine for any future direct-entrypoint reader."
+  dedup_status: net_new
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-glossary/business-glossary
+  note: "Confirmed NOT user-visible today (H-010 confirmed). Recommend defence-in-depth: clear the vector in TermServiceImpl.delete (TermServiceImpl.java:153-165). Caveat + the regression test guard the masking JOIN."
 - hypothesis_id: H-011
   one_line: "Dictionary tab is catalog-wide — every authenticated user sees every namespace's terms; 'namespace' is a classifier, not isolation."
   dedup_status: already_tracked
@@ -545,28 +657,136 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
   recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-glossary/business-glossary
   note: "UX onboarding gap; pairs with H-004. Could be a small UI fix (distinguish the two empty states) rather than a doc caveat — maintainer's call."
 
-### probes_emitted
-- probe_id: P-360
-  hypothesis_id: H-009
-  probe_path: "lineage/odd-platform/probes/P-360.yaml"
-- probe_id: P-361
+### functional_test_demands
+# LSN-030 (Rule 11) — every UNVERIFIED promise (use_case) becomes a missing-functional TEST-GAP
+# candidate. This is the bridge the v0.2.0 confirmed-hypothesis path was missing: H-002/H-003/H-006/
+# H-010 are CONFIRMED-but-untested and now demand a guard instead of routing to none.
+- use_case_id: F-024-UC-002
+  hypothesis_id: H-002
+  kind: happy-path
+  promise: "Selecting a namespace/tag/owner facet narrows the Dictionary results to matching terms."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-002)"
+  proposed_test: "e2e: seed two terms differing only by tag (or owner); open /termsearch, click the facet for term-A's tag, assert term-A shown + term-B filtered out. Add a unit slice test that the facet PUT carries the selected facet. (Also covers the NAMESPACES facet-OPTION empty-fetcher seam noted in H-002.)"
+- use_case_id: F-024-UC-003
+  hypothesis_id: H-003
+  kind: render
+  promise: "Infinite scroll loads the next 30 terms on scroll without losing already-loaded rows."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-003)"
+  proposed_test: "e2e: seed 31+ searchable terms (empty-query session lists all); open /termsearch, assert 30 rows, scroll to bottom, wait for GET .../results?page=2, assert >30 rows and the first page's rows still present. Unit: slice appends on page>1, replaces on page===1."
+- use_case_id: F-024-UC-004
+  hypothesis_id: H-004
+  kind: empty/no-match
+  promise: "The Dictionary first-view behaviour (empty search-with-facets, not a flat list) is what ships — regression guard for the DOC-178 framing."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-004)"
+  proposed_test: "e2e: open /termsearch on a populated catalog WITHOUT typing; assert the results table renders the empty/all-terms state per the documented contract (pins the search-with-facets behaviour so a future 'flat list' regression is caught)."
+- use_case_id: F-024-UC-005
+  hypothesis_id: H-005
+  kind: happy-path
+  promise: "Rapid facet clicks coalesce into one PUT (the advertised 1500ms debounce) — currently broken."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-005)"
+  proposed_test: "Unit/component: render TermSearch, fire 5 facet clicks within 1500ms, count updateTermSearch dispatches. Pin the CURRENT buggy behaviour (5 dispatches) as a characterization test per LSN-029, flip to assert 1 when PLT-017 lands."
+- use_case_id: F-024-UC-006
+  hypothesis_id: H-006
+  kind: resolve-later
+  promise: "A shared /termsearch/{uuid} URL restores the same filtered view for a colleague."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-006)"
+  proposed_test: "e2e: open /termsearch, apply a facet, capture the /termsearch/{uuid} URL, open it in a fresh context, assert the facet state restored. Backend unit: updateFacets then getFacets returns the persisted facetState."
+- use_case_id: F-024-UC-007
+  hypothesis_id: H-007
+  kind: edit-reconcile
+  promise: "Facet-then-Enter does not silently drop the just-clicked facet."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-007)"
+  proposed_test: "Backend unit on TermSearchServiceImpl.updateFacets: apply a facet, then apply a form with an empty filter group + a query; assert whether the prior facet survives the FacetStateDto.merge (settles server- vs client-side loss). Then a component test for the client last-write-wins window."
+- use_case_id: F-024-UC-008
   hypothesis_id: H-008
-  probe_path: "lineage/odd-platform/probes/P-361.yaml"
-- probe_id: P-362
+  kind: resolve-later
+  promise: "A stale-session bookmark recovers (fresh session) instead of a frozen empty page."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-008)"
+  proposed_test: "e2e: create a session, DIRECT DB UPDATE search_facets.created_at = NOW() - INTERVAL '31 days' (or DELETE the row to simulate eviction), reload /termsearch/{uuid}, assert the UI recovers (fresh session + catalog) rather than a frozen empty page. The backend 404 is already guarded by TermSearchServiceImplTest; this is the FRONTEND-recovery guard."
+- use_case_id: F-024-UC-009
+  hypothesis_id: H-009
+  kind: empty/no-match
+  promise: "A malformed-tsquery search returns a graceful empty result, not a sticky session-poisoning 500."
+  verdict: probe-needed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-009) — gated on PENDING-F-024-1"
+  proposed_test: "Integration (mirror IT-003 onto /termsearch): POST /api/terms/search {query:'foo )('}, assert graceful (no 500); then GET .../results assert no sticky 500. Pin the current behaviour first if it 500s (characterization), flip on the JooqFTSHelper fix."
+- use_case_id: F-024-UC-010
   hypothesis_id: H-010
-  probe_path: "lineage/odd-platform/probes/P-362.yaml"
+  kind: teardown
+  promise: "A deleted term never appears in Dictionary search results or the suggestions dropdown."
+  verdict: confirmed
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-010)"
+  proposed_test: "Integration: seed a searchable term, confirm it is findable, delete it (soft-delete), re-run the search + suggestions, assert it is ABSENT. Guards the DELETED_AT-IS-NULL masking JOIN against a future refactor that drops it (the latent-landmine becomes user-visible if the JOIN is lost)."
+- use_case_id: F-024-UC-011
+  hypothesis_id: H-011
+  kind: cross-actor
+  promise: "The catalog-wide read-collaborative posture is intentional — every authenticated user sees every namespace's terms (pin the architectural stance)."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-011)"
+  proposed_test: "Integration (DISABLED or two LDAP users): seed terms in namespace-A and namespace-B; assert the Dictionary search for a generic query returns BOTH to a single caller (pins the read-collaborative posture per system-mission.md:267 so a future 'add namespace scoping' change is a conscious, tested decision)."
+- use_case_id: F-024-UC-012
+  hypothesis_id: H-012
+  kind: resolve-later
+  promise: "A create/restore-session failure shows an error/retry, not a silent frozen empty page."
+  verdict: contradicted
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-012)"
+  proposed_test: "Component: mock createTermSearch to reject (500 / network), render TermSearch, assert an error/retry surface (not a frozen empty page). Overlaps UC-008's frontend fix; one .rejected reducer + error boundary satisfies both."
+- use_case_id: F-024-UC-013
+  hypothesis_id: H-013
+  kind: empty/no-match
+  promise: "The empty state distinguishes 'glossary is empty, add a term' from 'your search missed'."
+  verdict: partial
+  coverage: unverified
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id F-024-UC-013)"
+  proposed_test: "Component: render TermSearchResults with (a) !total && !query && empty(filters) -> assert onboarding copy + 'Add term' affordance; (b) !total && query -> assert 'No matches found'. Currently both render the same string — pin the gap, flip when the two-empty-states fix lands."
+
+### probes_emitted
+- probe_id: PENDING-F-024-1
+  hypothesis_id: H-009
+  status: pending-reflection-verification
+  emitted_by: feature-reflector
+  local_execution_blocked: false
+  hypothesis_text: "When a user types a query containing PostgreSQL tsquery operator characters (e.g. 'foo )(') into the Dictionary search box, the platform returns a graceful empty result, not a persistent HTTP 500 that breaks the session for everyone who later opens its URL."
+  expected_outcome: "POST /api/terms/search {query:'foo )('} returns 200 with a graceful (possibly empty) result; GET /api/terms/search/{id}/results returns 200 (not a sticky 500) on repeat opens of the persisted session."
+  procedure: |
+    Local docker-compose odd-minimal (AUTH_TYPE=DISABLED). 1) POST /api/terms/search
+    {"query":"foo )(","filters":{}} — record status (expect either graceful 200 or a
+    500 from JooqFTSHelper.tsQuery, JooqFTSHelper.java:164-168). 2) If a searchId was
+    issued, GET /api/terms/search/{searchId}/results — record status (a 500 here on a
+    persisted poisoned query proves the sticky-session DoS). 3) Compare against IT-003's
+    finding on the data-entity /api/search surface (same JooqFTSHelper). Settles whether
+    the F-017 PLT-090 defect reproduces on the /termsearch surface.
+  note: "PARALLEL-SAFE mode — recorded here only; no P-NNN file created. The orchestrator/maintainer mints the P-NNN + the TEST-GAP (UC-009)."
 
 ### validation_gaps
-- sidecar: "(chain gap) TermSearchService / TermSearchServiceImpl — NOT enriched"
-  field_insufficient: "The entire search-session orchestration (search_facets persistence keyed by the Term session UUID, the query_string → to_tsquery write path, the eviction contract, getFacets/updateFacets/getFilterOptions) is the load-bearing hop between TermController and the repositories, and it has no sidecar. F-024 hop 3 marks it transitive/un-enriched."
-  proposed_refresh: "Enrich TermSearchServiceImpl as a file-analyser node so H-008 (eviction-recovery), H-009 (tsquery persistence), and the per-caller session-ownership posture can be verdicted statically instead of by probe. This single missing node is why 3 of 13 hypotheses are probe-needed rather than confirmed/contradicted."
+- sidecar: "(now-resolvable) TermSearchServiceImpl — STILL has no file-analyser sidecar, but the SOURCE now exists and was read for this reflection"
+  field_insufficient: "At v0.2.0 the entire search-session orchestration (search_facets persistence, query->FacetStateDto write path, the eviction NotFound contract, getFacets/updateFacets/getFilterOptions) had NO sidecar AND was assumed un-enriched, forcing 3 probe-needed verdicts. The source (TermSearchServiceImpl.java, 134 lines) + its unit test (TermSearchServiceImplTest) now EXIST and resolved H-008 (NotFound contract, confirmed-contradicted) and H-010 (via the repository JOIN). Only H-009 (JooqFTSHelper throw on this path) still needs a probe."
+  proposed_refresh: "Enrich TermSearchServiceImpl as a file-analyser node (node_id 'odd-platform java service service:TermSearchServiceImpl') and add it as F-024 hop-3.5 between TermController and the repositories. This closes the last static gap: the fetchFacetState NotFound contract, the FacetStateDto.merge semantics (H-007 server-side), and the raw-query-persist-before-eval path (H-009 mechanism) all become first-class sidecar claims instead of source-read-for-validation citations. This single node is why F-024 carried 3 probe-needed at v0.2.0 — it now carries 1."
 
 ### doc_drift_findings
 - hypothesis_id: H-004
   doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
   doc_says: "(pre-2026-05-28) 'The Dictionary tab is the catalog-wide list of all terms in the platform.'"
   code_does: "First mount creates an empty-query search session and renders an empty results table until the user searches/filters."
-  recommended_log_as: "already remediated — DOC-178 (done) rewrote the framing to 'server-side faceted-search session' with empty-first-view caveat; no new doc-gap."
+  recommended_log_as: "already remediated — DOC-178 (done) rewrote the framing to 'server-side faceted-search session' with empty-first-view caveat; no new doc-gap. IT-019 also encodes the drift in its protocol."
 - hypothesis_id: H-011
   doc_url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
   doc_says: "'Searches and term-to-entity link operations resolve within the namespace by default.'"
@@ -575,4 +795,7 @@ For a demo, the product owner would flag four edges: the tab opens to an **empty
 
 ## maintainer_notes
 
-(none — first reflection for F-024; no prior maintainer-curated content to preserve)
+(none — v0.3.0 refresh of the 2026-06-01 v0.2.0 reflection; no maintainer-curated hypotheses
+to preserve. maintainer_curated: false on the prior reflection, so all auto-derived content
+refreshed; substance preserved + extended with the IT-019 / TermSearchServiceImplTest /
+TermSearchServiceImpl-source evidence that settled 2 of 3 prior probe-needed verdicts.)

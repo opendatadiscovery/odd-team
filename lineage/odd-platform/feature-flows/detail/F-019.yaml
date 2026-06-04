@@ -1120,6 +1120,190 @@ observed_vs_expected:
       bugs_limitations_corner_cases[6] + deleteOwner sidecar (batch P)
       bugs_limitations_corner_cases[6] + REFACTOR-185.md. Severity:
       LOW (corollary of REFACTOR-185; DISABLED is dev-only per docs).
+use_cases:
+  # LSN-030 / feature-reflector Rule 11 — the PROMISE layer. Each use_case is the
+  # compact projection of a F-019 reflection hypothesis (uc_id == hypothesis id),
+  # stated as a falsifiable user-facing promise. The full hypothesis + 4-verdict
+  # validation lives in feature-reflections/detail/F-019.yaml. coverage is `verified`
+  # ONLY when a REAL test asserts THIS promise (sidecar covered_behaviours + a Grep of
+  # the odd-platform unit tree AND the odd-team integration-tests tree); otherwise
+  # `unverified` + a missing-functional test demand. Authored 2026-06-04 by
+  # feature-reflector/0.3.0. Idempotent refresh: any use_case carrying
+  # maintainer_curated: true is preserved verbatim (none yet).
+  - uc_id: H-001
+    kind: render
+    promise: "An operator or auditor can reconstruct who created/renamed/deleted an Owner and when, from a platform audit surface."
+    actor: "platform-operator / compliance-auditor"
+    trace: "OwnerServiceImpl.java:38-122 (zero @ActivityLog) → activity schema V0_0_48__add_activity.sql:4,12 (data_entity_id NOT NULL) — chain hop 2"
+    verdict: contradicted
+    severity: HIGH
+    coverage: unverified
+    test_demand: "missing-functional (regression guard for the fix AND a pin of the current audit-silence contract)"
+  - uc_id: H-002
+    kind: edit-reconcile
+    promise: "An operator editing an Owner to rename it keeps the roles they did not explicitly remove, or is warned before role bindings are destroyed."
+    actor: odd-platform-ui-end-user
+    trace: "OwnerForm.tsx:40-43,73-86,108-117 (Save valid with roles:[]) -> OwnerServiceImpl.java:76-81,117-122 (notIn(empty) tautology DELETE) — UI hop + chain hop 2"
+    verdict: contradicted
+    severity: HIGH
+    coverage: unverified
+    test_ref_pin: "OwnerRoleStripKnownBugTest (@pins PLT-066 — pins the BUG, not the promise; goes RED when the promise is honored)"
+    test_demand: "missing-functional (the promise — Save with cleared roles must confirm/preserve; UI flow + service)"
+  - uc_id: H-003
+    kind: edit-reconcile
+    promise: "An API consumer issuing PUT /api/owners/{id} with `roles` omitted (PATCH-merge convention) keeps the existing role bindings."
+    actor: odd-api-consumer
+    trace: "OwnerServiceImpl.java:117-122 (CollectionUtils.isEmpty collapses null==empty) + components.yaml:419-422 (roles optional) — chain hop 2"
+    verdict: contradicted
+    severity: HIGH
+    coverage: unverified
+    test_ref_pin: "OwnerRoleStripKnownBugTest.putWithoutRolesStripsAllBindings_knownBug_PLT066 (@pins PLT-066 — characterization pin of the buggy null==empty collapse)"
+    test_demand: "missing-functional (behavioral: omitted roles must NOT strip — the StepVerifier the @pins flips to on fix)"
+  - uc_id: H-004
+    kind: cross-actor
+    promise: "An Owner directory row cannot enter the catalog without the OWNER_CREATE permission the /permissions doc describes."
+    actor: "platform-operator / data-steward-owner"
+    trace: "SecurityConstants.java:143 (path-anchored OWNER_CREATE) vs OwnerServiceImpl.java:38-42 getOrCreate reached from OwnerAssociationRequestServiceImpl:57 + OwnershipServiceImpl:52 + TermOwnershipServiceImpl:35 — chain hop 2 + upstream callers"
+    verdict: partial
+    severity: HIGH
+    coverage: unverified
+    test_demand: "missing-functional (assert a caller WITHOUT OWNER_CREATE mints an Owner via each side-door — pins the bypass until gated)"
+  - uc_id: H-005
+    kind: cross-actor
+    promise: "A non-privileged authenticated user cannot enumerate the full Owner directory (names + roles) of an admin surface."
+    actor: odd-platform-ui-end-user
+    trace: "SecurityConstants.java:143-147 (no GET rule) + OwnerController.java:30-38 (no @PreAuthorize) — chain hop 1"
+    verdict: contradicted
+    severity: MEDIUM
+    coverage: unverified
+    note: "IT-028 exercises GET /api/owners under AUTH_TYPE=DISABLED — it confirms the open-read contract but does NOT verify the gated-read PROMISE (which the code does not deliver); a real authz test needs the LDAP stack (only LDAP gives per-user roles locally)."
+    test_demand: "missing-functional (under LDAP: a zero-OWNER-permission user GETs /api/owners and currently succeeds — pin the read-collaborative posture)"
+  - uc_id: H-006
+    kind: grammar
+    promise: "A client creating an Owner via POST /api/owners receives the HTTP status the OpenAPI spec declares."
+    actor: odd-api-consumer
+    trace: "openapi.yaml:165-171,195-201 (declares 201) vs OwnerController.java:26,53 (returns 200) — chain hop 1a/1b"
+    verdict: contradicted
+    severity: MEDIUM
+    coverage: unverified
+    test_demand: "missing-functional (@WebFluxTest asserting POST create + PUT update status code against the spec contract)"
+  - uc_id: H-007
+    kind: teardown
+    promise: "After an operator deletes an Owner (gone from the list), a GET /api/owners/{id} for it returns 404 — deletion is consistent across list and by-id."
+    actor: "platform-operator / odd-api-consumer"
+    trace: "ReactiveOwnerRepositoryImpl.java:65-83 (getDto no deleted_at filter) vs :86-121 (list filtered) — chain hop 3 (unresolved)"
+    verdict: partial
+    severity: MEDIUM
+    coverage: unverified
+    test_ref_partial: "OwnerServiceImplTest.getOwnerDtoById_nonExistent_errorsNotFound — covers ONLY the never-existed->404 half; the soft-deleted-by-id leak (the contradicted half) is untested"
+    test_demand: "missing-functional (delete then GET by-id must 404 for the soft-deleted Owner — the half no test covers)"
+  - uc_id: H-008
+    kind: teardown
+    promise: "Deleting an Owner immediately revokes its role-conferred permissions (no orphan grant) and frees the name for a fresh Owner."
+    actor: platform-operator
+    trace: "OwnerServiceImpl.java:97 deleteOwnerRelationsExcept(id, List.of()) hard-delete + soft-delete UPDATE; V0_0_64:68-70 partial unique index — chain hop 1c + hop 2"
+    verdict: confirmed
+    severity: LOW
+    coverage: unverified
+    test_ref_partial: "OwnerServiceImplTest.delete_ownerWithNoAttachedResources_clearsRolesThenDeletes — verifies (a) hard-delete-of-bindings + soft-delete; the (b) NAME-REUSE-after-soft-delete half is UNTESTED"
+    test_demand: "missing-functional — LSN-030 HEADLINE: a CONFIRMED promise whose name-reuse half has no guard (integration: POST{name:X} -> DELETE -> POST{name:X} succeeds with a fresh id)"
+  - uc_id: H-009
+    kind: teardown-constraint
+    promise: "Deleting an Owner that still owns entities/terms or has a live user mapping is refused with a clear reason — no orphaned ownership."
+    actor: platform-operator
+    trace: "OwnerServiceImpl.java:90-96 (3-leg Mono.zip cascade-block -> CascadeDeleteException/USR004); 4th leg owner_association_request missing (V0_0_51:11 FK no ON DELETE) — chain hop 2"
+    verdict: partial
+    severity: MEDIUM
+    coverage: unverified
+    test_ref_partial: "OwnerServiceImplTest.delete_ownerWithExistingOwnership_* + delete_ownerAssociatedWithUser_* — cover the ownership + user-mapping legs; the termOwnership leg in isolation AND the missing 4th (owner_association_request) leg are UNTESTED"
+    test_demand: "missing-functional (per-leg cascade-block tests incl. termOwnership; plus the orphan-association-request gap — delete then approve a pending request must not bind to a dead Owner)"
+  - uc_id: H-010
+    kind: edit-reconcile
+    promise: "Renaming an Owner preserves every associated user's binding (rename is a label change, not an identity change)."
+    actor: platform-operator
+    trace: "V0_0_4__add_user_owner_mapping.sql:3 (FK by owner.id, stable across name) + OwnerServiceImpl.java:75 (rename via mapper) — chain hop 1b + hop 2"
+    verdict: confirmed
+    severity: LOW
+    coverage: unverified
+    test_demand: "missing-functional — LSN-030 HEADLINE: a CONFIRMED load-bearing safe-rename invariant with NO test at all (integration: seed user_owner_mapping -> PUT rename -> mapping still resolves to the same Owner; guards a future FK-by-name regression)"
+  - uc_id: H-011
+    kind: grammar
+    promise: "Renaming two Owners to the same name rejects the second with a 409 Conflict a client can distinguish from a bad-input error."
+    actor: odd-api-consumer
+    trace: "V0_0_64:70 (owner_name_unique) -> ControllerAdvice.handleUniqueConstraint -> USR003/HTTP 400 (not 409) — chain hop 2 + ControllerAdvice node"
+    verdict: contradicted
+    severity: LOW
+    coverage: unverified
+    test_demand: "missing-functional (integration: collision on create AND rename returns USR003/400 — pin the current contract OR assert 409 if adopted)"
+  - uc_id: H-012
+    kind: teardown
+    promise: "After deleting an Owner, the deleted Owner's name stops surfacing in catalog search."
+    actor: odd-platform-ui-end-user
+    trace: "OwnerServiceImpl.java:82,109-114 (update refreshes FTS) vs :87-100 (delete does NOT) — chain hop 2"
+    verdict: contradicted
+    severity: MEDIUM
+    coverage: unverified
+    test_demand: "missing-functional (delete an Owner then search the catalog — the deleted name must not match; asserts FTS hygiene parity with update)"
+  - uc_id: H-013
+    kind: cross-actor
+    promise: "A concurrent Owner delete and ownership-attach serialise so no ownership row ever points at a deleted Owner."
+    actor: "platform-operator / odd-collector-runtime"
+    trace: "OwnerServiceImpl.java:88-100 (cascade-check + soft-delete, no forUpdate, READ COMMITTED) — chain hop 2"
+    verdict: probe-needed
+    severity: MEDIUM
+    coverage: unverified
+    test_demand: "probe PENDING-F-019-1 (was P-340) — local Testcontainers concurrency probe; TOCTOU window observability requires RUNNING the system"
+  # Verified promises NOT among the 13 hypotheses — recorded so use_case_coverage
+  # reflects the true verified/total frontier (these are real F-019-validating tests
+  # found by Grep; each asserts a delivered promise the chain honors).
+  - uc_id: H-014
+    kind: happy-path
+    promise: "An operator searching the Owners management list by name sees the matching Owner and only the match (non-matches filtered)."
+    actor: platform-operator
+    trace: "OwnersList.tsx -> GET /api/owners?query= (debounced server-side filter) — UI hop + chain hop 1"
+    verdict: confirmed
+    severity: LOW
+    coverage: verified
+    test_ref: "IT-028 (integration-tests/e2e/specs/owners-management-search.spec.ts — @validates F-019; success + empty/no-match negative)"
+    test_demand: none
+  - uc_id: H-015
+    kind: happy-path
+    promise: "An operator can create a new Owner from the Owners tab, and the Create button stays disabled until a non-blank name is entered."
+    actor: platform-operator
+    trace: "OwnerForm.tsx:73-86 (name required validate) + POST /api/owners -> OwnerServiceImpl.create — UI hop + chain hop 1a/2"
+    verdict: confirmed
+    severity: LOW
+    coverage: verified
+    test_ref: "odd-platform/tests/features/owners/add-owner.spec.ts (Add new Owner + Cleanup input disables Create)"
+    test_demand: none
+  - uc_id: H-016
+    kind: render
+    promise: "A data entity's Overview renders its assigned owners (and none when unassigned) — the directory's owners reach the read surface."
+    actor: odd-platform-ui-end-user
+    trace: "ownership rows -> DataEntity Overview owners panel (cross-pillar P-01 consumer of the Owner directory) — F-019 shares_data_with P-01"
+    verdict: confirmed
+    severity: LOW
+    coverage: verified
+    test_ref: "IT-015 (integration-tests/e2e/specs/entity-owners-display.spec.ts — @validates F-019; renders assigned owners + none-when-unassigned)"
+    test_demand: none
+use_case_coverage:
+  verified: 3
+  total: 16
+  note: |-
+    SECOND COVERAGE FRONTIER (verified promises / total promises) — distinct from
+    line/method coverage and from the test_matrix test-type cells. 3/16 verified.
+    Of the 13 reflection hypotheses (H-001..H-013) ZERO promises are verified: 7
+    contradicted + 3 partial + 1 probe-needed carry no promise-asserting test, AND
+    BOTH confirmed hypotheses (H-008 delete-revocation+name-reuse, H-010 safe-rename)
+    are CONFIRMED-BUT-UNTESTED — the exact LSN-030 hole: H-010's safe-rename invariant
+    has no test at all, H-008's name-reuse half is unguarded (only the hard-delete half
+    is asserted by OwnerServiceImplTest). The only verified promises are the three
+    NON-hypothesis use_cases (H-014 list-search via IT-028, H-015 create via add-owner
+    spec, H-016 owners-render via IT-015). PLT-066 is PINNED (OwnerRoleStripKnownBugTest)
+    but a pin guards the BUG, not the H-002/H-003 promise. A user-facing Management CRUD
+    feature sitting at 0/13 verified HYPOTHESIS-promises is itself the headline finding:
+    13 functional test demands routed for TEST-GAP minting (12 missing-functional + 1
+    probe). See feature-reflections/detail/F-019.yaml cross_references.functional_test_demands.
 test_matrix:
   unit:
     state: GAP

@@ -59,7 +59,7 @@ Derive these (the skill does this; the agent receives them as inputs):
 - **CONCEPTS_YAML_PATH**: `lineage/{repo}/concepts.yaml`. Confirm exists; otherwise abort with "no concepts — run `/concepts` first".
 - **EXISTING_REFLECTION**: read `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml` if present; pass verbatim so the agent preserves `maintainer_curated: true` hypotheses.
 - **TARGET_PATH**: `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml`.
-- **INDEX_PATH**: `lineage/{repo}/feature-reflections/index.yaml`.
+- **INDEX_PATH**: RETIRED (2026-06-04 directive). No index file is written — navigation is the derived graph + the graph-retriever; the detail file is embedded on the next `graph-build`. Do not pass INDEX_PATH.
 
 If the `feature-reflections/` directory does not exist, the agent's Write will create it (Write tool creates parent dirs).
 
@@ -78,10 +78,9 @@ SYSTEM_MISSION_PATH: <relative>
 CONCEPTS_YAML_PATH: <relative>
 EXISTING_REFLECTION: <verbatim YAML if present, OR "none">
 TARGET_PATH: <relative>
-INDEX_PATH: <relative>
 ```
 
-The subagent reads the inputs, runs the 8-step workflow defined in its system prompt, writes the reflection + updates the index, and replies with two lines (Wrote: + Reflection summary).
+The subagent reads the inputs, runs the 8-step workflow defined in its system prompt, writes the reflection detail (the SOLE artefact — no index file; see its Rule 5) + the feature-flow `use_cases` promise layer, and replies with two lines (Wrote: + Reflection summary).
 
 ### 5. Parse the reply + surface the headline
 
@@ -112,5 +111,5 @@ The skill produces NO artefact of its own (the agent does). Just surface the ref
 - `.claude/agents/feature-reflector.md` — the subagent's system prompt.
 - `retrospectives/LSN-020-activity-userids-filter-binds-to-owner-id-no-top-down-reflection.md` — the case-law that motivated this skill.
 - `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml` — the canonical output path.
-- `lineage/{repo}/feature-reflections/index.yaml` — the registry + per-batch discovery delta.
+- (`feature-reflections/index.yaml` is RETIRED — navigation is the derived graph + the graph-retriever; refresh with `graph-build {repo}`. See ADR-0077.)
 - `.claude/skills/code-walk/SKILL.md` — the closest sibling skill (feature-advisor query-time, vs feature-reflector refresh-time).

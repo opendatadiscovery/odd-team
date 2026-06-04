@@ -345,6 +345,16 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
 - Count: **37 ITs total** (IT-035/036/037 ingestion-family via the helper). NOTE: use_case_coverage flips
   for F-030/F-055 are BATCHED (pending a reconciliation pass) — per-IT traceability is in the protocol
   `gates.validates`. Next tractable: F-095 stats, F-123 deletion-recreate, F-008 UC-13 lineage-edge half.
+- 2026-06-04 — IT-038 (F-123 Deletion Semantics) — e2e:deletion-recreate-semantics.spec.ts. create
+  datasource → DELETE (204) → re-create same name+oddrn → **200** (soft-delete is not a unique-constraint
+  landmine — DATA-LOSS contract holds); + delete is effective (gone from the active list, JSON-parsed to
+  dodge the SPA fallback). **GREEN (2 passed 893ms).** Distinct axis (resource lifecycle, not ingestion).
+- **38 ITs total** (035-038 this grind: F-008/F-030/F-055/F-123). PENDING RECONCILIATION (wind-down or a
+  fresh wakeup): (1) add IT-038 to feature-complete+ui-e2e+I5; (2) flip use_case_coverage for F-030/F-055/
+  F-123 (read each feature's use_cases, set the verified promise `coverage: verified` + `test_ref` + bump
+  the counter, like F-008 did); (3) re-ingest the ontology graph. Next tractable critical: F-095 stats
+  (POST /ingestion/entities/datasets/stats→201, needs DataSetField + DatasetStatisticsList shapes),
+  F-008 UC-13 lineage-edge half (transformer payload), F-047 column annotation, F-096 batch atomicity.
 
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`

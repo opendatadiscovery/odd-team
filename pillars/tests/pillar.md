@@ -34,6 +34,10 @@ ODD distinguishes tests **functionally**, by what boundary they cross — not by
 
 **The e2e-vs-integration argument is dissolved.** A browser UI→backend→DB flow is the *user-observable subset* of integration; adding a collector or a 3rd-party webhook is the *cross-system subset*. Both are **integration**, both live in odd-team. "e2e" is a sub-label, **not a third bucket**. We do not argue about it again.
 
+**The home rule (the practical discriminator).** The deciding question is *not* "does it touch a DB?" — it is **"does it need external orchestration (a docker-compose stack, a browser, a real 3rd party) plus a written run protocol?"**
+- **No → odd-platform CI.** Anything that runs inside `./gradlew build` belongs here: pure unit (Mockito/StepVerifier), WebFlux slice (`@WebFluxTest` / `WebTestClient`), and **in-process Testcontainers DB tests** (`BaseIntegrationTest`). Crossing the DB via Testcontainers is still CI-resident — it needs no separate protocol.
+- **Yes → odd-team `integration-tests/`.** Browser e2e (Playwright), collectors, Slack/S3-MinIO/LDAP/OAuth, multi-replica failover — anything requiring `run-suite.sh` + a docker-compose `IT-NNN` protocol with documented preparation.
+
 ### Probes are not a bucket
 
 A **probe** (`P-NNN`) is a one-shot measurement run against an ephemeral local stack to turn an *inferred* hypothesis into a *measured* fact cheaply — its job is to de-risk authoring the durable test. A `PROBED` test-matrix cell is **not coverage**. Every probe worth keeping **graduates** into a unit or integration test that lives in CI/the suite and carries a gate; the rest are discarded. Probes are scaffolding, never a deliverable.

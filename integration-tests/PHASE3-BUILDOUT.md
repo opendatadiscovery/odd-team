@@ -333,9 +333,15 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   (`docker-compose -p probe-stacks -f probe-stacks/odd-minimal.docker-compose.yml up -d`) + run each IT
   with `ODD_STACK_EXTERNAL=1 run-suite.sh IT-NNN` → **~1-2s per IT** (vs ~28s with churn). Probed
   feature-gating: metrics ENABLED (POST /ingestion/metrics→201), stats ENABLED (→201), lineage real
-  (json). ⚠ NEW KEY LESSON 5: a GET to ANY unmatched path returns **200 text/html (the SPA index.html
-  fallback)** — so /v3/api-docs + /swagger-ui "200" are FALSE (no runtime spec/swagger shipped →
-  F-097/F-029 NOT runtime-testable). Always check `content_type` (application/json = real API) on GET probes.
+  (json). ⚠ KEY LESSON 5 (CORRECTED 2026-06-04 — I got this WRONG first; maintainer caught it): a GET to
+  ANY unmatched path returns **200 text/html (the SPA index.html fallback)**, so a 200 on a GET proves
+  nothing — ALWAYS check `content_type` (application/json = real API) AND read the CONFIG for the
+  configured path. I probed the springdoc DEFAULT paths (/v3/api-docs, /swagger-ui), hit the SPA
+  fallback, and FALSELY concluded "no swagger shipped / F-097 not runtime-testable". WRONG: odd-platform
+  ships `springdoc-openapi`; application.yml configures it (paths SWAPPED) at UI=`/api/v3/api-docs`
+  (302→webjars shell 200) + JSON spec=`/api/v3/swagger-ui.html`. The UI shell loads; the SPEC HANGS
+  (springdoc 2.2.0 × Spring 6.2 `NoSuchMethodError` → PLT-141). F-097 IS testable → IT-042 (UI-shell
+  lock + spec-hang pin). LESSON: never conclude a feature is ABSENT from a default-path probe — read the build+config.
 - 2026-06-04 — IT-036 (F-030 Metrics Ingestion) — e2e:metrics-ingestion.spec.ts. Collector ingests a GAUGE
   family (POST /ingestion/metrics→201) → GET /api/dataentities/{id}/metrics serves it back; no-metrics
   entity → no family. **GREEN (2 passed 1.8s).** Helper ingest.ts +ingestMetrics/gaugeFamily/getEntityMetricsBody.

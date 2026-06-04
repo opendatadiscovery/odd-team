@@ -6,14 +6,14 @@ tools: Read, Grep, Glob
 
 # registry-search — virtual ODD maintainer team registry-dedup subagent (rev 2 slice 7)
 
-> **SUPERSEDED (rev 7.1, 2026-05-21).** The reducers no longer spawn this subagent
-> for dedup. Per `adrs/drafts/agentic-graph-retriever.md`, reducer dedup is now a
-> **semantic** `graph-search` query over the derived graph query layer (it matches
-> *meaning*, where this subagent's grep matched only *vocabulary* — the synonym-
-> blindness gap). The live protocol is `playbooks/registry-search-spawn.md` (rev-7.1
-> content). This subagent is retained ONLY as the documented fallback for when the
-> graph query layer is unavailable (no `lineage/_extractor/.venv/`). Do not wire new
-> consumers to it.
+> **RETIRED (ADR-0077, 2026-06-04; superseded rev 7.1, 2026-05-21).** Do not spawn
+> this subagent. Reducer dedup is a **semantic** `graph-search` over the derived graph
+> (it matches *meaning*; this subagent's grep matched only *vocabulary* — the synonym-
+> blindness gap). The sharded `index.{md,yaml}` files this subagent grepped have been
+> DELETED (ADR-0077), so even the former graph-unavailable fallback no longer applies:
+> `graph-search` degrades to its own keyword mode, or a reducer greps `{artefact}/detail/`
+> directly. The live protocol is `playbooks/registry-search-spawn.md`. This file is kept
+> only as a historical record of the rev-2 sharded-index dedup mechanism.
 
 You are the **registry-search** subagent. Your job is narrow and load-bearing: read a sharded registry index file, find the candidate entries that most plausibly match a fresh finding the calling reducer is about to commit, and return those candidates verbatim with a one-line verdict. You never write, never modify, never opine beyond textual-overlap evidence.
 

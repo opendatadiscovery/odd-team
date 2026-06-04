@@ -279,13 +279,13 @@ Add `processed_node_ids:` to the catalog frontmatter (newline-separated list of 
 
 ## Rule (rev 7.1) — Dedup via semantic search over the graph query layer
 
-**Through rev 2-7, dedup spawned the `registry-search` subagent — a grep over the sharded `concepts/index.yaml`. Grep matches *vocabulary*; it misses a concept phrased in different words. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning*.** Follow `playbooks/registry-search-spawn.md` (the rev-7.1 semantic-dedup protocol). The sharded shape is unchanged — `concepts/{index.yaml, detail/{kind}/{slug}.yaml}`; you still never load the full `index.yaml`.
+**Through rev 2-7, dedup spawned the `registry-search` subagent — a grep over the sharded `concepts/index.yaml`. Grep matches *vocabulary*; it misses a concept phrased in different words. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning*.** Follow `playbooks/registry-search-spawn.md` (the rev-7.1 semantic-dedup protocol). The sharded headline index is RETIRED (ADR-0077) — `concepts/index.yaml` is no longer written; `concepts/detail/{kind}/{slug}.yaml` is the SOLE canonical artefact and the derived graph (built by `graph-build`) is what you query. Dedup is `graph-search` over that graph; there is no index file to load.
 
 For every fresh concept (or canonicalisation candidate) you're about to commit:
 
 - Run, from the workspace root: `lineage/_extractor/.venv/bin/lineage-extractor graph-search {repo} "{QUERY_TEXT}" --label Concept --k 8 --json`. `QUERY_TEXT` is the candidate's discriminating fields: name + description + axes_present + contributing sidecar slugs + (if applicable) `canonical_in_docs` URL or `proposed_canonical` text.
 - For each promising candidate, `graph-node {repo} "{concept_id}" --json` to read its full content. Then decide:
-- **No candidate is the same concept** → write `detail/{kind}/{slug}.yaml` with the full concept content, append a headline under `by_kind.{kind}` in `index.yaml` matching the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py:shard_concepts`).
+- **No candidate is the same concept** → write `detail/{kind}/{slug}.yaml` with the full concept content. The `detail/{kind}/{slug}.yaml` file is the SOLE canonical artefact — no index is written; the headline is embedded into the derived graph by `graph-build`.
 - **One candidate IS the same concept** → read `detail/{kind}/{slug}.yaml`, append the new sidecar to `contributors`, merge new `nodes` (dedup by node_id), refresh aggregates (`security_aggregate.weaknesses`, `performance_aggregate.weaknesses`) additively, recompute `overall` on the union. Do NOT rewrite existing `description` prose unless the candidate proposes a refined definition (append a `## REFINED — {batch_id}` block, do not replace).
 - **Two or more candidates are plausibly the same and you cannot disambiguate** → mint a new slug with `maintainer_triage_pending: true` + an ambiguity block naming the candidate ids; surface in the investigator-log.
 
@@ -298,7 +298,7 @@ Never auto-merge two concept entries even when they appear identical (e.g., "Dat
 `lineage/{repo}/system-mission.md` (produced once per substrate scan by `domain-extractor`) is the doc-anchored 8-12-pillar shape for the project. When clustering concept candidates:
 
 - Anchor concept naming on the pillar vocabulary FIRST, then on `documentation/docs/main-concepts.md`, then on the maintainer-curated catalog. If a concept aligns with a pillar's `primary user actions` or `data entities operated on`, use the pillar's term verbatim.
-- For each cluster of sidecar-surfaced concepts that doesn't map cleanly to an existing pillar's vocabulary, surface a `canonical_candidate` entry in `concepts/index.yaml` and cross-reference `system-mission.md`'s canonicalisation_candidates block.
+- For each cluster of sidecar-surfaced concepts that doesn't map cleanly to an existing pillar's vocabulary, record the `canonical_candidate` in the concept's own `detail/{kind}/{slug}.yaml` file and cross-reference `system-mission.md`'s canonicalisation_candidates block (no index is written).
 - Per-concept `pillar_affinity:` field (NEW): every concept entry gains a `pillar_affinity: [P-NN, P-NN]` field naming which pillars it serves. Concepts spanning >2 pillars are integration-boundary concepts (worth probing).
 
 If `system-mission.md` does not exist, log a quality warning at the head of the catalog refresh and continue with rev-2 behaviour for this batch — but flag the situation in the maintainer-facing reply so Layer 0 is initialised before the next batch.
@@ -345,8 +345,7 @@ DEDUP (Rule 2/3) catches *"do we already have this fact?"* — same-registry dup
 **Procedure.**
 
 1. **Extract anchors** from the proposed finding text: class names, file:line citations, Spring config keys (with dots), migration filenames, pillar-anchored feature IDs (`P-NN:F-NNN`), snake_case table/column names.
-2. **Grep `feature-flows/index.yaml` + `feature-flows/detail/`** for each anchor. If matches → Read the matched detail files in full.
-3. **Grep the OTHER FOUR registries' index files** (`concepts/index.yaml`, `test-map/index.yaml`, `doc-gaps/index.md`, `refactoring-scopes/index.md`, `implicit-adrs/index.md`) for each anchor. For matches → Read 1-3 candidate detail files (cheapest signal first).
+2. **Look up each anchor over the derived graph** — `graph-search {repo} "{anchor}" --k 8 --json` (or `graph-node {repo} "{id}" --json` when the anchor is a known node id), per this file's own rev-7.1 dedup note above + `playbooks/registry-search-spawn.md`. The graph spans all registries (concepts, feature-flows, test-map, doc-gaps, refactoring-scopes, implicit-adrs), so a single graph query reaches every artefact type. For matches → `graph-node` to read the candidate's full content (cheapest signal first).
 4. **Classify the relationship** between the proposed finding and each cross-registry hit:
     - `STRENGTHENS` — same polarity (both assert the entity exists / behaves the same way). Emit with `related_features: [F-NNN]` back-link (or analogous list for the matched artefact type) added to the new file AND to the matched file.
     - `SUPERSEDES` — opposite polarity AND clear file:line evidence the new claim is correct. Emit with `superseded` block on the OLD artefact (`superseded_by: <new-id>`, `superseded_note: <reason>`) and `supersedes: [old-id]` on the NEW artefact. Reference LSN-018 in the supersede note.

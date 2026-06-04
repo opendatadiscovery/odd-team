@@ -386,15 +386,15 @@ If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag the
 
 ## Rule 7 (rev 7.1) — Dedup via semantic search over the graph query layer
 
-**Through rev 2-7, dedup spawned the `registry-search` subagent — a grep over the sharded `implicit-adrs/index.md` + `refactoring-scopes/index.md`. Grep matches *vocabulary*; it misses a decision or a gap phrased in different words. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning*.** Follow `playbooks/registry-search-spawn.md` (the rev-7.1 semantic-dedup protocol). The sharded shape is unchanged — `implicit-adrs/{index.md, detail/{ID}.md}` and `refactoring-scopes/{index.md, detail/{ID}.md}`; you still never load the full `index.md`.
+**Through rev 2-7, dedup spawned the `registry-search` subagent — a grep over the sharded `implicit-adrs/index.md` + `refactoring-scopes/index.md`. Grep matches *vocabulary*; it misses a decision or a gap phrased in different words. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning*.** Follow `playbooks/registry-search-spawn.md` (the rev-7.1 semantic-dedup protocol). The flat index files are RETIRED (ADR-0077): no `index.md` aggregate is written or read. `detail/{ID}.md` is the sole canonical artefact per finding (`implicit-adrs/detail/{ID}.md`, `refactoring-scopes/detail/{ID}.md`); dedup is a `graph-search` over the derived graph (which embeds the `detail/` corpus), never a grep over an index.
 
 For every fresh ADR-candidate AND every fresh refactoring scope you're about to commit, run a `graph-search` from the workspace root:
 
 - **For ADR candidates** — `lineage/_extractor/.venv/bin/lineage-extractor graph-search {repo} "{QUERY_TEXT}" --label ImplicitADR --k 8 --json`. `QUERY_TEXT` is the candidate's discriminating prose (decision statement + source sidecar's `implicit_adrs[N]` line + supporting sidecars' slugs).
 - **For refactoring scopes** — the same command with `--label RefactoringScope`. `QUERY_TEXT` is the scope title + source sidecar's `bugs_limitations_corner_cases[N]` text + node anchor + cross-references.
 - For each promising candidate, `graph-node {repo} "{ID}" --json` to read its full content. Then decide:
-  - **No candidate is the same** → mint NEXT_AVAILABLE_ID, write `detail/{NEW_ID}.md` with the full entry, append a multi-paragraph headline to `index.md` matching the existing entries' shape (`lineage/_extractor/registry-shard/shard.py:_index_headline_md` / `_index_headline_adr`).
-  - **One candidate IS the same** → read ONLY `detail/{ID}.md`, append the new sidecar to `surfaced_by`, append a `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new evidence. Do NOT rewrite existing prose. Update the index headline ONLY if severity / classification / category changed.
+  - **No candidate is the same** → mint NEXT_AVAILABLE_ID, write `detail/{NEW_ID}.md` with the full entry. The `detail/{ID}.md` file is the SOLE canonical artefact — no index is written; the finding is embedded into the derived graph by `graph-build` (ADR-0077).
+  - **One candidate IS the same** → read ONLY `detail/{ID}.md`, append the new sidecar to `surfaced_by`, append a `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new evidence. Do NOT rewrite existing prose. No index headline to update — `detail/{ID}.md` is canonical and `graph-build` re-embeds it (ADR-0077).
   - **Two or more candidates ambiguous** → mint NEW_ID with `maintainer_triage_pending: true` + an ambiguity block; surface in the investigator-log.
 
 Never auto-merge across HIGH-confidence candidates. Maintainer-triggered merges only.
@@ -418,8 +418,8 @@ DEDUP (Rule 2/3) catches *"do we already have this fact?"* — same-registry dup
 **Procedure.**
 
 1. **Extract anchors** from the proposed finding text: class names, file:line citations, Spring config keys (with dots), migration filenames, pillar-anchored feature IDs (`P-NN:F-NNN`), snake_case table/column names.
-2. **Grep `feature-flows/index.yaml` + `feature-flows/detail/`** for each anchor. If matches → Read the matched detail files in full.
-3. **Grep the OTHER FOUR registries' index files** (`concepts/index.yaml`, `test-map/index.yaml`, `doc-gaps/index.md`, `refactoring-scopes/index.md`, `implicit-adrs/index.md`) for each anchor. For matches → Read 1-3 candidate detail files (cheapest signal first).
+2. **`graph-search` the derived graph for feature-flow matches** on each anchor — `graph-search {repo} "{anchor}" --label Feature --json` (the graph embeds the `feature-flows/detail/` corpus). For hits → `graph-node {repo} "{ID}" --json` to read the matched detail entries in full.
+3. **`graph-search` the OTHER FOUR registries** (concepts, test-map, doc-gaps, refactoring-scopes, implicit-adrs) for each anchor — one `graph-search` per relevant `--label`, per this file's rev-7.1 dedup note (Rule 7) and `playbooks/registry-search-spawn.md`. The flat index files are RETIRED (ADR-0077); dedup matches *meaning* over the graph, not *vocabulary* over an index. For hits → `graph-node {repo} "{ID}" --json` to read 1-3 candidate detail entries (cheapest signal first).
 4. **Classify the relationship** between the proposed finding and each cross-registry hit:
     - `STRENGTHENS` — same polarity (both assert the entity exists / behaves the same way). Emit with `related_features: [F-NNN]` back-link (or analogous list for the matched artefact type) added to the new file AND to the matched file.
     - `SUPERSEDES` — opposite polarity AND clear file:line evidence the new claim is correct. Emit with `superseded` block on the OLD artefact (`superseded_by: <new-id>`, `superseded_note: <reason>`) and `supersedes: [old-id]` on the NEW artefact. Reference LSN-018 in the supersede note.

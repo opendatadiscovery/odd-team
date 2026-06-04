@@ -352,19 +352,19 @@ If the prior artefact existed and `STRENGTHENS` annotations were emitted, includ
 
 Per `adrs/drafts/feature-anchored-ontology.md` rev 2 principle 8: the feature registry is **append-only and emergent**. Each batch may discover new features OR extend existing features from a new entry-point angle. **No batch is gated on "the feature catalog is complete."** Progress is measured against the fixed substrate (`total_substrate_nodes`), never against feature count.
 
-**Dedup protocol (rev 7.1).** Through rev 2-7 dedup spawned the `registry-search` subagent — a grep over `feature-flows/index.yaml`. Grep matches *vocabulary*; it misses a feature phrased differently. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning*. Follow `playbooks/registry-search-spawn.md`. The sharded shape is unchanged (`feature-flows/{index.yaml, detail/{F-NNN}.yaml}`); you still never load the full `index.yaml`.
+**Dedup protocol (rev 7.1).** Through rev 2-7 dedup spawned the `registry-search` subagent — a grep over `feature-flows/index.yaml`. Grep matches *vocabulary*; it misses a feature phrased differently. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning* via `graph-search`. Follow `playbooks/registry-search-spawn.md`. The flat index files are **RETIRED (ADR-0077)** — they served no retrieval-time consumer and were denormalized drift-generating decoration; `feature-flows/detail/{F-NNN}.yaml` is the sole canonical artefact, embedded into the derived graph by `graph-build`. Dedup is `graph-search` over that graph, never a load of any `index.yaml`.
 
 For every candidate feature you're about to commit:
 
 - Run, from the workspace root: `lineage/_extractor/.venv/bin/lineage-extractor graph-search {repo} "{QUERY_TEXT}" --label Feature --k 8 --json`. `QUERY_TEXT` is the candidate feature's discriminating fields: feature_name + entry_point + contributing_nodes (ordered) + terminal_side_effect + the highest-leverage facet of `observed_vs_expected`.
 - For each promising candidate, `graph-node {repo} "{F-NNN}" --json` to read it. Then decide, with the rev-2 emergent-registry semantics:
-  - **No candidate is the same feature** → mint NEXT_AVAILABLE_FEATURE_ID, write `feature-flows/detail/{F-NNN}.yaml` with the full feature entry, append a headline to `feature-flows/index.yaml` matching `lineage/_extractor/registry-shard/shard.py:shard_feature_flows`. Record in the batch delta: `new_features: [F-NNN]`.
-  - **One candidate IS the same feature** → read `feature-flows/detail/{F-NNN}.yaml`, ADD the new entry_point + new contributing_nodes to the chain (do NOT remove existing nodes), refresh `amplification_factor` if the new path's multiplicity changes the product, append a new facet to `observed_vs_expected.facets` only if the new entry-point surfaces a distinct user-observable consequence. Update the `feature-flows/index.yaml` headline ONLY if `test_matrix_summary` cells changed state or `control_summary` changed. Record in batch delta: `extended_features: [F-NNN: <which entry-point added>]`.
+  - **No candidate is the same feature** → mint NEXT_AVAILABLE_FEATURE_ID, write `feature-flows/detail/{F-NNN}.yaml` with the full feature entry. The detail file is the SOLE canonical artefact — no index is written; `graph-build` embeds it into the derived graph. Record in the batch delta: `new_features: [F-NNN]`.
+  - **One candidate IS the same feature** → read `feature-flows/detail/{F-NNN}.yaml`, ADD the new entry_point + new contributing_nodes to the chain (do NOT remove existing nodes), refresh `amplification_factor` if the new path's multiplicity changes the product, append a new facet to `observed_vs_expected.facets` only if the new entry-point surfaces a distinct user-observable consequence. The edited `detail/{F-NNN}.yaml` is the sole canonical artefact — no index is written; `graph-build` re-embeds it. Record in batch delta: `extended_features: [F-NNN: <which entry-point added>]`.
   - **Two or more candidates ambiguous** → mint a new F-NNN detail with `maintainer_triage_pending: true` + a `merge_candidates: [F-NNN1, F-NNN2, ...]` block. Surface in investigator-log; the maintainer decides whether to merge (recorded next batch as `merged_features: [F-NNN absorbed-by F-MMM]`).
 
 **Never auto-merge.** The emergent-registry promise (rev 2 risk-mitigation row "Emergent-feature registry never converges") is that merges are maintainer-triggered when two features share >50% of `contributing_nodes` AND the maintainer confirms they describe the same user-observable contract.
 
-**Per-batch delta block** at the head of `feature-flows/index.yaml`:
+**Per-batch delta block** — NOT written to any index file (indexes are retired, ADR-0077). If a delta is still useful, record it as a transient log line (e.g. in the investigator-log), never in an index file. Shape:
 ```yaml
 batch_discovery_delta:
   batch_id: <batch identifier>
@@ -440,8 +440,8 @@ DEDUP (Rule 2/3) catches *"do we already have this fact?"* — same-registry dup
 **Procedure.**
 
 1. **Extract anchors** from the proposed finding text: class names, file:line citations, Spring config keys (with dots), migration filenames, pillar-anchored feature IDs (`P-NN:F-NNN`), snake_case table/column names.
-2. **Grep `feature-flows/index.yaml` + `feature-flows/detail/`** for each anchor. If matches → Read the matched detail files in full.
-3. **Grep the OTHER FOUR registries' index files** (`concepts/index.yaml`, `test-map/index.yaml`, `doc-gaps/index.md`, `refactoring-scopes/index.md`, `implicit-adrs/index.md`) for each anchor. For matches → Read 1-3 candidate detail files (cheapest signal first).
+2. **`graph-search` the derived graph** (per the rev-7.1 dedup note above + `playbooks/registry-search-spawn.md`) for each anchor, scoped `--label Feature` — index files are retired (ADR-0077). For each hit, `graph-node {repo} "{F-NNN}" --json` to read the matched feature detail in full.
+3. **`graph-search` the OTHER FOUR artefact types** (concepts, test-map, doc-gaps, refactoring-scopes, implicit-adrs) for each anchor — drop `--label Feature` or scope it to the relevant label. For each hit, `graph-node {repo} "{node_id}" --json` to read 1-3 candidate detail entries (cheapest signal first).
 4. **Classify the relationship** between the proposed finding and each cross-registry hit:
     - `STRENGTHENS` — same polarity (both assert the entity exists / behaves the same way). Emit with `related_features: [F-NNN]` back-link (or analogous list for the matched artefact type) added to the new file AND to the matched file.
     - `SUPERSEDES` — opposite polarity AND clear file:line evidence the new claim is correct. Emit with `superseded` block on the OLD artefact (`superseded_by: <new-id>`, `superseded_note: <reason>`) and `supersedes: [old-id]` on the NEW artefact. Reference LSN-018 in the supersede note.

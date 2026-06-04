@@ -20,11 +20,12 @@ retriever cutover for the reducer-dedup consumer.
 ## When to fire
 
 Every time one of the 5 reducer subagents is about to commit a fresh finding from
-a new sidecar — BEFORE writing to the sharded registry (`{artefact}/index.{md|yaml}`
-+ `{artefact}/detail/{id}.{md|yaml}`).
+a new sidecar — BEFORE writing the finding's `{artefact}/detail/{id}.{md|yaml}` file
+(the SOLE canonical artefact; the flat `{artefact}/index.{md|yaml}` mirrors are
+RETIRED per ADR-0077).
 
-Falls back to "always mint new" only when: the sharded index does not yet exist
-(first batch after a fresh shard); or the maintainer passes `--no-dedup`.
+Falls back to "always mint new" only when: the derived graph is not yet built
+(first batch on a fresh substrate); or the maintainer passes `--no-dedup`.
 
 ## Pre-step (the orchestrator does this once, before the parallel reducers)
 
@@ -81,8 +82,8 @@ intelligence, not a mechanical verdict line:
 
 | Situation | Reducer's next move |
 |---|---|
-| **No candidate is the same finding** (low similarity, or different subject on inspection) | Mint NEXT_AVAILABLE_ID. Write `{artefact}/detail/{NEW_ID}.{md\|yaml}` with the full new entry. Append a multi-paragraph headline to `{artefact}/index.{md\|yaml}` in the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py`). Record `surfaced_by: [{slug}.md:{field-path}]`. |
-| **One candidate IS the same finding** | Read `{artefact}/detail/{ID}`. Append: the new sidecar slug to `surfaced_by`, new file:line evidence to the evidence block, refinement narrative under a `STRENGTHENS — {new_sidecar} (batch {batch_id})` heading. Do NOT rewrite existing prose. Update the index headline only if severity / classification / category changed. |
+| **No candidate is the same finding** (low similarity, or different subject on inspection) | Mint NEXT_AVAILABLE_ID. Write `{artefact}/detail/{NEW_ID}.{md\|yaml}` with the full new entry — the SOLE canonical artefact; NO index is written (index files RETIRED, ADR-0077; `graph-build` embeds the detail file into the derived graph). Record `surfaced_by: [{slug}.md:{field-path}]`. |
+| **One candidate IS the same finding** | Read `{artefact}/detail/{ID}`. Append: the new sidecar slug to `surfaced_by`, new file:line evidence to the evidence block, refinement narrative under a `STRENGTHENS — {new_sidecar} (batch {batch_id})` heading. Do NOT rewrite existing prose. NO index headline to update (RETIRED, ADR-0077); `graph-build` re-embeds the edited detail file. |
 | **Two or more candidates are plausibly the same and you cannot disambiguate** | Mint a new ID, BUT add `maintainer_triage_pending: true` to the entry frontmatter + a top block naming the ambiguous candidate IDs. Surface it in the batch's investigator-log entry for the maintainer's per-batch review. NEVER auto-merge HIGH-confidence candidates — merges are maintainer-triggered. |
 
 Apply your artefact's own strengthen logic (concept-merger merges `contributors` /
@@ -94,9 +95,10 @@ logic is unchanged by this cutover; only the candidate-surfacing mechanism chang
 `graph-search` degrades to keyword search on its own when the embedding half is
 unavailable, so it almost always returns *something*. If the graph layer is fully
 absent — no `lineage/_extractor/.venv/`, or `graph-build` errors — fall back to a
-`grep` over `INDEX_PATH` for the finding's file:line anchors + distinctive
-identifiers (the legacy registry-search heuristic), and log
-`dedup_fallback: grep` in the batch's investigator-log entry.
+`grep` over the `{artefact}/detail/` files directly (the `index.{md|yaml}` mirrors
+are RETIRED, ADR-0077 — there is no index to grep) for the finding's file:line
+anchors + distinctive identifiers, and log `dedup_fallback: grep-detail` in the
+batch's investigator-log entry.
 
 ## Exit criteria per finding
 
@@ -108,10 +110,11 @@ Per-finding reducer context stays bounded by the `graph-search` result (~5-15 KB
 
 ## Per-batch aggregated invariants
 
-- every detail file has an index entry; every index entry has a detail file
-  (reconciled by `rebuild_indexes.py` in Phase 3);
+- `detail/` files are the sole canonical artefacts; no index is written or
+  reconciled (index mirrors RETIRED, ADR-0077); `graph-build` embeds `detail/`
+  into the derived graph after the batch;
 - the batch's investigator-log entry records per-reducer new / strengthen /
-  ambiguous counts + any `dedup_fallback: grep`.
+  ambiguous counts + any `dedup_fallback: grep-detail`.
 
 ## Cross-references
 

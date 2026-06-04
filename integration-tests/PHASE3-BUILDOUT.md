@@ -370,6 +370,12 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   models read directly (next iter). RBAC/auth family (F-006/F-011/F-105) is auth-stack-blocked on
   odd-minimal (DISABLED=permitAll). PENDING RECONCILIATION still open (suites feature-complete/ui-e2e
   add for 038-040; use_case_coverage flips for F-030/F-055/F-123/F-047/F-046; graph re-ingest).
+- 2026-06-04 (iter 2 cont.) — IT-041 (F-208 Data Entity Staleness) — e2e:entity-staleness.spec.ts.
+  fresh entity → is_stale=false; UPDATE last_ingested_at = NOW()-30d → is_stale=true; re-ingest →
+  is_stale=false. GREEN (2 passed 1.2s). The default stale-period is ACTIVE with no explicit env →
+  DISPROVES F-208-UC-2 "unset silently disables" on this image. db helper +setEntityLastIngestedDaysAgo.
+  **41 ITs total; 7 critical features this run: F-008/F-030/F-055/F-123/F-047/F-046/F-208.** Add IT-041
+  to the suites + flip F-208 coverage at reconciliation.
 
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`

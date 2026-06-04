@@ -782,3 +782,15 @@ export async function entityByOddrn(oddrn: string): Promise<{ id: number; hollow
     return r.rows[0] ? { id: Number(r.rows[0].id), hollow: Boolean(r.rows[0].hollow) } : null;
   });
 }
+
+// IT-041 — F-208 staleness: force an entity's last_ingested_at into the past so the staleness signal
+// (data_entity.is_stale, computed vs the deployment stale-period) flips. Used to prove the signal works
+// without manipulating clocks. Verified column: data_entity.last_ingested_at.
+export async function setEntityLastIngestedDaysAgo(entityId: number, days: number): Promise<void> {
+  await withClient(async (c) => {
+    await c.query('UPDATE data_entity SET last_ingested_at = NOW() - make_interval(days => $2::int) WHERE id = $1', [
+      entityId,
+      days,
+    ]);
+  });
+}

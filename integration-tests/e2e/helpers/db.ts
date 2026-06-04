@@ -758,3 +758,27 @@ export async function seedPopularYoungTags(): Promise<string[]> {
     return popNames;
   });
 }
+
+// IT-035 — F-008 ingestion contract: a raw data_source row the ingestion API resolves
+// data_source_oddrn against (avoids the collector-token/session datasource-register path,
+// which is a separate promise — UC-11). Distinct id/oddrn so it never collides with other seeds.
+export async function seedIngestionDataSource(id: number, oddrn: string, name: string): Promise<void> {
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO data_source (id, oddrn, name) VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO UPDATE SET oddrn = EXCLUDED.oddrn, name = EXCLUDED.name`,
+      [id, oddrn, name],
+    );
+  });
+}
+
+// IT-035 — F-008: read an ingested entity's ground-truth state by oddrn (existence + the
+// `hollow` flag the ingestion mapper maintains — IngestionServiceImpl reads getHollow()).
+// Used to verify whether a re-ingest that OMITS an entity destroys/hollows it (UC-13
+// data-loss guard). Returns null when the row is absent (hard-deleted).
+export async function entityByOddrn(oddrn: string): Promise<{ id: number; hollow: boolean } | null> {
+  return withClient(async (c) => {
+    const r = await c.query('SELECT id, hollow FROM data_entity WHERE oddrn = $1', [oddrn]);
+    return r.rows[0] ? { id: Number(r.rows[0].id), hollow: Boolean(r.rows[0].hollow) } : null;
+  });
+}

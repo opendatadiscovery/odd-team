@@ -312,6 +312,24 @@ realistic data), OR (c) build collector docker stacks (unlocks the collector-int
 (d) have me grind the fiddly-UI surfaces (facets/suggestions/linked-terms) at ~1-2 iterations each.
 Reaching ~50 needs (b)/(c)/(d); it is NOT reachable by raw-seed display ITs without padding.
 
+## ✅ PLATEAU BROKEN (2026-06-04) — ingestion-API seed helper (unlock option b)
+Built `e2e/helpers/ingest.ts`: `createDataSource` (POST /api/datasources) + `ingestEntities`
+(POST /ingestion/entities) + `tableEntity` (minimal TABLE item per ingestion/samples/07_kinesis;
+snake_case wire `data_source_oddrn`/`field_list`) + db helpers `seedIngestionDataSource`/`entityByOddrn`
+(reads the `hollow` flag). This drives the REAL ingestion contract — the CRITICAL data family
+(F-008 itself, F-030 metrics, F-022 DQ, realistic structure/lineage) is now reachable. Under
+odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no collector token.
+- 2026-06-04 — IT-035 (F-008 Batch Ingestion — ingestion-write contract) — e2e:ingestion-reingest-contract.spec.ts.
+  FIRST ingestion-API-driven IT. **UC-13** (re-ingest non-destruction): ingest {a,b} → re-ingest {a} →
+  b STILL live + hollow=false → **GREEN**. EMPIRICAL CORRECTION — the reflector's entity-level "silent
+  destruction" hypothesis is FALSE; top-level re-ingest is non-destructive upsert (the omitted lineage-EDGE
+  half via LineageServiceImpl.replaceLineagePaths remains a follow-up — extend with a lineage-bearing payload).
+  **UC-06** (atomicity): duplicate-ODDRN batch rejected whole (500 from Collectors.toMap) + NO partial row →
+  **GREEN**. **2 passed (27.6s).** feature-complete + ui-e2e + I5. F-008 frontier 5/14 → 7/14. Count: **35 ITs
+  total.** Next critical via the helper: F-030 metrics (ingestMetrics → GET /api/dataentities/{id}/metrics),
+  F-022 DQ (specific_attributes via real ingest — retry the NPE-blocked surface), more F-008 (UC-12 audit,
+  the UC-13 lineage-edge half). RE-INGEST due ~IT-037.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

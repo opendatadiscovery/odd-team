@@ -396,6 +396,15 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   tractable" was under-verification (same root cause as the Swagger miss). NEXT: prioritise UNVERIFIED
   promises (frontier-moving) — F-059/F-125/F-094/F-096/F-058 + F-095 edge/validation (UC-5/10/11).
 
+- 2026-06-04 (iter 5) — IT-045 (F-095 stats INPUT-VALIDATION gaps) — first FRONTIER-MOVING batch:
+  targeted UNVERIFIED promises, probed read-back-first. The stats endpoint has NO input validation →
+  3 LSN-029 characterization pins (GREEN now, flip when validation lands), F-095 frontier **2/12 → 5/12**:
+  UC-11 empty/null body → 500 (not 4xx); UC-10 unknown field ODDRN → silent 201 (no signal); UC-5
+  out-of-range (low>high, negative counts) → 201 + STORED VERBATIM (read-back). Drafted **PLT-142**
+  (stats endpoint no input validation, 3 facets). **45 ITs total.** Lesson applied: assert read-back,
+  not POST status (a wrong key / bad value still 201s). Next unverified: F-095 UC-6/7/12 (tag-auth,
+  tag-preserve, DoS), F-125 token lifecycle, F-008 UC-12 audit-on-ingest, lookup features (F-059/F-058).
+
 ## ⚠ WIND-DOWN POLICY (loop: read before grinding more) — 2026-06-04
 The easy odd-minimal-tractable lane is largely exhausted after **7 critical features this run**
 (F-008/030/055/123/047/046/208 = IT-035..041, all GREEN + pushed). Remaining critical features need

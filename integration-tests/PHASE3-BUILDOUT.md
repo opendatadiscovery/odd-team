@@ -383,6 +383,19 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   **41 ITs total; 7 critical features this run: F-008/F-030/F-055/F-123/F-047/F-046/F-208.** Add IT-041
   to the suites + flip F-208 coverage at reconciliation.
 
+- 2026-06-04 (iter 4, post-Swagger) — RE-PROBED the two features I'd WRONGLY dismissed (read-the-config
+  discipline + live probes, not guesses). **IT-043 (F-005/F-008 lineage via ingestion):** the ingestion
+  data_transformer uses `inputs`/`outputs` ODDRN arrays (NOT source_oddrn_list — my earlier grep guess);
+  ingesting a JOB creates A→job→B edges; re-ingesting the job with outputs=[] REMOVES the omitted edge
+  (UC-13 edge-half = replace, not merge). GREEN. **IT-044 (F-095 stats):** DataSetFieldStat wrapper is
+  `number_stats` (a wrong key = silent hollow 201 → assert the READ-BACK); pushed unique_count reads back
+  on the structure; an unstated field has null stats. GREEN. Helpers: ingest.ts +transformerEntity/
+  numberField/ingestNumberFieldStats; db.ts +lineageEdgeExists. **44 ITs total.** HONESTY: neither bumped
+  the promise-frontier (UC-13 already counted via IT-035; F-095-UC-1 via a prior probe) — they UPGRADE
+  probe→durable-IT + complete UC-13's edge half. LESSON CONFIRMED: both WERE testable; the earlier "not
+  tractable" was under-verification (same root cause as the Swagger miss). NEXT: prioritise UNVERIFIED
+  promises (frontier-moving) — F-059/F-125/F-094/F-096/F-058 + F-095 edge/validation (UC-5/10/11).
+
 ## ⚠ WIND-DOWN POLICY (loop: read before grinding more) — 2026-06-04
 The easy odd-minimal-tractable lane is largely exhausted after **7 critical features this run**
 (F-008/030/055/123/047/046/208 = IT-035..041, all GREEN + pushed). Remaining critical features need

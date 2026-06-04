@@ -76,6 +76,41 @@ export function transformerEntity(oddrn: string, name: string, inputs: string[],
   };
 }
 
+// ---- F-095 statistics ingestion (POST /ingestion/entities/datasets/stats) ----
+// DatasetStatisticsList = { items: [ { dataset_oddrn, fields: { <field_oddrn>: DataSetFieldStat } } ] }.
+// DataSetFieldStat wraps a TYPE-specific block: number_stats / integer_stats / string_stats / etc.
+// ⚠ verified via probe: a WRONG wrapper key is silently ignored (hollow 201) — always assert the read-back.
+export interface NumberStats {
+  low_value?: number;
+  high_value?: number;
+  mean_value?: number;
+  median_value?: number;
+  nulls_count: number;
+  unique_count: number;
+}
+
+export async function ingestNumberFieldStats(
+  datasetOddrn: string,
+  fieldOddrn: string,
+  fieldName: string,
+  numberStats: NumberStats,
+): Promise<number> {
+  const res = await fetch(`${BASE}/ingestion/entities/datasets/stats`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      items: [{ dataset_oddrn: datasetOddrn, fields: { [fieldOddrn]: { name: fieldName, number_stats: numberStats } } }],
+    }),
+  });
+  await res.text().catch(() => undefined);
+  return res.status;
+}
+
+// A TYPE_NUMBER dataset column (so number_stats apply to it).
+export function numberField(oddrn: string, name: string): Record<string, unknown> {
+  return { oddrn, name, type: { type: 'TYPE_NUMBER', logical_type: 'bigint', is_nullable: true } };
+}
+
 // ---- F-030 metrics ingestion (POST /ingestion/metrics) ----
 // MetricSetList = { items: [ { oddrn, metric_families } ] } (per MetricsIngestionTest.createMetrics).
 export interface MetricFamily {

@@ -2,6 +2,42 @@
 
 Cross-context brain for the integration-suite build-out. The /loop reads this first (with README.md + TEMPLATE.md + suites.yaml). Memory: `project_phase3_integration_e2e_buildout`.
 
+## ✅✅ FULL-FEATURE E2E BUILD-OUT COMPLETE — 2026-06-07 (every feature now has ≥1 IT)
+
+**113/113 features carry ≥1 e2e IT. 0 uncovered.** 124 protocols / 123 specs (was 47/46). Authored in **4 parallel
+authoring waves** (general-purpose subagents, each grounding every assertion in live curl/DB/rendered-DOM + source
+BEFORE asserting — the read-the-config discipline — then running its spec to GREEN). Every wave disk-gated by the
+lead (compile-all via `playwright test --list` + PyYAML frontmatter + stray-file hunt + an **authoritative re-run**
+of every spec; agent "green" claims never trusted) and committed separately. Stack: persistent `odd-minimal`
+(`ODD_STACK_EXTERNAL=1`, ~1-2s/IT); D5 multi-stack specs self-manage odd-loginform/odd-ldap (up + torn down clean).
+
+- **Wave 1 (IT-048..065, 18 feat, 52 tests)** front-of-queue risk: lookup RDM/rename/listing · cascade+mgmt gating ·
+  principal→owner/my-objects · DQ severity/reports/history · ingestion credential/atomicity/auth-matrix · public-API/
+  appInfo/actuator. → commit `b5acb12`.
+- **Wave 2 (IT-066..087, 22 feat, 41 tests)** user-facing UI (browser-driven): search rendering · browse/overview ·
+  lineage/relationships · dataset detail · terms/glossary · query examples. → commit `e8ea5c7`.
+- **Wave 3 (IT-088..110, 23 feat, 63 tests)** collaboration/platform/mgmt: activity/collab/notifications · platform
+  internals (housekeeping/scheduler/advisory-lock/r2dbc, config-observable) · collectors+wizard · chrome/i18n/state ·
+  owner-association mgmt workflow. → commit `c056736`.
+- **Wave 4 (IT-111..124, 14 feat, 41 tests)** auth/security: DISABLED posture · webhook security · config exposure ·
+  OAuth posture (IdP-blocked sub-promises documented, not faked) · multi-stack LOGIN_FORM + LDAP. → commit `cdbd50b`.
+
+**New bug drafts filed (filing deferred per maintainer):** PLT-143 (missing-required-param 500-not-400) · PLT-144
+(DQ RUNNING-row 500) · PLT-145 (HIGH — lookup rename ALTER-TABLEs the physical relation, data-loss) · PLT-146
+(reference-data contract gaps) · PLT-147 (search-results NPE on null transformer/DQ details) · PLT-148 (HIGH —
+owner-association WRITE surface 500s under DISABLED while UI shows actions enabled; LSN-001/002 class) · PLT-149
+(unknown integration id 200-not-404). **PLT-001 upgraded low→HIGH** (X-API-Key → S2S filter NPE → unauthenticated
+500 DoS on the shipped DISABLED default; "unreachable" framing retracted). All other findings cited existing PLTs
+(anti-dup, LSN-009).
+
+**DEFERRED (mechanical, policy-correct):** per-PROMISE frontier flips (use_case_coverage). Wave-1 + the wave-2
+B2/B4/B5 agents flipped on disk (accurate); the rest are honest under-counts. The durable per-IT linkage is committed
+(each protocol's `gates.validates: [F-NNN]` + the green test + uc-ids in test names) — the full per-promise frontier
+should be **re-derived by the graph-build/reflector pass** (ADR-0077 no-mirror: don't hand-maintain derived roll-ups),
+NOT hand-transcribed. Feature-level coverage (the maintainer's stated bar — "each feature ≥1 e2e test") is the
+authoritative, accurate number: **113/113**. Also still deferred from the prior run: graph re-ingest of the odd-team
+ITs + scorecard/worklist regen (substrate scan is behind HEAD).
+
 ## Mandate (maintainer, 2026-06-03)
 Build the **integration (e2e) suite in THIS repo** (odd-team, `integration-tests/`) that verifies **real end-to-end feature behaviour (UI→backend→DB)** for the ontology's features. Grounded in the **feature-flows** (113 features) + the **documentation** (../documentation feature descriptions) + the **refined test-gaps** (1038 gaps; 253 `missing-integration` is the prime pool). **Success path + ≥1 negative path** per feature. Follow the **IT-NNN protocol**. Target **~200 tests** across 120+ features (north star; phased + prioritised by criticality). NEVER add integration tests to odd-platform; NEVER touch odd-platform src/main.
 

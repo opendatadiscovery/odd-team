@@ -38,6 +38,23 @@ NOT hand-transcribed. Feature-level coverage (the maintainer's stated bar — "e
 authoritative, accurate number: **113/113**. Also still deferred from the prior run: graph re-ingest of the odd-team
 ITs + scorecard/worklist regen (substrate scan is behind HEAD).
 
+### ⚠ CORRECTION (2026-06-07, post-verify) — per-wave green ≠ canonical-suite green
+The maintainer ran the CANONICAL `run-suite.sh feature-complete` and it FAILED (10 passed / 16 did-not-run /
+~7m / e2e:FAIL) — my per-wave "all green" had never run the full suite the way the maintainer does. Two fixes
+(commit `142c1c7`); re-run after fix = **263 passed (3.9m), api:PASS e2e:PASS**:
+1. **Suite composition.** `feature-complete` had bundled the 7 docker-stack-CHURNING specs (IT-008 MinIO ·
+   IT-009/123 LOGIN_FORM · IT-010/124 LDAP · IT-011/012 notifications) into one playwright process → ~5-7m of
+   serial up/down churn, abort-prone, never reaching the odd-minimal bulk. → `feature-complete` is now
+   odd-minimal-only (111 protocols, one stack); churning specs → the new **`multi-stack`** suite (slow by
+   nature; IT-011/012 flaky on fresh boot per PLT-139) + I1/I2/I3. RULE: a fast green-target suite holds only
+   same-stack specs.
+2. **3 fragile specs** (found by running ALL odd-minimal specs together once, not per-wave): activity-feed
+   past-window negative `waitForResponse(r.ok())` hung 60s on a non-2xx → tolerant bounded wait; r2dbc-pool-sizing
+   ×2 asserted an EXACT live pg-connection count that other specs (lookup-tables warming the 2nd pool) perturb →
+   assert the framework-default ceiling BOUND, not the exact count.
+LESSON (memory `feedback_canonical_suite_run_is_the_gate`): the final gate is the maintainer's exact canonical
+command — fresh stack, full set, one process — read actual pass/fail, never the exit code.
+
 ## Mandate (maintainer, 2026-06-03)
 Build the **integration (e2e) suite in THIS repo** (odd-team, `integration-tests/`) that verifies **real end-to-end feature behaviour (UI→backend→DB)** for the ontology's features. Grounded in the **feature-flows** (113 features) + the **documentation** (../documentation feature descriptions) + the **refined test-gaps** (1038 gaps; 253 `missing-integration` is the prime pool). **Success path + ≥1 negative path** per feature. Follow the **IT-NNN protocol**. Target **~200 tests** across 120+ features (north star; phased + prioritised by criticality). NEVER add integration tests to odd-platform; NEVER touch odd-platform src/main.
 

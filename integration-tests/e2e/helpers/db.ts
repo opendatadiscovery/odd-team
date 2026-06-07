@@ -12,7 +12,7 @@ const CONN =
   process.env.ODD_DB_URL ??
   'postgresql://odd-platform:odd-platform-password@localhost:15432/odd-platform';
 
-async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
+export async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
   const client = new Client({ connectionString: CONN });
   await client.connect();
   try {
@@ -20,6 +20,17 @@ async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
   } finally {
     await client.end();
   }
+}
+
+// Generic escape-hatch for specs that need a seed not yet covered by a named helper
+// above. Prefer a named helper when one fits; use this for one-off arrange/read SQL so
+// you never have to re-declare the Client boilerplate (or edit this shared file while
+// other specs are being authored in parallel). Returns the pg rows.
+export async function dbQuery<T = Record<string, unknown>>(
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  return withClient(async (c) => (await c.query(sql, params)).rows as T[]);
 }
 
 // Seed a fresh, renderable data entity with view_count = 0 — the same minimal column

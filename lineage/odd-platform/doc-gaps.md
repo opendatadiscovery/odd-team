@@ -2223,3 +2223,8 @@ Batch G is the **dataEntity-controller-method confirmation pass**. Three of the 
 - **DOC-GAP-009** (data-entities api-reference missing — punts to Swagger UI) — 5 more methods from batch G land in the dataEntity api-reference gap; 35+ dataEntity operations across batches A-G now have ZERO api-reference subpage coverage.
 - **DOC-GAP-053** (META "docs frame default behaviour but omit blast radius") — now 6-sidecar triangulated.
 - **DOC-GAP-077** (Live Permissions page omits path / scope-asymmetry warnings) — 3 new policy-scope-asymmetry instances from batch G's createDataEntityTagsRelations + upsertDataEntityInternalDescription.
+
+
+## RETRACTION — DOC-GAP-088 (hand-annotation, 2026-06-08, per DOC-338)
+
+DOC-GAP-088's conclusion ("`DataEntityMapperImpl.applyStatus` resets `statusUpdatedAt` on every transition, so the 30-day soft-delete TTL never fires / soft-deleted entities never hard-delete / the platform has no functioning row-by-age retention path") is **INVERTED** and is retracted. The `applyStatus` always-false guard is real but affects only **non-`DELETED`** transitions. The transition **to** `DELETED` runs through a separate soft-delete path (`ReactiveDataEntityRepositoryImpl.getDeleteChangedFields`, `:112-114`) that stamps `STATUS_UPDATED_AT = now()` correctly, and `DataEntityHousekeepingJob` (`:73-77`) purges on that column — so the 30-day hard-delete purge **IS active and irreversible** (incl. S3/MinIO objects) on a default install. See DOC-338 for the full code-verified proof; DOC-191 / DOC-293 are superseded.

@@ -55,6 +55,24 @@ The maintainer ran the CANONICAL `run-suite.sh feature-complete` and it FAILED (
 LESSON (memory `feedback_canonical_suite_run_is_the_gate`): the final gate is the maintainer's exact canonical
 command — fresh stack, full set, one process — read actual pass/fail, never the exit code.
 
+### ⚠ CORRECTION 2 (2026-06-08, post-fix) — the flapping was CONCURRENCY on the single shared stack
+After the suite-split, feature-complete STILL flapped for the maintainer (10/3 passed, "16 did not run").
+Root cause is NOT the tests: there is ONE odd-minimal `odd-platform` container (fixed compose project
+`probe-stacks`, :18080). TWO full e2e suites at once — the maintainer's terminal run + my background/foreground
+runs — overload that one container into a crash/restart WINDOW → `ECONNREFUSED 127.0.0.1:18080` /
+`socket hang up` / `ERR_SOCKET_NOT_CONNECTED` on a band of specs, then recovery. Proof: a SOLO run is green
+both ways (maintainer's run; my clean verify = **266 passed, api:PASS e2e:PASS, 3.7m**). Fixes (commit
+`5fc7831`): run-suite.sh uses a PERSISTENT reused stack (`ODD_STACK_EXTERNAL=1`, no per-run up/`down -v`
+churn) + 127.0.0.1 (IPv4, kills the `::1` path) + a fail-fast "stack-unhealthy" message. **OPERATING RULE:
+run ONE e2e suite at a time — the stack is a single shared instance; concurrent suites crash it. The agent
+must NOT run e2e in the background while the maintainer runs it.**
+
+Also (commit `24a3cc5`): the maintainer's manual `/search/{old-uuid}` "Unknown Error" → real bug PLT-150,
+pinned by IT-125. On an undisturbed stack: facets+results of a missing session correctly 404 "Search not
+found"; the FILTERS endpoint 500s (getFilterOptions returns a Flux the controller wraps `Mono.just(flux)
+.map(ok)` → 200 commits before the missing-session NotFoundException → 500 not 404); the SPA shows a generic
+"Unknown Error" for an expired link. The gap the happy-path search specs never exercised.
+
 ## Mandate (maintainer, 2026-06-03)
 Build the **integration (e2e) suite in THIS repo** (odd-team, `integration-tests/`) that verifies **real end-to-end feature behaviour (UI→backend→DB)** for the ontology's features. Grounded in the **feature-flows** (113 features) + the **documentation** (../documentation feature descriptions) + the **refined test-gaps** (1038 gaps; 253 `missing-integration` is the prime pool). **Success path + ≥1 negative path** per feature. Follow the **IT-NNN protocol**. Target **~200 tests** across 120+ features (north star; phased + prioritised by criticality). NEVER add integration tests to odd-platform; NEVER touch odd-platform src/main.
 

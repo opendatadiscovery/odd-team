@@ -91,11 +91,19 @@ if [ "${#PROBES[@]}" -gt 0 ]; then
   if ( cd "$RUNTIME" && uv run python probe-runtime/runner.py "${PROBES[@]}" $batch $dry ); then api_outcome="PASS"; else api_outcome="FAIL"; fi
 fi
 
-# --- UI-e2e rail (Playwright; integration-tests/e2e — self-contained, brings its own stack) ---
+# --- UI-e2e rail (Playwright; integration-tests/e2e) ---
+# PERSISTENT SHARED STACK (do NOT churn up/down per run). We bring odd-minimal up ONCE if it is not
+# already healthy, then run playwright with ODD_STACK_EXTERNAL=1 so its global-setup/teardown neither
+# re-create nor `down -v` the stack. Rationale (2026-06-08 e2e:FAIL — "3 passed then mass ECONNREFUSED"):
+# the old per-run `up` + `down -v` churn races the shared FIXED-project stack — a concurrent run, a
+# still-settling prior teardown, or a second invocation tears `probe-stacks` down MID-RUN, so every later
+# spec hits ECONNREFUSED. A persistent reused stack removes that race AND is far faster. IPv4 (127.0.0.1)
+# health URL avoids any ::1/localhost resolution ambiguity. Stack is LEFT UP; stop it with
+# `(cd integration-tests/e2e && npm run stack:down)` when finished. `--fresh` forces a clean recreate.
 e2e_outcome="n/a"
 if [ "${#E2E[@]}" -gt 0 ]; then
   if [ -n "$dry" ]; then
-    echo "+ (cd $HERE/e2e && npx playwright test ${E2E[*]})   [dry-run]"
+    echo "+ (cd $HERE/e2e && ODD_STACK_EXTERNAL=1 npx playwright test ${E2E[*]})   [dry-run]"
     e2e_outcome="DRY-RUN-OK"
   elif ! command -v npx >/dev/null 2>&1; then
     echo "  → SKIP ui-e2e: Node/npx not found. One-time: (cd integration-tests/e2e && npm install && npm run browser)"
@@ -104,8 +112,21 @@ if [ "${#E2E[@]}" -gt 0 ]; then
     echo "  → SKIP ui-e2e: deps not installed. One-time: (cd integration-tests/e2e && npm install && npm run browser)"
     e2e_outcome="SKIPPED(no-deps)"
   else
-    echo "+ (cd $HERE/e2e && npx playwright test ${E2E[*]})"
-    if ( cd "$HERE/e2e" && npx playwright test "${E2E[@]}" ); then e2e_outcome="PASS"; else e2e_outcome="FAIL"; fi
+    COMPOSE="$ROOT/lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml"
+    HEALTH="http://127.0.0.1:18080/actuator/health"
+    [ "${ODD_E2E_FRESH:-}" = "1" ] && { echo "  → --fresh: recreating odd-minimal…"; docker-compose -f "$COMPOSE" down -v >/dev/null 2>&1 || true; }
+    if curl -fsS --max-time 5 "$HEALTH" 2>/dev/null | grep -q UP; then
+      echo "  → odd-minimal already healthy — reusing it (persistent)."
+    else
+      echo "  → bringing up odd-minimal (persistent; reused by later runs)…"
+      docker-compose -f "$COMPOSE" up -d
+      curl -fsS --retry 40 --retry-delay 3 --retry-all-errors --retry-connrefused --max-time 5 "$HEALTH" >/dev/null 2>&1 \
+        || { echo "  ✗ odd-minimal did not become healthy at $HEALTH within ~120s — aborting e2e (not a test failure)."; e2e_outcome="FAIL(stack-unhealthy)"; }
+    fi
+    if [ "$e2e_outcome" != "FAIL(stack-unhealthy)" ]; then
+      echo "+ (cd $HERE/e2e && ODD_STACK_EXTERNAL=1 npx playwright test ${E2E[*]})"
+      if ( cd "$HERE/e2e" && ODD_STACK_EXTERNAL=1 npx playwright test "${E2E[@]}" ); then e2e_outcome="PASS"; else e2e_outcome="FAIL"; fi
+    fi
   fi
 fi
 

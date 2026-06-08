@@ -9,7 +9,7 @@ const COMPOSE = path.resolve(
   __dirname,
   '../../lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml',
 );
-const HEALTH = `${process.env.ODD_BASE_URL ?? 'http://localhost:18080'}/actuator/health`;
+const HEALTH = `${process.env.ODD_BASE_URL ?? 'http://127.0.0.1:18080'}/actuator/health`;
 
 export default async function globalSetup(): Promise<void> {
   if (process.env.ODD_STACK_EXTERNAL === '1') {

@@ -20,7 +20,10 @@ export default defineConfig({
   globalTeardown: './global-teardown',
   timeout: 60_000,
   use: {
-    baseURL: process.env.ODD_BASE_URL ?? 'http://localhost:18080',
+    // 127.0.0.1 (not 'localhost') — force IPv4 so page.goto + apiRequestContext never resolve to ::1
+    // (IPv6 localhost), which playwright's request context can prefer → spurious
+    // `connect ECONNREFUSED ::1:18080` (2026-06-08). Docker publishes 18080 on IPv4.
+    baseURL: process.env.ODD_BASE_URL ?? 'http://127.0.0.1:18080',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

@@ -10,7 +10,7 @@ const SOURCE_ID = 2001;
 
 const CONN =
   process.env.ODD_DB_URL ??
-  'postgresql://odd-platform:odd-platform-password@localhost:15432/odd-platform';
+  'postgresql://odd-platform:odd-platform-password@127.0.0.1:15432/odd-platform'; // 127.0.0.1 not localhost — force IPv4 (avoid ::1)
 
 export async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
   const client = new Client({ connectionString: CONN });

@@ -11,7 +11,7 @@
 // odd-minimal (AUTH_TYPE=DISABLED → permitAll) these POSTs work without a collector token;
 // the conditional IngestionDataEntitiesFilter is OFF by default (this is F-008-UC-01).
 
-const BASE = process.env.ODD_BASE_URL ?? 'http://localhost:18080';
+const BASE = process.env.ODD_BASE_URL ?? 'http://127.0.0.1:18080'; // 127.0.0.1 not localhost — force IPv4 (avoid ::1)
 
 export interface IngestEntity {
   oddrn: string;

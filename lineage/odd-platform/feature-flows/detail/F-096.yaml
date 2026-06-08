@@ -202,8 +202,9 @@ use_cases:
     promise: "One bad entity (or one failing processor) in an N-entity batch rolls back ALL N entities + every downstream side effect — the catalog is never half-applied."
     actor: custom-collector-author
     trace: "IngestionServiceImpl.java:66 @ReactiveTransactional wraps lookup + upsert + 14 processors + OTLP export (IngestionService.md downstream_side_effects closing para)."
-    coverage: unverified
+    coverage: verified
     verdict: confirmed
+    test_ref: "IT-061 ingestion-batch-atomicity.spec.ts — a batch [valid, malformed-no-type] returns 500 AND the valid sibling is NOT persisted (whole batch rolled back); the all-valid 2-item batch commits both. Atomicity confirmed end-to-end; the 500 (vs 400) is the error-contract drift pin (PLT-045 family)."
     test_demand: "functional — IngestionTransactionalRollbackTest (NET-NEW; does not exist)"
   - uc_id: H-002
     kind: empty/no-match
@@ -217,10 +218,17 @@ use_cases:
     kind: empty/no-match
     promise: "Unknown data_source_oddrn returns 404 (DATASOURCE_NOT_FOUND), not 5xx — a config error reads as config, not platform crash."
     actor: custom-collector-author
-    trace: "IngestionServiceImpl.java:68-69 NotFoundException uncaught; no @ExceptionHandler maps it to 404."
-    coverage: unverified
-    verdict: contradicted
-    test_demand: "functional — mint under PLT-045 test plan (unknown-datasource to 404)"
+    # CORRECTION 2026-06-07 (IT-061 grounding): verdict was `contradicted` on the premise that
+    # NotFoundException is uncaught -> 5xx. LIVE PROBE CONTRADICTS THE PREMISE: POST /ingestion/entities
+    # with an unregistered data_source_oddrn returns HTTP 404 {"code":"USR002","message":"DataSource with
+    # oddrn ... is not found"}. ControllerAdvice.java:30-34 HAS @ExceptionHandler(NotFoundException) ->
+    # 404. So the PROMISE IS MET (precise, resolvable 404). The trace's "no @ExceptionHandler maps it" was
+    # the factual error. Reclassified confirmed; this promise is the desirable behaviour, NOT a drift.
+    trace: "IngestionServiceImpl.java:68-69 NotFoundException -> ControllerAdvice.java:30-34 @ExceptionHandler(NotFoundException) -> 404 USR002 (VERIFIED live 2026-06-07)."
+    coverage: verified
+    verdict: confirmed
+    test_ref: "IT-061 ground-probe (curl): unregistered data_source_oddrn -> 404 USR002 'DataSource with oddrn ... is not found'. (Asserted in protocol; the spec's empty-batch test pins the sibling USR001 400 contract.)"
+    test_demand: "none — promise met (404). Prior 'contradicted' verdict rested on a wrong trace premise (handler DOES exist)."
   - uc_id: H-004
     kind: empty/no-match
     promise: "Oversized payload returns 413 Payload Too Large, not 5xx — the author learns to split rather than retrying the same too-big batch."
@@ -287,10 +295,15 @@ use_cases:
     test_demand: "probe PENDING-F-096-2 (local all-JOB_RUN payload, assert 2xx, no empty-IN exception)"
 
 use_case_coverage:
-  verified: 0
+  verified: 2
   total: 11
   note: |-
-    SECOND COVERAGE FRONTIER (verified promises / total promises) — 0/11. This is the
+    SECOND COVERAGE FRONTIER (verified promises / total promises) — 2/11 as of 2026-06-07 (was 0/11):
+    H-001 (all-or-nothing rollback) is now covered end-to-end by IT-061 ingestion-batch-atomicity.spec.ts,
+    and H-003 (unknown-datasource -> 404) was RECLASSIFIED contradicted->confirmed during IT-061 grounding
+    (live probe: unregistered data_source_oddrn -> 404 USR002, because ControllerAdvice DOES map
+    NotFoundException -> 404; the prior 5xx premise was a wrong trace). IT-061 also pins the empty-batch
+    400 USR001 contract and the malformed-mid-batch error-contract drift (500 not 4xx, PLT-045). This is the
     operator-facing ERROR CONTRACT of the platform's single load-bearing write endpoint, and
     ZERO of its 11 user-facing promises has a behavioural test guarding it. The happy-path 200
     is covered (BaseIngestionTest), but every PROMISE that defines the contract — atomicity

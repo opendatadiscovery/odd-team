@@ -1,5 +1,7 @@
 # Last updated 2026-05-31 — ADR pillar **backbone batch REVIEWED** (`/review`, separate session). **24 of 26 ADRs → `done`; 2 BLOCKED on Gate A2** (citation-accuracy — the decisions themselves are sound + verified): **ADR-0040** (notifications-disabled — `application.yml:175`→ real `:173`; `NotificationsFeatureCondition.java:18-22` is past-EOF → real default-false read `:11-13`) and **ADR-0045** (housekeeping-partition-separation — Evidence cites a **non-existent method** `dropEmptyPartitions`; real code is `EmptyPartitionsHousekeepingJob.doHousekeeping` → `getEmptyPastPartitions` + loop `dropPartition`, plus 4/6 line cites wrong). Both blocks independently re-verified by the orchestrator @ `ede5d277`. **ADR-0074 live disclosure-tone read = PROTECTIVE, boundary held** (the flagged 🔒⚖ concern — PASS: the DISABLED warning reads as operator guidance; the weakness/exploit framing is correctly withheld). Gate 8 LIVE for all 26 (PR #92 merged 0074/0075 to `origin/main` — the earlier "unmerged" note below is stale). Editorial audit (mandatory step 5, ADR-log subtree + parents) logged **DOC-316** (index/SUMMARY ordering is authoring-chronological), **DOC-317** (ADR log is a one-way nav leaf — no page links IN; highest-value fix), **DOC-318** (top-down-only cross-links). ProspectLog/provectus spec-branding (the line-below "logged for triage" note) → **PLT-112** (odd-platform, verified @ `ede5d277`). Two methodology class-fixes shipped: filename-stem slug rule (`pillars/adr/authoring.md`) + `/blob/`-check body-scoping clarification (`playbooks/live-site-verification.md`). **Backlog: adr done 26 (ALL reviewed items closed), blocked 0, review-ready 0.** ADR-0040 + ADR-0045 Gate-8 closeout complete: doc **PR #93 merged** to `origin/main` (`a9cf24a`); the live GitBook render shows the corrected Evidence (ADR-0045's fabricated `dropEmptyPartitions` is gone, real `getEmptyPastPartitions`/`dropPartition` flow shown; ADR-0040's `:175`→`:173`, `:18-22`→`:11-13`, etc.), both HTTP 200, descriptions 192/183 ≤200, the 3 `…/blob/main/…` raw-HTML hits per page are benign Edit-on-GitHub chrome — both flipped `review-ready` → `done` (Gate A2 + Gate 8 verified against the live render + code @ `ede5d277`). **The entire section-A backbone + earlier ADR batches are now DONE — 26/26 review-ready ADRs closed.** **NEXT:** ADR section B KEEP (0050/0053/0049, 🔒 0017/0027/0006/0063, 0005/0026).
 
+## /implement 2026-05-31 (ADR pillar - ADR-0001 pilot closeout) - **ADR-0001 -> `review-ready`**. The 2026-05-30 BLOCKED pilot (the "lone hand-mapped exception" overclaim, Gate 6/9) is corrected and live on `origin/main` (documentation `74d6220`/`f2f815c`/`02db8fe`, all confirmed ancestors of `origin/main`): the contract-first rule now names **two** deliberate external-webhook exceptions - `AlertManagerController` (`ingestion/alert/alertmanager`) + `EventApiController` (`/api/slack/events`). Re-verified @ odd-platform `ede5d277`: exactly 2 of 36 `*Controller.java` do not `implements *Api` (both `@PostMapping` webhook receivers). Backlog item flipped `blocked -> review-ready` with a fix-applied audit block. Surface check: page Consequences+Evidence live; backlog Description names both; `adr-nodes.jsonl` realises[] carries no singularity claim (no change); `implicit-adrs.md` ADR-CANDIDATE-001 left as-is (regenerable archaeologist artifact; phrase scoped to the contract-bound delegate surface) - documented in the item. **adr: 26 backbone `done` + ADR-0001 pilot `review-ready`; blocked 0.** Hand off to `/review` (separate session) for Gate 8 live-site + the done flip.
+
 ## /review 2026-05-31 (ADR pillar — **Gate 8 closeout: ADR-0040 + ADR-0045 → `done`**). Re-review after doc PR #93 merged. Verified the merge on `origin/main` (`a9cf24a` + fix `1d0e88b`; content check: ADR-0045 `dropEmptyPartitions`=0, ADR-0040 stale `:175`=0). **Gate 8 live:** both pages HTTP 200; the corrected Evidence renders (ADR-0045 fabricated method gone → real `getEmptyPastPartitions(:21-22)`/`dropPartition(:26)` flow; ADR-0040 `:173`/`:11-13`/`:17`/`:15`); meta-descriptions 192/183 chars (≤200); the 3 `…/blob/main/…` raw-HTML hits per page resolve to each page's OWN source `.md` = GitBook Edit-on-GitHub chrome (not an LSN-004 fallback). **Gate A2 re-confirmed** against the live render + code @ `ede5d277`. Both `review-ready` → `done` with a closeout Review block. **Same-session-fix transparency:** the citation fix was implemented earlier this session, so the closeout is ground-truth-verified (live GitBook + odd-platform code), not session-separated — acceptable for mechanical citation corrections (the fabricated-method removal is independently checkable: `grep dropEmptyPartitions` = 0). **All 26 reviewed ADRs are now `done`; the ADR backbone review cycle is closed.**
 
 ## /implement 2026-05-31 (ADR pillar — **Gate A2 citation fix of the 2 blocked items**, ADR-0040 + ADR-0045 → `review-ready`). Unblocked the two `/review` failures. Both decisions were sound; the published Evidence cited code that did not match `ede5d277` (ADR-0045 cited a **fabricated method** `partitionService.dropEmptyPartitions(...)` — no such method). Re-verified every locus by direct read, then corrected BOTH the published page (Evidence; +ADR-0045 Decision prose) AND the backlog `realises:` frontmatter. **ADR-0040:** `application.yml:175`→`:173`; `NotificationsFeatureCondition.java:18-22`(past-EOF)→`:11-13`; `ConditionalOnNotifications.java:9-14`→`:9-12`; consumers `NotificationSubscriberStarter:14`→`:17`, `AlertNotificationMessageProcessor:14`→`:15` (`:14` was `@Component`). **ADR-0045:** removed the fabricated `dropEmptyPartitions`/`getTableName` → real `doHousekeeping`(`:17`)→`getEmptyPastPartitions`(`:21-22`)→`dropPartition`(`:26`) flow; `EmptyPartitionsHousekeepingJob:8-9`→`:13-14`,`:14-15`→`:17`; `ActivityEmpty…:6-7`→`:8-9`; `PostgreSQLPartitionCreationJob:18-19`→`:40-41`. Doc fix branch `fix/docs-adr-0040-0045-evidence-citations` commit `1d0e88b` pushed (2 files, 8 lines); odd-team realises/frontmatter PyYAML-clean; both flipped `blocked`→`review-ready` with a `## Fix` audit block. **Gate 8 DEFERRED** for both until the doc PR merges + GitBook syncs — the re-review confirms the live render and closes to `done`.
@@ -4195,3 +4197,47 @@ blocked|pending -> review-ready.
 
 These 4 join DOC-305/306/307 on the unmerged review-followups branch -> one PR. /review (separate
 session) handles Gate 8 (live-site) after the branch is pushed + merged.
+
+
+## Harvest → drafted artefacts (2026-06-08)
+
+The 2026-06-08 token-windfall harvest + full-manual editorial audit (`lineage/odd-platform/harvest/` +
+`lineage/odd-platform/editorial-audit/`, ~12M tokens) were triaged into **203 tracked artefacts** via a
+second background workflow (~4.4M tokens). All disk-gated: **203/203 present, YAML-valid, required keys,
+no strays, no duplicate titles**.
+
+- **63 upstream issue drafts** — `issues/odd-platform/PLT-151..213` (route=bug; `status: draft`). Paste-ready
+  GitHub bodies, each consumer-read-verified (real `file:line` excerpts). Security/perf folded in (severity-flagged).
+- **104 documentation items** — `backlog/docs/DOC-336..439` (route=caveat + editorial code-doc-drift;
+  `status: pending`). Full-scope (every surface in `affected_files`) + `Sources:` footers.
+- **36 test items** — `backlog/tests/TST-005..040` (route=test; `status: pending`). Each carries a typed gate
+  (validates-feature / regresses-bug / enforces-ADR / characterization-pin per LSN-029); deduped against
+  existing IT-NNN / TEST-GAP coverage.
+
+**3 priority-critical LIVE published-doc-error corrections lead the queue:**
+- **DOC-336** — RETRACT the false GitHub `admin-groups` "case-insensitive substring" admonition (code is full
+  `equalsIgnoreCase`); retracts the claim baked into DOC-235/238.
+- **DOC-337** — fix NAMESPACE-vs-QUERY_EXAMPLE contextual-permission error (DOC-243 shipped a non-dispatchable
+  NAMESPACE perm + dropped the real QUERY_EXAMPLE).
+- **DOC-338** — RETRACT the soft-delete TTL "persists forever" inversion across `statuses.md` /
+  `de-deprecation.md` / `odd-platform.md`. CODE-VERIFIED: the 30-day hard-purge IS active + irreversible
+  (incl. S3/MinIO objects); reopens/retracts DOC-191/DOC-293/DOC-GAP-088 (inverted tracked conclusion) +
+  re-scopes PLT-027.
+
+All `pending`/`draft` for maintainer review (Backlog Review Gate — not implemented, not committed). The 290
+KNOWN harvest findings were NOT re-filed (convergence refs cross-linked instead). `state/file-registry.yaml`
+is updated per-item as items move to `in-progress`. Counts: backlog/docs 334→438, backlog/tests 4→40,
+issues/odd-platform 143→206.
+
+
+### Verification (2026-06-08) — adversarial fact-check of DOC-336..439
+
+Re-derived each of the 104 DOC items' central claims from ground-truth spec/code/docs (+ a live localhost
+probe for the lineage case). Result: **91 verified, 8 imprecise, 5 wrong**. Report:
+`lineage/odd-platform/harvest/2026-06-08-doc-verification.md`.
+
+- 5 WRONG (status -> blocked; do NOT implement as written): DOC-383, DOC-386, DOC-387, DOC-430, DOC-436.
+- 8 IMPRECISE (stay pending + in-file clarify note): DOC-340, 362, 370, 397, 401, 415, 425, 426.
+- DOC-341: verified core, but a live probe shows the bad URL returns 500/SYS001 not 404 (corrected note added).
+- 4 verified items rest on odd-collectors facts not checkable locally (DOC-354/376/434/435 — re-check upstream).
+- PLT-151..213 + TST-005..040 are NOT yet verified (same provenance) — same adversarial pass recommended.

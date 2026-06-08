@@ -1,4 +1,28 @@
-# Last updated 2026-06-08 — documentation pillar: **2026-06-08 harvest-corrections batch — 13 DOC items → `review-ready`** on branch `docs/harvest-2026-06-08-corrections` (NOT pushed / NOT merged; handed to the maintainer for one-pass review).
+# Last updated 2026-06-08 — documentation pillar: **2026-06-08 harvest-corrections batch REVIEWED (separate session) — all 13 DOC items → `done`**. Corrections merged to documentation `origin/main` (PR #96) + odd-team bookkeeping (PR #161); every claim re-verified against odd-platform `7f5ea179`; Gate 8 live-verified on canonical URLs.
+
+## /review 2026-06-08 (documentation pillar — 2026-06-08 harvest corrections) — **13 DOC items: ACCEPTED, `review-ready` → `done`**
+
+Separate-session review of the entire harvest-corrections batch (the `/implement` was an earlier 2026-06-08 session). **Verdict: 13/13 ACCEPTED; every gate PASS.** These were CRITICAL/high **inversions** of live docs, so the review independently consumer-read every corrected claim against odd-platform `7f5ea179` — a wrong "correction" ships a double-inverted page. DOC-338 (the TTL-purge inversion, the crown jewel) was owner-verified by the reviewer; the other 12 by **4 parallel read-only verification agents** (auth handlers / permissions+QE-UI / alerting+notifications / lookup+tags+spec+versions). **All corrected texts are code-accurate and the OLD texts were the genuine defects; no correction overstates** — including DOC-340's new durability claim, which the persistent-logical-slot code (no `withTemporaryOption`, existence-guarded creation, `setAppliedLSN`/`setFlushedLSN`) genuinely supports.
+
+**Per-item (all Gate 1–11 PASS; key consumer-read evidence @ `7f5ea179`):**
+- **DOC-338** (CRITICAL) — linchpin verified: soft-delete stamps `STATUS_UPDATED_AT` (`ReactiveDataEntityRepositoryImpl.java:112-114`), DELETED routes via `softDelete→delete()` (`DataEntityInternalStateServiceImpl.java:78-79`), housekeeping purges on that clock + deletes S3/MinIO files (`DataEntityHousekeepingJob.java:73-77,142`), defaults on+30 (`application.yml:166,170`); the `applyStatus` always-false guard (`DataEntityMapperImpl.java:247-250`) is the genuine NARROW bug (non-DELETED only). Purge IS active+irreversible — old "persists forever" was inverted.
+- **DOC-336** — `OperationUtils.java:9` `containsIgnoreCase`=`equalsIgnoreCase` (full match, no substring), uniform across all handlers.
+- **DOC-337** — `PolicyTypeDto.java:9-12` contextual = DATA_ENTITY/TERM/QUERY_EXAMPLE, no NAMESPACE; live page already correct (no doc edit); records SPC-002/DOC-240/DOC-243 corrected.
+- **DOC-339** — `AbstractOIDCUserHandler.java:33-46` admin-principals always; `CustomOIDCUserHandler.java:42-44` `getDefaultGroupsClaim()`=null.
+- **DOC-340** — alert INSERT `ReactiveAlertRepositoryImpl.java:324-333`; WAL subscriber reads FROM primary `NotificationSubscriber.java:47,53-58,68`; persistent slot durability HOLDS (`:104-126,83-84`).
+- **DOC-341** — `openapi.yaml:1253/1287/2418` split+group; no singular path. **DOC-342** — `.nvmrc`=v24.13.0, `package.json:141-144` engines. **DOC-343** — orphan zero-includes+SUMMARY-absent (safe delete); `GoogleUserHandler.java:38-40`.
+- **DOC-344** — `LookupTableColumnTypes.java:44` TYPE_TIME(TIMESTAMP) + `LookupTimestampValidator` (400 on bad value); preamble "eight distinct types" correctly unchanged. **DOC-345** — `openapi.yaml:910-924` GET-only, no whole-entity delete handler/thunk; `deleteLookupTable` cleans both halves. **DOC-346** — `PermissionProvider.tsx:39-43` renders unconditionally; `WithPermissions.tsx:28` hides control only.
+- **DOC-331** — webhook `!= HttpStatus.OK.value()` (exactly 200) `AbstractNotificationSender.java:26`; SMTP `.equals("smtp")` `NotificationConfiguration.java:63-68`. **DOC-348** — `components.yaml:340-345` bare string, `TagServiceImpl.java:155` raw `setName(n)`, no validation on any write path.
+
+**Gate 8 (live-site) — PASS for all 13.** Merge status verified via `git fetch` (the initial local read was a STALE ref — exactly the failure CLAUDE.md's "git fetch before inferring merge" rule guards against): corrections are on documentation `origin/main` (`d9823bd`, PR #96). All 13 canonical live URLs (`docs.opendatadiscovery.org/features/…`) render the NEW content, OLD content gone, HTTP 200. **Transient observed:** immediately post-merge the bare `/data-discovery/statuses` served a stale Cloudflare-cached OLD render for ~2 min, then settled to a `307 → /features/…` redirect; self-healed, not a content defect.
+
+**Retraction/supersession bookkeeping — confirmed landed:** DOC-191/293 → `superseded` (DOC-338 refs); DOC-235/238 → `done` w/ retraction notes; PLT-081 → `rejected`; DOC-036/DOC-277 → `done`; DOC-GAP-088 retraction in `doc-gaps.md` is code-cited to the linchpin lines.
+
+**Editorial audit (mandatory step 5):** the full-tree editorial read ran earlier today (windfall harvest, commit `6463778`, 203 artefacts — this batch is its output), so this run did a FOCUSED cross-page coherence pass on the corrected surfaces + neighbours (`admin-promotion.md`, `query-examples.md`, `api-reference/lineage.md`, `notifications.md`). **Zero new contradictions** — every reconciliation is consistent; `notifications.md:102,111` independently corroborates the DOC-340 persistent-slot framing. **No new DOC-NNN findings.**
+
+**Low-priority observation (not blocking; items closed):** several item `Sources:` footers cite non-canonical live URLs (bare slug instead of the `features/`-prefixed canonical, e.g. DOC-340's footer; DOC-338's `/data-discovery/statuses` 307-redirects) — they resolve via redirect or are imprecise internal citations, not published-page defects.
+
+**Backlog:** docs review-ready 13 → 0; docs done +13 (DOC-338/336/337/339/340/341/342/343/344/345/346/331/348).
 
 ## /implement 2026-06-08 (documentation pillar — 2026-06-08 harvest corrections) — **13 DOC items → `review-ready`**
 

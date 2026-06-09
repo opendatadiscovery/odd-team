@@ -64,6 +64,7 @@ discovered_during: DOC-013 | scan/{scanner} | free text
 github_issue_url:                 # populated when status flips draft → filed
 github_issue_number:              # populated when filed (nice for cross-reference)
 found_date: "YYYY-MM-DD"
+user_facing_verified: true | false   # false until the user-facing claim is driven against the running system; draft -> filed needs true OR an explicit false + reason (playbooks/user-facing-verification.md)
 ---
 ```
 
@@ -95,11 +96,11 @@ Anything that is **not** appropriate for the GitHub issue body (internal-only co
 
 ### Verify the user-facing surface — do not infer it
 
-The `User-facing impact` section must be grounded in the running feature: drive the UI, hit the endpoint, read the front-end component — not deduced from back-end code alone. Code-only analysis misses front-end/back-end contradictions: e.g. a back end that returns duplicate rows while the UI de-dupes them, so the real symptom is an inflated count badge, not duplicate rows (the failure mode behind PLT-176). If a local stack is available, reproduce the observable behaviour and cite what you saw.
+The `User-facing impact` section must be grounded in the running feature: drive the UI, hit the endpoint, read the front-end component — not deduced from back-end code alone. Code-only analysis misses front-end/back-end contradictions: e.g. a back end that returns duplicate rows while the UI de-dupes them, so the real symptom is an inflated count badge, not duplicate rows (the failure mode behind PLT-176). If a local stack is available, reproduce the observable behaviour and cite what you saw. Protocol: `playbooks/user-facing-verification.md`. A draft carries `user_facing_verified: true` only once driven; the whole statically-authored corpus is `false` by default (per `retrospectives/LSN-031`), and `draft -> filed` is gated on it.
 
 ### Encoding: ASCII-only body
 
-The maintainer's copy-paste path into GitHub mangles UTF-8 — `N×M` pastes as `N�M`, an em dash as `?`. Keep issue **bodies ASCII-only**: use `-` / `--` for dashes, `x` for the multiplication sign, `->` `<-` `<->` for arrows, `>=` / `<=`, `...` for an ellipsis, straight quotes. The only exception is content that is inherently non-Latin (e.g. native-language strings that ARE the subject of the bug, as in PLT-213); flag such a draft as needing a UTF-8-safe paste, and keep the non-Latin text confined to a code block where possible.
+The maintainer's copy-paste path into GitHub mangles UTF-8 — `N×M` pastes as `N�M`, an em dash as `?`. Keep issue **bodies ASCII-only**: use `-` / `--` for dashes, `x` for the multiplication sign, `->` `<-` `<->` for arrows, `>=` / `<=`, `...` for an ellipsis, straight quotes. The only exception is content that is inherently non-Latin (e.g. native-language strings that ARE the subject of the bug, as in PLT-213); flag such a draft as needing a UTF-8-safe paste, and keep the non-Latin text confined to a code block where possible. Mechanical protocol + full replacement map: `playbooks/ascii-only-issue-bodies.md`.
 
 ## Lifecycle
 

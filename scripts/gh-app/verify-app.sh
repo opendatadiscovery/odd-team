@@ -6,7 +6,11 @@
 # Optional:     GH_TARGET_REPO  (default opendatadiscovery/odd-platform)
 set -euo pipefail
 
-: "${GH_APP_ID:?set GH_APP_ID}"; : "${GH_INSTALLATION_ID:?set GH_INSTALLATION_ID}"; : "${GH_APP_KEY_PATH:?set GH_APP_KEY_PATH}"
+# Auto-load machine-local config (~/.config/odd-contributor/env) if present — set the IDs there once, never re-export.
+_cfg="${ODD_CONTRIBUTOR_ENV:-$HOME/.config/odd-contributor/env}"
+[ -f "$_cfg" ] && . "$_cfg"
+
+: "${GH_APP_ID:?set GH_APP_ID (or put it in ~/.config/odd-contributor/env)}"; : "${GH_INSTALLATION_ID:?set GH_INSTALLATION_ID}"; : "${GH_APP_KEY_PATH:?set GH_APP_KEY_PATH}"
 repo="${GH_TARGET_REPO:-opendatadiscovery/odd-platform}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

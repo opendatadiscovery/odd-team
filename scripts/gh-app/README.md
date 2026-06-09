@@ -21,11 +21,14 @@ You have the **App ID** and the **`.pem`** already. You still need the **Install
    mkdir -p ~/.config/odd-contributor && mv /path/to/your-key.pem ~/.config/odd-contributor/key.pem
    chmod 600 ~/.config/odd-contributor/key.pem
    ```
-2. **Export the env** (e.g. in `~/.config/odd-contributor/env`, sourced when you run a contributor pass — never committed):
+2. **Store the IDs once in `~/.config/odd-contributor/env`** — the scripts **auto-source** this (set it once, never re-export). It is **not** in the repo: the App ID + Installation ID are non-secret identifiers, but they stay off this public repo as defense-in-depth. If you ever lose them, they are recoverable from GitHub — the **App ID** is on the App's page (`…/settings/apps/odd-contributor`), the **Installation ID** is in the App's install-settings URL (`…/installations/<ID>`).
    ```bash
-   export GH_APP_ID=<your-app-id-or-client-id>
-   export GH_INSTALLATION_ID=<installation-id>
-   export GH_APP_KEY_PATH=~/.config/odd-contributor/key.pem
+   cat > ~/.config/odd-contributor/env <<'EOF'
+   export GH_APP_ID=<your-app-id>
+   export GH_INSTALLATION_ID=<your-installation-id>
+   export GH_APP_KEY_PATH="$HOME/.config/odd-contributor/key.pem"
+   EOF
+   chmod 600 ~/.config/odd-contributor/env
    ```
 3. **Verify:**
    ```bash

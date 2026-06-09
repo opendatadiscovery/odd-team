@@ -12,7 +12,12 @@
 #   TOKEN=$(scripts/gh-app/gh-token.sh)
 set -euo pipefail
 
-: "${GH_APP_ID:?set GH_APP_ID (App ID or Client ID)}"
+# Auto-load machine-local config (App ID + Installation ID + key path) if the vars aren't already set.
+# This file is NOT in the repo — the IDs stay off the public repo as defense-in-depth; the key never leaves it.
+_cfg="${ODD_CONTRIBUTOR_ENV:-$HOME/.config/odd-contributor/env}"
+[ -f "$_cfg" ] && . "$_cfg"
+
+: "${GH_APP_ID:?set GH_APP_ID (App ID or Client ID) — or put it in ~/.config/odd-contributor/env}"
 : "${GH_INSTALLATION_ID:?set GH_INSTALLATION_ID}"
 : "${GH_APP_KEY_PATH:?set GH_APP_KEY_PATH (path to the .pem)}"
 

@@ -69,6 +69,7 @@ The workspace is being reorganised into a layered architecture so the framework 
 | features | — | not yet activated |
 | code-quality | — | not yet activated |
 | adr | `pillars/adr/pillar.md` | active — implicit-adrs → backlog `ADR-NNNN` → published ADR-log (docs Developer Guides) → ontology (`PROMOTED_TO`/`REALISES`); pilot ADR-0001 shipped |
+| contributor | `pillars/contributor/pillar.md` | active (draft ADR) — virtual-contributor: resolve a GitHub issue end-to-end (code+tests+docs+ontology+PR); two gates (plan+merge); scoped-token GitHub App; skill `/contribute`; ADR `adrs/drafts/contributor-pillar.md` |
 
 **Session boot — what to load:**
 
@@ -251,7 +252,7 @@ Any phase that discovers a bug, gap, or adjacent issue out of scope routes throu
 ## Key Principles
 
 - One work item = one atomic commit (multiple items ship in a single PR per batch)
-- No functional changes — only docs, tests, comments, spec alignment
+- No functional changes — only docs, tests, comments, spec alignment. **Exception — the `contributor` pillar** (`pillars/contributor/pillar.md`) changes odd-platform code to resolve GitHub issues, gated by GATE 1 (human plan approval) + GATE 2 (human merge); this rule holds for every other pillar.
 - Human reviews backlog before implementation begins; the agent runs the batch
 - Parallel execution allowed only for non-conflicting file sets
 - Navigation files are living pointers — update immediately when stale

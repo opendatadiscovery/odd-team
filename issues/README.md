@@ -78,6 +78,9 @@ One concise paragraph. State the defect / gap / requested feature in operator-vi
 ## Where
 File:line citations with a short code excerpt. Operators searching the GitHub issue need to find the offending code without leaving the issue.
 
+## User-facing impact
+What the user actually does, and what they actually see — VERIFIED against the running feature, not inferred from code. Name the user (operator / API consumer / end user), the feature or flow they are in, and the observable behaviour on the real surface (the UI screen, the HTTP response, the alert that does or does not arrive). Call out any front-end/back-end contradiction (the back end does X, the front end shows Y) and any on-screen self-contradiction (e.g. a count badge that disagrees with the list it labels). For a back-end-only issue, state the consumer-visible effect (the 500, the silently dropped delivery). This section is REQUIRED: a bug we cannot describe in end-to-end user-facing terms is a bug we have not finished investigating.
+
 ## Why it matters
 Operator impact in concrete terms. For bugs: what breaks, who is affected, how the failure manifests (silent, loud, intermittent). For features: what use case it unlocks. Severity rationale if relevant.
 
@@ -89,6 +92,14 @@ The on-disk trail in this workspace: which backlog item, which scan, which revie
 ```
 
 Anything that is **not** appropriate for the GitHub issue body (internal-only context, links to the workspace, severity-prioritisation reasoning that would read oddly to outsiders) should be omitted from the file or kept to a single-line frontmatter field. **One file = paste-ready draft. No double maintenance.**
+
+### Verify the user-facing surface — do not infer it
+
+The `User-facing impact` section must be grounded in the running feature: drive the UI, hit the endpoint, read the front-end component — not deduced from back-end code alone. Code-only analysis misses front-end/back-end contradictions: e.g. a back end that returns duplicate rows while the UI de-dupes them, so the real symptom is an inflated count badge, not duplicate rows (the failure mode behind PLT-176). If a local stack is available, reproduce the observable behaviour and cite what you saw.
+
+### Encoding: ASCII-only body
+
+The maintainer's copy-paste path into GitHub mangles UTF-8 — `N×M` pastes as `N�M`, an em dash as `?`. Keep issue **bodies ASCII-only**: use `-` / `--` for dashes, `x` for the multiplication sign, `->` `<-` `<->` for arrows, `>=` / `<=`, `...` for an ellipsis, straight quotes. The only exception is content that is inherently non-Latin (e.g. native-language strings that ARE the subject of the bug, as in PLT-213); flag such a draft as needing a UTF-8-safe paste, and keep the non-Latin text confined to a code block where possible.
 
 ## Lifecycle
 

@@ -29,8 +29,8 @@ No code is written until a human approves the implementation plan — *even for 
 
 ## G-C4 — GATE 2: the merge is human, and GitHub enforces it
 
-The agent NEVER merges. Three structural layers make this a platform guarantee, not a prompt: every PR is `draft: true` (GitHub returns 405 on merge); `main` is branch-protected with required review + no-bypass; CODEOWNERS requires the maintainer. The bot's token has no merge path.
-- **Enforced at:** GitHub branch protection + CODEOWNERS + draft-PR; the bot's GitHub App has only Issues/PR/Contents (write) + Metadata (read).
+The agent NEVER merges. The guarantee is structural, not a prompt: `main` branch protection requires **≥1 approving review** with no bypass, and GitHub blocks a PR author from approving its own PR — the bot is the author (a distinct identity), so a human maintainer must approve before any merge. **Any** maintainer can review (no CODEOWNERS, no hardcoded owner). The bot also opens PRs as `draft` (a signal); the required approval is the enforcement.
+- **Enforced at:** GitHub branch protection (require ≥1 approval, no bypass) + the author-cannot-self-approve rule; the bot's GitHub App has only Issues/PR/Contents (write) + Metadata (read) — no Administration, so it cannot weaken the rule.
 - **Case-law:** `GITHUB-MECHANICS.md` §3; `PITFALLS.md` #10.
 
 ## G-C5 — The change is bounded by the approved plan

@@ -35,7 +35,7 @@ You have the **App ID** and the **`.pem`** already. You still need the **Install
 
 ## The merge gate (do this in each target repo)
 
-The scripts can't enforce the merge gate — GitHub does. On `opendatadiscovery/odd-platform` (Settings → Branches → `main`): require a PR + 1 approval + **Require review from Code Owners** + **Do not allow bypassing**. Then add `CODEOWNERS.template`'s content as `.github/CODEOWNERS`. The bot's PRs are always `draft:true`; the merge endpoint returns **405** for it regardless.
+The scripts can't enforce the merge gate — GitHub does, via `main` branch protection: **require a PR before merging + require ≥1 approving review + do not allow bypassing**. That's the whole gate: the bot authors the PR, GitHub blocks authors from self-approving, so a human maintainer must approve before merge — and any maintainer can (no CODEOWNERS, no hardcoded owner). The bot also opens PRs as `draft` (a signal); the required approval is the enforcement. `odd-platform`'s `main` is already protected — just confirm **Require approvals: 1** is on.
 
 ## Security
 

@@ -18,7 +18,7 @@ A `/contribute` run that must: read an issue + its comments; post a clarifying o
 - the GitHub App `odd-contributor` installation (registered by the maintainer; the encrypted private key, NEVER committed)
 - `$GH_APP_ID`, `$GH_INSTALLATION_ID`, the private key path (env / local secret store)
 - the issue number; the change branch name `contrib/CTRIB-NNN-slug`
-- **PRECONDITION — branch protection on `main` (human-set, agent-UNVERIFIABLE).** Require-a-PR-before-merging + "do not allow bypassing" + CODEOWNERS must be ON before any write run. The agent has NO `Administration:read`, so it cannot check this — and `Contents:write` alone would otherwise permit a direct `PUT /contents` push to `main`. Branch protection is what structurally confines the bot to its own branch + draft PRs. Treat it as a one-time setup gate; do not enable writes until the maintainer confirms it (`scripts/gh-app/verify-app.sh` checks the token + perms, NOT the branch rule).
+- **PRECONDITION — branch protection on `main` (human-set, agent-UNVERIFIABLE).** `main` must require a PR before merging **and ≥1 approving review**, with no bypass for the bot. That required approval is the real gate: the bot is the PR author, GitHub blocks authors from self-approving, so a human maintainer must approve before any merge — and any maintainer can (no CODEOWNERS, no hardcoded owner). The agent has NO `Administration:read`, so it cannot check this, and `Contents:write` alone would otherwise permit a direct `PUT /contents` push to `main`. (`opendatadiscovery/odd-platform`'s `main` is already protected — confirm "Require approvals: 1" is on.) `scripts/gh-app/verify-app.sh` checks the token + perms, NOT the branch rule.
 
 ## procedure
 
@@ -32,7 +32,7 @@ A `/contribute` run that must: read an issue + its comments; post a clarifying o
 
 5. **Branch + push** (after GATE 1): `GET /git/ref/heads/main` → `POST /git/refs` (create `contrib/CTRIB-NNN-slug`) → `PUT /repos/.../contents/{path}` (or push a commit) on that branch only. Never push to `main`.
 
-6. **Open a DRAFT PR** (GATE 2 entry): `POST /repos/.../pulls` with `"draft": true`, `head=contrib/CTRIB-NNN-slug`, `base=main`, a descriptive body containing `Closes #N`. Then `POST .../pulls/{n}/requested_reviewers` for the maintainer. The PR is draft — the merge endpoint returns 405 for the bot regardless (G-C4).
+6. **Open a DRAFT PR** (GATE 2 entry): `POST /repos/.../pulls` with `"draft": true`, `head=contrib/CTRIB-NNN-slug`, `base=main`, a descriptive body containing `Closes #N`. Then `POST .../pulls/{n}/requested_reviewers` for a configured reviewer or maintainers team (`$GH_REVIEWERS` — a list/team, never a hardcoded person). The required approval (from ANY maintainer) is the merge gate; the bot is the PR author and cannot self-approve (G-C4).
 
 7. **Record** every URL (comments, branch, PR) in the CTRIB record so the maintainer's audit is one file.
 

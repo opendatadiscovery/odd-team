@@ -61,7 +61,7 @@ The two gates are **additive** on the existing `/implement → review-ready → 
 ### 2. GitHub identity + least privilege (the scoped token)
 
 Per `GITHUB-MECHANICS.md`:
-- **Identity: a GitHub App** registered as `odd-contributor`, acting as `odd-contributor[bot]` — a distinct audit actor, excludable from CODEOWNERS, with **1-hour auto-expiring installation tokens**. A PAT is rejected: it attributes all bot activity to the maintainer's account and is long-lived.
+- **Identity: a GitHub App** registered as `odd-contributor`, acting as `odd-contributor[bot]` — a distinct audit actor with **1-hour auto-expiring installation tokens**. A PAT is rejected: it attributes all bot activity to the maintainer's account and is long-lived.
 - **Exactly four permissions:** Issues (write), Pull requests (write), Contents (write), Metadata (read). **Nothing else** — no Administration, Workflows, Secrets, Actions. The app cannot read or modify branch protection.
 - **Branch on upstream** (`opendatadiscovery/*`), not a fork — write comes from the App installation; branch protection applies cleanly.
 - **Execution in this environment:** `gh` is not installed and the GitHub MCP server loses the bot identity (PAT auth), so the path is a small `gen-jwt.sh` (openssl) → installation token in an env var → `curl` to the REST API. The private key is encrypted at rest and **never committed**.
@@ -69,12 +69,12 @@ Per `GITHUB-MECHANICS.md`:
 
 ### 3. The merge gate is enforced by GitHub, not by convention
 
-Three structural layers, any one of which blocks the bot (`GITHUB-MECHANICS.md`):
-1. **Every PR is `draft: true`** — GitHub's merge endpoint returns 405 on a draft.
-2. **`main` branch protection** — required approval + "do not allow bypassing."
-3. **CODEOWNERS requires `@RamanDamayeu`** on every path.
+The guarantee is structural, not conventional (simplifying `GITHUB-MECHANICS.md` §3, which proposed CODEOWNERS as a third layer — dropped per the maintainer's 2026-06-09 call: it hardcodes a single owner, and required-approval already guarantees a human review while letting *any* maintainer give it):
+1. **`main` branch protection requires ≥1 approving review**, with no bypass for the bot — the hard gate.
+2. **GitHub blocks a PR author from approving its own PR.** The bot is the author (a distinct identity, `odd-contributor[bot]`), so it cannot self-approve — a *human* maintainer must approve before any merge, and **any** maintainer can.
+3. **The bot opens PRs as `draft`** — a courtesy signal that the PR awaits review; the required approval (not the draft flag) is the enforcement.
 
-The agent's token *cannot* merge regardless of what it does. GATE 2 is therefore a platform guarantee, not a prompt instruction.
+The agent's token *cannot* merge regardless of what it does (no Administration permission to weaken the rule; not on any bypass list). GATE 2 is therefore a platform guarantee, not a prompt instruction.
 
 ### 4. The code mandate + the hard-stop guardrails
 
@@ -117,7 +117,7 @@ The contributor runs **attended** (every issue through both gates) until it pass
 ## Consequences
 
 - **Two rules scoped** (not deleted): `CLAUDE.md:254` and the GitHub-human-only rule now carry a `contributor`-pillar exception; they remain in force for every other pillar.
-- **New artefacts:** the `contributor` pillar (`pillars/contributor/`), the `/contribute` skill + the intake/comment/reproduce/PR agents, the `gen-jwt.sh` token helper, and a **one-time human setup**: register the `odd-contributor` GitHub App, set branch protection + CODEOWNERS, and provision the installation key. This is the single human-infrastructure step the whole design depends on.
+- **New artefacts:** the `contributor` pillar (`pillars/contributor/`), the `/contribute` skill + the intake/comment/reproduce/PR agents, the `gen-jwt.sh` token helper, and a **one-time human setup**: register the `odd-contributor` GitHub App, confirm `main` branch protection requires ≥1 approving review, and provision the installation key. This is the single human-infrastructure step the whole design depends on.
 - **Risk posture:** the irreversible-blast-radius classes are ADR-gated and human-signed; the merge gate is a GitHub guarantee; the token is least-privilege and revocable; prompt injection is structurally contained. The residual risk is a *plausible-but-wrong fix that passes review* — mitigated by reproduce-first + full-suite + the fresh-context `/review`.
 - **The leverage is triage, not codegen:** per the field evidence, the value comes from resolving well-scoped, reproduced issues and declining the rest — exactly what the pilot batch (verified, reproduced, scoped) provides.
 

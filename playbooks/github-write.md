@@ -21,7 +21,7 @@ A `/contribute` run that must: read an issue + its comments; post a clarifying o
 
 ## procedure
 
-1. **Mint a short-lived installation token.** `gen-jwt.sh` (openssl, no SDK) signs a JWT from the App key → `POST /app/installations/{id}/access_tokens` → a **1-hour** `$GH_INSTALLATION_TOKEN`. Never log it; never commit it; let it expire (do not persist). (`GITHUB-MECHANICS.md` §5.)
+1. **Mint a short-lived installation token.** `scripts/gh-app/gh-token.sh` (openssl + python3, no jq) signs a JWT from the App key and exchanges it via `POST /app/installations/{id}/access_tokens` → a **1-hour** token: `TOKEN=$(scripts/gh-app/gh-token.sh)`; `unset TOKEN` after the run. Never log it; never commit it; let it expire. Env + setup: `scripts/gh-app/README.md`. (`GITHUB-MECHANICS.md` §5.)
 
 2. **Identity + permissions (verify once per setup).** The token belongs to `odd-contributor[bot]` with EXACTLY: Issues (write), Pull requests (write), Contents (write), Metadata (read). If any other permission is present, STOP and tell the maintainer — the App is over-scoped. (`GITHUB-MECHANICS.md` §1-2.)
 

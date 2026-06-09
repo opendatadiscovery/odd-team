@@ -3,12 +3,12 @@ id: CTRIB-001
 github_issue_number: 1744
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1744
 class: bug
-status: implementing
+status: review-ready
 reproduced: "live this session 2026-06-09 (documented in issue body + retrospectives/LSN-031): GET /api/activity?tag_ids=1,2&owner_ids=1,2&type=ALL -> 20 rows / 5 distinct; GET /api/activity/counts -> total_count=20; UI 5 cards under 'All 20' badge. Local stack currently down — the durable reproduction is the failing repository test (phase D, testcontainers)."
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-09 — EXISTS fix; root-cause comment skipped; branch protection confirmed)"
 plan_approved_at: "2026-06-09"
-pr_url:
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1745"
 pr_draft: true
 ---
 
@@ -46,7 +46,50 @@ Issue #1744 is the filed form of PLT-176 (`issues/odd-platform/PLT-176.md`).
 **Ontology refresh (G-C10):** `/enrich --touched` on `ReactiveActivityRepositoryImpl` + the F-021 activity-feed reflection (the de-dup corrects the fan-out facet); committed.
 
 ## Test ledger
-(phase D)
+- **Unit** — `ReactiveActivityRepositoryFanOutTest` (Testcontainers, `repository/reactive/`). Seeds 1 entity + 2 tags + 2 owners + 1 activity. **RED on unfixed code (2026-06-09):** `findAllActivities` returned 4 rows (`hasSize(1)` failed at `:100`) — the fan-out, confirmed. Fix applied (EXISTS semi-joins in `ReactiveActivityRepositoryImpl`: dropped the tag/owner LEFT JOINs from `addJoins`, converted the predicates to `EXISTS`, cleaned the now-vestigial params off `addJoins`/`buildBaseQuery`). **GREEN** + **full `:odd-platform-api:build` GREEN** (432 tests, 0 failures; checkstyle + assemble green).
+- **Integration** — IT extending `IT-088` (count badge == listed events): **still TODO** (odd-team Playwright/run-suite; the user-facing-symptom test, per the two-bucket home rule).
+
+## Branch / PR
+- Branch `contrib/CTRIB-001-activity-fanout` pushed to `opendatadiscovery/odd-platform` (commit `2cf9dc24`, authored `odd-contributor[bot]`).
+- Draft PR: **#1745** — https://github.com/opendatadiscovery/odd-platform/pull/1745 (GATE 2; review requested from `RamanDamayeu`; the bot cannot merge).
 
 ## Comments (issue thread)
-- Root-cause comment: DRAFTED, held for GATE 1 (first public bot action; and it largely restates the maintainer-authored issue — post for the public record, or skip).
+- Root-cause comment: **skipped per GATE 1** — the maintainer authored the issue with the same analysis; no difference-making comment to add (G-C6).
+
+## PR body (for GATE 2 — draft PR on #1744)
+
+**Title:** `fix(activity): de-duplicate tag+owner filtered feed via EXISTS semi-joins`
+
+```
+## Summary
+`GET /api/activity` and `/api/activity/counts` LEFT-JOIN the one-to-many `tag_to_data_entity`
+and `ownership` tables to apply the `tag_ids` / `owner_ids` filters, with no `DISTINCT`. An entity
+matching N filtered tags x M filtered owners therefore returns each activity event N*M times, and the
+same fan-out inflates the count — which is what makes the "All" count badge disagree with the
+(front-end de-duplicated) list.
+
+This replaces the fan-out LEFT JOINs with `EXISTS` semi-joins, which filter without multiplying rows —
+fixing the list query AND all three count methods (`getTotalActivitiesCount`,
+`getMyObjectsActivitiesCount`, `getDependentActivitiesCount`) in one change, no `DISTINCT` needed.
+
+## Root cause (ReactiveActivityRepositoryImpl)
+- `addJoins(...)` LEFT-joined `TAG_TO_DATA_ENTITY` / `OWNERSHIP` (one-to-many on `data_entity_id`).
+- `getCommonConditions(...)` filtered them with `TAG_ID IN (...)` / `OWNER_ID IN (...)`.
+- The list select had no `DISTINCT`; the count used `selectCount()` over the same fanned-out rows.
+
+## Change
+- `getCommonConditions`: tag/owner predicates -> `EXISTS (SELECT 1 FROM ... WHERE data_entity_id =
+  data_entity.id AND ...)`.
+- `addJoins` / `buildBaseQuery`: removed the tag/owner LEFT JOINs (and the now-unused params).
+- No wire-contract change: the response shape is unchanged; only duplicate rows + the inflated count go.
+
+## Tests
+- New `ReactiveActivityRepositoryFanOutTest` (Testcontainers): one entity with 2 tags + 2 owners + 1
+  activity -> asserts the list returns 1 row and `getTotalActivitiesCount` returns 1 (not 4). RED before
+  the fix, GREEN after; full `:odd-platform-api:build` green.
+
+Closes #1744
+
+---
+Opened by odd-contributor[bot]. Human approval required before merge.
+```

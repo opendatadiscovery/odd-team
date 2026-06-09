@@ -18,6 +18,7 @@ A `/contribute` run that must: read an issue + its comments; post a clarifying o
 - the GitHub App `odd-contributor` installation (registered by the maintainer; the encrypted private key, NEVER committed)
 - `$GH_APP_ID`, `$GH_INSTALLATION_ID`, the private key path (env / local secret store)
 - the issue number; the change branch name `contrib/CTRIB-NNN-slug`
+- **PRECONDITION — branch protection on `main` (human-set, agent-UNVERIFIABLE).** Require-a-PR-before-merging + "do not allow bypassing" + CODEOWNERS must be ON before any write run. The agent has NO `Administration:read`, so it cannot check this — and `Contents:write` alone would otherwise permit a direct `PUT /contents` push to `main`. Branch protection is what structurally confines the bot to its own branch + draft PRs. Treat it as a one-time setup gate; do not enable writes until the maintainer confirms it (`scripts/gh-app/verify-app.sh` checks the token + perms, NOT the branch rule).
 
 ## procedure
 

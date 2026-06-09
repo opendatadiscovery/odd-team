@@ -72,7 +72,7 @@ Per `GITHUB-MECHANICS.md`:
 Three structural layers, any one of which blocks the bot (`GITHUB-MECHANICS.md`):
 1. **Every PR is `draft: true`** — GitHub's merge endpoint returns 405 on a draft.
 2. **`main` branch protection** — required approval + "do not allow bypassing."
-3. **CODEOWNERS requires `@raman`** on every path.
+3. **CODEOWNERS requires `@RamanDamayeu`** on every path.
 
 The agent's token *cannot* merge regardless of what it does. GATE 2 is therefore a platform guarantee, not a prompt instruction.
 

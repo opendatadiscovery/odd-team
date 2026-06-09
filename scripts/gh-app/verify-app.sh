@@ -40,5 +40,5 @@ api "https://api.github.com/repos/$repo/issues?per_page=1&state=all" \
 
 echo ""
 echo "Read + token checks passed. The merge gate (draft PR -> 405) is verified per-PR, not here:"
-echo "  branch protection on main + CODEOWNERS @raman + draft:true make the merge irreducibly human."
+echo "  branch protection on main + CODEOWNERS @RamanDamayeu + draft:true make the merge irreducibly human."
 echo "Never log or commit the token above; it expires in 1h. Kill-switch: uninstall the App or delete the .pem."

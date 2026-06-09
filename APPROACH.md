@@ -848,7 +848,8 @@ The reflector's prompt is stack-agnostic at the framework level (system prompt i
 ### Cross-references
 
 - `retrospectives/LSN-020` *(rev 5)* — the case-law that motivated this layer.
-- `.claude/agents/feature-reflector.md` rev `feature-reflector/0.1.0` — the system prompt + output schema + worked example.
+- `retrospectives/LSN-031` *(rev 6)* — the layer validated user-facing hypotheses against static sidecars, never the running system, so a `confirmed`/`contradicted` verdict on a rendered-UI or cross-endpoint observable was a static claim wearing user-facing language (PLT-176: back-end fan-out reported as "duplicate rows"; the running UI de-dupes and the real symptom is a count/list contradiction). **Rule 12** widens `probe-needed` from timing/concurrency to **any observable that is a property of the running assembled system** (front-end transform of a back-end response; consistency between sibling endpoints on one screen) — so it routes through the step-7 probe-runner above instead of being asserted from a static trace. `playbooks/user-facing-verification.md` is the issue-side gate: no code-bug user-facing claim is filable until driven.
+- `.claude/agents/feature-reflector.md` rev `feature-reflector/0.4.0` — the system prompt + output schema + worked example.
 - `.claude/skills/reflect-feature/SKILL.md` — the maintainer-facing slash command.
 - `lineage/{repo}/feature-reflections/index.yaml` + `feature-reflections/detail/F-NNN.yaml` — the canonical output paths.
 - `.claude/agents/probe-runner.md` — the downstream consumer that resolves `pending-reflection-verification` probes.

@@ -107,6 +107,7 @@ Do *not* add an LSN for:
 | `LSN-028-yaml-frontmatter-parse-error-stalled-gitbook-sync.md` | populated | added 2026-05-28 (Gate 8 + /implement step 6.5 PyYAML parse-check extension; DOC-281 hotfix; GitBook sync was halted entirely until fixed) |
 | `LSN-029-disabled-test-is-blind-pin-known-bugs.md` | populated | added 2026-06-02 (tests axis — characterization pins for known bugs: `@pins`/`status=pins-known-bug`, never `@Disabled`; MinioConfigRegionTest) |
 | `LSN-030-test-demand-method-shaped-not-use-case-shaped.md` | populated | added 2026-06-03 (tests axis — test demand minted only by method-shaped per-node layer; feature use-cases never become test obligations; F-056 wiki-link never reflected) |
+| `LSN-031-reflection-confirms-user-facing-behaviour-from-static-code-not-the-running-system.md` | populated | added 2026-06-09 (issue-reporting — feature-reflector Rule 12 + `user-facing-verification` gate; PLT-176 FE/BE contradiction + count/list on-screen mismatch, found only by driving the UI) |
 
 ## Index by gate / playbook informed
 
@@ -138,4 +139,7 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | Gate 11 — Audience isolation (mechanical banned-term grep) | LSN-026 |
 | Playbook — `live-site-verification.md` raw-HTML head inspection | LSN-027 |
 | Playbook — `live-site-verification.md` YAML frontmatter parse check | LSN-028 |
+| Playbook — `user-facing-verification.md` (drive the running feature; no static user-facing claim filed) | LSN-031 (sequel to LSN-020, LSN-023) |
+| `feature-reflector` Rule 12 — running-system observable routes to `probe-needed`, not static `confirmed` | LSN-031 |
+| Issue drafts — required `## User-facing impact` section + ASCII-only body (`issues/README.md`) | LSN-031 |
 | `/implement` skill — step 6.5 pre-commit mechanical sweeps | LSN-026 (Gate 11 banned-term), LSN-027 (description-length), LSN-028 (YAML parse) |

@@ -47,11 +47,18 @@ Issue #1744 is the filed form of PLT-176 (`issues/odd-platform/PLT-176.md`).
 
 ## Test ledger
 - **Unit** — `ReactiveActivityRepositoryFanOutTest` (Testcontainers, `repository/reactive/`). Seeds 1 entity + 2 tags + 2 owners + 1 activity. **RED on unfixed code (2026-06-09):** `findAllActivities` returned 4 rows (`hasSize(1)` failed at `:100`) — the fan-out, confirmed. Fix applied (EXISTS semi-joins in `ReactiveActivityRepositoryImpl`: dropped the tag/owner LEFT JOINs from `addJoins`, converted the predicates to `EXISTS`, cleaned the now-vestigial params off `addJoins`/`buildBaseQuery`). **GREEN** + **full `:odd-platform-api:build` GREEN** (432 tests, 0 failures; checkstyle + assemble green).
-- **Integration** — IT extending `IT-088` (count badge == listed events): **still TODO** (odd-team Playwright/run-suite; the user-facing-symptom test, per the two-bucket home rule).
+- **Integration** — IT extending `IT-088` (count badge == listed events): **TODO** — must run against an image **BUILT FROM THE BRANCH** (`jibDockerBuild` + `ODD_PLATFORM_IMAGE` override), never `ghcr…:latest` which still has the bug (`retrospectives/LSN-032`).
 
 ## Branch / PR
 - Branch `contrib/CTRIB-001-activity-fanout` pushed to `opendatadiscovery/odd-platform` (commit `2cf9dc24`, authored `odd-contributor[bot]`).
 - Draft PR: **#1745** — https://github.com/opendatadiscovery/odd-platform/pull/1745 (GATE 2; review requested from `RamanDamayeu`; the bot cannot merge).
+
+## Definition of Done (four merge-readiness gates — `retrospectives/LSN-032`; the PR stays `draft` until all ✓)
+
+1. **Unit (full build, on the branch):** ✅ `:odd-platform-api:build` — 432 tests + checkstyle + assemble GREEN on `contrib/CTRIB-001-activity-fanout`.
+2. **Integration (branch-built image):** ☐ **TODO** — author the IT (extend `IT-088`: tag+owner filter → badge == listed count), then `./gradlew :odd-platform-api:jibDockerBuild --image=odd-platform:contrib-CTRIB-001` + `ODD_PLATFORM_IMAGE=odd-platform:contrib-CTRIB-001 integration-tests/run-suite.sh IT-NNN`. **Never the published image.**
+3. **Docs:** ✅ **VERIFIED no change** — read `active-platform-features/activity-feed.md`; it documents the Tag/Owner filters' correct intent (narrow by tag/owner), never the buggy count → the fix makes reality match the doc.
+4. **Ontology:** ◐ sidecar updated (TAG/OWNERSHIP `LEFT JOIN` → `EXISTS` + the fan-out finding, `@regresses PLT-176`); ☐ **graph re-embed TODO**.
 
 ## Comments (issue thread)
 - Root-cause comment: **skipped per GATE 1** — the maintainer authored the issue with the same analysis; no difference-making comment to add (G-C6).

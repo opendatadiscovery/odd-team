@@ -108,6 +108,7 @@ Do *not* add an LSN for:
 | `LSN-029-disabled-test-is-blind-pin-known-bugs.md` | populated | added 2026-06-02 (tests axis — characterization pins for known bugs: `@pins`/`status=pins-known-bug`, never `@Disabled`; MinioConfigRegionTest) |
 | `LSN-030-test-demand-method-shaped-not-use-case-shaped.md` | populated | added 2026-06-03 (tests axis — test demand minted only by method-shaped per-node layer; feature use-cases never become test obligations; F-056 wiki-link never reflected) |
 | `LSN-031-reflection-confirms-user-facing-behaviour-from-static-code-not-the-running-system.md` | populated | added 2026-06-09 (issue-reporting — feature-reflector Rule 12 + `user-facing-verification` gate; PLT-176 FE/BE contradiction + count/list on-screen mismatch, found only by driving the UI) |
+| `LSN-032-integration-harness-pulls-published-image-not-the-working-branch.md` | populated | added 2026-06-09 (contributor — integration validation must BUILD from the working branch, never pull `ghcr…:latest`; the four-gate Definition of Done; first /contribute run CTRIB-001 / PR #1745) |
 
 ## Index by gate / playbook informed
 
@@ -141,5 +142,6 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | Playbook — `live-site-verification.md` YAML frontmatter parse check | LSN-028 |
 | Playbook — `user-facing-verification.md` (drive the running feature; no static user-facing claim filed) | LSN-031 (sequel to LSN-020, LSN-023) |
 | `feature-reflector` Rule 12 — running-system observable routes to `probe-needed`, not static `confirmed` | LSN-031 |
+| Contributor G-C2 / G-C10 — build-from-branch integration + the four-gate Definition of Done (unit-build + branch-image IT + docs-read + ontology-committed) | LSN-032 (sequel to LSN-031) |
 | Issue drafts — required `## User-facing impact` section + ASCII-only body (`issues/README.md`) | LSN-031 |
 | `/implement` skill — step 6.5 pre-commit mechanical sweeps | LSN-026 (Gate 11 banned-term), LSN-027 (description-length), LSN-028 (YAML parse) |

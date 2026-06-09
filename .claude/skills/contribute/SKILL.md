@@ -50,11 +50,22 @@ This skill owns the **temporal structure**: the 12-phase loop and the **two huma
     - **Unit → odd-platform CI** (runs in `./gradlew build`): Mockito/StepVerifier, `@WebFluxTest` slices, **and in-process Testcontainers DB tests (`BaseIntegrationTest`) — these are UNIT, not integration.** A real behavioural test that FAILS on the bug, PASSES on the fix, the failing condition injected explicitly. A characterization `@pins` is re-grounded RED→GREEN (`retrospectives/LSN-029`), never deleted, never used as fix-evidence.
     - **Integration → odd-team `integration-tests/IT-NNN`** (runs via `run-suite.sh`): the **browser e2e** (Playwright) / 3rd-party / multi-process flow. **MANDATORY when the bug is user-facing or a front-end/back-end contradiction** — that symptom is invisible to a unit test (the `retrospectives/LSN-031` / PLT-176 lesson: the back end can be "fixed" while the rendered UI still contradicts itself). Author or EXTEND an `IT-NNN` per `integration-tests/TEMPLATE.md` (seed → readiness → run → assert; `validates: [F-NNN]` / `regresses:` gates; `automation: e2e:*.spec.ts`); **check `integration-tests/protocols/` for an existing IT first** (e.g. Activity → `IT-088`). The assertion is what the USER sees (e.g. the count badge equals the number of listed events).
 
-11. **Run both buckets.** `./gradlew :odd-platform-api:test` (the FULL unit suite — G-C2 overfitting backstop) **and** `integration-tests/run-suite.sh IT-NNN`. Record both running-system observations in the CTRIB test ledger. A green unit test while the integration IT is still RED means the user-facing symptom is unfixed — **not done** (G-C2).
+11. **Run BOTH buckets on the WORKING BRANCH — never the published image (`retrospectives/LSN-032`).**
+    - **Unit (full CI replica):** `scripts/run-platform-tests.sh` — the no-arg FULL `:odd-platform-api:build` (test + checkstyle + assemble), on the contrib branch. NOT a bare `:test` (blind to checkstyle).
+    - **Integration (image BUILT from the branch):** build the branch image with Jib, then run the IT against THAT — never `ghcr.io/.../odd-platform:latest` (the published image still has the bug → a false green):
+      ```
+      ./gradlew :odd-platform-api:jibDockerBuild --image=odd-platform:contrib-CTRIB-NNN
+      ODD_PLATFORM_IMAGE=odd-platform:contrib-CTRIB-NNN integration-tests/run-suite.sh IT-NNN
+      ```
+    Record both runs in the CTRIB test ledger. A green unit build while the integration IT (on the branch image) is RED = the symptom is unfixed — **not done** (G-C2).
 
-12. **Docs (G-C10)** — update `docs.opendatadiscovery.org` (documentation pillar) where behaviour changed, or record "no doc change + why".
+12. **Docs (G-C10)** — **READ** the affected `docs.opendatadiscovery.org` page(s) and decide: update where behaviour changed, or record "no doc change + why" (the *why* requires having read the page — never assert a doc decision unread).
 
-13. **Ontology refresh (G-C10)** → `/enrich --touched` on the changed nodes + re-embed the graph; **commit** it (not narrated).
+13. **Ontology refresh (G-C10)** → `/enrich --touched` on the changed nodes (the sidecar that described the OLD shape is now stale) + re-embed the graph; **commit** it (not narrated).
+
+> **Definition of Done — all four gates before the PR leaves `draft` (the merge-readiness gate, not optional trailing phases — `LSN-032`):**
+> 1. full unit build green **on the branch** · 2. integration IT green **against the branch-built image** · 3. docs read + decided · 4. ontology re-enriched + re-embedded + committed.
+> The draft PR (phase 14) may open earlier for visibility, but it stays `draft` until all four are checked in the CTRIB ledger.
 
 ## Phase E — Draft PR → **GATE 2**
 

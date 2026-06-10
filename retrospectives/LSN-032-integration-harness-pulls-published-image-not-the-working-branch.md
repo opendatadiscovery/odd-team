@@ -36,7 +36,7 @@ A contributor fix is **not done** until BOTH buckets are green **on the working 
 ontology:
 
 1. **Unit** — the FULL CI replica on the branch: `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build` = test + checkstyle + assemble). Not a bare `:test` (blind to checkstyle).
-2. **Integration** — the `IT-NNN` suite against an odd-platform image **built from the branch**, never `ghcr…:latest`. odd-platform ships Jib: `./gradlew :odd-platform-api:jibDockerBuild --image=odd-platform:contrib-<id>`, then `ODD_PLATFORM_IMAGE=odd-platform:contrib-<id> integration-tests/run-suite.sh IT-NNN`. The compose now reads `${ODD_PLATFORM_IMAGE:-ghcr…latest}` (default = published for ontology use; override = branch image for contributor use).
+2. **Integration** — the `IT-NNN` suite against an odd-platform image **built from the branch**, never `ghcr…:latest`. **⚠️ Refined by `LSN-033`: the build-from-branch must NOT be a frozen per-fix tag (that re-freezes the SUT — the exact mistake this fix shipped first). The System Under Test is a run parameter: `integration-tests/run-suite.sh` builds `odd-platform:odd-team-sut` from `$ODD_SUT` (default = the working tree) on every run, via `build-sut.sh`. Just `integration-tests/run-suite.sh IT-NNN`.**
 3. **Docs** — READ the affected page and decide (change, or "no change + why"); never assert without reading (the fan-out fix's "no doc change" was only trustworthy after reading `activity-feed.md`).
 4. **Ontology** — re-enrich the touched sidecar(s) + re-embed the graph, COMMITTED. A code change silently invalidates the sidecar that described the old shape (CTRIB-001 left `ReactiveActivityRepositoryImpl`'s sidecar saying "LEFT JOIN" after the fix made it `EXISTS`).
 

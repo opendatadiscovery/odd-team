@@ -56,11 +56,23 @@ case "$SUT" in
     jib_from "$PLATFORM" >&2
     ;;
   main|ref:*)
-    if [ "$SUT" = "main" ]; then ref="origin/main"; git -C "$PLATFORM" fetch -q origin main || true
-    else ref="${SUT#ref:}"; git -C "$PLATFORM" fetch -q origin "$ref" 2>/dev/null || true; fi
+    if [ "$SUT" = "main" ]; then ref="main"; else ref="${SUT#ref:}"; fi
+    # Resolve FRESHLY from origin — never a stale LOCAL branch. Fetch the ref and build at FETCH_HEAD
+    # (uniform for a branch / tag / fetchable sha). Fall back to a local ref ONLY if origin won't serve
+    # it (e.g. a sha already present locally); otherwise error loudly rather than build the wrong commit.
+    if git -C "$PLATFORM" fetch -q origin "$ref" 2>/dev/null; then
+      src="FETCH_HEAD"
+    elif git -C "$PLATFORM" rev-parse --verify -q "${ref}^{commit}" >/dev/null; then
+      src="$ref"; echo "-> SUT: '$ref' not fetchable from origin; using the local commit." >&2
+    else
+      echo "ERROR: cannot resolve ref '$ref' (not fetchable from origin, not present locally)" >&2; exit 1
+    fi
     wt="$(mktemp -d)/odd-sut"
-    trap 'git -C "$PLATFORM" worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$(dirname "$wt")"' EXIT
-    git -C "$PLATFORM" worktree add -q --detach "$wt" "$ref"
+    # Best-effort cleanup that NEVER fails the build: odd-platform's codegen writes some generated files
+    # as root inside the worktree, so rm leaves root-owned leftovers in /tmp (harmless, ephemeral) — and a
+    # cleanup failure must not clobber a SUCCESSFUL build's exit code. Every step is `|| true`. (LSN-033.)
+    trap 'git -C "$PLATFORM" worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$(dirname "$wt")" 2>/dev/null || true; git -C "$PLATFORM" worktree prune 2>/dev/null || true' EXIT
+    git -C "$PLATFORM" worktree add -q --detach "$wt" "$src"
     desc="${ref} @ $(git -C "$wt" rev-parse --short HEAD)"
     echo "-> SUT: building from ${desc} (throwaway worktree, working tree untouched)..." >&2
     jib_from "$wt" >&2

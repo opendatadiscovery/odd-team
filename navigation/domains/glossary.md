@@ -47,6 +47,8 @@ Business terms, definitions, term-to-entity assignments, term hierarchy.
 - `documentation/docs/GLOSSARY.md` — stub (5 empty headers — pre-existing).
 
 ## Related code sites (added 2026-05-27 — scan run SR-20260527T1800Z)
+- Repository: `odd-platform-api/.../repository/reactive/ReactiveTermRepositoryImpl.java` — `getTermDetailsDto` :194-238 (the 4-aggregation detail query; #1746 cross-namespace-linked-term namespace fix at :211, regression-pinned by `ReactiveTermRepositoryCrossNamespaceLinkTest` + IT-127), `extractTerms` :610-636, `listByTerm` :457-499, `getTermByIdAndLinkedTermId` :502-527. Relation seeding: `TermRelationsRepositoryImpl.createRelationWithTerm` :163-172 (added 2026-06-10 — CTRIB-002 review).
+- UI hook: `odd-platform-ui/src/lib/hooks/useTermWiki.ts` — the shared `[[ns:term]]` mention hook (parse/resolve/deeplink-rewrite; null-namespace guard since #1746 at :51-58); mounted by `Terms/TermDetails/Overview/TermDefinition/TermDefinition.tsx` :16-23 (its tooltip shows the cross-namespace `[[Finance:User]]` example) (added 2026-06-10 — CTRIB-002 review).
 - Service: `odd-platform-api/.../service/term/TermServiceImpl.java` — regex `\[\[([^:]*?):([^\]]*?)\]\]` at line 67; auto-link materialisation at lines 201-207; cross-time drain at lines 99-117 (createTerm) + 421-442 (resolveUnhandledDescriptionMentions).
 - UI sub-tree (per F-151..F-156): `odd-platform-ui/src/components/Terms/TermDetails/{TermDetails,TermDetailsTabs,TermDetailsRoutes,Overview/{Overview,OverviewTags,TermLinkedTerms},TermLinkedTermsList/LinkedTermsList,TermLinkedColumnsList/LinkedColumnsList,TermLinkedEntitiesList,TermQueryExamples}.tsx`.
 - UI form: `odd-platform-ui/src/components/Terms/TermsForm/TermsForm.tsx` — Create/Edit dialog (F-154 anchor).

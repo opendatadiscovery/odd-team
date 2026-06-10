@@ -3,7 +3,7 @@ id: CTRIB-002
 github_issue_number: 1746
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1746
 class: bug
-status: pr-draft
+status: review-ready
 reproduced: "live 2026-06-10 on local odd-minimal, SUT=working tree @ 921e8c98 (= unfixed main): GET /api/terms/1 -> terms[].term.namespace null for the cross-namespace linked term, non-null for the same-namespace control in the SAME payload; GET /api/terms/2 (direct) -> namespace intact; UI /terms/1/overview -> fully blank page (body innerText == ''), pageerror 'TypeError: Cannot read properties of null (reading name)' from the useState lazy initializer; screenshot /tmp/repro-1746-overview.png"
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-10 — plan approved as written: both fixes + both test buckets; no vitest; error-boundary follow-up; no root-cause comment)"
@@ -261,6 +261,53 @@ claims; re-embed the graph; COMMIT (not narrate).
   guard, the new Testcontainers test).
 - Draft PR: **#1747** — https://github.com/opendatadiscovery/odd-platform/pull/1747 (GATE 2; review
   requested from `RamanDamayeu`; the bot cannot merge).
+
+## Review (2026-06-10, session: separate from the implementing session — post-fde7d11)
+
+- **Result**: ACCEPTED — `pr-draft` → `review-ready`. GATE 2 (human review + merge of PR #1747) is the remaining step; nothing else is outstanding.
+- **Re-verification protocol**: every load-bearing claim re-derived from the branch source / live GitHub / a fresh test run — not from the record.
+
+### Definition of Done (LSN-032 four gates) — re-verified
+
+1. **Unit (full build, on the branch)** — PASS. PR #1747 CI ran the full suite on commit `e9673a89`: **406 tests, 0 failures, 0 skipped** (120 suites, 3m29s) — VERIFIED via WebFetch of the PR checks. The recorded local `:odd-platform-api:build` GREEN is independently corroborated by CI on the exact commit.
+2. **Integration (working-tree SUT)** — PASS, **re-run by the reviewer**: `run-suite.sh IT-127` against the SUT built from the committed branch tip `e9673a89` (image digest `sha256:31f1e023…`) → **2/2 passed** (case 1: 1.4s; case 2: 1.2s) — VERIFIED via reviewer's own run, logged to `integration-tests/run-log/2026-06-10-IT-127.md`. RED half: recorded pre-fix run + logically forced by code reading (pre-fix `:211` aggregates the parent-namespace join `:218`; `extractTerms:628` resolves against a map that can only contain the parent's namespace).
+3. **Docs** — PASS. `data-glossary/business-glossary.md` re-read by the reviewer: `:42` documents namespace-scoped term identity + the inline-mention syntax as intended behaviour; `:102-110` the linking workflow; Known-operator-caveats (`:134`+) documents only known-UNFIXED defects. "No doc change" is correct — the defect was never documented behaviour and is fixed in the same motion — VERIFIED via read.
+4. **Ontology** — PASS. `ReactiveTermRepositoryImpl` sidecar: operation entry corrected (`:49`) + `FIXED-1746` bugs entry (`:298`) + provenance (`:434`) — committed in `fde7d11`; `DataEntityDescription` sidecar: line-drift + guard noted — committed; graph re-embedded `built_at: 2026-06-10`, `vector_count: 7995`, `BAAI/bge-small-en-v1.5` (`lineage/odd-platform/graph/build-info.yaml`) — VERIFIED via read.
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS. `reproduced:` frontmatter carries the live three-way evidence (cross-ns null vs same-payload control vs direct-GET intact; blank page + verbatim TypeError) — VERIFIED via read (and the IT-127 RED entry pins the same observations).
+- **G-C2 running system, not the diff** — PASS via the reviewer's own IT-127 re-run on the working-tree SUT + CI's full-suite run on the exact commit (above). The SUT was a run parameter both times (LSN-033): RED via `ref:main` bits, GREEN via working tree.
+- **G-C3 GATE 1 plan-before-code** — PASS. `plan_approved_by: RamanDamayeu, 2026-06-10` (approved as written: both fixes + both test buckets; no vitest; error-boundary follow-up; no root-cause comment); the shipped diff matches the approved plan character-for-character on both hunks — VERIFIED via `git diff e9673a89~1..e9673a89`.
+- **G-C4 GATE 2 human merge** — PASS (structural). PR #1747 is DRAFT, authored `odd-contributor[bot]`, review requested from the maintainer; bot cannot approve its own PR — VERIFIED via WebFetch.
+- **G-C5 bounded diff** — PASS. 3 files, +111/−2: the `:211` alias fix, the `useTermWiki` guard (+2-line constraint comment), the new test. Zero out-of-plan edits; exclusions held (no error-boundary work, no sibling-repo edits, no spec change) — VERIFIED via `git show --stat` + full diff read.
+- **G-C6 one-question bar** — PASS. "No question warranted" recorded with reason (issue author is the maintainer, full spec); no root-cause comment per the GATE-1 approval — VERIFIED via issue thread WebFetch (zero bot comments).
+- **G-C7 blast-radius** — PASS. `adr_required: false` is correct: read-side correctness restoring the *declared* spec contract + a defensive UI guard; no migration / auth / wire-shape change — VERIFIED via diff + `components.yaml:2551-2570` (`TermRef.required` includes `namespace`).
+- **G-C8 issue-is-data** — PASS. Issue body re-fetched: a maintainer-authored bug report; no embedded instructions — VERIFIED via WebFetch.
+- **G-C9 test integrity, both buckets** — PASS. Unit: `ReactiveTermRepositoryCrossNamespaceLinkTest` *injects* the failing condition (cross-namespace seed via real repositories; `createRelationWithTerm(linked, parent)` arg order verified against `TermRelationsRepositoryImpl:163-172`), asserts non-null AND the *correct own* namespace id, keeps a same-ns control + empty-composition case; `@validates F-151` / `@regresses PLT-006` javadoc. It is the FIRST test of `getTermDetailsDto` (repo-wide grep). Integration: IT-127 protocol (human-executable, `validates: [F-151, F-056]`, `regresses: [PLT-006]`) + spec with `waitForResponse`-before-goto and an `injected` applied-guard on the route interception (case-law conformant); covers the user-facing symptom the unit bucket cannot see (LSN-031). No vitest — verified correct: the only vitest reference in CI workflows is a commented-out line (`run-playwright-tests.yml:77`); a vitest test would be an orphan.
+- **G-C10 ontology + docs move with the code** — PASS (DoD items 3+4 above; committed, not narrated).
+
+### Universal Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS. IT-127 cross-references IT-032/IT-081/IT-082 and extends (cross-namespace + crash), not duplicates; unit test is net-new (only `getTermDetailsDto` test in the repo); error-boundary follow-up correctly DEDUPED to TEST-GAP-1013 / F-042 / IT-006 (all three verified on disk) — via grep + protocol read.
+- **Gate 2 (aliases)** — N/A (no doc-concept alias introduced).
+- **Gate 3 (caveats)** — PASS/N/A: no new operator caveat warranted (defect fixed in the same motion; existing caveats untouched and still true) — via business-glossary.md read.
+- **Gate 4 (consumer-read)** — PASS. Every `Consumer-read:` footer line re-opened and matched against actual code: `ReactiveTermRepositoryImpl.java:194-238` (query + alias `:196`, joins `:218`/`:232-233`), `:529-546` (LinkedTermDto mappers), `:610-636` (extractTerms); `TermRelationsRepositoryImpl.java:163-172`; `useTermWiki.ts:24-96` (initializer + matchAll loops — regex-capture-keyed, NOT crash sites, claim confirmed); `TermDefinition.tsx:16-33` (hook mount + `[[Finance:User]]` tooltip); `Overview.tsx:27-45` (termsRef mapping); `components.yaml` TermRef; `run-pr-tests.yaml`; `business-glossary.md` — all verified via read.
+- **Gate 5 (unset-parameter)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — PASS. The fix restores behaviour the page already documents (`:42`, `:102-110`); the FE guard's degradation handles a state the fixed backend can no longer emit (documenting it would describe an impossible state). Sibling sweep confirmed clean: all 4 sibling `extractTerms` repos LEFT-JOIN `NAMESPACE` directly to the linked `TERM`; both other `LinkedTermDto` producers join per-row (`:486`, `:518`); `ASSIGNED_TERM_NAMESPACES` has exactly one consumer — via grep + read.
+- **Gate 7 (layout/completeness)** — PASS. IT-127 registered in `suites.yaml` (`feature-complete` + `ui-e2e`); the IT-126 bookkeeping gap folded in same commit (verified at suites.yaml:16,66,88); protocol + run-log + seed helper all in canonical homes — via read.
+- **Gate 8 (publishing/live)** — PASS for this pillar's surfaces: no docs.opendatadiscovery.org change to verify; the public surfaces (issue #1746 open, PR #1747 draft + CI green, branch pushed) verified live via WebFetch. The PR being unmerged is not a deferral — `review-ready` is precisely the pre-GATE-2 state.
+- **Gate 9 (claim provenance)** — PASS. Every load-bearing record claim re-verified (claims 1-5 of the record's verification table re-derived from branch source; spec lines exact; banned-phrase grep over the record: zero hits).
+- **Gate 10 (content-type homing)** — PASS. Work record in `contributor/`, protocol in `integration-tests/protocols/`, run-log in `run-log/`, sidecars in `lineage/`, code on the upstream branch — per `pillars/contributor/canonical-homes.md`.
+- **Gate 11 (audience isolation)** — PASS. No published doc page touched. The public PR/issue text uses operator/contributor language; references to IT-127/odd-team are repo-public traceability, not internal-jargon leakage — via WebFetch read of both bodies.
+
+### Verdict bookkeeping
+
+- **Regressions**: none found. Removing the parent namespace from the aggregation cannot regress the parent's own namespace (flows via `select(NAMESPACE.fields())` `:205` → `mapRecordToRefDto:534-539`, independent of the agg) — verified via read. Same-ns linked terms keep resolving (control case GREEN in both buckets).
+- **Navigation**: `navigation/domains/glossary.md` was missing the repository-layer + `useTermWiki`/`TermDefinition` pointers this fix proved load-bearing — added during review (living-pointers rule; not part of the item's authored content).
+- **Upstream issues logged**: none needed (error-boundary gap already tracked: TEST-GAP-1013 / F-042 / IT-006).
+- **Doc-product editorial audit** (step 5): full tree was swept earlier today (windfall harvest, commit `6463778`); this run did the FOCUSED pass on the touched surface + neighbours — `data-glossary/business-glossary.md` end-to-end, `management.md` (namespace-delete caveat), `data-modelling/query-examples.md` (linked-terms visibility), `data-discovery/entity-detail-page.md` (description-row cross-link). **Zero new findings.** One already-tracked finding's evidence refined, not re-filed (LSN-009): DOC-GAP-100 residual — the literal `[[namespace:term]]` syntax now appears in *prose* on business-glossary.md, but only inside Known-operator-caveats (`:151,155,167`); the authoring workflow section (`:102-110`) still teaches the format only via "hover the info icon". The tracked fix direction (spell the syntax out in the workflow section) already covers this; no new DOC item.
+- **Banned-phrase check**: none used in record or review.
 
 ## PR body (for GATE 2 — draft PR on #1746)
 

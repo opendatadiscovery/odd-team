@@ -17,6 +17,7 @@
 | Wave | Groups | Issues | confirmed-static | corrected | runtime-only/mixed | reject-cand | gate |
 |---|---|---|---|---|---|---|---|
 | 1 | G01-G06 | 42 | 7 | 9 | 25 | 1 (PLT-005) | PASS (42/42 YAML+ASCII+section+flag) |
+| 2 | G07-G12 | 42 | 17 | 18 | 4 | 3 (PLT-011,022,126) +1 dup (PLT-144) | PASS (42/42) |
 
 ## Cross-cutting findings (for maintainer triage — NOT auto-filed)
 
@@ -50,3 +51,21 @@ corrected/falsified (the PLT-167 class — UI/severity claims that did not survi
 
 confirmed-static (held under trace, section+citations added): PLT-004, PLT-012, PLT-020, PLT-042, PLT-051, PLT-055, PLT-089, PLT-105, PLT-121, PLT-154.
 flag->true (code-settled or runtime-backed): PLT-003, PLT-005, PLT-021, PLT-027, PLT-028, PLT-051, PLT-055, PLT-085, PLT-121, PLT-128, PLT-139, PLT-141, PLT-153, PLT-163.
+
+### Wave 2 (G07-G12)
+
+reject-candidates / fully falsified:
+- PLT-011 medium->low REJECT-CAND — i18next prepends active lang then walks fallback with `en` FIRST; missing keys resolve to English, never another locale. No user bug.
+- PLT-022 high->low REJECT-CAND — `exclude_from_search` is an ingestion-set DEG-member signal with NO operator toggle; list surfaces omitting it is largely intended; live docs already document it. Premise (operator hides entity) false.
+- PLT-126 high->low REJECT-CAND — commons-lang3 3.18.0 `randomAlphanumeric` delegates to SecureRandom (proven by javap); token IS CSPRNG. security_sensitive->false.
+- PLT-144 high (dup of PLT-021) — real defect, but PLT-021 already owns the endpoint+IT-059 evidence; banner added, do not file separately.
+
+corrected (claim/severity falsified, defect survives):
+- PLT-052 high->medium — "out-of-enum TypeError blanks page" falsified (BE coerces unknown->UNKNOWN, FE enum closed); surviving defect is the tests-by-latest-run mislabel.
+- PLT-140 high->low — "reverse-lookup 500/405" + "silent truncation past 50" both falsified (separate /linked_terms path; FE recomputes hasNext); only a BE pageInfo contract wart remains.
+- PLT-067 high->medium — defence-in-depth/perf, draft itself says today's code is correct (no present leak).
+- PLT-075 high->medium — "no platform.base-url exists" grep claim false (property exists, 3 consumers); multi-precondition runtime-only.
+- PLT-013/030/033/064/065/025/026/044/040/097/098/100/101/102/106/108/124/145/147/148/151/152/002/016/031/165 — citation/scope/mechanism corrections; core defects survive (many fabricated SQL/line cites fixed).
+
+confirmed-static held: PLT-026, PLT-040, PLT-044, PLT-080, PLT-086, PLT-098, PLT-101, PLT-102, PLT-104(probe P-004), PLT-127(IT-003), PLT-145(IT-048), PLT-147(IT-068), PLT-148(IT-105), PLT-152(IT-009).
+flag->true wave 2: 33 of 42 (RBAC wiring facts code-settled; observ. auth-mode-labelled). Stayed false: PLT-011,013,016,030(mixed mechanism),033... (runtime/mixed) — see per-draft.

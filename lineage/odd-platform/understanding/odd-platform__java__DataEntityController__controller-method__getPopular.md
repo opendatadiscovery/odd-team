@@ -579,3 +579,10 @@ session_id: session-2026-05-13-G
   feature_id: F-001
   ran_at: 2026-06-10T15:28:31+00:00
   verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260610T163309Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-10T16:33:09+00:00
+  verdict: "all assertions passed"

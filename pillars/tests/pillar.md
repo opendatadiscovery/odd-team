@@ -52,6 +52,19 @@ A feature is **verified** when every falsifiable promise in its `use_cases` bloc
 
 This single definition dissolves the recurring questions: *is it a test or a finding?* (a finding is a promise without coverage); *unit or integration?* (a per-promise routing decision); *what's left?* (total promises − verified, routed by layer).
 
+## The System Under Test is a run parameter (default: the working tree)
+
+**What a test verifies and which build it runs against are orthogonal.** A test is the question; the SUT is the *subject*. The subject is chosen at RUN time — never baked into the test, the protocol, or the compose stack. Welding a fixed artifact into a test turns regression into a museum exhibit: it re-verifies one frozen moment and goes green no matter what later code breaks (`retrospectives/LSN-033`, completing `LSN-032`). Unit tests are already SUT-agnostic — `./gradlew build` compiles whatever is checked out. Integration tests reach the same property via `integration-tests/build-sut.sh`, which re-materialises the stable tag `odd-platform:odd-team-sut` from `$ODD_SUT` on every `run-suite.sh` run:
+
+| `ODD_SUT` | Subject | Mechanism |
+|---|---|---|
+| **`working`** (default) | the checked-out working tree, **uncommitted included** | gradle (unit) / Jib (image) from the working tree |
+| `main` | HEAD of `origin/main` | throwaway worktree → build |
+| `ref:<tag\|sha>` | a release candidate / a bisect point | throwaway worktree → build |
+| `published[:version]` | the shipped ghcr image | `docker pull` + retag |
+
+The default is the working tree because the most common question an odd-team member asks is **"did I just break something, here, now?"** — run the full suite (unit + integration) against what you are building, then against `main` / a `ref` / `published` when you need a different subject. No `IT-*` protocol or test names a frozen image; the contributor RED→GREEN uses `working` (GREEN) vs `ref:main` / `published` (RED), not a per-fix tag.
+
 ## The traceability ledger — no orphan tests
 
 Every test maps to what it protects via `lineage/odd-platform/test-gates.yaml` (retrofit, ontology-inferred) **or** an in-source declaration on new tests:

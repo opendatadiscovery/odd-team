@@ -112,6 +112,25 @@ if [ "${#E2E[@]}" -gt 0 ]; then
     echo "  → SKIP ui-e2e: deps not installed. One-time: (cd integration-tests/e2e && npm install && npm run browser)"
     e2e_outcome="SKIPPED(no-deps)"
   else
+    # --- SUT materialisation: the artifact under test is a RUN-TIME parameter (default = working tree). LSN-033.
+    #     build-sut.sh re-materialises odd-platform:odd-team-sut from $ODD_SUT (working|main|ref:X|published[:v])
+    #     on EVERY run, so regression is measured against the subject you chose — never a frozen image. Tests +
+    #     compose stay SUT-agnostic. An explicit $ODD_PLATFORM_IMAGE (raw image ref) bypasses this.
+    sut_ok=1
+    if [ -z "${ODD_PLATFORM_IMAGE:-}" ]; then
+      if sut_out="$("$HERE/build-sut.sh")"; then
+        printf '%s\n' "$sut_out" | sed -n 's/^SUT_DESC=/  → SUT = /p'
+        export ODD_PLATFORM_IMAGE="odd-platform:odd-team-sut"
+        sut_id="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_IMAGE_ID=//p')"
+        running_id="$(docker inspect -f '{{.Image}}' probe-odd-platform 2>/dev/null || true)"
+        [ -n "$sut_id" ] && [ "$sut_id" != "$running_id" ] && { echo "  → SUT changed since the running stack → recreating"; ODD_E2E_FRESH=1; }
+      else
+        echo "  ✗ SUT build failed — aborting e2e (not a test failure)."; e2e_outcome="FAIL(sut-build)"; sut_ok=0
+      fi
+    else
+      echo "  → SUT = explicit ODD_PLATFORM_IMAGE=$ODD_PLATFORM_IMAGE (build-sut bypassed)"
+    fi
+    if [ "$sut_ok" = 1 ]; then
     COMPOSE="$ROOT/lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml"
     HEALTH="http://127.0.0.1:18080/actuator/health"
     [ "${ODD_E2E_FRESH:-}" = "1" ] && { echo "  → --fresh: recreating odd-minimal…"; docker-compose -f "$COMPOSE" down -v >/dev/null 2>&1 || true; }
@@ -126,6 +145,7 @@ if [ "${#E2E[@]}" -gt 0 ]; then
     if [ "$e2e_outcome" != "FAIL(stack-unhealthy)" ]; then
       echo "+ (cd $HERE/e2e && ODD_STACK_EXTERNAL=1 npx playwright test ${E2E[*]})"
       if ( cd "$HERE/e2e" && ODD_STACK_EXTERNAL=1 npx playwright test "${E2E[@]}" ); then e2e_outcome="PASS"; else e2e_outcome="FAIL"; fi
+    fi
     fi
   fi
 fi

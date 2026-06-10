@@ -28,12 +28,14 @@ the visible cards. Source: feature-flow F-021; finding PLT-176; fix PR #1745.
 
 ## 2. Preparation — build the test stand
 - **Stack**: `odd-minimal` (AUTH_TYPE=DISABLED).
-- **CRITICAL (LSN-032): the image MUST be built from the working branch, not pulled from ghcr** — the
-  published image still has the bug, so running this against it green-washes the fix:
+- **The SUT is a run parameter (`retrospectives/LSN-033`), default = the working tree.** This protocol pins
+  NO image; `run-suite.sh` builds `odd-platform:odd-team-sut` from `$ODD_SUT` on each run:
   ```
-  ./gradlew :odd-platform-api:jibDockerBuild --image=odd-platform:contrib-CTRIB-001 -PbundleUI=false -x test
-  ODD_PLATFORM_IMAGE=odd-platform:contrib-CTRIB-001 integration-tests/run-suite.sh IT-126
+  integration-tests/run-suite.sh IT-126                   # default: the working tree   -> GREEN (the fix)
+  ODD_SUT=ref:main integration-tests/run-suite.sh IT-126  # the RED proof: main, pre-fix -> FAIL (4 rows)
+  ODD_SUT=published integration-tests/run-suite.sh IT-126 # the released image -> FAIL until the fix ships
   ```
+  Never pin a frozen `contrib-*` tag — that makes this regression test blind to every future change.
 - **Seed data** (inline via `helpers/db.ts dbQuery`, ids 20890-20895, oddrn `//e2e-it126/`): one
   data entity (`it126_fanout_entity`) carrying **2 tags** (`tag_to_data_entity`) + **2 owners**
   (`ownership` with `data_entity_id`) + **one** `DESCRIPTION_UPDATED` activity (`created_at = NOW()`,
@@ -49,8 +51,8 @@ the visible cards. Source: feature-flow F-021; finding PLT-176; fix PR #1745.
 2. Wait for `GET /api/activity` and `GET /api/activity/counts` (both carry `tag_ids` + `owner_ids`).
 3. Observe the entity `it126_fanout_entity` renders exactly once; observe the "All" badge count.
 
-**Automated rail**: `ODD_PLATFORM_IMAGE=odd-platform:contrib-CTRIB-001 integration-tests/run-suite.sh IT-126`
-(Playwright `e2e/specs/activity-tag-owner-fanout.spec.ts`).
+**Automated rail**: `integration-tests/run-suite.sh IT-126` (default SUT = the working tree; Playwright
+`e2e/specs/activity-tag-owner-fanout.spec.ts`). RED proof: `ODD_SUT=ref:main integration-tests/run-suite.sh IT-126`.
 
 ## 5. What it checks — assertions
 - **No fan-out (PASS):** the `GET /api/activity` response has **no duplicate activity ids**
@@ -60,6 +62,8 @@ the visible cards. Source: feature-flow F-021; finding PLT-176; fix PR #1745.
 - **Rendered (PASS):** the seeded entity renders in the filtered feed (the browser drove the real flow).
 
 ## 6. Result log
-- 2026-06-09 — authored for CTRIB-001 / PR #1745. RED against the published image
-  (`ghcr…:latest`: 4 rows / badge 4), GREEN against the branch-built image
-  (`odd-platform:contrib-CTRIB-001`: 1 row / badge 1). Run via `run-suite.sh IT-126` (see run-log/).
+- 2026-06-09 — authored for CTRIB-001 / PR #1745. RED against `published` (`ghcr…:latest`: 4 rows / badge 4),
+  GREEN against the working-tree build (1 row / badge 1).
+- 2026-06-10 — re-verified through the SUT mechanism (`retrospectives/LSN-033`): `run-suite.sh IT-126`
+  (default `working`) builds `odd-platform:odd-team-sut` from the working tree → GREEN; `ODD_SUT=ref:main` → RED.
+  No frozen image; the test will catch any future regression in the Activity feed.

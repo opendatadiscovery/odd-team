@@ -47,7 +47,7 @@ Issue #1744 is the filed form of PLT-176 (`issues/odd-platform/PLT-176.md`).
 
 ## Test ledger
 - **Unit** — `ReactiveActivityRepositoryFanOutTest` (Testcontainers, `repository/reactive/`). Seeds 1 entity + 2 tags + 2 owners + 1 activity. **RED on unfixed code (2026-06-09):** `findAllActivities` returned 4 rows (`hasSize(1)` failed at `:100`) — the fan-out, confirmed. Fix applied (EXISTS semi-joins in `ReactiveActivityRepositoryImpl`: dropped the tag/owner LEFT JOINs from `addJoins`, converted the predicates to `EXISTS`, cleaned the now-vestigial params off `addJoins`/`buildBaseQuery`). **GREEN** + **full `:odd-platform-api:build` GREEN** (432 tests, 0 failures; checkstyle + assemble green).
-- **Integration** — **IT-126** (`activity-tag-owner-fanout.spec.ts`): browser e2e driving the global Activity page with the tag+owner filter. **RED on the published image** (`ghcr…:latest`: `GET /api/activity` returns **4** rows / 1 distinct — the fan-out) → **GREEN on the branch-built image** (`odd-platform:contrib-CTRIB-001`, UI bundled: **1** row, badge == 1). Run via `ODD_PLATFORM_IMAGE=odd-platform:contrib-CTRIB-001 integration-tests/run-suite.sh IT-126`. The published-vs-branch RED/GREEN proves the IT catches the bug, not green-washing (`retrospectives/LSN-032`).
+- **Integration** — **IT-126** (`activity-tag-owner-fanout.spec.ts`): browser e2e driving the global Activity page with the tag+owner filter, run against the **working-tree SUT** (`integration-tests/run-suite.sh IT-126`, default `ODD_SUT=working` → builds `odd-platform:odd-team-sut` from the working tree on each run). **GREEN** (1 row, badge == 1); **RED** via `ODD_SUT=published` / `ref:main` (`GET /api/activity` → **4** rows, the fan-out). The SUT is a run parameter, never a frozen tag (`retrospectives/LSN-033`) — so this IT catches the bug AND every future Activity-feed regression.
 
 ## Branch / PR
 - Branch `contrib/CTRIB-001-activity-fanout` pushed to `opendatadiscovery/odd-platform` (commit `2cf9dc24`, authored `odd-contributor[bot]`).
@@ -56,7 +56,7 @@ Issue #1744 is the filed form of PLT-176 (`issues/odd-platform/PLT-176.md`).
 ## Definition of Done (four merge-readiness gates — `retrospectives/LSN-032`) — ✅ ALL FOUR MET (the PR can leave `draft`)
 
 1. **Unit (full build, on the branch):** ✅ `:odd-platform-api:build` — 432 tests + checkstyle + assemble GREEN on `contrib/CTRIB-001-activity-fanout`.
-2. **Integration (branch-built image):** ✅ **IT-126** GREEN on the UI-bundled branch image (`odd-platform:contrib-CTRIB-001`: 1 row, badge == 1) and RED on the published image (4 rows) — the browser e2e verifies the fix end-to-end AND proves it catches the bug (see the test ledger).
+2. **Integration (working-tree SUT):** ✅ **IT-126** GREEN via `run-suite.sh IT-126` (default `ODD_SUT=working` → `odd-platform:odd-team-sut`: 1 row, badge == 1) and RED via `ODD_SUT=published` / `ref:main` (4 rows) — the browser e2e verifies the fix AND proves it catches the bug, with no frozen image (`retrospectives/LSN-033`).
 3. **Docs:** ✅ **VERIFIED no change** — read `active-platform-features/activity-feed.md`; it documents the Tag/Owner filters' correct intent (narrow by tag/owner), never the buggy count → the fix makes reality match the doc.
 4. **Ontology:** ✅ sidecar updated (TAG/OWNERSHIP `LEFT JOIN` → `EXISTS` + the fan-out finding, `@regresses PLT-176`) **and** graph re-embedded (`graph-build odd-platform`: nodes=7071, vectors=7995, model `bge-small`).
 

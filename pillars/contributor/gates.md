@@ -15,11 +15,11 @@ A bug fix requires a live reproduction first. Phase 4 must produce a captured ob
 - **Enforced at:** `playbooks/reproduce-first.md`; the CTRIB record's `reproduced:` field must carry an evidence path before the plan-gate.
 - **Case-law:** `retrospectives/LSN-031` (verify the running system); `adrs/drafts/research/contributor/PITFALLS.md` #1.
 
-## G-C2 — Verify the running system (built from the branch), not the diff
+## G-C2 — Verify the running system (the working-tree SUT), not the diff
 
-Done is not "the diff looks right." Run the FULL CI replica on the branch (`scripts/run-platform-tests.sh` = `:odd-platform-api:build` — test + checkstyle + assemble, not a bare `:test`) AND drive the feature on a stack **built from the working branch** (Jib `jibDockerBuild` → `ODD_PLATFORM_IMAGE` override → `run-suite.sh`) — NEVER the published `ghcr…:latest` image, which still has the bug (a green against it is a *false* green). A patch that passes its own generated test but not the suite is overfit (21–33% do).
-- **Enforced at:** `/review` (separate session) + the integration bucket on the branch image; the CTRIB test ledger cites BOTH a full-build run and a branch-image integration run.
-- **Case-law:** `retrospectives/LSN-031` (verify the running system); `retrospectives/LSN-032` (verify YOUR system, not the published image); `EXTERNAL-PRACTICE.md` (overfitting data).
+Done is not "the diff looks right." Run the FULL CI replica (`scripts/run-platform-tests.sh` = `:odd-platform-api:build` — test + checkstyle + assemble, not a bare `:test`) AND drive the feature on the integration stack — both against the **working-tree System Under Test** (`integration-tests/run-suite.sh`; default `ODD_SUT=working` builds `odd-platform:odd-team-sut` from your working tree each run). **The SUT is a run parameter, never a frozen tag** (`retrospectives/LSN-033`) — pinning a `contrib-*` image makes the test blind to all future regression. NEVER assert a fix against the published `ghcr…:latest` (a green there is *false* — `LSN-032`); use `ODD_SUT=published` / `ref:main` only as the RED half of the proof. A patch that passes its own generated test but not the suite is overfit (21–33% do).
+- **Enforced at:** `/review` (separate session) + the integration bucket on the working-tree SUT; the CTRIB test ledger cites BOTH a full-build run and a `run-suite.sh` run, with the RED proof via `ODD_SUT=ref:main`/`published`.
+- **Case-law:** `retrospectives/LSN-031` (verify the running system); `LSN-032` (verify YOUR system, not the published image); `LSN-033` (the SUT is a run parameter, default working tree); `EXTERNAL-PRACTICE.md` (overfitting data).
 
 ## G-C3 — GATE 1: human approves the plan before any code
 

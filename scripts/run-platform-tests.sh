@@ -28,6 +28,11 @@
 # checkstyleTest` instead of the full `build` (skips `assemble` for a fast inner
 # loop — `assemble` is still covered by a no-arg run before push).
 #
+# System Under Test (LSN-033): the unit bucket is SUT-agnostic — gradle compiles whatever is checked out,
+# so this runs against your WORKING TREE by default (the right default: "did I just break something?").
+# To run the unit suite against a different subject (a release candidate / main), check out or `git worktree`
+# that ref and run this there — the integration analogue is `integration-tests/build-sut.sh` ($ODD_SUT).
+#
 # Overrides: ODD_PLATFORM_DIR=<path>  JAVA_HOME_17=<jdk17 path>
 set -euo pipefail
 

@@ -20,6 +20,8 @@
 | 2 | G07-G12 | 42 | 17 | 18 | 4 | 3 (PLT-011,022,126) +1 dup (PLT-144) | PASS (42/42) |
 | 3 | G13-G18 | 42 | 22 | 16 | 4 | 4 (PLT-006 FIXED, 034, 157, 207) +1 dup (PLT-103) | PASS (42/42) |
 | 4 | G19-G24 | 40 | 18 | 16 | 6 | 4 (PLT-131, 136, 203 +dup 173) | PASS (40/40) |
+| 5 | G25-G29 | 27 | 9 | 14 | 4 | 2 (PLT-071 +dup 032) | PASS (27/27) |
+| **Total** | **29 groups** | **193** | **~73** | **~73** | **~43** | **15 reject/dup** | **193/193 PASS** |
 
 ## Cross-cutting findings (for maintainer triage — NOT auto-filed)
 
@@ -114,3 +116,31 @@ corrected (claim/severity/mechanism falsified, defect survives):
 - PLT-169/135/142/170/110/111/118/130/133/174/175/178/180/183/184/187/192/193/194/197/201/202/204/206/112/209/007/143 — citation/mechanism/scope corrections + section added; defects survive (PLT-143/142 runtime-backed by IT-052/IT-045).
 
 flag->true wave 4: 33 of 40 (code-settled or IT-backed). Stayed false: PLT-203,136(reject),173(dup),175,178,180,196-class runtime, PLT-112(Swagger broken by PLT-141).
+
+### Wave 5 (G25-G29)
+
+reject-candidates / fully falsified:
+- PLT-071 (feature) REJECT-CAND — "Okta/Keycloak users get NO admin path" false: admin-principals works for ALL OIDC handlers and admin-groups works when the groups-claim is set; live docs already document 7 providers correctly (DOC-339). Re-scoped to an optional convenience feature (default nested groups-claim for Keycloak).
+- PLT-032 low REJECT-CAND — Defect 1 duplicates PLT-010 (named canonical); Defect 2 (silent nav on relatedMessagesError) distinct, mis-cited, corrected and kept.
+
+corrected (claim/mechanism/severity falsified, defect survives):
+- PLT-068 medium->low — feature flags do NOT map to nav tabs (category error); the 9 tabs are deliberate chrome (IT-101); surviving fact is an inert orphan ALERT_NOTIFICATIONS flag.
+- PLT-077 medium->low — typo'd auth.type fails CLOSED (Spring default chain locks out), not open; security framing withdrawn; availability/diagnosability bug survives.
+- PLT-211 low — "user sees raw JSON in UI" false (GenAI is API-only, no shipped UI) + "undocumented" false (genai.md specifies bare-string); code-side envelope-leak survives.
+- PLT-212 low — premise falsified: no doc claims a 20MB answer ceiling (all 20MB refs are inbound); the 256KB outbound codec default is a real latent code asymmetry, re-scoped.
+- PLT-185 medium — modal does NOT close on reject (stays open); input-loss survives; root cause is the generic handleResponseThunk rejectWithValue resolving the .then().
+- PLT-205 medium->low — confirmed i18n drift, regraded to cosmetic per Priority Order.
+- PLT-038 (n/a)->low — grammar bug confirmed AND enriched: the correct i18n key is missing from all 6 locales, so broken English renders everywhere.
+- PLT-076/082/129/132/146/150/181/191/195/009/210/041/062/063/095/092/094 — citation/scope corrections + section added; defects survive (PLT-146/150 runtime-backed by IT-050/IT-125).
+
+flag->true wave 5: 23 of 27. Stayed false: PLT-181,185,191,195,205,009,211,212,062,063 (runtime/forward-design).
+
+## Closing summary
+
+193 drafts swept across 5 waves. ~38% had >=1 load-bearing user-facing claim or severity rationale FALSIFIED by reading the FE/spec/library the original draft never traced — the exact PLT-176/PLT-167 failure mode, now measured at corpus scale. 15 reject-candidates/duplicates (incl. PLT-006 already fixed on main). ~125 flipped user_facing_verified:true (code-settled absence-of-control facts or workspace-runtime-backed by IT-/probe- artefacts); the rest stay false with the precise remaining live-drive named. The dominant correction was fabricated/stale SQL + line citations with the underlying defect surviving re-scoped — i.e. the bugs are mostly real, but the user-facing FRAMING was systematically wrong. NONE of the reject-candidates had their status flipped (left for an authorised session per sweep rules). Severity downgrades concentrated in the security-framed drafts (RBAC observable masked under default DISABLED; values masked by show-values=NEVER; fails-closed not open).
+
+### Maintainer follow-ups (recorded, not auto-actioned)
+1. Reconcile confirmed duplicates before filing: PLT-103->PLT-078, PLT-054->PLT-099, PLT-144->PLT-021, PLT-173->PLT-120, PLT-032->PLT-010(Defect 1).
+2. Close PLT-006 (fixed on main, CTRIB-002/#1747) and the reject-candidates (PLT-005,011,022,034,036?,071,126,131,136,157,203,207) after review — status flips need an authorised session.
+3. Consider class-level items for two cross-cutting roots the sweep surfaced: (a) dead UI error-toasts platform-wide (handleResponseThunk/errorHandling ResponseError wrapper never unwrapped — affects every thunk + react-query mutation error path); (b) SecurityConstants singular-vs-plural path mismatches that make several gates inert (PLT-098/101 class).
+4. The soft-delete-aware partial unique index convention (falsified PLT-207) is a candidate implicit-ADR datum.

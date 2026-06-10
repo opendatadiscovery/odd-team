@@ -36,7 +36,7 @@ selects the SUT at invocation:
 | **`working`** (DEFAULT) | the checked-out working tree, **uncommitted included** | the odd-team member's normal loop: "run the regression + my new feature on what I'm building now" |
 | `main` | HEAD of `origin/main` (throwaway worktree) | "is main green?" / the integration baseline |
 | `ref:<tag\|sha>` | a specific ref (throwaway worktree) | a release candidate, a bisect point |
-| `published[:version]` | the shipped ghcr image | "does the *released* build have this?" / reproduce-against-prod / the RED half of a fix proof |
+| `published` / `published:<version>` | the shipped ghcr image (`:latest` **moves** = current release, verified 2026-06 to track the newest semver; pin `:<version>` to reproduce) | "does the *released* build have this?" / reproduce-against-prod / the RED half of a fix proof |
 
 The tests and the compose stack reference a **stable** name (`odd-platform:odd-team-sut`); the harness
 **re-materialises** that name from the selected source on **every** run. Regression is therefore always

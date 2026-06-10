@@ -11,8 +11,12 @@
 #                                 ("run the suite on what I'm building right now")
 #   main                          HEAD of origin/main (throwaway git worktree) — the integration baseline
 #   ref:<tag|sha>                 a specific git ref (throwaway worktree) — a release candidate / a bisect point
-#   published                     pull ghcr ...:latest, retag — "does the RELEASED build have this?"
-#   published:<version>           pull ghcr ...:<version>, retag — a specific shipped version
+#   published                     pull ghcr ...:latest, retag — the MOVING "current release" pointer
+#                                 (odd-platform CI keeps :latest == the newest semver release). Answers
+#                                 "does the current released build have this?" but is NOT reproducible over time.
+#   published:<version>           pull ghcr ...:<version> (e.g. published:0.27.13), retag — a PINNED, reproducible
+#                                 release. odd-platform ships semver 0.x.y (85+ tags as of 2026-06). PREFER this
+#                                 for a reproducible RED proof or a fixed baseline; :latest drifts as releases ship.
 #
 # Emits (stdout, last lines, machine-readable):
 #   SUT_DESC=<human description>

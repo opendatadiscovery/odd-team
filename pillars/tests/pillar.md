@@ -61,7 +61,7 @@ This single definition dissolves the recurring questions: *is it a test or a fin
 | **`working`** (default) | the checked-out working tree, **uncommitted included** | gradle (unit) / Jib (image) from the working tree |
 | `main` | HEAD of `origin/main` | throwaway worktree → build |
 | `ref:<tag\|sha>` | a release candidate / a bisect point | throwaway worktree → build |
-| `published[:version]` | the shipped ghcr image | `docker pull` + retag |
+| `published` / `published:<version>` | the shipped ghcr image — `:latest` is the **moving** current release (not reproducible over time); a pinned `:<version>` (semver, e.g. `0.27.13`) is reproducible | `docker pull` + retag |
 
 The default is the working tree because the most common question an odd-team member asks is **"did I just break something, here, now?"** — run the full suite (unit + integration) against what you are building, then against `main` / a `ref` / `published` when you need a different subject. No `IT-*` protocol or test names a frozen image; the contributor RED→GREEN uses `working` (GREEN) vs `ref:main` / `published` (RED), not a per-fix tag.
 

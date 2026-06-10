@@ -51,7 +51,7 @@ case "$SUT" in
   working)
     sha="$(git -C "$PLATFORM" rev-parse --short HEAD 2>/dev/null || echo '?')"
     git -C "$PLATFORM" diff --quiet 2>/dev/null && dirty="" || dirty="+uncommitted"
-    desc="working tree @ ${sha}${dirty}"
+    desc="built from source: the odd-platform WORKING TREE @ ${sha}${dirty}"
     echo "-> SUT: building from the odd-platform working tree (${desc})..." >&2
     jib_from "$PLATFORM" >&2
     ;;
@@ -73,14 +73,14 @@ case "$SUT" in
     # cleanup failure must not clobber a SUCCESSFUL build's exit code. Every step is `|| true`. (LSN-033.)
     trap 'git -C "$PLATFORM" worktree remove --force "$wt" 2>/dev/null || true; rm -rf "$(dirname "$wt")" 2>/dev/null || true; git -C "$PLATFORM" worktree prune 2>/dev/null || true' EXIT
     git -C "$PLATFORM" worktree add -q --detach "$wt" "$src"
-    desc="${ref} @ $(git -C "$wt" rev-parse --short HEAD)"
+    desc="built from source: ${ref} @ $(git -C "$wt" rev-parse --short HEAD)"
     echo "-> SUT: building from ${desc} (throwaway worktree, working tree untouched)..." >&2
     jib_from "$wt" >&2
     ;;
   published|published:*)
     if [ "$SUT" = "published" ]; then ver="latest"; else ver="${SUT#published:}"; fi
     img="ghcr.io/opendatadiscovery/odd-platform:${ver}"
-    desc="published ${img}"
+    desc="PULLED from ghcr (not built): ${img}"
     echo "-> SUT: pulling ${img}..." >&2
     docker pull "$img" >&2
     docker tag "$img" "$TAG"

@@ -19,6 +19,7 @@
 | 1 | G01-G06 | 42 | 7 | 9 | 25 | 1 (PLT-005) | PASS (42/42 YAML+ASCII+section+flag) |
 | 2 | G07-G12 | 42 | 17 | 18 | 4 | 3 (PLT-011,022,126) +1 dup (PLT-144) | PASS (42/42) |
 | 3 | G13-G18 | 42 | 22 | 16 | 4 | 4 (PLT-006 FIXED, 034, 157, 207) +1 dup (PLT-103) | PASS (42/42) |
+| 4 | G19-G24 | 40 | 18 | 16 | 6 | 4 (PLT-131, 136, 203 +dup 173) | PASS (40/40) |
 
 ## Cross-cutting findings (for maintainer triage — NOT auto-filed)
 
@@ -93,3 +94,23 @@ corrected (UI claim/severity falsified, defect survives):
 
 confirmed-static held + flag->true: PLT-158, PLT-159, PLT-160, PLT-161 (attachment family), PLT-119, PLT-073, PLT-008, PLT-050, PLT-053, PLT-079, PLT-088, PLT-171, PLT-186, PLT-188, PLT-198, PLT-039.
 flag stayed false (runtime/mixed): PLT-024, PLT-054, PLT-072, PLT-099, PLT-162, PLT-035, PLT-046, PLT-103, PLT-168, PLT-157, PLT-034(low), PLT-172, PLT-196.
+
+### Wave 4 (G19-G24)
+
+reject-candidates / fully falsified:
+- PLT-131 medium->low FALSIFIED — extrapolated "GET /api/owners/{id} returns soft-deleted owner" to a NONEXISTENT endpoint (no by-id GET in OwnerApi); the getDto deleted_at omission is real-but-latent. security_sensitive->false.
+- PLT-136 medium->low REJECT-CAND — "deleted owner stays searchable" unreachable: an owner is only deletable with zero ownerships, and the owner FTS vector exists only where ownerships do.
+- PLT-203 medium REJECT-CAND — success toast DOES fire ("Owner association created successfully") + list invalidation; read only the form, not the mutation hook.
+- PLT-173 medium (dup of PLT-120) — same resolver collapse; PLT-120 is the fuller, security-flagged twin (LSN-009 backlog-internal dup).
+
+corrected (claim/severity/mechanism falsified, defect survives):
+- PLT-182 medium->low — "namespace_name silently discarded by server" false (FE serializer strips it client-side); only a cosmetic FE typing nit remains.
+- PLT-189 medium — "GET /logout 404s" false (SPA-fallback filter serves index.html 200; symptom is a blank in-app page); dead-affordance under DISABLED survives.
+- PLT-138 medium->low — "silent" false (global error toast fires); residual is no .rejected reducer / no inline retry, page stays empty after the toast.
+- PLT-137 medium->low — UI hides the edit buttons (computes external correctly); defect is API/service-guard-vs-list inconsistency, not UI-reachable.
+- PLT-199 medium->low — pool is cold (no warmup, minIdle=0); "doubles footprint at startup" false; code-hygiene fix; ceiling concern homed in F-120/IT-096.
+- PLT-208 medium — "every signed-in user, first screen" false (renders only for owner-associated users, never under DISABLED); cross-owner visibility survives.
+- PLT-091 medium — search row dispatches NO view_count write (the +2 is PLT-104's detail double-fetch reached via search); size:100 + a11y survive; reconciled with PLT-104.
+- PLT-169/135/142/170/110/111/118/130/133/174/175/178/180/183/184/187/192/193/194/197/201/202/204/206/112/209/007/143 — citation/mechanism/scope corrections + section added; defects survive (PLT-143/142 runtime-backed by IT-052/IT-045).
+
+flag->true wave 4: 33 of 40 (code-settled or IT-backed). Stayed false: PLT-203,136(reject),173(dup),175,178,180,196-class runtime, PLT-112(Swagger broken by PLT-141).

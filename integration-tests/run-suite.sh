@@ -83,9 +83,37 @@ echo "  ui e2e    : ${E2E[*]:-none}"
 echo "  manual    : ${MANUAL[*]:-none}"
 for m in "${MANUAL[@]:-}"; do [ -n "$m" ] && echo "  → MANUAL $m: open protocols/$m-*.md and execute sections 2-5 by hand, then log to run-log/."; done
 
-# --- API-probe rail (probe-runtime) ---
+# --- System Under Test: materialise ONCE for the WHOLE run (LSN-033). BOTH rails (api-probe + ui-e2e)
+#     bring up the SAME odd-minimal compose, so they MUST test the same image. build-sut.sh re-materialises
+#     odd-platform:odd-team-sut from $ODD_SUT (working|main|ref:X|published[:v]); an explicit
+#     $ODD_PLATFORM_IMAGE bypasses it. Skipped for manual-only / dry runs (no stack needed).
+sut_ok=1; sut_desc=""; sut_id=""
+if { [ "${#PROBES[@]}" -gt 0 ] || [ "${#E2E[@]}" -gt 0 ]; } && [ -z "$dry" ]; then
+  if [ -z "${ODD_PLATFORM_IMAGE:-}" ]; then
+    if sut_out="$("$HERE/build-sut.sh")"; then
+      sut_desc="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_DESC=//p')"
+      sut_id="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_IMAGE_ID=//p')"
+      export ODD_PLATFORM_IMAGE="odd-platform:odd-team-sut"
+    else
+      echo "  x SUT build failed -- aborting the run (not a test failure)."; sut_ok=0
+    fi
+  else
+    sut_desc="explicit raw image (build-sut bypassed): $ODD_PLATFORM_IMAGE"
+    sut_id="$(docker images --no-trunc -q "$ODD_PLATFORM_IMAGE" 2>/dev/null | head -1)"
+  fi
+  if [ "$sut_ok" = 1 ]; then
+    echo "  ===================================================================="
+    echo "  SYSTEM UNDER TEST (BOTH the api-probe and ui-e2e rails run against this):"
+    echo "    source: ${sut_desc:-unknown}"
+    echo "    image : ${ODD_PLATFORM_IMAGE}"
+    echo "    digest: ${sut_id:-<unknown>}"
+    echo "  ===================================================================="
+  fi
+fi
+
+# --- API-probe rail (probe-runtime) — runs against the SUT above (inherits the exported $ODD_PLATFORM_IMAGE) ---
 api_outcome="n/a"
-if [ "${#PROBES[@]}" -gt 0 ]; then
+if [ "${#PROBES[@]}" -gt 0 ] && [ "$sut_ok" = 1 ]; then
   batch=""; [ "${#PROBES[@]}" -gt 1 ] && batch="--batch"
   echo "+ (cd $RUNTIME && uv run python probe-runtime/runner.py ${PROBES[*]} $batch $dry)"
   if ( cd "$RUNTIME" && uv run python probe-runtime/runner.py "${PROBES[@]}" $batch $dry ); then api_outcome="PASS"; else api_outcome="FAIL"; fi
@@ -101,7 +129,7 @@ fi
 # health URL avoids any ::1/localhost resolution ambiguity. Stack is LEFT UP; stop it with
 # `(cd integration-tests/e2e && npm run stack:down)` when finished. `--fresh` forces a clean recreate.
 e2e_outcome="n/a"
-if [ "${#E2E[@]}" -gt 0 ]; then
+if [ "${#E2E[@]}" -gt 0 ] && [ "$sut_ok" = 1 ]; then
   if [ -n "$dry" ]; then
     echo "+ (cd $HERE/e2e && ODD_STACK_EXTERNAL=1 npx playwright test ${E2E[*]})   [dry-run]"
     e2e_outcome="DRY-RUN-OK"
@@ -112,57 +140,34 @@ if [ "${#E2E[@]}" -gt 0 ]; then
     echo "  → SKIP ui-e2e: deps not installed. One-time: (cd integration-tests/e2e && npm install && npm run browser)"
     e2e_outcome="SKIPPED(no-deps)"
   else
-    # --- SUT materialisation: the artifact under test is a RUN-TIME parameter (default = working tree). LSN-033.
-    #     build-sut.sh re-materialises odd-platform:odd-team-sut from $ODD_SUT (working|main|ref:X|published[:v])
-    #     on EVERY run, so regression is measured against the subject you chose — never a frozen image. Tests +
-    #     compose stay SUT-agnostic. An explicit $ODD_PLATFORM_IMAGE (raw image ref) bypasses this.
-    sut_ok=1; sut_desc=""; sut_id=""
-    if [ -z "${ODD_PLATFORM_IMAGE:-}" ]; then
-      if sut_out="$("$HERE/build-sut.sh")"; then
-        sut_desc="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_DESC=//p')"
-        sut_id="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_IMAGE_ID=//p')"
-        export ODD_PLATFORM_IMAGE="odd-platform:odd-team-sut"
-      else
-        echo "  x SUT build failed -- aborting e2e (not a test failure)."; e2e_outcome="FAIL(sut-build)"; sut_ok=0
-      fi
-    else
-      sut_desc="explicit raw image (build-sut bypassed): $ODD_PLATFORM_IMAGE"
-      sut_id="$(docker images --no-trunc -q "$ODD_PLATFORM_IMAGE" 2>/dev/null | head -1)"
-    fi
-    if [ "$sut_ok" = 1 ]; then
+    # The SUT image (printed once at the top) is already exported as $ODD_PLATFORM_IMAGE and built. Recreate
+    # the persistent stack only if it is not already running that exact image (digest), then confirm before testing.
     COMPOSE="$ROOT/lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml"
     HEALTH="http://127.0.0.1:18080/actuator/health"
-    # Make the artifact under test UNMISSABLE (LSN-033): source kind (built vs pulled), image, digest.
-    echo "  ===================================================================="
-    echo "  SYSTEM UNDER TEST (what the e2e rail runs against):"
-    echo "    source: ${sut_desc:-unknown}"
-    echo "    image : ${ODD_PLATFORM_IMAGE}"
-    echo "    digest: ${sut_id:-<unknown>}"
-    echo "  ===================================================================="
     running_id="$(docker inspect -f '{{.Image}}' probe-odd-platform 2>/dev/null || true)"
-    [ -n "$sut_id" ] && [ "$sut_id" != "$running_id" ] && { echo "  -> SUT differs from the running stack -> recreating it with this image"; ODD_E2E_FRESH=1; }
+    [ -n "$sut_id" ] && [ "$sut_id" != "$running_id" ] && { echo "  -> e2e: running stack image != SUT -> recreating with the SUT image"; ODD_E2E_FRESH=1; }
     [ "${ODD_E2E_FRESH:-}" = "1" ] && { echo "  -> --fresh: recreating odd-minimal..."; docker-compose -f "$COMPOSE" down -v >/dev/null 2>&1 || true; }
     if curl -fsS --max-time 5 "$HEALTH" 2>/dev/null | grep -q UP; then
-      echo "  → odd-minimal already healthy — reusing it (persistent)."
+      echo "  -> odd-minimal already healthy -- reusing it (persistent)."
     else
-      echo "  → bringing up odd-minimal (persistent; reused by later runs)…"
+      echo "  -> bringing up odd-minimal (persistent; reused by later runs)..."
       docker-compose -f "$COMPOSE" up -d
       curl -fsS --retry 40 --retry-delay 3 --retry-all-errors --retry-connrefused --max-time 5 "$HEALTH" >/dev/null 2>&1 \
-        || { echo "  ✗ odd-minimal did not become healthy at $HEALTH within ~120s — aborting e2e (not a test failure)."; e2e_outcome="FAIL(stack-unhealthy)"; }
+        || { echo "  x odd-minimal did not become healthy at $HEALTH within ~120s -- aborting e2e (not a test failure)."; e2e_outcome="FAIL(stack-unhealthy)"; }
     fi
     if [ "$e2e_outcome" != "FAIL(stack-unhealthy)" ]; then
       run_now="$(docker inspect -f '{{.Image}}' probe-odd-platform 2>/dev/null || true)"
-      if [ -n "$sut_id" ] && [ "$run_now" = "$sut_id" ]; then echo "  -> confirmed: the stack is running the SUT image shown above."
-      else echo "  -> WARNING: the stack is running image $run_now, which does NOT match the SUT digest $sut_id."; fi
+      if [ -n "$sut_id" ] && [ "$run_now" = "$sut_id" ]; then echo "  -> confirmed: the e2e stack is running the SUT image."
+      else echo "  -> WARNING: the e2e stack is running image $run_now, which does NOT match the SUT digest $sut_id."; fi
       echo "+ (cd $HERE/e2e && ODD_STACK_EXTERNAL=1 npx playwright test ${E2E[*]})"
       if ( cd "$HERE/e2e" && ODD_STACK_EXTERNAL=1 npx playwright test "${E2E[@]}" ); then e2e_outcome="PASS"; else e2e_outcome="FAIL"; fi
-    fi
     fi
   fi
 fi
 
 # --- combined verdict ---
 parts=()
+[ "$sut_ok" = 0 ] && parts+=("SUT-BUILD-FAILED")
 [ "$api_outcome" != "n/a" ] && parts+=("api:$api_outcome")
 [ "$e2e_outcome" != "n/a" ] && parts+=("e2e:$e2e_outcome")
 [ "${#MANUAL[@]}" -gt 0 ] && parts+=("manual:${#MANUAL[@]}-pending")

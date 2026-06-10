@@ -145,5 +145,6 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | `feature-reflector` Rule 12 — running-system observable routes to `probe-needed`, not static `confirmed` | LSN-031 |
 | Contributor G-C2 / G-C10 — build-from-branch integration + the four-gate Definition of Done (unit-build + branch-image IT + docs-read + ontology-committed) | LSN-032 (sequel to LSN-031) |
 | Tests + contributor — the SUT is a run parameter (default working tree); no test/protocol names a frozen image (`build-sut.sh`, `ODD_SUT`) | LSN-033 (completes LSN-032) |
+| Gate 8 + `playbooks/github-write.md` — `push.default current` in publishing checkouts; explicit same-name refspec; docs-repo `main` branch protection recommended | LSN-034 |
 | Issue drafts — required `## User-facing impact` section + ASCII-only body (`issues/README.md`) | LSN-031 |
 | `/implement` skill — step 6.5 pre-commit mechanical sweeps | LSN-026 (Gate 11 banned-term), LSN-027 (description-length), LSN-028 (YAML parse) |

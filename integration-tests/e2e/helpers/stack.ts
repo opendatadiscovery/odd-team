@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { composeCmd } from './docker';
 
 // Generic ephemeral docker-compose stack lifecycle for the self-managed, mode-specific
 // stacks a spec brings up/tears down itself (the SHARED odd-minimal stack is handled by
@@ -17,7 +18,7 @@ export interface StackOpts {
 export async function composeUp(opts: StackOpts): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`[e2e] bringing up the ${opts.label} stack…`);
-  execSync(`docker-compose -p ${opts.project} -f "${opts.compose}" up -d`, { stdio: 'inherit' });
+  execSync(`${composeCmd()} -p ${opts.project} -f "${opts.compose}" up -d`, { stdio: 'inherit' });
   for (let i = 0; i < 60; i += 1) {
     try {
       const r = await fetch(opts.healthUrl);
@@ -36,7 +37,7 @@ export async function composeUp(opts: StackOpts): Promise<void> {
 
 export async function composeDown(opts: { compose: string; project: string }): Promise<void> {
   try {
-    execSync(`docker-compose -p ${opts.project} -f "${opts.compose}" down -v`, { stdio: 'inherit' });
+    execSync(`${composeCmd()} -p ${opts.project} -f "${opts.compose}" down -v`, { stdio: 'inherit' });
   } catch {
     /* best-effort teardown */
   }

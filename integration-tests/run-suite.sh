@@ -25,6 +25,19 @@ for _nb in "$HOME/.local/node/bin" "$HOME"/.local/node-*/bin; do
   [ -x "$_nb/node" ] && case ":$PATH:" in *":$_nb:"*) ;; *) PATH="$_nb:$PATH"; export PATH ;; esac
 done
 
+# Docker Compose CLI: prefer the v2 plugin ('docker compose'). The legacy v1 python binary
+# crashes with KeyError: 'ContainerConfig' when RECREATING a container against modern Docker
+# engines (the image-inspect key v1 reads was removed) — fatal for any 'up -d' over a running
+# stack whose image drifted (exactly the SUT-changed path). Fallback to v1 warns loudly.
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD=(docker-compose)
+  echo "WARNING: Compose v2 plugin not found — using legacy docker-compose v1, which crashes on container recreate (ContainerConfig) against modern Docker engines." >&2
+else
+  COMPOSE_CMD=()
+fi
+
 arg="${1:-}"; dry=""
 [ "${2:-}" = "--dry-run" ] && dry="--dry-run"
 [ -z "$arg" ] && { echo "usage: run-suite.sh <suite> | IT-NNN | --list [--dry-run]"; exit 1; }
@@ -139,6 +152,9 @@ if [ "${#E2E[@]}" -gt 0 ] && [ "$sut_ok" = 1 ]; then
   elif [ ! -d "$HERE/e2e/node_modules" ]; then
     echo "  → SKIP ui-e2e: deps not installed. One-time: (cd integration-tests/e2e && npm install && npm run browser)"
     e2e_outcome="SKIPPED(no-deps)"
+  elif [ ${#COMPOSE_CMD[@]} -eq 0 ]; then
+    echo "  → SKIP ui-e2e: no Docker Compose CLI found (need the v2 plugin 'docker compose', or legacy 'docker-compose')."
+    e2e_outcome="SKIPPED(no-compose)"
   else
     # The SUT image (printed once at the top) is already exported as $ODD_PLATFORM_IMAGE and built. Recreate
     # the persistent stack only if it is not already running that exact image (digest), then confirm before testing.
@@ -146,12 +162,12 @@ if [ "${#E2E[@]}" -gt 0 ] && [ "$sut_ok" = 1 ]; then
     HEALTH="http://127.0.0.1:18080/actuator/health"
     running_id="$(docker inspect -f '{{.Image}}' probe-odd-platform 2>/dev/null || true)"
     [ -n "$sut_id" ] && [ "$sut_id" != "$running_id" ] && { echo "  -> e2e: running stack image != SUT -> recreating with the SUT image"; ODD_E2E_FRESH=1; }
-    [ "${ODD_E2E_FRESH:-}" = "1" ] && { echo "  -> --fresh: recreating odd-minimal..."; docker-compose -f "$COMPOSE" down -v >/dev/null 2>&1 || true; }
+    [ "${ODD_E2E_FRESH:-}" = "1" ] && { echo "  -> --fresh: recreating odd-minimal..."; "${COMPOSE_CMD[@]}" -f "$COMPOSE" down -v >/dev/null 2>&1 || true; }
     if curl -fsS --max-time 5 "$HEALTH" 2>/dev/null | grep -q UP; then
       echo "  -> odd-minimal already healthy -- reusing it (persistent)."
     else
       echo "  -> bringing up odd-minimal (persistent; reused by later runs)..."
-      docker-compose -f "$COMPOSE" up -d
+      "${COMPOSE_CMD[@]}" -f "$COMPOSE" up -d
       curl -fsS --retry 40 --retry-delay 3 --retry-all-errors --retry-connrefused --max-time 5 "$HEALTH" >/dev/null 2>&1 \
         || { echo "  x odd-minimal did not become healthy at $HEALTH within ~120s -- aborting e2e (not a test failure)."; e2e_outcome="FAIL(stack-unhealthy)"; }
     fi

@@ -8,7 +8,7 @@ blocks against an ephemeral local docker-compose mirror, and emits a
 probe-run artefact recording every step's outcome with timestamps + evidence.
 
 Operational invariant: LOCAL-ONLY. The runner shells out to:
-  - docker-compose (probe-stack lifecycle)
+  - Docker Compose (probe-stack lifecycle; prefers the v2 plugin 'docker compose')
   - docker exec ... psql (SQL queries against the ephemeral Postgres)
   - python requests (REST against the ephemeral backend)
 That's the entire surface. No remote calls, no managed services, nothing
@@ -34,6 +34,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -210,10 +211,39 @@ def compose_path_for_profile(profile: str, *, stack_dir: Path) -> Path:
     return path
 
 
+_COMPOSE_CMD: tuple[str, ...] | None = None
+
+
+def compose_command() -> list[str]:
+    """Resolve the Docker Compose CLI once per process.
+
+    Prefer the v2 plugin ('docker compose'): the legacy v1 python binary crashes with
+    KeyError: 'ContainerConfig' when RECREATING a container against modern Docker
+    engines (the image-inspect key v1 reads was removed) — which kills any 'up -d'
+    over a running stack whose image/config drifted (2026-06-10, P-001 arrange).
+    Fall back to v1 (fresh up/down still works there) with a loud warning.
+    """
+    global _COMPOSE_CMD
+    if _COMPOSE_CMD is None:
+        rc, _, _ = run_shell(["docker", "compose", "version"], timeout=10)
+        if rc == 0:
+            _COMPOSE_CMD = ("docker", "compose")
+        elif shutil.which("docker-compose"):
+            print("[runner] WARNING: Compose v2 plugin not found — falling back to legacy "
+                  "docker-compose v1, which crashes on container recreate (ContainerConfig) "
+                  "against modern Docker engines.", file=sys.stderr)
+            _COMPOSE_CMD = ("docker-compose",)
+        else:
+            raise FileNotFoundError(
+                "no Docker Compose CLI found: need the v2 plugin ('docker compose') "
+                "or the legacy 'docker-compose' binary")
+    return list(_COMPOSE_CMD)
+
+
 def stack_up(compose_file: Path, *, verbose: bool = False) -> StepOutcome:
     started = time.monotonic()
     started_at = now_iso()
-    argv = ["docker-compose", "-f", str(compose_file), "up", "-d"]
+    argv = [*compose_command(), "-f", str(compose_file), "up", "-d"]
     if verbose:
         print(f"[runner] stack_up: {' '.join(shlex.quote(a) for a in argv)}", file=sys.stderr)
     rc, stdout, stderr = run_shell(argv, timeout=120)
@@ -268,7 +298,7 @@ def stack_wait_healthy(*, backend_base: str = DEFAULT_BACKEND_BASE, timeout_s: i
 def stack_down(compose_file: Path, *, destroy_volumes: bool = True, verbose: bool = False) -> StepOutcome:
     started = time.monotonic()
     started_at = now_iso()
-    argv = ["docker-compose", "-f", str(compose_file), "down"]
+    argv = [*compose_command(), "-f", str(compose_file), "down"]
     if destroy_volumes:
         argv.append("-v")
     if verbose:

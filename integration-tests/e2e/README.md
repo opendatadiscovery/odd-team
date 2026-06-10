@@ -6,7 +6,7 @@ catch user-observable defects that an API probe structurally cannot (e.g. the F-
 view_count double-count, which is a React `useEffect` bug invisible to an HTTP call).
 
 Self-contained and odd-team-owned: it brings up its own stack (the same `odd-minimal`
-docker-compose the API-probe runtime uses) and does **not** depend on the upstream
+compose stack the API-probe runtime uses (Compose v2: `docker compose`)) and does **not** depend on the upstream
 `odd-platform/tests/` harness. Local-only.
 
 ## Why a separate rail from the API probes
@@ -57,13 +57,13 @@ Options:
 e2e/
   package.json            playwright + pg
   playwright.config.ts    baseURL :18080, single-worker, no-retry (a pin must not be masked)
-  global-setup.ts         docker-compose up odd-minimal + wait for /actuator/health
-  global-teardown.ts      docker-compose down -v
+  global-setup.ts         docker compose up odd-minimal + wait for /actuator/health
+  global-teardown.ts      docker compose down -v
   helpers/db.ts           seed + read ground truth in Postgres (view_count, search_facets, tags, attachment entity)
   helpers/net.ts          intercept/mutate the dashboard JSON response (UI-resilience tests)
   helpers/docker.ts       recreate the platform container (durability tests — the redeploy event)
   helpers/attachments.ts  the shared 3-step attachment upload flow (IT-007 + IT-008)
-  helpers/stack.ts        generic self-managed docker-compose stack lifecycle (up/down + health)
+  helpers/stack.ts        generic self-managed compose stack lifecycle (v2) (up/down + health)
   helpers/minio-stack.ts  REMOTE/MinIO stack wrapper (IT-008)
   helpers/loginform-stack.ts  LOGIN_FORM (enforcing) stack wrapper (IT-009)
   helpers/ldap-stack.ts   LDAP (enforcing, non-admin user) stack wrapper (IT-010)

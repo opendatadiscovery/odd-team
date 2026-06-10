@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as path from 'node:path';
+import { composeCmd } from './helpers/docker';
 
 // Bring up the odd-minimal stack (platform + Postgres) the e2e specs run against.
 // Reuses the SAME compose file the API-probe runtime uses — one stack definition,
@@ -17,7 +18,7 @@ export default async function globalSetup(): Promise<void> {
     return;
   }
   console.log('[e2e] bringing up odd-minimal stack…');
-  execSync(`docker-compose -f "${COMPOSE}" up -d`, { stdio: 'inherit' });
+  execSync(`${composeCmd()} -f "${COMPOSE}" up -d`, { stdio: 'inherit' });
 
   // Platform start_period is ~30s; poll its actuator health until UP.
   for (let i = 0; i < 30; i += 1) {

@@ -22,6 +22,28 @@ const COMPOSE = path.resolve(
 const PLATFORM_SERVICE = 'probe-odd-platform';
 const HEALTH = `${process.env.ODD_BASE_URL ?? 'http://localhost:18080'}/actuator/health`;
 
+// Docker Compose CLI: prefer the v2 plugin ('docker compose'). The legacy v1 python binary
+// crashes with KeyError: 'ContainerConfig' when RECREATING a container against modern Docker
+// engines (the image-inspect key v1 reads was removed) — fatal for the --force-recreate below.
+// Resolved once per process; also used by global-setup/teardown.
+let composeCli: string | undefined;
+export function composeCmd(): string {
+  if (!composeCli) {
+    try {
+      execSync('docker compose version', { stdio: 'ignore' });
+      composeCli = 'docker compose';
+    } catch {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[e2e] WARNING: Compose v2 plugin not found — falling back to legacy docker-compose v1, ' +
+          'which crashes on container recreate (ContainerConfig) against modern Docker engines.',
+      );
+      composeCli = 'docker-compose';
+    }
+  }
+  return composeCli;
+}
+
 export async function recreatePlatformContainer(): Promise<void> {
   if (process.env.ODD_STACK_EXTERNAL === '1') {
     throw new Error(
@@ -33,7 +55,7 @@ export async function recreatePlatformContainer(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log('[e2e] recreating the platform container (fresh ephemeral storage; DB kept)…');
   execSync(
-    `docker-compose -f "${COMPOSE}" up -d --force-recreate --renew-anon-volumes --no-deps ${PLATFORM_SERVICE}`,
+    `${composeCmd()} -f "${COMPOSE}" up -d --force-recreate --renew-anon-volumes --no-deps ${PLATFORM_SERVICE}`,
     { stdio: 'inherit' },
   );
   // The fresh container's start_period is ~30s; poll its actuator health until UP.

@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as path from 'node:path';
 import { Client } from 'pg';
+import { composeCmd } from './docker';
 
 // Two-replica notifications stack for the ADR-0043 leader-election + failover test.
 // The spec controls start order (A before B → A is the deterministic leader); the standby
@@ -20,7 +21,7 @@ export const HA_DB_URL =
   process.env.ODD_HA_DB_URL ?? 'postgresql://odd-platform:odd-platform-password@localhost:15437/odd-platform';
 
 const compose = (args: string) =>
-  execSync(`docker-compose -p ${PROJECT} -f "${COMPOSE}" ${args}`, { stdio: 'inherit' });
+  execSync(`${composeCmd()} -p ${PROJECT} -f "${COMPOSE}" ${args}`, { stdio: 'inherit' });
 
 async function db<T>(fn: (c: Client) => Promise<T>): Promise<T> {
   const c = new Client({ connectionString: HA_DB_URL });

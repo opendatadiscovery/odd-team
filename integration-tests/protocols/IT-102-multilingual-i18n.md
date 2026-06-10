@@ -4,7 +4,7 @@ title: "The UI switches locale (i18next), persists the choice, and falls back to
 gates:
   validates: [F-043]
   enforces: []
-  regresses: []
+  regresses: [PLT-190]
 test_class: integration
 stack: odd-minimal
 automation: "e2e:multilingual-i18n.spec.ts"
@@ -22,6 +22,9 @@ chosen locale, persists the choice in `localStorage('i18nextLng')` across a relo
 back to English for an unknown stored locale. If it FAILS, the multilingual feature (0/12
 promises verified) is broken on its happy path. Source: feature-flow F-043; `i18n.ts:22-31` +
 `SelectLanguage.tsx:28-33` + `components/shared/elements/AppToolbar/ToolbarTabs`.
+Also REGRESSES PLT-190 / odd-platform#1748: three of the nine toolbar tabs (Data Quality /
+Data Modelling / Master Data) had no key in ANY locale catalog — the natural-keys fallback
+rendered raw English literals beside six translated siblings under every non-English locale.
 
 ## 2. Preparation — build the test stand
 - **Stack**: `odd-minimal` (AUTH_TYPE=DISABLED).
@@ -38,7 +41,11 @@ promises verified) is broken on its happy path. Source: feature-flow F-043; `i18
    menu → "Select language" → pick "Spanish"; observe the Catalog tab re-render as "Catálogo".
 2. PERSISTENCE (UC-2): after switching to Spanish, reload the page; observe Spanish persists
    (Catalog tab "Catálogo") and `localStorage('i18nextLng') === 'es'`.
-3. CORNER (fallback): pre-set `localStorage('i18nextLng')='zz-bogus'` (init script) before the
+3. REGRESSION #1748 (PLT-190): from English, switch to "Ukrainian" via the same dialog;
+   observe ALL NINE toolbar tabs render Ukrainian (Каталог / Директорія / Якість даних /
+   Моделювання даних / Майстер-дані / Менеджмент / Словник / Сповіщення / Активність) and
+   that no tab still reads the raw literals "Data Quality" / "Data Modelling" / "Master Data".
+4. CORNER (fallback): pre-set `localStorage('i18nextLng')='zz-bogus'` (init script) before the
    first load; open `/directory`; observe English renders (Catalog tab "Catalog", not Spanish /
    not a key literal) — the `i18n.ts:23` `languages.includes(...) ? ... : 'en'` guard.
 
@@ -49,9 +56,17 @@ promises verified) is broken on its happy path. Source: feature-flow F-043; `i18
   gone. (FAIL: label stays English → `changeLanguage` / re-render broken.)
 - **PERSISTENCE (PASS):** after reload the Spanish label is still shown and `i18nextLng==='es'`.
   (FAIL: reverts to English → the localStorage round-trip is broken.)
+- **REGRESSION #1748 (PASS):** under `ua` every one of the nine toolbar tabs shows its
+  ua.json value; zero tabs read "Data Quality" / "Data Modelling" / "Master Data". (FAIL: a
+  toolbar tab renders a raw English literal under a non-English locale → a tab key went
+  missing from a catalog again — the PLT-190 class.)
 - **CORNER (PASS):** an unknown stored locale renders English (not Spanish, not a key id).
   (FAIL: a bogus locale leaks through → the fallback guard regressed.)
 
 ## 6. Result log
 - 2026-06-07 — authored; i18n config + SelectLanguage flow ground-truthed; locale switch driven
   through the real user-menu dialog; 3/3 green via run-suite.sh IT-102 (see run-log/).
+- 2026-06-10 — CTRIB-003 (#1748): added case 4 (all nine toolbar tabs translate under ua;
+  `regresses: [PLT-190]`). RED on the pre-fix SUT (tree clean @ fbb2eb43 = ref:main bits;
+  the three tabs rendered raw English literals under ua), GREEN 4/4 on the fixed working-tree
+  SUT (the 18 catalog entries). See run-log/2026-06-10-IT-102.md (3 entries: baseline/RED/GREEN).

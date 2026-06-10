@@ -89,6 +89,49 @@ test.describe('F-043 Multilingual UI — locale switching + fallback', () => {
     expect(stored, 'i18nextLng must be persisted as "es"').toBe('es');
   });
 
+  // REGRESSION #1748 (PLT-190): three of the nine toolbar tabs (Data Quality / Data
+  // Modelling / Master Data) had NO key in ANY of the six locale catalogs — the natural-keys
+  // fallback rendered the raw English literal beside six translated siblings under every
+  // non-English locale (a half-translated primary nav). The catalogs now carry all nine tab
+  // keys; this case pins the FULL tab set under Ukrainian (the issue's user story).
+  test('every toolbar tab translates under a non-English locale (regression #1748)', async ({
+    page,
+  }) => {
+    await page.goto('/directory');
+    await expect(
+      page.getByRole('tab', { name: 'Catalog', exact: true }),
+      'baseline: the English chrome must render before switching',
+    ).toBeVisible({ timeout: 10_000 });
+
+    await switchLanguageViaUi(page, 'Ukrainian');
+
+    // all NINE tabs render their ua.json values — including the three #1748 keys
+    const uaTabs = [
+      'Каталог',
+      'Директорія',
+      'Якість даних',
+      'Моделювання даних',
+      'Майстер-дані',
+      'Менеджмент',
+      'Словник',
+      'Сповіщення',
+      'Активність',
+    ];
+    for (const name of uaTabs) {
+      await expect(
+        page.getByRole('tab', { name, exact: true }),
+        `the "${name}" tab must render its ua.json value (no missing-key fallback)`,
+      ).toBeVisible({ timeout: 10_000 });
+    }
+    // and the previously-keyless three no longer fall back to the raw English literal
+    for (const literal of ['Data Quality', 'Data Modelling', 'Master Data']) {
+      await expect(
+        page.getByRole('tab', { name: literal, exact: true }),
+        `the raw English literal "${literal}" must be gone under ua (#1748)`,
+      ).toHaveCount(0);
+    }
+  });
+
   // CORNER: an unknown / unsupported locale must fall back to English. i18n.ts:23 guards
   // `languages.includes(storedLanguage) ? storedLanguage : 'en'`, so a bogus stored value
   // boots English — NOT a key-literal and NOT a third locale. We seed the bogus value via

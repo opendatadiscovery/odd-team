@@ -3,7 +3,7 @@ id: CTRIB-002
 github_issue_number: 1746
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1746
 class: bug
-status: review-ready
+status: merged
 reproduced: "live 2026-06-10 on local odd-minimal, SUT=working tree @ 921e8c98 (= unfixed main): GET /api/terms/1 -> terms[].term.namespace null for the cross-namespace linked term, non-null for the same-namespace control in the SAME payload; GET /api/terms/2 (direct) -> namespace intact; UI /terms/1/overview -> fully blank page (body innerText == ''), pageerror 'TypeError: Cannot read properties of null (reading name)' from the useState lazy initializer; screenshot /tmp/repro-1746-overview.png"
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-10 — plan approved as written: both fixes + both test buckets; no vitest; error-boundary follow-up; no root-cause comment)"
@@ -265,6 +265,7 @@ claims; re-embed the graph; COMMIT (not narrate).
 ## Review (2026-06-10, session: separate from the implementing session — post-fde7d11)
 
 - **Result**: ACCEPTED — `pr-draft` → `review-ready`. GATE 2 (human review + merge of PR #1747) is the remaining step; nothing else is outstanding.
+- **GATE 2 COMPLETE**: PR #1747 merged by RamanDamayeu 2026-06-10T17:02:33Z (verified via API; main @ fbb2eb43). Status → `merged` (flip recorded during the CTRIB-003 batch).
 - **Re-verification protocol**: every load-bearing claim re-derived from the branch source / live GitHub / a fresh test run — not from the record.
 
 ### Definition of Done (LSN-032 four gates) — re-verified

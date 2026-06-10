@@ -49,8 +49,7 @@ no language detector; everything ships in the main JS bundle.
   "contributors adding a new locale (must edit three places: this file's
   imports + `resources` map, `lib/constants.ts:LANGUAGES_MAP`,
   `lib/constants.ts:LANG_TO_COUNTRY_CODE_MAP`)",
-  "operators (today: undocumented; per F-047 below, no operator-facing
-  guidance exists)"]
+  "operators (documented since 2026-05-28 at docs.opendatadiscovery.org/features/multilingual-ui — DOC-171)"]
 
 ## dependencies_semantic
 
@@ -213,14 +212,15 @@ no language detector; everything ships in the main JS bundle.
   uncompressed for the locale layer); not a defect, but worth knowing
   before adding a seventh locale." — evidence: static `import` syntax on
   `odd-platform-ui/src/locales/i18n.ts:3-8`. — severity: LOW
-- "The multilingual UI feature is undocumented on the public site as of
-  2026-05-08 — operators have no way to learn which locales ship, how to
-  switch, that preference is local-only, or how to contribute a new
-  locale. Three live WebFetch attempts (configuration page, Features hub,
-  site index) returned 200 with zero references." — evidence: the three
-  `documents.inferred_docs` entries above + the canonical F-047 finding
+- "RESOLVED 2026-05-28 (DOC-171): the multilingual UI feature is now
+  documented end-to-end at docs.opendatadiscovery.org/features/multilingual-ui
+  (supported locales, switching, local-only persistence, new-locale
+  contribution; live-verified 2026-06-10 HTTP 200). Historical: undocumented
+  as of 2026-05-08 — three live WebFetch attempts (configuration page,
+  Features hub, site index) returned 200 with zero references." — evidence:
+  the live page + the original F-047 finding
   in `findings/docs-coverage-undocumented-features/2026-05-08.md#F-047`. —
-  severity: MEDIUM
+  severity: MEDIUM (resolved)
 
 ## security
 

@@ -3,7 +3,7 @@ id: CTRIB-003
 github_issue_number: 1748
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1748
 class: bug
-status: review-ready
+status: merged
 reproduced: "live 2026-06-10 on local odd-minimal, SUT=working tree @ fbb2eb43 (= unfixed main, digest sha256:49543efe…): drove the REAL SelectLanguage dialog (user menu → Select language → Ukrainian; localStorage i18nextLng='ua'); toolbar then renders [Каталог, Директорія, Data Quality, Data Modelling, Master Data, Менеджмент, Словник, Сповіщення, Активність] — 6 tabs translated, 3 raw English literals side-by-side; screenshot /tmp/repro-1748-toolbar-ua.png; baseline IT-102 3/3 green on the same SUT (run-log/2026-06-10-IT-102.md)"
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-10 — plan approved as written: 18 entries across all six catalogs, IT-102 extension, no vitest, no root-cause comment, 70-key consolidated follow-up)"
@@ -279,6 +279,7 @@ missing-key cardinality to the sweep's 73); re-embed the graph; COMMIT (not narr
 ## Review (2026-06-10, separate session — implementer shipped `ba0df7b`/`3049b9af`/`d6b42f8`)
 
 - **Result**: **ACCEPTED** — `pr-draft` → `review-ready`. One process finding logged (LSN-034, below); it does not invalidate any deliverable and its remediation IS the GATE 2 merge.
+- **GATE 2 COMPLETE**: PR #1749 **squash-merged** by RamanDamayeu 2026-06-10T18:20:28Z (verified via API + `git fetch`): odd-platform `origin/main` HEAD = `8c142e15` ("fix(ui): … (#1749)", authored `odd-contributor[bot]`), tree IDENTICAL to branch head `3049b9af` (`git diff 3049b9af origin/main` empty; all 3 keys grep-confirmed in each of the six catalogs on `origin/main`); the branch commit itself is not in main's history (squash). Issue #1748 auto-closed (`completed`, 18:20:29Z). **The LSN-034 live-claim window closed at this merge** — the published fixed-note on `features/multilingual-ui` is now true. Status → `merged`.
 - **Contributor gates**:
   - G-C1 (reproduce-first) — PASS: `reproduced:` frontmatter carries the live capture (pre-fix SUT digest `49543efe…`, ua tab-text dump, screenshot); baseline IT-102 3/3 on the same SUT isolates the defect to the keys. VERIFIED via run-log entries 1-2 + frontmatter.
   - G-C2 (verify the running system) — PASS: reviewer independently re-ran `run-suite.sh IT-102` against the SUT built from the COMMITTED branch (clean tree @ `3049b9af`, digest `67f5cc2a…`) → **4/4 GREEN in 8.4s** (run-log entry 4). Implementer's RED half verified: distinct digest `c1e521f2…` on the clean pre-fix tree, failure at the exact first missing tab (`Якість даних`). PR CI on `3049b9af`: 6/6 checks green (GitHub API). VERIFIED via my own suite run + check-runs API.

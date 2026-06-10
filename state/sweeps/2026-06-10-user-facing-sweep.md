@@ -18,6 +18,7 @@
 |---|---|---|---|---|---|---|---|
 | 1 | G01-G06 | 42 | 7 | 9 | 25 | 1 (PLT-005) | PASS (42/42 YAML+ASCII+section+flag) |
 | 2 | G07-G12 | 42 | 17 | 18 | 4 | 3 (PLT-011,022,126) +1 dup (PLT-144) | PASS (42/42) |
+| 3 | G13-G18 | 42 | 22 | 16 | 4 | 4 (PLT-006 FIXED, 034, 157, 207) +1 dup (PLT-103) | PASS (42/42) |
 
 ## Cross-cutting findings (for maintainer triage — NOT auto-filed)
 
@@ -25,6 +26,9 @@
 - **jOOQ precedence is NOT a bug** (G01 PLT-005, REJECT-CANDIDATE): the `.or()/.and()` "SQL precedence" defect family does not exist — jOOQ combines the whole accumulated condition correctly (proven by javap+jshell render). Any other draft asserting a jOOQ `.or().and()` precedence bug (PLT-083 mentions the same pattern) must be re-checked against this.
 - **Global ControllerAdvice maps NotFound->404** (G03): a single `@RestControllerAdvice` (NotFound->404, BadUserRequest->400, catch-all->500) falsifies any "no @ExceptionHandler on controller X => 5xx" reasoning. Re-check such claims corpus-wide.
 - **Live docs were MORE accurate than drafts** (G04 PLT-061/078/089): several drafts were the stale artefact; the published operator caveats already had the correct masking/permission-name/wedge behaviour.
+- **Confirmed duplicates to reconcile before filing:** PLT-103 == PLT-078 (both /actuator/env, values masked — PLT-078 is the fuller writeup); PLT-054 == PLT-099 (both /api/slack/events HMAC absence — consolidate on one PR); PLT-144 == PLT-021 (RUNNING wire-enum 500). PLT-106 overlaps PLT-003 (alertmanager no-auth) + PLT-044 (stats cross-dataset); PLT-035 overlaps PLT-054/099 dedup.
+- **PLT-006 already FIXED on main** (CTRIB-002 / PR #1747, commit fbb2eb43) — the contributor flow shipped the null-namespace fix + a regression test; draft is a closeable reject-candidate. A draft tracking an already-fixed bug is its own staleness class.
+- **Soft-delete-aware partial unique index** (owner/role/tag/title/collector, WHERE deleted_at IS NULL) is a deliberate, repeated convention (falsified PLT-207) — a candidate implicit-ADR datum, not a bug.
 
 ## Verdict log
 
@@ -69,3 +73,23 @@ corrected (claim/severity falsified, defect survives):
 
 confirmed-static held: PLT-026, PLT-040, PLT-044, PLT-080, PLT-086, PLT-098, PLT-101, PLT-102, PLT-104(probe P-004), PLT-127(IT-003), PLT-145(IT-048), PLT-147(IT-068), PLT-148(IT-105), PLT-152(IT-009).
 flag->true wave 2: 33 of 42 (RBAC wiring facts code-settled; observ. auth-mode-labelled). Stayed false: PLT-011,013,016,030(mixed mechanism),033... (runtime/mixed) — see per-draft.
+
+### Wave 3 (G13-G18)
+
+reject-candidates / fully falsified:
+- PLT-006 high (FIXED ON MAIN) — null-namespace term-overview crash fixed by CTRIB-002/#1747 (commit fbb2eb43; re-read source to confirm, not the commit msg). Closeable.
+- PLT-034 medium->low REJECT-CAND — premise inverted: WithPermissions IS a synchronous render-gate (`WithPermissions.tsx:28` returns null on no-perm), not a context provider with a flash window. No defect.
+- PLT-157 high->low REJECT-CAND — "surviving audit rows hidden behind inner join" doesn't exist; the hard-delete (TTL purge) deletes activity rows in the same txn before the entity, none stranded. Source reflection F-021 made the same untraced cascade assumption.
+- PLT-207 high->low REJECT-CAND — the proposed partial unique index already exists since V0_0_31; recreate-by-name already works. Drafted from the birth migration, ignoring 8 later collector migrations.
+
+corrected (UI claim/severity falsified, defect survives):
+- PLT-103 high->medium — /actuator/env masks all values (show-values=NEVER); "JDBC/LDAP/Slack verbatim leak" false; duplicate of PLT-078; residual is config-KEY recon.
+- PLT-166 high->low — bare /management/integrations inherits the PARENT provider, not the sibling; no control in the subtree uses hasAccessTo yet — harm is prospective.
+- PLT-168 high->medium — skeleton DOES reserve hero/tags/info-bar space; "unbounded CLS" rescoped to a bounded post-skeleton shift; magnitude runtime-only.
+- PLT-164 high->medium — Title is a descriptive label, not authorization-relevant; security framing dropped; the unaudited unbounded mint survives.
+- PLT-156 high (partial) — reassignment misattributes past activity (holds); "soft-delete makes activity authorless" false (UI falls back to username).
+- PLT-117 medium (rescoped) — tab is HIDDEN not click-then-redirect, and it's a blanket deleted-entity policy over 6 tabs; report/SLA cross-channel split via deep-link survives.
+- PLT-024/054/072/099/162/035/036/037/017/043/087/096/060 — citation/mechanism/scope corrections (fabricated SQL columns, wrong method names, swapped springdoc paths); core defects survive.
+
+confirmed-static held + flag->true: PLT-158, PLT-159, PLT-160, PLT-161 (attachment family), PLT-119, PLT-073, PLT-008, PLT-050, PLT-053, PLT-079, PLT-088, PLT-171, PLT-186, PLT-188, PLT-198, PLT-039.
+flag stayed false (runtime/mixed): PLT-024, PLT-054, PLT-072, PLT-099, PLT-162, PLT-035, PLT-046, PLT-103, PLT-168, PLT-157, PLT-034(low), PLT-172, PLT-196.

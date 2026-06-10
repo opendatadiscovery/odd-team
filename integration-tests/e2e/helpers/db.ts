@@ -818,3 +818,31 @@ export async function lineageEdgeExists(parentOddrn: string, childOddrn: string)
     return r.rows.length > 0;
   });
 }
+
+// IT-127 — #1746 (PLT-006): seed a parent term whose description mentions a linked term living in a
+// DIFFERENT namespace, plus the term_to_term description-link row the mention materialises. Returns the
+// parent term id (the overview route is /terms/{id}/overview). The cross-namespace link is the canonical
+// [[OtherNamespace:Term]] wiki-link case; on the unfixed platform GET /api/terms/{parent} serializes the
+// linked term with namespace = null and the overview white-screens. Idempotent.
+// Verified schema: term_to_term(target_term_id, assigned_term_id, is_description_link).
+export async function seedCrossNamespaceLinkedTerms(
+  parentName: string,
+  linkedName: string,
+  parentNamespace = 'IT127-parent-ns',
+  linkedNamespace = 'IT127-linked-ns',
+): Promise<{ parentId: number; linkedId: number }> {
+  const definition = `References [[${linkedNamespace}:${linkedName}]] across namespaces.`;
+  const parentId = await seedTermWithDefinition(parentName, definition, parentNamespace);
+  const linkedId = await seedTermWithDefinition(
+    linkedName,
+    'The linked term living in a different namespace.',
+    linkedNamespace,
+  );
+  await withClient(async (c) => {
+    await c.query(
+      'INSERT INTO term_to_term (target_term_id, assigned_term_id, is_description_link) VALUES ($1, $2, TRUE) ON CONFLICT DO NOTHING',
+      [parentId, linkedId],
+    );
+  });
+  return { parentId, linkedId };
+}

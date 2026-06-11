@@ -1,7 +1,7 @@
 ---
 name: review
 description: Verify a `review-ready` work item (or an entire batch) meets every acceptance criterion and every Quality Bar gate. Reject by default — each check requires cited evidence. Must run in a session distinct from the `/implement` session that produced the item.
-argument-hint: <work-item-id> | batch:<branch-name>
+argument-hint: <work-item-id> | batch:<branch-name> | release:<version>
 allowed-tools: Read Grep Glob WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
 
@@ -16,7 +16,7 @@ This skill exists because `/implement` is not allowed to self-close items. The l
 Refuse to run if any of these are true:
 
 - `$ARGUMENTS` is empty → list every `review-ready` item and ask which to review.
-- The work item status is not `review-ready` → print the status and stop.
+- The work item status is not `review-ready` → print the status and stop. (A `pending-release` item is waiting on `/review release:{version}` — the release gate, not a re-review.)
 - **You are the same session that implemented the item.** If `/implement` and `/review` were called in the same session without an intervening boundary, stop and surface that — self-review defeats the gate.
 - The work item's commit is missing a `Sources:` footer (or the legacy `Consumer-read:` footer) **and** the item's claims are factual → reject immediately with "missing Sources footer" and set status to `blocked`. Pure prose-polish items with `Sources: none (prose polish, no factual claim)` are exempt.
 
@@ -25,7 +25,7 @@ Refuse to run if any of these are true:
 1. `CLAUDE.md` — universal framework + Quality Bar overview.
 2. `pillars/{active}/{pillar,gates,authoring,canonical-homes,cornerstones}.md` — pillar rules.
 3. `backlog/README.md` — status transitions.
-4. The work item file — status, acceptance criteria, Context, Implementation Record.
+4. The work item file — status, acceptance criteria, Context, Implementation Record. A `milestone:` field marks the item **release-gated** (`adrs/drafts/release-train-doc-gating.md`): its commits live on the documentation train `release/{version}` — fetch that branch; the diff under review is the item's commits there.
 5. The commit(s) that implemented it — `git log --format=full <branch>` in the target repo. Extract the `Sources:` footer; you will verify every cited source.
 
 ## Protocol
@@ -50,7 +50,7 @@ Run each gate by invoking its playbook in **verification mode** (re-derive what 
 | Gate 5 — Unset-parameter audit | `playbooks/unset-parameter-audit.md` | Every SDK builder in scope has every parameter classified; every `caveat-defaulted` parameter is documented as a known limitation. The `retrospectives/LSN-002` gate. |
 | Gate 6 — Bidirectional code ↔ doc | (pillar-specific) | Every functional claim → code evidence. Every user-visible code path touched → doc coverage as feature / limitation / performance / security. Missing either direction is a finding (filed via `playbooks/follow-up-on-disk.md` — narration alone fails this gate). |
 | Gate 7 — Layout and completeness | (pillar-specific; `pillars/documentation/gates.md` Gate 7) | SUMMARY entry; index/README links; in-page TOC sync (`retrospectives/LSN-005`); IA hierarchy sanity (`retrospectives/LSN-007`). |
-| Gate 8 — Publishing standards | `playbooks/live-site-verification.md` | Live-site WebFetch per affected URL; no GitHub-fallback substring (`retrospectives/LSN-004`). DEFERRED if PR not yet merged; item stays `review-ready`. |
+| Gate 8 — Publishing standards | `playbooks/live-site-verification.md` | Live-site WebFetch per affected URL; no GitHub-fallback substring (`retrospectives/LSN-004`). DEFERRED if PR not yet merged; item stays `review-ready`. Release-gated items (`milestone:` set): live verification is **scheduled at the release gate** — run the branch-verifiable sub-checks (PyYAML, ≤200-char description, tree-relative links) against the train now, record `PENDING-RELEASE ({version})` + the post-merge URL/phrase list (`pillars/documentation/gates.md` Gate 8). |
 | Gate 9 — Factual claim provenance | `playbooks/claim-inventory.md` | Every cited source actually supports the claim. Per-class: `Repo:` lines WebFetched (`retrospectives/LSN-003`); `Integration:` lines cross-checked against `navigation/architecture.md`; `Spec:` lines grep'd in OpenAPI YAML; etc. **Outbound URL sweep mandatory**. **Banned-phrase check**: every note ends in `VERIFIED via …` or `NOT VERIFIED → log as DOC-NNN`. |
 | Gate 10 — Content type homing | (pillar-specific; `pillars/documentation/gates.md` Gate 10) | Read the `Sources:` footer as a content-type signal: 3+ `Spec:` lines on a feature page → API reference content embedded incorrectly (`retrospectives/LSN-006`). 5+ `Config:` lines on a non-config page → configuration reference embedded incorrectly. |
 | Gate 11 — Audience isolation *(2026-05-27)* | (pillar-specific; `pillars/documentation/gates.md` Gate 11) | Run the mechanical banned-term grep on `../documentation/docs/**/*.md` files touched by the change. Every workspace-internal term (`Cornerstone N`, `Gate N`, `LSN-NNN`, `SHB-NNN`, `feature-flow-builder`, `Quality Bar`, etc.) on a published doc line = FAIL → flip item to `blocked` with the leak cited; the implementer rewrites in operator language. Contextual stop-words (`sidecar`, `maintainer`, `methodology`, `playbook`, `pillar`, `backlog`, `findings`, `lineage`, `scanners`, `retrospectives`) need per-hit classification per the Gate 11 Exceptions table. Case-law: `retrospectives/LSN-026` — stance-only enforcement missed a single-sentence leak ("Cornerstone 5 holds…") in `data-discovery/tagging.md:56` despite two prior `/review` passes. |
@@ -102,7 +102,7 @@ The case for this step's existence is `playbooks/doc-product-editorial-read.md` 
   - Gate 5 — PASS ({SDK builder audit}) / N/A (no SDK in scope) / FAIL ({unset caveat})
   - Gate 6 — PASS ({evidence}) / FAIL
   - Gate 7 — PASS ({evidence}) / FAIL
-  - Gate 8 — PASS ({URL + observed text}) / DEFERRED (not yet merged) / FAIL
+  - Gate 8 — PASS ({URL + observed text}) / DEFERRED (not yet merged) / PENDING-RELEASE ({version} — URLs + phrases recorded) / FAIL
   - Gate 9 — PASS ({per-class verification summary}) / FAIL ({specific unverified claim})
   - Gate 10 — PASS ({per-sub-section content-type identification}) / N/A (pure prose polish) / FAIL ({embedded fragment that should target a canonical home})
 - **Outbound URL sweep**: {count} URLs verified via WebFetch; {count} mismatches caught (list); {count} broken (logged as DOC-NNN)
@@ -119,6 +119,7 @@ The case for this step's existence is `playbooks/doc-product-editorial-read.md` 
 ```
 
 - **All gates PASS, no deferrals**: flip `status: review-ready` → `status: done`. Update `state/PROGRESS.md` counts. Editorial findings (if any) are logged as separate follow-ups; they do not block the flip.
+- **Release-gated item — all gates PASS with Gate 8 PENDING-RELEASE**: flip `status: review-ready` → `status: pending-release`. The item cannot reach `done` before its release — `/review release:{version}` (below) owns that flip after the train merges and live verification passes.
 - **Any gate FAIL**: flip `status: review-ready` → `status: blocked`. Leave the verdict in the item. Surface to the user with the specific failure and the fix the implementer needs to do. Editorial findings are still logged independently.
 - **Any gate DEFERRED** (typically Gate 8 because the PR isn't merged yet): leave `status: review-ready`. Re-run `/review` after merge to close out Gate 8. Editorial findings are still logged.
 
@@ -128,6 +129,15 @@ If `$ARGUMENTS` starts with `batch:` (e.g., `batch:feature/critical-odd-platform
 - Identify every item on the branch via `git log` (look for `[DOC-NNN]` in commit messages).
 - Run the per-item protocol for each.
 - Produce one combined verdict table at the end. Individual items may FAIL while others PASS.
+
+### 8. Release-gate mode
+
+If `$ARGUMENTS` is `release:{version}` (e.g., `release:0.28.0`): run `playbooks/release-train-merge.md` **half 2** — the post-merge publication verification:
+- Preconditions: milestone `{version}` closed; release published with `tag_name == {version}`; the train PR merged to documentation `main` (verify via `git fetch` + `git log origin/main`, never local state).
+- Derive the manifest: `grep -rl 'milestone: "{version}"' backlog/`.
+- Run `playbooks/live-site-verification.md` once across the union of every item's recorded URLs + expected phrases.
+- Flip each fully-verified item `pending-release` → `done`; any failure → `blocked` per the playbook's on-fail.
+- Refresh the doc ground-truth layer (`/ingest-docs` + graph rebuild), append the release record to `state/PROGRESS.md`, and delete the merged train branch.
 
 ## Rules
 

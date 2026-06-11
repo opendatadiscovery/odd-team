@@ -34,6 +34,7 @@ Convert findings at `$ARGUMENTS` into backlog work items.
    - **Issue type** (for issue drafts) — bug | feature | adjustment; bugs also need `severity`
    - **Granularity** — One work item / one issue draft per logical change (split complex findings, merge trivial ones)
    - **Priority** — critical (wrong info) > high (missing tests for fragile code) > medium (gaps) > low (cosmetic). **Rev-13 ontology-corroboration lift**: if the scanner-feed log lists this finding's `findings_produced` against an ontology clue source AND the clue is either `feature-flow` or `doc-gap` corroboration, lift the priority by ONE tier (medium → high, high → critical). Two independent signals (ontology AND scanner) flagging the same gap is published-mistake risk per CLAUDE.md's "wrong docs > missing docs" priority bar. Concept-source clues (non-canonical-term) default to `medium`; shoebox-source clues inherit the shoebox thread's severity.
+   - **Release routing** (documentation items — `adrs/drafts/release-train-doc-gating.md` Decision 3) — does the change describe behaviour **absent from the latest published odd-platform release**? Mechanical test: find the introducing commit; `git -C ../odd-platform tag --contains {sha}` empty (or only unpublished tags) ⇒ **release-gated** → set `milestone:` from the introducing issue/PR's milestone (`GET /repos/.../issues/{n}` → `.milestone.title`); no open matching milestone → create the item `blocked` with an unresolved-milestone note (the maintainer creates/re-targets milestones). Released-truth corrections — including known-issue caveats for released bugs — stay un-gated and publish immediately at their normal priority. A release-gated item's urgency is "complete before the release gate", not "before the next session".
    - **Affected files** — Which files will be created/modified? (For issue drafts: cite upstream `file:line` in the body, not affected_files in this workspace.)
    - **Dependencies** — Does this item require another to complete first?
    - **Effort** — small (<30min), medium (30-90min), large (>90min) — for backlog items only; issue drafts have no in-workspace effort once the body is written.
@@ -43,6 +44,7 @@ Convert findings at `$ARGUMENTS` into backlog work items.
    - Write testable acceptance criteria (not vague goals)
    - Include scanner source and found date
    - **For findings sourced from ontology clues** (rev 13): include `ontology_source:` in the backlog item's Context section — e.g. `ontology_source: feature-flow F-007 (Source: Ontology[F-007:hop-2] → Repo[AlertManagerController.java:24-31])`. This back-links the work item to the F-NNN it came from, so when the doc PR ships, the maintainer can flip the F-NNN's `doc_status:` field from `backlog` → `drafted` → `live`.
+   - **For release-gated items**: set `milestone: "{version}"` in the frontmatter and record the affected pages + expected post-merge URLs in the item — the release gate (`playbooks/release-train-merge.md`) consumes them.
 
 5. **Update file registry** — Add to `state/file-registry.yaml`:
    - Map each affected file to the new work item ID

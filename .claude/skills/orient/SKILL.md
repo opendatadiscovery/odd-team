@@ -1,7 +1,7 @@
 ---
 name: orient
 description: Quick orientation for a new session — shows system overview, current state, and available actions.
-allowed-tools: Read Glob
+allowed-tools: Read Glob Grep Bash(git *)
 ---
 
 # Orient
@@ -21,8 +21,9 @@ Quick orientation for working in the ODD Team maintenance system.
    - `/review <id>` — verify completed work
    - `/status` — full progress report
    - `/navigate <feature>` — find code locations
-4. Show recommended next action based on current progress
-5. List any blockers or items needing attention
+4. Check release trains (`adrs/drafts/release-train-doc-gating.md`): grep `backlog/` for `milestone:` by status + `git -C ../documentation branch -r --list 'origin/release/*'`. A closed milestone with `pending-release` items, or a published release whose train still exists, makes the release gate (`playbooks/release-train-merge.md`) the recommended next action.
+5. Show recommended next action based on current progress
+6. List any blockers or items needing attention
 
 ## Output Format
 

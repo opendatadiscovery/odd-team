@@ -32,7 +32,7 @@ addressing only (`doc-nodes.jsonl`), the per-page agentic sidecars
 
 ## Prerequisites
 
-- `../documentation` is cloned (the prose SoT; the build reads it).
+- `../documentation` is cloned (the prose SoT; the build reads it) **and checked out on `main`, synced to `origin/main`** — the doc layer ingests **published truth only**; release trains (`release/*` branches) are invisible to it by design (`adrs/drafts/release-train-doc-gating.md`). Assert `git -C ../documentation branch --show-current` → `main`; refuse to ingest otherwise.
 - The extractor venv is installed (`lineage/_extractor`, `uv sync --extra embeddings` for the doc vectors; graph-only still works without).
 - `lineage/{repo}/concepts.yaml` + `feature-flows.yaml` exist (the `doc-analyser` binds DESCRIBES against them).
 - `WebFetch` available — `doc-analyser` verifies each page's live URL (the authoritative GitBook slug); stale verification is forbidden.

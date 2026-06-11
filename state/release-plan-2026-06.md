@@ -23,12 +23,14 @@
 | 7 | **PLT-150** | `switchIfEmpty(NotFound)` on search-filters read + graceful "search expired" UI state | Bookmarked/expired search deep-link → generic "Unknown Error" boundary | SAFE | S | ufv=true |
 | 8 | **PLT-143 + PLT-076** | One ControllerAdvice commit: `MissingRequestValueException`/`ServerWebInputException` + `IllegalArgumentException` → 400 | Missing required param / bad input read as platform crash (500 SYS001) + ERROR-log noise | SAFE | S | ufv=true both |
 | 9 | **PLT-121** | Relabel global Alerts "All" → "Open" (or additive `status` param defaulting OPEN) | Resolved alerts invisible on every global tab; stewards conclude alerts were purged | SAFE | S | ufv=true |
-| 10 | **PLT-176** | De-dup activity tag+owner fan-out (EXISTS subqueries / DISTINCT + countDistinct ×3) | Count badge says 20, list shows 5 — on an audit surface (maintainer-caught live) | SAFE | M | ufv=true |
+| 10 | **PLT-179** | Relabel DQ "Title" filter → "Owner title" + OpenAPI param description (binding unchanged) | "Title" reads as the dataset name but binds an ownership role — confidently-wrong DQ aggregates | SAFE | S | ufv=true |
 | 11 | **PLT-104 [FE scope]** | Remove `details.status?.status` from the `useEffect` dep array → +1 not +2 per open | Popular strip's sole ranking signal double-counts every view | SAFE | S | ufv=true; probe P-004/IT-001 re-run |
 | 12 | **PLT-056 [D1+D4]** | Target column: render `targetDataEntity` (one-line copy-paste fix) + runtime-validate `?type=` | Critical: BOTH columns show the source dataset on every Relationships row; bad deep-link renders fake-empty page | SAFE | S | FE-traced 2026-06-10; eyeball on live stack |
 | 13 | **PLT-057 [D1+D2]** | `scrollableTarget` one-line fix (+ shared id constant) + additive `LOOKUP_TABLE_RENAMED` activity event | Critical: Lookup Tables list silently stops at 30 rows under a true-total header; renames have zero audit trail | SAFE (event is additive) | S | **Drive first**: seed >30 tables, confirm truncation (ufv=false today); TST-001 pairs |
 | 14 | **PLT-001** | Null-guard `S2sTokenProvider.isValidToken` / gate filter on s2s configured | Any request with any `X-API-Key` header → 500 on shipped default (trivial unauth error-spam) | SAFE | S | ufv=true |
 | 15 | **PLT-163** | Shared ConfirmationDialog: reset loading + surface error on reject (both mutateAsync and thunk arms) | All ~23 confirm-and-mutate flows either freeze a dead spinner or close-as-success on failure | SAFE | M | ufv=true |
+
+> Slot 10 was originally **PLT-176** (activity fan-out dedup) — discovered on 2026-06-11 to be already filed upstream as [#1744](https://github.com/opendatadiscovery/odd-platform/issues/1744) and **fixed by PR #1745** (closed completed 2026-06-10). PLT-179 promoted from alternates.
 
 ## Stretch — 5 slots (land if the week allows; order = priority)
 
@@ -43,10 +45,9 @@
 ## Alternates (first substitutions if a slate item balloons)
 
 - **PLT-139** (M) — notification subscriber wedges on fresh boot (slot-before-publication). Top silent-corruption per SME (#8) but needs the WAL harness to verify; first alternate, or its own fast-follow. IT-011 pairs.
-- **PLT-179** (S) — relabel DQ "Title" filter (binds ownership role, not dataset name). 5-minute fix; grab anytime.
 - **PLT-026 [D1]** (S) — "Popular tags" returns oldest-by-id (paginate-before-COUNT).
 - **PLT-128** (S) — DataSource delete blocked by attached entities closes the modal like a success.
-- **PLT-058 [PR-2: D5+D6+D7]** (S-M) — Term linked-terms tab: fake 500 during loading / real errors render as empty / un-debounced keystroke search.
+- **PLT-058 [PR-2: D5+D6+D7]** (S-M) — Term linked-terms tab: fake 500 during loading / real errors render as empty / un-debounced keystroke search. (Whole cluster now tracked upstream as #1754.)
 - **PLT-174** (S) — thread `ownerIds` through the 3 dropped activity view modes (same code as PLT-176).
 - **PLT-044 [D1]** (S, **FLAG**) — parent-child check on stats ingestion: one-line fix but ingestion starts rejecting writes that previously (corruptingly) succeeded — release-note if shipped.
 
@@ -66,6 +67,13 @@
 ## Release narrative (for the changelog)
 
 A trust-and-stability pass: the everyday 500s on core surfaces are gone (catalog search, entity detail, glossary search, DQ run history, lineage, expired search links, and the API docs page itself), one confirmed SQL injection is closed along with a handful of small contained security gaps, and the UI stops misreporting — the Alerts "All" tab, activity counts, relationship targets, lookup-table listings, view counts, and destructive-action dialogs now mean what they say. Every change is backwards-compatible: no contract breaks, no new required config, no posture flips, no changed defaults. The heavier posture/default/semantics work is deferred to a dedicated, loudly release-noted follow-up.
+
+## Filing status (2026-06-11)
+
+- **Filed by maintainer (open):** #1752 (PLT-056), #1753 (PLT-057), #1754 (PLT-058), #1751 (PLT-215), #1750 (PLT-177).
+- **Filed + already fixed (closed completed):** #1744 (PLT-176, PR #1745), #1746 (PLT-006, PR #1747), #1748 (PLT-190, PR #1749).
+- **Queued for batch filing:** the remaining 20 slate items — manifest `state/filing-manifest-2026-06-11.txt`, script `scripts/file-issue-batch.py` (replicates the #1754 format: draft body verbatim + frontmatter in a trailing fenced block + labels + milestone). All 20 drafts carry `suggested_milestone: "0.28.0"` (open milestone, due 2026-06-22) per the new milestone-at-filing rule (`issues/README.md`); the script's `--milestone` flag is the maintainer's decision lever. Idempotent: drafts with `github_issue_number` set are skipped.
+- **PLT-109 is deliberately NOT filed publicly** — it stays in the private GHSA (confirmed exploit; responsible disclosure).
 
 ## Process notes for the week
 

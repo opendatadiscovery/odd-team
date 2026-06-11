@@ -70,7 +70,7 @@ e2e/
   helpers/notifications-stack.ts  notifications/WAL (logical-replication) stack wrapper (IT-011)
   helpers/ha-stack.ts     2-replica notifications stack + leader/failover orchestration (IT-012)
   specs/
-    view-count-overview.spec.ts          IT-002 — opening the Overview page must register +1 (pins the +2 bug)
+    view-count-overview.spec.ts          IT-002 — opening the Overview page must register +1 (regresses PLT-104; GREEN since #1764)
     search-tsquery-poisoning.spec.ts     IT-003 — a search metacharacter must not 500/poison the session (PLT-090/127)
     quality-dashboard-unknown-status.spec.ts  IT-004 — an unknown run status must degrade, not blank the dashboard (PLT-052)
     top-tags-ordering.spec.ts            IT-005 — Top Tags must show most-popular, not oldest-by-id (PLT-026)

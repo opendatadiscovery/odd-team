@@ -104,10 +104,38 @@ The roll-up of this ledger is the **Test-Traceability Ledger** dimension of the 
 
 "How many are missing" depends on the stage you mean — and the pillar's answer is always stated against stage 2 (promises), because that is the user-observable truth.
 
+## The flip-on-fix checklist (red→green closure)
+
+When a pinned bug's fix ships, the flip is COMPLETE only when **every surface encoding the
+pin's red-state flips in the same commit**. The converge rule applies: `grep -rn IT-NNN`
+across the workspace and classify EVERY hit — the primary feature's artefacts are never
+the whole list. Surfaces:
+
+1. **`integration-tests/suites.yaml` — the lane move** `known-bugs` → `feature-complete`
+   (per the lane's own description, *that move IS the measurable regression closure*) +
+   both lane comments + any I-batch comment naming the IT.
+2. The protocol's `expected_result` (green-state wording, regression framing preserved).
+3. The spec's header comment (`EXPECTED RESULT` line) — spec and protocol must agree.
+4. `integration-tests/e2e/README.md` spec-index line.
+5. **Every** `feature-flows/detail/*.yaml` referencing the IT — sibling features too, not
+   only the primary: flip each `use_cases` entry (`coverage` / `test_ref` / `test_demand`)
+   and the `use_case_coverage` count + note.
+6. Probe asserts that pinned the old behaviour (`probes/P-NNN.yaml`, pre-authored flip).
+7. Living index docs (`PHASE3-BUILDOUT.md` existing-coverage line; `test-plan.md`
+   present-tense claims — bracket-annotate dated narratives, never rewrite them).
+8. Graph re-embed (flows changed).
+
+Dated artefacts (run-log entries, `feature-reflections/`, findings) keep their
+point-in-time truth — never retro-edit those. Case-law: the IT-002 flip (#1764/CTRIB-004,
+2026-06-11) shipped the protocol/probe/F-001 surfaces but missed the lane move, the spec
+header, the README line, and the sibling flows F-141/F-176 — both `/contribute` and
+`/review` missed the residue because neither ran the grep; the maintainer caught it
+([[feedback-converge-claim-complete-not-instance-loop]] class, repeat instance).
+
 ## Success signals
 
 - `scripts/run-platform-tests.sh` green in odd-platform CI on every PR (unit + JaCoCo gate).
-- `integration-tests/run-suite.sh feature-complete` green; `known-bugs` red-by-design; every red→green move recorded as a regression closure.
+- `integration-tests/run-suite.sh feature-complete` green; `known-bugs` red-by-design; every red→green move recorded as a regression closure **via the flip-on-fix checklist above**.
 - The scorecard's promise-coverage frontier and Test-Traceability dimension climb batch over batch and **never silently regress**.
 - A maintainer can ask "is F-NNN verified?" and get one answer from one place.
 

@@ -15,8 +15,8 @@ import { seedEntity, readViewCount, ENTITY_ID } from '../helpers/db';
  * browser fires the buggy effect. So the user-observable truth is only reachable
  * end-to-end, UI included — which is the whole point.
  *
- * EXPECTED RESULT TODAY: RED. One Overview page-open registers +2, not +1. That red
- * IS the regression signal for PLT-104; it goes green when PLT-104 is fixed.
+ * EXPECTED RESULT: GREEN since the #1764 fix (CTRIB-004, 2026-06-11) — this spec was
+ * the RED pin for PLT-104. A FAIL with 2 means the LSN-017 double-fetch regressed.
  */
 test.describe('F-001 view_count — opening the entity Overview page', () => {
   test('a single page-open registers exactly one view (PLT-104: it double-counts)', async ({ page }) => {

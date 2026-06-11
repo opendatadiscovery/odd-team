@@ -515,3 +515,35 @@ Draft PR body: root-cause + change + exclusions + both-bucket evidence + docs ro
   left unfilled by the implement run (machine-stamped evidence intact; reviewer's filled
   re-run entries supersede).
 - **Banned-phrase check**: none used in record or review.
+
+### Post-verdict correction (2026-06-11, maintainer-found — flip residue)
+
+The maintainer caught what both the implement session AND this review missed: **the
+IT-002 red→green flip was incomplete.** The pin was still in the `known-bugs` suite lane
+(`integration-tests/suites.yaml`) whose own description names the move to
+`feature-complete` as "the measurable regression closure" — and a workspace-wide grep
+found further unflipped surfaces: the spec's RED-today header (TST-041, known), the e2e
+README index line, sibling feature flows **F-141 UC-09** and **F-176 UC-009** (both still
+claiming IT-002 RED / promise-broken), `PHASE3-BUILDOUT.md`, and `test-plan.md`.
+
+- **Why /contribute missed it**: the GATE-1 plan's ontology-refresh checklist enumerated
+  the F-001-adjacent artefacts (protocol, P-004, F-001, sidecars) and the flip was executed
+  from that list; suites.yaml and the sibling flows were never on it.
+- **Why this review missed it**: (a) Gate 7 was run docs-scoped, despite the CTRIB-002
+  precedent including a suites.yaml registration check; (b) the reviewer's own runs used
+  `run-suite.sh IT-002` — direct protocol invocation bypasses suite-lane resolution, so
+  the green run never touched the stale registry; (c) the `grep -rn IT-002` converge sweep
+  was run only AFTER the first finding (the spec comment) and stopped there instead of
+  classifying every hit — the [[feedback-converge-claim-complete-not-instance-loop]]
+  failure class, repeated.
+- **Fixed (same day)**: lane moved known-bugs → feature-complete (+ lane comments + I9
+  comment); spec header + README + PHASE3 + test-plan flipped; F-141 UC-09 / F-176 UC-009
+  flipped (`coverage`, `test_ref`, `test_demand`, `use_case_coverage` counts/notes — F-176
+  verified 1/12 → 2/12); run-log narrative fields backfilled (TST-041 both halves →
+  `review-ready`); graph re-embedded. **Class guard added**: `pillars/tests/pillar.md`
+  "The flip-on-fix checklist (red→green closure)" — 8 surfaces + the mandatory grep;
+  cites this miss as case-law.
+- **Verdict impact**: Gate 7 amended PASS → **PASS-after-correction** (the original PASS
+  was wrong by omission). The ACCEPTED result stands — the code, PR, docs train, and
+  primary-feature ontology were verified correct; the residue was workspace test-state
+  bookkeeping — but the miss is recorded as a review-quality failure, not excused.

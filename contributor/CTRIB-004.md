@@ -547,3 +547,33 @@ claiming IT-002 RED / promise-broken), `PHASE3-BUILDOUT.md`, and `test-plan.md`.
   was wrong by omission). The ACCEPTED result stands — the code, PR, docs train, and
   primary-feature ontology were verified correct; the residue was workspace test-state
   bookkeeping — but the miss is recorded as a review-quality failure, not excused.
+
+### Full-set regression measurement (2026-06-11 directive — G-C2 closed for this item)
+
+The maintainer's same-day directive (every unit + every integration test at implement AND
+review; scoped runs are never the gate) was applied retroactively to this item — the
+original implement + review had only run the impacted IT-001/IT-002. Measured on the
+PR #1770 branch SUT (committed `93cb5252`):
+
+| Set | Result | Verdict |
+|---|---|---|
+| Unit — full `:odd-platform-api:build` | 406 tests, 0 failures (local 5m40s + CI 6/6 on the exact head) | GREEN |
+| `feature-complete` run 1 (first-ever full run incl. IT-002) | 269 passed / 2 failed (4.5m) | flake — see below |
+| `feature-complete` run 2 (clean re-run) | 270 passed / 1 failed (4.6m) | flake — see below |
+| `multi-stack` | 9 passed (3.4m) — MinIO, LOGIN_FORM ×2, LDAP ×2, notifications WAL ×2 | GREEN |
+| `known-bugs` | 6 failed — every failure = its documented pin; none unexpectedly green | RED-as-designed ✓ |
+
+The three e2e failures were three DIFFERENT specs, each failing in exactly one of the two
+runs and passing in the other (and solo): view-count got-0 + global-alerts negative
+(run 1), data-entity-overview 999999 networkidle-hang (run 2). All three are wait-strategy
+/ shared-seed-isolation fragility under full-set sequential load — the 2026-06-07/08
+canonical-run class, next instances → **TST-042** (spec hardening; includes the open
+platform-side question why a 404-entity route keeps the network busy 60s). Harness defect
+observed en route → **TST-043** (mixed-rail double image build + mid-suite stack recreate
++ nondeterministic double run-log entry).
+
+**Regression verdict for #1764: NO regression attributable to the fix.** Mechanical
+exclusion on top of the statistics: the fix removes a duplicate dispatch (cannot produce
+got-0 — the remaining dispatch is unconditional on mount), creates no alerts, and the
+404-entity path is identical pre/post-fix (the removed dep only changed on FULFILLED
+actions, which a 404 never emits). GATE 2 remains unblocked.

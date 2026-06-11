@@ -38,9 +38,9 @@ This skill owns the **temporal structure**: the 12-phase loop and the **two huma
 
 ## Phase C — Plan → **GATE 1**
 
-7. **Write the plan** (the CTRIB `## Plan` section, a `/code-walk`-derived artifact): the exact change; the **explicit scope EXCLUSIONS** (what is deliberately not touched — G-C5); the ADR decision; the test plan (unit + integration); the docs decision **including routing** (docs `main` for released-truth corrections / the `release/{milestone}` train for unreleased behaviour / none + why — G-C11); the ontology nodes to refresh.
+7. **Write the plan** (the CTRIB `## Plan` section, a `/code-walk`-derived artifact): the exact change; the **explicit scope EXCLUSIONS** (what is deliberately not touched — G-C5); the ADR decision; the test plan (unit + integration); the docs decision **including routing** (docs `main` for released-truth corrections / the `release/{milestone}` train for unreleased behaviour / none + why — G-C11); the ontology nodes to refresh. **If the plan changes the issue's scope** (fixes a subset, reframes, or defers facets), the plan MUST include the drafted **scope comment** for the issue thread — what this PR covers, what is deferred and where it is tracked (ASCII, self-contained, no workspace-internal IDs). The public thread must reflect the actual PR scope; the workspace record alone is not enough (G-C5; memory `feedback_scope_change_comment_on_issue`).
 
-8. **GATE 1** → `playbooks/pause-and-ask.md`. **Stop. A human approves the plan before any code is written** (G-C3 — even for a one-liner). Record `plan_approved_by`/`plan_approved_at`. Do not proceed without approval.
+8. **GATE 1** → `playbooks/pause-and-ask.md`. **Stop. A human approves the plan before any code is written** (G-C3 — even for a one-liner). Approving a plan that carries a scope comment IS approval to post it: post it via `playbooks/github-write.md` immediately after approval, before any code, and record the comment URL in the CTRIB record. Record `plan_approved_by`/`plan_approved_at`. Do not proceed without approval.
 
 ## Phase D — Implement + test (between the gates)
 

@@ -35,9 +35,9 @@ The agent NEVER merges. The guarantee is structural, not a prompt: `main` branch
 
 ## G-C5 — The change is bounded by the approved plan
 
-The diff touches only what the approved plan scoped. A refactor / second bug / adjacent improvement discovered mid-fix does NOT enter the current PR — it routes to the backlog via `playbooks/follow-up-on-disk.md` (a new `CTRIB`/`PLT`/`REFACTOR` item). Scope failure — not bugs — is the #1 reason agent PRs are rejected.
-- **Enforced at:** the plan's scope-exclusions list; `/review` rejects an over-broad diff.
-- **Case-law:** `EXTERNAL-PRACTICE.md` (scope is the top rejection cause); `PROBES.md` AC-3.
+The diff touches only what the approved plan scoped. A refactor / second bug / adjacent improvement discovered mid-fix does NOT enter the current PR — it routes to the backlog via `playbooks/follow-up-on-disk.md` (a new `CTRIB`/`PLT`/`REFACTOR` item). Scope failure — not bugs — is the #1 reason agent PRs are rejected. **And the bounding is public:** when the approved plan narrows or reframes the issue's stated scope, the plan carries a drafted scope comment for the issue thread (what the PR covers, what is deferred, where the deferred part is tracked); GATE 1 approval includes posting it, before any code. The issue thread — not only the workspace CTRIB record — must reflect the actual PR scope.
+- **Enforced at:** the plan's scope-exclusions list + the drafted scope comment (SKILL phase 7/8); `/review` rejects an over-broad diff and a silent scope narrowing (comment URL missing from the CTRIB record).
+- **Case-law:** `EXTERNAL-PRACTICE.md` (scope is the top rejection cause); `PROBES.md` AC-3; maintainer directive 2026-06-11 (CTRIB-004 GATE 1 — scope change must be commented on the issue; memory `feedback_scope_change_comment_on_issue`).
 
 ## G-C6 — One-question clarify bar
 

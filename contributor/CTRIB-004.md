@@ -4,7 +4,7 @@ github_issue_number: 1764
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1764
 class: bug
 milestone: "0.28.0"
-status: pr-draft
+status: review-ready
 reproduced: "live 2026-06-11 on local odd-minimal, SUT=working tree @ 8c142e15 (= unfixed main; image odd-platform:odd-team-sut, digest sha256:275f56ffd3da…): run-suite.sh IT-002 seeded entity 2001 at view_count=0, drove ONE real-browser open of /dataentities/2001/overview; assert view_count==1 FAILED — Expected: 1, Received: 2 (run-log/2026-06-11-IT-002.md, outcome e2e:FAIL; Playwright screenshot+trace in e2e/test-results/). Same stack: GET /api/resource/DATA_ENTITY/2001/permissions → [] (DISABLED grants no permissions — status control hidden, claim 7 runtime-confirmed)"
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-11 — approved as written INCLUDING posting the scope comment; Closes #1764 + PLT-217 follow-up draft chosen)"
@@ -357,3 +357,161 @@ Draft PR body: root-cause + change + exclusions + both-bucket evidence + docs ro
    appended; graph re-embedded (`graph-build odd-platform`: nodes=7082, vectors=8014,
    `BAAI/bge-small-en-v1.5`; new StatusSettingsForm sidecar = top retrieval hit on
    spot-check).
+
+## Review (2026-06-11, session: separate from the implementing session — post-dd055ad)
+
+- **Result**: ACCEPTED — `pr-draft` → `review-ready`. GATE 2 (human review + merge of
+  PR #1770) is the remaining step. Paired DOC-443 flipped `review-ready` → `pending-release`
+  (Gate 8 PENDING-RELEASE 0.28.0; post-merge URLs recorded in that item).
+- **Re-verification protocol**: every load-bearing claim re-derived from branch source /
+  live GitHub API / the reviewer's own fresh suite runs — not from this record.
+
+### Definition of Done (LSN-032 four gates) — re-verified
+
+1. **Unit (full build, on the branch)** — PASS. PR #1770 CI ran 6/6 checks green on the exact
+   head `93cb5252`: Test Results + run_tests (406 tests, 0 failures, ~3m24s, 120 suites) +
+   Playwright test/lint/format-check — VERIFIED via check-runs API fetch. Independently
+   corroborates the recorded local `:odd-platform-api:build` GREEN (5m40s).
+2. **Integration (working-tree SUT)** — PASS, **re-run by the reviewer on the COMMITTED
+   branch tip**: `run-suite.sh IT-002` against the SUT built from clean `93cb5252` (digest
+   `sha256:40f75c31…`) → harness confirmed "the e2e stack is running the SUT image" →
+   **1 passed (3.8s)** (one page-open == exactly one view). `run-suite.sh IT-001` on the same
+   tip (digest `sha256:ee15e801…`) → **P-001 PASS, all assertions** — backend +1 contract
+   unmoved. Both runs appended to the 2026-06-11 run-logs with filled narrative fields.
+   RED half: implementer's pre-fix run (clean `8c142e15` = main bits, digest `275f56ff…`,
+   `Expected: 1, Received: 2`) — VERIFIED via run-log read; LSN-033 honoured throughout
+   (SUT = run parameter, built from the tree each run).
+3. **Docs** — PASS. Train branch `release/0.28.0` exists on the documentation remote at
+   exactly `a0199ae` (ls-remote), based on `origin/main` @ `5d92250`; main untouched
+   (a0199ae unreachable from main). Diff = 3 pages / +6/−6, read end-to-end at the train ref:
+   entity-detail-page "+2" warning → version-anchored **info** note (correct hint downgrade;
+   lead resynced to "One version note and one caveat"); catalog-overview "+2" clause →
+   "one view as of 0.28.0"; search.md section retitled + false direct-nav advice corrected
+   in place; all three "sole signal / trivially inflatable" warnings preserved (still true);
+   canonical anchor `#general-panel-view-count-caveats` intact. Train-tree grep: zero
+   surviving present-tense "+2"/double-count claims. Live page still serves the 0.27.x "+2"
+   warning (WebFetch) — release-gating intact, no leak. Commit carries a full `Sources:` footer.
+4. **Ontology** — PASS, verified on disk: 5 sidecar files present (3 re-enriched/created
+   2026-06-11 + 2 probe-stamped); F-001 `amplification_factor: 1` + FIXED-1764 provenance +
+   hop-1 multiplicity 1 + chain facet RESOLVED-1764 + UC-2 `verdict: confirmed` /
+   `coverage: verified` (F-001.yaml:592-601); P-004 asserts flipped to `xhr_count == 1` with
+   pre-authored HISTORY; IT-002 protocol `expected_result` green-state; PLT-104 fix section +
+   PLT-091 Defect-2 closure cross-links in dd055ad; graph build-info `built_at: 2026-06-11`,
+   nodes=7082, vectors=8014, `BAAI/bge-small-en-v1.5`. The reviewer's IT-001 run re-stamped
+   P-001 probe-run + both controller sidecars + feature-flows to the committed tip (stronger
+   provenance than the implementer's pre-commit tree; committed with this review).
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS. Live RED reproduction on the unfixed tree (clean
+  `8c142e15`, digest `275f56ff…`): `Expected: 1, Received: 2` + the permissions probe
+  (`GET …/permissions` → `[]`) — VERIFIED via run-log + `reproduced:` frontmatter; the RED
+  run doubles as the failing-test-first half (IT-002 pre-existed as the PLT-104 pin).
+- **G-C2 running system, not the diff** — PASS via the reviewer's own IT-002 + IT-001
+  re-runs on the committed branch tip (above) + CI's full suite on the exact commit.
+- **G-C3 GATE 1 plan-before-code** — PASS. `plan_approved_by: RamanDamayeu (2026-06-11,
+  approved as written INCLUDING the scope comment; Closes + PLT-217 chosen)`; the shipped
+  diff matches the approved plan exactly — `git show 93cb5252`: 2 files, +11/−1, dep removed
+  + explicit refetch dispatch, nothing else — VERIFIED via full diff read.
+- **G-C4 GATE 2 human merge** — PASS (structural). PR #1770 `draft: true`, author
+  `odd-contributor[bot]`, review requested from RamanDamayeu, base `main` — VERIFIED via PR API.
+- **G-C5 bounded diff + public scope comment** — PASS. Diff bounded (zero backend changes —
+  IT-001 green proves it at runtime); every exclusion held (no dedup/rate-limit, no ranking
+  change, no search-side change, no other dep edits, no vitest, no LDAP IT). **The scope
+  comment is on the public thread**: issue #1764 comment 4681791399, author
+  `odd-contributor[bot]`, posted 2026-06-11T14:44:54Z — BEFORE the code commit (93cb5252
+  authored 15:21:12Z) — content matches the GATE-1-approved draft with the Closes-variant
+  final sentence — VERIFIED via comment API fetch. Deferred facets tracked: PLT-217 drafted,
+  ASCII-clean, paste-ready.
+- **G-C6 one-question bar** — PASS. "No question warranted" recorded with reason (issue is
+  the maintainer's own PLT-104 with full root cause); issue thread has exactly 1 comment =
+  the scope comment, zero clarify noise — VERIFIED via issue API (comments: 1).
+- **G-C7 blast-radius** — PASS. `adr_required: false` is correct: FE-only dep-array fix +
+  explicit dispatch; no migration, no auth/posture change, no wire-contract change. The
+  G-C7-class concern (anti-abuse design under DISABLED) was identified and EXCLUDED to
+  PLT-217 rather than half-fixed — the gate working as designed.
+- **G-C8 issue-is-data** — PASS. Issue body re-fetched: maintainer-authored bug report,
+  no instruction-like content — VERIFIED via issue API fetch.
+- **G-C9 test integrity, both buckets** — PASS. Unit: N/A-with-reason re-confirmed (vitest
+  has zero CI executors — CTRIB-002/-003 precedent; the repo no-regression gate is the full
+  build, green locally AND in CI on the exact commit). Integration: IT-002 is the
+  pre-existing failing test for exactly this bug (`regresses: [PLT-104]`), RED pre-fix →
+  GREEN post-fix (failing condition = the real pre-fix tree, not an asserted-buggy pin);
+  IT-001 pins the unchanged backend contract. The user-facing symptom is integration-only
+  (LSN-031) and that is where it is tested. Status-change refetch preservation: NOT
+  e2e-driveable under DISABLED (permissions `[]` runtime-confirmed); verified by code-read
+  (sole consumer chain: StatusSettingsForm → SelectableEntityStatus:67 → EntityStatus:21
+  `selectable` → DataEntityDetailsHeader:113-122 permission-gated — grep-verified single
+  render path, so the explicit dispatch fires only with the detail page mounted) + tsc/eslint/
+  webpack + suite no-regression; LDAP-stack IT correctly left as a maintainer-option follow-up.
+- **G-C10 ontology + docs move with the code** — PASS (DoD items 3+4 above; all committed,
+  not narrated).
+- **G-C11 milestone gate** — PASS. Issue #1764 milestone `0.28.0` OPEN (re-verified via
+  API at review time); PR body carries verbatim `Milestone: 0.28.0` + `Closes #1764` +
+  `Docs: documentation@release/0.28.0 -- publishes with the 0.28.0 release (commit a0199ae).`
+  — VERIFIED via PR API verbatim-quote fetch. Docs routed to the train (DoD 3); paired
+  DOC-443 carries `milestone: "0.28.0"` for the release gate.
+
+### Universal Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS. No new test/protocol duplicates (IT-002 pre-existed and
+  was flipped, not re-authored); PLT-217 deduped against PLT-026 (pagination defect stays
+  separate) and PLT-091 (Defect 2 closed-by, Defects 1/3/4 remain there); DOC-443 vs DOC-297/
+  DOC-260 correctly classified as supersede-on-train, prior items stay `done` — via grep + read.
+- **Gate 2 (aliases)** — N/A (no new doc concept/alias).
+- **Gate 3 (caveats)** — PASS. The retired caveat became a version-anchored info note (not
+  deleted); the still-true inflatable/sole-signal warnings preserved as warning admonitions
+  on all three pages — via train-ref read.
+- **Gate 4 (consumer-read)** — PASS. Both commit footers re-walked: workspace dd055ad
+  (4 files) and odd-platform 93cb5252 (12 files) — every cited consumer re-read this review;
+  key chain re-derived: dep populated by own fulfilled action (selectors `:93-97` emptyObj),
+  increment `:174-180`, `.flatMap(this::incrementViewCount)` `:207`, `listPopular` VIEW_COUNT
+  DESC `:633`, soft-delete/restore side effects (`DataEntityInternalStateServiceImpl:74-98,
+  107-135`), dep origin `002f415a` (#1399, 2023-08) — all match.
+- **Gate 5 (unset-parameter)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — PASS. Behaviour change (one open = +1) → 3 train
+  pages updated; preserved behaviours (status-change refetch +1; inflatable counter) →
+  existing docs still accurate; converge sweep independently re-run at the train ref (zero
+  surviving "+2" claims). Code paths touched are all documented surfaces (detail page,
+  Popular ranking, search-row click).
+- **Gate 7 (layout/completeness)** — PASS. No SUMMARY change needed (no page added/moved);
+  section retitle on search.md keeps its in-page position; anchors resolve — via read.
+- **Gate 8 (publishing/live)** — PASS for the pillar's public surfaces (PR #1770, issue
+  comment, branch — all fetched live). Docs half: **PENDING-RELEASE (0.28.0)** by design —
+  branch-verifiable sub-checks run NOW and green (PyYAML OK on all 3 train pages;
+  descriptions 189/191/129 ≤200 chars; links tree-relative; live pages still serve 0.27.x
+  truth = no leak). Post-merge URLs + phrases recorded in DOC-443 for the release gate.
+- **Gate 9 (claim provenance)** — PASS. Every load-bearing record claim re-derived (claims
+  1-7 of the verification table re-walked against branch source; comment/PR/issue/milestone
+  via API; train via ls-remote + diff). Banned-phrase grep over the record: zero hits.
+  Outbound URL sweep: 6 live fetches (PR ×2, issue, comment, check-runs, live doc page),
+  all resolved, zero mismatches.
+- **Gate 10 (content-type homing)** — PASS. Work record in `contributor/`, run evidence in
+  `run-log/`, probe artefacts in `probe-runs/`, doc edits on the train, follow-ups in
+  `issues/` + `backlog/` — per canonical-homes.
+- **Gate 11 (audience isolation)** — PASS. Banned-term grep over all 3 train pages: zero
+  hits (no LSN/CTRIB/PLT/gate jargon leaked; the public PR/issue text is operator-language;
+  IT-002 references there are repo-public traceability).
+
+### Verdict bookkeeping
+
+- **Regressions**: none found. The one candidate vector — the explicit dispatch firing from
+  a non-detail-page context — is closed by the grep-verified single render path (above).
+  Loader-boolean double-refire risk was already logged by the implementer in the thunk
+  sidecar as a static-trace adjacent finding (correctly NOT promoted without runtime proof).
+- **Navigation**: consistent — `navigation/domains/data-entities.md:41` already points at
+  `odd-platform-ui/src/components/DataEntityDetails/`; no new bean factories/SDK builders
+  discovered.
+- **Upstream issues logged**: none new this review (PLT-217 was drafted by the implement
+  session and verified here).
+- **Doc-product editorial findings** (audit per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused pass on the touched surface + neighbours (full-tree sweep
+    was 2026-06-08, commit `6463778`): entity-detail-page.md end-to-end at the train ref;
+    catalog-overview.md Recommended/Popular sections; search.md edited section + flanking
+    sections + Where-to-next.
+  - **Findings**: none surfaced this run.
+- **Follow-ups filed this review**: `backlog/tests/TST-041.md` (low) — stale RED-today header
+  comment in `view-count-overview.spec.ts` + two harness-templated run-log narrative fields
+  left unfilled by the implement run (machine-stamped evidence intact; reviewer's filled
+  re-run entries supersede).
+- **Banned-phrase check**: none used in record or review.

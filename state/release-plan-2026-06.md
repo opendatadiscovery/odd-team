@@ -72,8 +72,8 @@ A trust-and-stability pass: the everyday 500s on core surfaces are gone (catalog
 
 - **Filed by maintainer (open):** #1752 (PLT-056), #1753 (PLT-057), #1754 (PLT-058), #1751 (PLT-215), #1750 (PLT-177).
 - **Filed + already fixed (closed completed):** #1744 (PLT-176, PR #1745), #1746 (PLT-006, PR #1747), #1748 (PLT-190, PR #1749).
-- **Queued for batch filing:** the remaining 20 slate items — manifest `state/filing-manifest-2026-06-11.txt`, script `scripts/file-issue-batch.py` (replicates the #1754 format: draft body verbatim + frontmatter in a trailing fenced block + labels + milestone). All 20 drafts carry `suggested_milestone: "0.28.0"` (open milestone, due 2026-06-22) per the new milestone-at-filing rule (`issues/README.md`); the script's `--milestone` flag is the maintainer's decision lever. Idempotent: drafts with `github_issue_number` set are skipped.
-- **PLT-109 is deliberately NOT filed publicly** — it stays in the private GHSA (confirmed exploit; responsible disclosure).
+- **Queued for batch filing:** 15 slate items — manifest `state/filing-manifest-2026-06-11.txt`, script `scripts/file-issue-batch.py` (replicates the #1754 format: draft body verbatim + frontmatter in a trailing fenced block + labels + milestone 0.28.0). All slate drafts carry `suggested_milestone: "0.28.0"` (open milestone, due 2026-06-22) per the new milestone-at-filing rule (`issues/README.md`). Idempotent: drafts with `github_issue_number` set are skipped.
+- **NOT filed publicly (maintainer decision 2026-06-11):** PLT-109 (GHSA, confirmed exploit) and the 5 security-adjacent items **PLT-090, PLT-160, PLT-161, PLT-012, PLT-061** — they stay `draft` (private handling); the fixes remain in the slate, only the public disclosure is withheld.
 
 ## Process notes for the week
 

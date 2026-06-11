@@ -169,6 +169,7 @@ Not separate roles. A maintainer working a piece of work moves through these in 
 4. **Flip status to `review-ready`, not `done`.** The implementer cannot self-mark done. `/review` in a separate session handles the final transition.
 5. Keep `navigation/domains/*.md` current whenever pointers shift
 6. Live-site verification is part of `/review`, not `/implement` — but the implementer must surface the URLs that will need fetching.
+7. Documentation routing: a change describing behaviour absent from the latest published release rides the milestone train (`release/{version}` in the documentation repo) and publishes at the release gate — never directly to docs main (`adrs/drafts/release-train-doc-gating.md`).
 
 ### Review (`/review`)
 1. **Must run in a session distinct from the one that implemented the item.** Same-session self-review defeats the gate.
@@ -233,7 +234,7 @@ Acceptance criteria on a work item are the named deliverables. The Quality Bar i
 ### Gate 8 — Live-Site Verification
 
 - Always perform live-site fetches as part of `/review`, even if the upstream PR appears unmerged. Verify merge status by checking the actual remote refs (`git fetch` + `git log origin/main`) rather than inferring from local state.
-- Never defer live-site checks; if a check is impossible, state the concrete reason and proceed with all other gates.
+- Never skip live-site checks. For release-gated items (`milestone:` set) the check is *scheduled* at the release gate (`playbooks/release-train-merge.md`) and tracked by `pending-release` — the item cannot reach `done` before it runs. If a check is impossible for any other reason, state the concrete reason and proceed with all other gates.
 
 ## Autonomous Execution and Batching
 
@@ -270,6 +271,7 @@ Any phase that discovers a bug, gap, or adjacent issue out of scope routes throu
 - Parallel execution allowed only for non-conflicting file sets
 - Navigation files are living pointers — update immediately when stale
 - Incorrect documentation has higher priority than missing documentation
+- Docs describing unreleased functionality publish at release via the milestone train (`release/{version}` in the documentation repo); the live manual describes the latest published release (`adrs/drafts/release-train-doc-gating.md`)
 - Scanner decomposition must fit in a single session (~100K tokens of working context)
 - Implementer cannot self-mark `done`; review is a separate session
 

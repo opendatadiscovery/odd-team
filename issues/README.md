@@ -65,8 +65,11 @@ github_issue_url:                 # populated when status flips draft → filed
 github_issue_number:              # populated when filed (nice for cross-reference)
 found_date: "YYYY-MM-DD"
 user_facing_verified: true | false   # false until the user-facing claim is driven against the running system; draft -> filed needs true OR an explicit false + reason (playbooks/user-facing-verification.md)
+suggested_milestone:              # optional ("0.29.0") — the agent's recommendation for the target release; carried into the paste
 ---
 ```
+
+**odd-platform drafts — attach a milestone at filing.** When a `PLT-*` draft is filed, attach the target **milestone** (the future release tag, e.g. `0.28.0`) in the GitHub UI — `/contribute` hard-stops on milestone-less issues (`pillars/contributor/gates.md` G-C11), and the milestone keys the documentation release train (`adrs/drafts/release-train-doc-gating.md`). The `suggested_milestone:` field carries the agent's recommendation; the maintainer decides.
 
 ## Body sections (paste-ready)
 

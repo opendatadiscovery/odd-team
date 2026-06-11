@@ -646,6 +646,16 @@ Format:
 - doc_drift_findings:
   - "<one-line statement of where the doc disagrees with the code>"
 
+**Release-train marker** *(2026-06-11; `adrs/drafts/release-train-doc-gating.md`)*: when the
+page/section documenting this node exists only on a documentation **release train** (the node's
+behaviour is merged to `main` but absent from the latest published release), a `declared_docs` /
+`inferred_docs` entry carries, instead of a live verification:
+
+- pending_release: "0.28.0"                               # the milestone/release version gating publication
+  train_ref: "release/0.28.0 @ <short-sha> docs/<path>.md#<anchor>"
+  # Skip live WebFetch for these entries — GitBook publishes main only; the live site cannot show them yet.
+  # Confidence stays LOW until the release gate publishes and a later enrichment verifies live.
+
 ## implicit_adrs
 
 **Architectural decisions the code embodies INTENTIONALLY but no `adrs/` file

@@ -62,6 +62,7 @@ When a retrospective adds new case-law that changes the procedure, update the pl
 | `doc-product-editorial-read.md` | active | Phase 7 (added 2026-05-03) | every `/review` session, after the per-item gates and before the verdict | `/review` SKILL Step 5 (`.claude/skills/review/SKILL.md`) |
 | `deep-research.md` | active | added 2026-05-08 | drafting any proposal (ADR / pillar / skill) with ≥3 technical decisions; or about to write "open questions for human review" listing technical choices | CLAUDE.md ADR section; `feedback_research_dont_punt.md` (auto-memory); LSN-013 |
 | `pause-and-ask.md` | active (rev 2 — research-backed) | added 2026-05-08 | discrete-option decision needed → use Anthropic's `AskUserQuestion` tool per documented schema; banned: "your call" / "want me to..." / multi-option open-enders in narrative | CLAUDE.md "When to pause and ask the user"; `feedback_pause_and_ask_well.md` (auto-memory); LSN-014 (original miss), LSN-015 (intuition-authored rev 1 contradicted schema) |
+| `release-train-merge.md` | active | added 2026-06-11 | release `{version}` published (or milestone closed) with an open documentation train `release/{version}` / backlog items in `pending-release` | Gate 8 (`pillars/documentation/gates.md`); `/implement release:{version}` (half 1) + `/review release:{version}` (half 2); `adrs/drafts/release-train-doc-gating.md` |
 
 ## Sub-protocol relationships
 
@@ -70,3 +71,4 @@ When a retrospective adds new case-law that changes the procedure, update the pl
 - `playbooks/duplication-sweep.md` step 2 invokes `playbooks/claim-inventory.md` for new outbound URLs.
 - `playbooks/follow-up-on-disk.md` invokes `playbooks/duplication-sweep.md` step 3 for the grep-backlog-first rule.
 - `playbooks/doc-product-editorial-read.md` invokes `playbooks/follow-up-on-disk.md` for every editorial finding surfaced (every finding is a tracked DOC-NNN, never narrated).
+- `playbooks/release-train-merge.md` invokes the `/implement` step-6.5 mechanical sweeps over the full train diff (half 1) and `playbooks/live-site-verification.md` across the train manifest's URL lists (half 2).

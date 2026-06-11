@@ -1,7 +1,7 @@
 ---
 name: implement
 description: Work a batch of backlog items end-to-end as a maintainer — hold the Implementation Quality Bar, run the Pre-authoring stance check, log follow-ups on disk, flip items to `review-ready`, and ship one PR per repo per batch.
-argument-hint: <work-item-id>
+argument-hint: <work-item-id> | release:<version>
 allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(head *) Bash(grep *) Bash(sed *) Bash(wc *) Bash(echo *) Bash(python3 *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
 
@@ -10,6 +10,8 @@ allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(c
 `$ARGUMENTS` is the **batch starter**, not the sole item. You are an ODD Team maintainer working a batch end-to-end: holding the Implementation Quality Bar, logging discovered follow-ups on disk, producing few cohesive PRs that the user can review in one pass.
 
 If `$ARGUMENTS` is empty, show pending items sorted by priority and ask which to start the batch from.
+
+**Release-gate form:** `/implement release:{version}` runs `playbooks/release-train-merge.md` **half 1** — pre-merge readiness for the documentation release train (milestone closed + release published + `tag_name == {version}`; final train sync; the step-6.5 mechanical sweeps over the full train diff; manifest completeness incl. the milestone-issue cross-check; push + the single train PR for the human to merge). Half 2 (post-merge live verification) belongs to `/review release:{version}`.
 
 **You cannot self-mark items `done`.** This phase ends at `status: review-ready`. `/review` in a separate session handles the final transition. The lesson: `retrospectives/LSN-002-minio-region-unset.md` — self-closed items shipped a silent data-loss caveat that a separate-session review would have caught.
 
@@ -27,9 +29,9 @@ Read in this order (the session-boot pattern from `CLAUDE.md`):
 
 1. **Pre-flight on the starter.** Status must be `pending`; check `state/file-registry.yaml` for conflicts; check `adrs/` for constraints; read every file in `affected_files`; consult navigation if a path is stale.
 
-2. **Freshen `origin/main`** for every target repo the batch will touch. **Mandatory for `documentation`** (`retrospectives/LSN-008-stale-branch-false-positives.md`): fetch and checkout `origin/main` in `../documentation` before reading or editing.
+2. **Freshen `origin/main`** for every target repo the batch will touch. **Mandatory for `documentation`** (`retrospectives/LSN-008-stale-branch-false-positives.md`): fetch and checkout `origin/main` in `../documentation` before reading or editing. **Release-gated items** (`milestone:` in frontmatter — `adrs/drafts/release-train-doc-gating.md`): the documentation working branch is the **train** `release/{version}`, not a fresh batch branch — create it from freshly-fetched `origin/main` if absent (`git push -u origin release/{version}`); else check it out and **sync-first** (`git merge origin/main`; resolve; merge, never rebase). Leave `../documentation` checked out on `main` at session end.
 
-3. **Assemble batch candidates.** From the backlog, pick continuation items that share the starter's `target_repo`, have no file conflicts with already-staged items, are small or medium effort, and share a theme (scanner source, feature area, or quality-bar concern). Name the batch after the theme it covers (e.g., `feature/docs-quality-xrefs`). Cut the batch branch from freshly-fetched `origin/main`; the odd-team bookkeeping lives on a parallel branch in this repo.
+3. **Assemble batch candidates.** From the backlog, pick continuation items that share the starter's `target_repo`, have no file conflicts with already-staged items, are small or medium effort, and share a theme (scanner source, feature area, or quality-bar concern). Name the batch after the theme it covers (e.g., `feature/docs-quality-xrefs`). Cut the batch branch from freshly-fetched `origin/main`; the odd-team bookkeeping lives on a parallel branch in this repo. **Routing class is a batch-compatibility dimension**: never mix release-gated (`milestone:` set) and immediate documentation items on one branch — for a release-gated batch the train branch IS the batch branch (per-item commits land on it directly; the only publication PR is the release gate's).
 
 4. **Per-item: pre-authoring duplication sweep** → run `playbooks/duplication-sweep.md`. Existing-content + new-content + backlog-internal sweeps; record decisions in the item's Context. If the sweep shows the item is mis-scoped, drop it from the batch.
 
@@ -49,7 +51,7 @@ Repeat per item.
 
 5. **Follow-up auto-logging** → run `playbooks/follow-up-on-disk.md` for every out-of-scope discovery. Grep the backlog first; classify scope (trivial-fold / small-batch-item / larger-deferred / upstream-issue). Never write "noted as follow-up" without the file on disk.
 
-6. **Pillar authoring rules** — for `target_repo: documentation`, hold `pillars/documentation/authoring.md` (no GitBook `"mention"` links; ship page + SUMMARY + index together; in-page TOC sync; `Sources:` footer format; **Gate 11 audience isolation** — the mechanical grep below).
+6. **Pillar authoring rules** — for `target_repo: documentation`, hold `pillars/documentation/authoring.md` (no GitBook `"mention"` links; ship page + SUMMARY + index together; in-page TOC sync; `Sources:` footer format; **Gate 11 audience isolation** — the mechanical grep below; **release-gated content carries its version** — "Release-gated authoring": `Available since {version}`).
 
 6.5. **Pre-commit mechanical sweeps** *(mandatory for `target_repo: documentation`)* — run BOTH checks on the staged diff before every documentation commit. **Do not commit if either check returns a hit.**
 
@@ -134,7 +136,7 @@ Repeat per item.
 
 1. **Consolidate state updates** on a single odd-team branch: `DOC-XXX` frontmatter → `review-ready`; `state/file-registry.yaml`; `state/PROGRESS.md` counts (and Upstream Issues table for any new draft); `navigation/domains/*.md` if pointers shifted (especially bean factories / SDK builders discovered during the consumer-read audit); any new ADR drafts; new `backlog/{cat}/DOC-NNN.md` follow-up items; new `issues/{repo}/{PREFIX}-NNN.md` upstream drafts.
 
-2. **Push and open PRs** — at most one per repo. Target-repo PR body enumerates each item by ID with a one-line summary; mark explicitly as **pending review**. odd-team state PR covers all bookkeeping for the batch with the same pending-review marker.
+2. **Push and open PRs** — at most one per repo. Target-repo PR body enumerates each item by ID with a one-line summary; mark explicitly as **pending review**. odd-team state PR covers all bookkeeping for the batch with the same pending-review marker. **Release-gated batches**: push the train branch (same-name refspec — `retrospectives/LSN-034`) and open **no documentation PR** — `release/{version} → main` is opened once per release by `playbooks/release-train-merge.md` half 1; the handoff lists each item's expected post-merge URLs + verbatim phrases for the deferred Gate 8.
 
 3. **Hand off to review.** The batch does not proceed to merge from this session. Report: items moved to `review-ready` (by ID); follow-ups logged (by ID — both backlog and issue drafts); `Sources:` footers (summarised); caveats surfaced; PR URLs; instruction to user to run `/review` in a separate session.
 
@@ -143,6 +145,7 @@ Live-site verification is **`/review`'s** responsibility (`playbooks/live-site-v
 ## When to pause and ask the user
 
 - Acceptance criteria genuinely cannot be met → mark the item `blocked`, continue the batch; do not escalate single-item blockers.
+- A documentation item classifies release-gated but no open milestone matches the unreleased behaviour → mark it `blocked`, surface (the maintainer creates or re-targets milestones — never invent one).
 - A destructive or irreversible action isn't explicitly authorized.
 - An ADR conflict forces a material scope decision.
 - A scope-expansion judgment call ("this pulls in 5 more items — expand or split?").
@@ -154,7 +157,7 @@ Silence is not the target; savvy judgment is. Don't bundle unrelated items, don'
 ## Reference
 
 - Quality Bar gates → `pillars/{active}/gates.md` (documentation: `pillars/documentation/gates.md`)
-- Universal-gate playbooks → `playbooks/{consumer-read,unset-parameter-audit,duplication-sweep,pre-authoring-stance,claim-inventory,live-site-verification,follow-up-on-disk}.md`
+- Universal-gate playbooks → `playbooks/{consumer-read,unset-parameter-audit,duplication-sweep,pre-authoring-stance,claim-inventory,live-site-verification,follow-up-on-disk,release-train-merge}.md`
 - Case-law → `retrospectives/` (`retrospectives/README.md` carries an LSN-by-gate index)
 - Integration patterns + canonical repos → `navigation/architecture.md`
 - Batching rules → `CLAUDE.md` "Autonomous Execution and Batching"

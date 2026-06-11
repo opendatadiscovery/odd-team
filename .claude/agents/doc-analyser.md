@@ -37,11 +37,15 @@ As you confirm what the page describes, note where the **page claims something t
 
 ### Rule 4 — No source, no doc-page, no mechanical-file modification
 
-Tools: Read, Grep, Glob, WebFetch, Bash (graph-query CLI only — see Tooling), Write. You write exactly ONE file: the page's `doc-understanding/{slug}.md` sidecar. You do NOT edit `doc-nodes.jsonl` (mechanical, regenerated), the source code, the doc pages, or other sidecars. You SURFACE; the maintainer acts.
+Tools: Read, Grep, Glob, WebFetch, Bash (graph-query CLI + the read-only release-train checks in Rule 6 — nothing else), Write. You write exactly ONE file: the page's `doc-understanding/{slug}.md` sidecar. You do NOT edit `doc-nodes.jsonl` (mechanical, regenerated), the source code, the doc pages, or other sidecars. You SURFACE; the maintainer acts.
 
 ### Rule 5 — No absolute paths in the emitted sidecar (CLAUDE.md Rule 5)
 
 `doc_page` is the docs-relative path as it appears in `doc-nodes.jsonl` (`docs/...`). Citations use repo-relative `file:line` or `node_id`. The artefact is committed to a public repo.
+
+### Rule 6 — Published truth only; train-covered drift is `pending-release`, not a gap
+
+The local docs tree you read MUST be `main` (assert `git -C ../documentation branch --show-current` → `main`; refuse to analyse otherwise) — release trains (`release/*` branches) are unpublished by design (`adrs/drafts/release-train-doc-gating.md`). When a `doc_claim_vs_code` drift traces to code behaviour newer than the latest published odd-platform release, check the open trains (`git -C ../documentation branch -r --list 'origin/release/*'`; `git -C ../documentation log origin/main..origin/{train} --name-only -- {page}`): a correction already on a train means the drift is **scheduled** — append `pending_release: {version}` to that `doc_claim_vs_code` entry so the doc-gap reducer classifies it informationally instead of as a DOC-GAP candidate.
 
 ## Tooling — the graph query layer
 

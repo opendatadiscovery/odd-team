@@ -12,8 +12,11 @@ id: {CATEGORY}-{NNN}  # e.g., TST-012, DOC-005, NAV-003, SPC-001
 title: "Short description of what needs to change"
 category: docs|tests|navigation|spec
 target_repo: odd-platform|odd-collectors|odd-docs|opendatadiscovery-specification
-status: pending|in-progress|review-ready|done|blocked|rejected
+status: pending|in-progress|review-ready|pending-release|done|blocked|rejected
 priority: critical|high|medium|low
+milestone: ""       # optional — "0.28.0" marks the item RELEASE-GATED: its docs ride documentation
+                    # branch release/{version} and publish at the release gate, never directly to docs
+                    # main (adrs/drafts/release-train-doc-gating.md). Absent = immediate (normal flow).
 affected_files:
   - path/to/file1 (create|modify|read)
   - path/to/file2 (modify)
@@ -51,10 +54,12 @@ Numbers are sequential within each category.
 ## Lifecycle
 
 ```
-pending → in-progress → review-ready → done
-   ↓                         ↓
-blocked  (dependency                  blocked
-   or acceptance failure)             (review rejected)
+pending → in-progress → review-ready → done                      (immediate items — no `milestone:`)
+pending → in-progress → review-ready → pending-release → done    (release-gated items — `milestone:` set;
+   ↓                         ↓                  ↓                  docs publish via the release/{version} train)
+blocked  (dependency      blocked            blocked
+   or acceptance       (review rejected)  (release-gate live
+   failure)                                verification failed)
    ↓
 rejected (closed without implementation — false positive, obsolete, or superseded)
 ```
@@ -66,7 +71,10 @@ rejected (closed without implementation — false positive, obsolete, or superse
 | `pending` → `in-progress` | `/implement` | No file-conflict with another `in-progress` item |
 | `in-progress` → `review-ready` | `/implement` | All acceptance criteria + Quality Bar responsibilities met; commit has `Consumer-read:` footer |
 | `in-progress` → `blocked` | `/implement` | Criteria cannot be met; note the blocker in the item |
-| `review-ready` → `done` | `/review` **in a separate session** | Every Quality Bar responsibility cited with evidence; live-site fetch passed |
+| `review-ready` → `done` | `/review` **in a separate session** | Immediate items (no `milestone:`) only. Every Quality Bar responsibility cited with evidence; live-site fetch passed |
+| `review-ready` → `pending-release` | `/review` **in a separate session** | Release-gated items (`milestone:` set): every gate passes with cited evidence against the train branch; Gate 8 recorded `PENDING-RELEASE` with the post-merge URL list. The item structurally cannot reach `done` before its release |
+| `pending-release` → `done` | `/review release:{version}` (release gate, half 2 — `playbooks/release-train-merge.md`) | Milestone closed + release `{version}` published + train merged to docs main; live-site verification passed for the item's recorded URLs |
+| `pending-release` → `blocked` | `/review release:{version}` | Post-merge live verification failed — note the failing URL + fetched evidence in the item |
 | `review-ready` → `blocked` | `/review` | Missing evidence, failed live-site fetch, or unaddressed caveat — note the failure in the item |
 | `pending` / `in-progress` / `review-ready` → `rejected` | any phase | False positive / obsolete / superseded — see below |
 
@@ -84,6 +92,7 @@ A `rejected` item must include a `## Rejection` section at the top of the body d
 6. `depends_on` items must be `done` (not `review-ready`) before this item can move to `in-progress`
 7. Every implementation commit must carry a `Consumer-read:` footer — see `CLAUDE.md` "Implementation Quality Bar" #4
 8. `/review` must run in a session distinct from the `/implement` session that produced the `review-ready` state
+9. Release-gated items (`milestone:` set) are authored on the documentation branch `release/{version}`, never directly on docs main; the routing classifier runs at triage (`adrs/drafts/release-train-doc-gating.md` Decision 3); an item that classifies release-gated with no open matching milestone is created `blocked`
 
 ## Review Gate
 

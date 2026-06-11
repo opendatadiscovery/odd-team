@@ -7,21 +7,21 @@ prompt_version: probe-runner/0.1.0
 maintainer_curated: true
 stack_profile: odd-minimal
 expected_outcome: |
-  Opening /dataentities/{id}/overview in headless Chromium triggers TWO
-  XHR requests to GET /api/dataentities/{id} per page-mount (due to the
-  useEffect dep-array bug at DataEntityDetails.tsx:56-64 where
-  details.status?.status is in the array and changes after the first fetch
-  resolves). Each XHR increments view_count by 1, so a single page-open
-  inflates view_count by +2. This empirically pins LSN-017 — the
-  user-observable doubling that the static methodology could not surface
-  on its own.
+  Opening /dataentities/{id}/overview in headless Chromium triggers ONE
+  XHR request to GET /api/dataentities/{id} per page-mount, and view_count
+  grows by exactly +1 per page-open.
 
-  When the useEffect dep-array bug is fixed (remove details.status?.status
-  from the array), this probe's assertions flip: xhr_count becomes 1, and
-  delta becomes 1.
+  HISTORY: until the #1764 fix (CTRIB-004, 2026-06-11, ships in 0.28.0)
+  this probe pinned the LSN-017 doubling — details.status?.status sat in
+  the DataEntityDetails.tsx:56-64 useEffect dep array, the fetch's own
+  fulfilled action changed it, and the effect re-fired: xhr_count == 2,
+  delta == 2 (run R-20260519T-P-004 measured exactly that). The assertions
+  below were flipped 2 -> 1 with the fix, exactly as the original
+  authoring note anticipated; a FAIL with 2 means the double-fetch
+  regressed (IT-002 is the suite-level regression gate for the same fact).
 ---
 
-# P-004 — UI page-open doubles view_count (LSN-017 empirical proof)
+# P-004 — UI page-open registers exactly ONE view (LSN-017 fixed by #1764)
 
 arrange:
   - kind: docker-compose-up
@@ -72,13 +72,12 @@ observe:
     capture_as: final_view_count
 
 assert:
-  # The headline assertion: UI fires 2 backend GETs per page-open.
-  - "xhr_count == 2"
+  # The headline assertion: the UI fires exactly ONE backend GET per page-open
+  # (was 2 before the #1764 dep-array fix; a 2 here = the LSN-017 regression).
+  - "xhr_count == 1"
 
-  # The user-observable consequence: view_count grows by 2 per page-open.
-  # If the UI fix lands (single useEffect fire) AND the backend per-call
-  # delta stays +1, this assertion would change to == 1.
-  - "final_view_count - initial_view_count == 2"
+  # The user-observable consequence: one page-open = one view.
+  - "final_view_count - initial_view_count == 1"
 
   # Cross-check: the two facts compose deterministically.
   - "final_view_count - initial_view_count == xhr_count"

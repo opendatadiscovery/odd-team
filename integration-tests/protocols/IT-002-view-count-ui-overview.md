@@ -10,7 +10,7 @@ stack: odd-minimal
 automation: "e2e:specs/view-count-overview.spec.ts"
 plan_ref: "F-001 P1 — the user-flow integration test for view_count (IT-001 = backend sub-check)"
 status: ready
-expected_result: "RED until PLT-104 fixed — one page-open double-counts to +2; the red is the regression signal"
+expected_result: "GREEN since the #1764 fix (CTRIB-004, 2026-06-11) — one page-open registers exactly +1; a FAIL with 2 means the LSN-017 double-fetch regressed"
 ---
 
 # IT-002 — view_count, the real user scenario (UI Overview page)
@@ -24,10 +24,11 @@ expected_result: "RED until PLT-104 fixed — one page-open double-counts to +2;
 ## 1. What this checks
 A user opening a data entity's **Overview page** is **one visit** and must increment
 `data_entity.view_count` by exactly **+1** — because that count drives the Popular
-Entities ranking (F-001). **Known bug (PLT-104 / LSN-017):** each page-open registers
-**+2** (the `useEffect` dep-array fires the detail fetch twice), so the "most popular"
-ranking is inflated 2× for entities users actually click. **This test is RED today** —
-the red is the regression signal; it goes green when PLT-104 is fixed.
+Entities ranking (F-001). **History (PLT-104 / LSN-017 / #1764):** until the CTRIB-004
+fix (odd-platform #1764, 0.28.0) each page-open registered **+2** — the `useEffect`
+dep-array (`details.status?.status`) fired the detail fetch twice. This test was the
+RED pin for that bug (run-log 2026-06-11: pre-fix `Received: 2`, post-fix `1 passed`);
+it is GREEN since the fix and a FAIL with 2 means the double-fetch regressed.
 Source: F-001 H-002 · PLT-104 · LSN-017 · TEST-GAP-836 (UI anchor).
 
 ## 2. Preparation — build the test stand
@@ -51,7 +52,7 @@ Source: F-001 H-002 · PLT-104 · LSN-017 · TEST-GAP-836 (UI anchor).
 
 ## 5. What it checks — assertions
 - **PASS** when: after one page-open, `view_count == 1`.
-- **FAIL (expected today)** when: `view_count == 2` — the LSN-017/PLT-104 UI double-count is live.
+- **FAIL (regression)** when: `view_count == 2` — the LSN-017/PLT-104 double-fetch is back (fixed by #1764).
 - **FAIL (setup)** when: `view_count == 0` — the page didn't load the entity (verify the UI route).
 
 ## 6. Result log

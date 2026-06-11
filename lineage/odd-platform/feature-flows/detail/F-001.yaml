@@ -27,11 +27,21 @@ description: 'Opening a data entity''s detail page in the UI registers a view in
 
   "Popular shows the most-viewed or most-used data entities."
 
-  The user-observable reality, per LSN-017 + this first probe round:
+  FIXED-1764 (CTRIB-004, 2026-06-11, ships 0.28.0): one page-open now
 
-  opening the detail page once registers as +2 views, not +1, due to a
+  registers exactly +1 — the LSN-017 useEffect dep-array doubling
 
-  useEffect dependency-array bug in the React component.
+  (details.status?.status re-firing the fetch; +2 per open, pinned by
+
+  P-004 and the IT-002 RED) is removed; IT-002 GREEN pins the +1. The
+
+  refetch-after-status-change moved to an explicit dispatch in
+
+  StatusSettingsForm. The inflation surface (unauthenticated,
+
+  unthrottled increment x sole-DESC ranking) REMAINS by design until
+
+  the PLT-217 hardening proposal lands.
 
   '
 contributing_nodes:
@@ -117,19 +127,21 @@ chain:
 - hop: 1
   node: ts react-component:DataEntityDetails
   sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
-  multiplicity_per_trigger: 2
+  multiplicity_per_trigger: 1
   evidence: |-
-    DataEntityDetails.tsx:56-64 — useEffect dependency-array contains 5 entries
-    (`dataEntityId`, three group-status flags, AND `details.status?.status`); the
-    5th entry is RESPONSE-DERIVED (sourced from the same Redux slice the dispatch
-    writes to), so first mount fires the effect ONCE → dispatch fires →
-    `details.status` flips from undefined to a concrete enum → dep-array changes
-    → effect re-fires → SECOND dispatch. PRIMARY-SOURCE CONFIRMED batch J.
-    The cycle quiesces at +2 because the second fetch returns the same status.
-    Sidecar bugs_limitations_corner_cases[0] empirically pins LSN-017 via P-004
-    (run R-20260519T010758Z-P-004; xhr_count=2 + DB delta=2 regex-filtered).
+    FIXED-1764 (CTRIB-004, 2026-06-11): the useEffect dependency-array is now 4
+    entries (`dataEntityId` + three group-status flags); the RESPONSE-DERIVED 5th
+    entry `details.status?.status` was removed on
+    contrib/CTRIB-004-view-count-double-fetch, so one mount fires the effect ONCE
+    → one dispatch → +1 view. IT-002 GREEN pins this (run-log 2026-06-11; P-004
+    asserts flipped 2→1). The refetch-after-status-change that dep used to provide
+    is dispatched explicitly by StatusSettingsForm.onSubmit post-mutation.
+    HISTORY (pre-fix, batch J primary-source + P-004 run R-20260519T010758Z):
+    the 5th entry flipped undefined→enum when the first fetch fulfilled, the
+    effect re-fired, and the cycle quiesced at +2 per open (xhr_count=2, DB
+    delta=2) — LSN-017's headline composition drift.
   unresolved: false
-  resolved_in_batch: J
+  resolved_in_batch: J (multiplicity re-measured post-#1764, CTRIB-004)
 - hop: 2
   node: ts redux-thunk:fetchDataEntityDetails
   sidecar: odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md
@@ -194,19 +206,18 @@ terminal_side_effect:
   evidence: ReactiveDataEntityRepositoryImpl.java:173-180 (incrementViewCount) — confirmed from primary source via batch-H
     repository sidecar
   cardinality_per_call: 1
-amplification_factor: 2
+amplification_factor: 1
 amplification_factor_provenance: |-
-  FULLY MEASURED end-to-end — P-004 (run R-20260519T010758Z-P-004) observed
-  xhr_count=2 AND view_count delta=2 in a single UI page-open via headless
-  Chromium. The full chain product is empirically confirmed. LSN-017's headline
-  (opening a detail page registers as +2 views) is no longer inferred — it is
-  the measured truth. Batch-H adds primary-source SQL confirmation at
-  ReactiveDataEntityRepositoryImpl.java:173-180 for hop-4. Batch-J adds
-  PRIMARY-SOURCE CONFIRMATION at hop-1 (DataEntityDetails.tsx:56-64 dep-array
-  bug — the +2 root cause) AND hop-2 (fetchDataEntityDetails.ts:35-42 thunk
-  one-call-per-dispatch invariant). The +2 amplification is now FULLY anchored
-  at EVERY layer of the chain (UI useEffect + thunk + controller + service +
-  repository + DB).
+  FIXED-1764 + RE-MEASURED — IT-002 (run-log 2026-06-11, SUT built from the
+  CTRIB-004 fix tree) observed one UI page-open → view_count delta=1; the
+  pre-fix RED on the same day (SUT = unfixed main bits) observed delta=2.
+  P-004's asserts flipped 2→1 accordingly. HISTORY: the 2× amplification was
+  FULLY MEASURED end-to-end pre-fix — P-004 (run R-20260519T010758Z-P-004)
+  observed xhr_count=2 AND delta=2 (LSN-017's headline); batch-H anchored
+  hop-4 (ReactiveDataEntityRepositoryImpl.java:173-180, unchanged by the fix)
+  and batch-J anchored hop-1 (the dep-array driver, now removed) + hop-2
+  (thunk one-call-per-dispatch, unchanged). The chain product is now
+  1 (mount) × 1 (dispatch) × 1 (+1 per GET) = +1 per page-open.
 observed_vs_expected:
   facets:
   - facet: backend per-call delta
@@ -216,12 +227,12 @@ observed_vs_expected:
     provenance: MEASURED — P-001 ran 5 sequential GETs; observed final_view_count - initial_view_count = 5 (run R-20260519T003701Z-P-001).
       Primary-source SQL confirmation in batch-H ReactiveDataEntityRepositoryImpl sidecar (line 173-180).
   - facet: UI page-open delta
-    observed: +2 view_count per page-open; UI fires 2 sequential GET /api/dataentities/{id} per mount
+    observed: +1 view_count per page-open (FIXED-1764; was +2 with 2 GETs per mount until CTRIB-004)
     expected: +1 per logical page-open (per the operator-facing UX intent)
-    drift_class: ui_amplification
-    provenance: MEASURED — P-004 (run R-20260519T010758Z-P-004) launched headless Chromium, navigated to /dataentities/1004,
-      observed xhr_count=2 (regex-filtered to exact `/api/dataentities/1004` matches) AND view_count delta=2. LSN-017's headline
-      empirically proven; fix would flip xhr_count to 1 + delta to 1.
+    drift_class: null
+    provenance: MEASURED both sides of the fix — pre-fix P-004 (run R-20260519T010758Z-P-004) observed xhr_count=2 + delta=2
+      (LSN-017's headline); post-fix IT-002 (run-log 2026-06-11, SUT from the contrib/CTRIB-004 tree) observed one page-open →
+      delta=1 (RED Received:2 on the unfixed bits the same day = the regression signal works). P-004 asserts flipped to 1/1.
   - facet: anonymous reachability under DISABLED
     observed: anonymous caller successfully fetches detail AND increments view_count; 10 anon calls → +10 view_count
     expected: either documented anonymous-OK posture OR 401/403
@@ -417,34 +428,34 @@ observed_vs_expected:
       + dataEntitiesRoutes.ts:66-73 + PopularStrip sidecar
       doc_drift_findings[0] (live WebFetch + local doc both show
       contradiction). NEW DOC-GAP candidate.
-  - facet: F-001 chain composition formula complete — full +2/page-open formula confirmed end-to-end (batch ZA — STATIC, PRIMARY-SOURCE)
+  - facet: F-001 chain composition formula — RESOLVED-1764 (+1/page-open since CTRIB-004; was the +2 formula, batch ZA STATIC PRIMARY-SOURCE)
     observed: |-
-      Batch ZA DataEntityDetails sidecar re-verifies LSN-017 PRIMARY-SOURCE
-      intact at the exact line anchor (DataEntityDetails.tsx:56-64). The
-      full chain composition formula now reads (per sidecar invariants[1]):
-      hop-1 (useEffect dep-array bug) multiplicity=2 ×
+      FIXED-1764 (CTRIB-004, 2026-06-11): hop-1's dep array is now 4 entries
+      (`details.status?.status` removed on contrib/CTRIB-004-view-count-double-fetch,
+      exactly the 1-line fix this facet's `expected` pre-authored), so the
+      chain composition formula reads:
+      hop-1 (useEffect, mount-keyed) multiplicity=1 ×
       hop-2 (fetchDataEntityDetails thunk) multiplicity=1 ×
       hop-3 (DataEntityController.getDataEntityDetails) multiplicity=1 ×
       hop-3.5 (DataEntityServiceImpl.getDetails @ReactiveTransactional) multiplicity=1 ×
       hop-4 (ReactiveDataEntityRepositoryImpl.incrementViewCount) per-call delta=+1
-      → cumulative per page-open: +2 view_count. The doubling lives
-      ENTIRELY at hop-1 (this useEffect); every other hop in the chain
-      has multiplicity=1. Steady-state per-mount dispatch profile: 6
-      backend HTTP calls (2 × fetchDataEntityDetails — LSN-017 doubling
-      — plus 1 × alerts-counts + 1 × DQ-test-report + 1 × SLA-report +
-      1 × resource-permissions). The second useEffect (lines 66-76) is
-      CORRECTLY keyed on [dataEntityId] only — demonstrating the author
-      KNEW the correct pattern. The bug is one component's discrete
-      defect, NOT a project-wide systematic pattern. Batch-Q UI LSN-017
-      negative-findings cluster (PolicyList / RolesList / OwnersList /
-      CollectorsList) + batch-U TermDetails confirm DataEntityDetails as
-      the SOLE platform-wide canonical instance of the response-derived-
-      dep-array bug.
+      → cumulative per page-open: +1 view_count (IT-002 GREEN 2026-06-11;
+      pre-fix RED Received:2 the same day; P-004 asserts flipped 1/1).
+      Steady-state per-mount dispatch profile: 5 backend HTTP calls
+      (1 × fetchDataEntityDetails + 1 × alerts-counts + 1 × DQ-test-report
+      + 1 × SLA-report + 1 × resource-permissions). The
+      refetch-after-status-change the removed dep provided is dispatched
+      explicitly by StatusSettingsForm.onSubmit (the status-change side
+      effects — lineage/group soft-delete/restore — still reach the page).
+      HISTORY (pre-fix): hop-1 multiplicity was 2 (the response-derived
+      dep re-fired the effect; 6 calls/mount; +2/open). Batch-Q + batch-U
+      negative-findings stand: DataEntityDetails was the SOLE platform-wide
+      instance of the response-derived-dep-array bug — now zero remain.
     expected: |-
-      Fix is 1 line (remove `details.status?.status` from the dep array
-      at line 63); assertion would flip from xhr_count=2 to xhr_count=1
-      and DB delta from +2 to +1.
-    drift_class: ui_amplification
+      +1 per page-open (matches intent). The pre-fix facet's expected
+      ("fix is 1 line — remove `details.status?.status` at line 63;
+      xhr_count 2→1, delta +2→+1") shipped verbatim as #1764.
+    drift_class: null
     provenance: |-
       STATIC + MEASURED — re-verified primary source at
       DataEntityDetails.tsx:56-64 (batch ZA DataEntityDetails sidecar
@@ -563,11 +574,12 @@ observed_vs_expected:
 use_cases:
 # LSN-030 (feature-reflector Rule 11) — the promise layer projected from the F-001 reflection.
 # Each use_case = one falsifiable user-facing promise (uc_id == reflection hypothesis id).
-# coverage is `verified` ONLY if a real test pins the promise; this feature has ZERO tests
-# guarding any promise (no UI specs, no popular/view_count Java test, no Playwright detail-open
-# spec), so every use_case is `unverified`. Full hypothesis + validation lives in
-# feature-reflections/detail/F-001.yaml; this is the compact projection the
-# test-coverage-mapper Step 2b reads. Authored 2026-06-04 by feature-reflector/0.3.0.
+# coverage is `verified` ONLY if a real test pins the promise. Since 2026-06-11 (CTRIB-004)
+# UC-2 is verified by IT-002 (Playwright detail-open spec, RED pre-fix / GREEN post-fix) with
+# IT-001/P-001 pinning the backend +1 sub-contract; the remaining use_cases stay `unverified`.
+# Full hypothesis + validation lives in feature-reflections/detail/F-001.yaml; this is the
+# compact projection the test-coverage-mapper Step 2b reads. Authored 2026-06-04 by
+# feature-reflector/0.3.0; UC-2 updated 2026-06-11 by CTRIB-004.
 - uc_id: F-001-UC-1
   hypothesis_id: H-001
   kind: happy-path
@@ -582,11 +594,11 @@ use_cases:
   kind: render
   promise: "Opening an entity detail page once counts exactly one view (one page-open == +1)."
   actor: odd-platform-ui-end-user
-  trace: "DataEntityDetails.tsx:56-64 (useEffect dep-array, LSN-017) -> fetchDataEntityDetails -> incrementViewCount (ReactiveDataEntityRepositoryImpl.java:173-180); probe P-004 pins +2"
-  verdict: contradicted
-  coverage: unverified
-  test_demand: "missing-functional"
-  note: "Highest-value single test in the UI codebase — the LSN-017 dispatch-once regression-pin (flip 2->1 on the DataEntityDetails.tsx:63 fix)."
+  trace: "DataEntityDetails.tsx:56-63 (useEffect, mount-keyed since #1764/CTRIB-004) -> fetchDataEntityDetails -> incrementViewCount (ReactiveDataEntityRepositoryImpl.java:173-180); IT-002 pins +1 (was P-004-pinned +2 pre-fix)"
+  verdict: confirmed
+  coverage: verified
+  test_demand: null
+  note: "FIXED-1764 + VERIFIED 2026-06-11: IT-002 (view-count-overview.spec.ts) RED on pre-fix main (Received: 2) -> GREEN on the fix tree (1 passed); the regression pin this UC demanded now exists and gates the promise. Backend +1 sub-contract: IT-001/P-001."
 - uc_id: F-001-UC-3
   hypothesis_id: H-003
   kind: cross-actor

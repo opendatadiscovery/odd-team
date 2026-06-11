@@ -18,6 +18,8 @@ Review of any item whose target repo publishes to a live site:
 
 The trigger fires after the PR has merged to `origin/main` and the publisher (GitBook for documentation; pillar-specific for others) has rebuilt.
 
+A second trigger *(2026-06-11; `adrs/drafts/release-train-doc-gating.md`)*: the **release train** `release/{version}` merged to documentation `main` at the release gate. Inputs = the union of affected-URL lists recorded in the milestone's `pending-release` items (manifest: `grep -rl 'milestone: "{version}"' backlog/`); the procedure below runs once across the whole train (`playbooks/release-train-merge.md` half 2). Until that merge, a release-gated item's Gate 8 verdict is `PENDING-RELEASE` — scheduled, never skipped; the item cannot reach `done` before this protocol runs.
+
 ## inputs
 
 - list of affected URLs on the live site (per the item's acceptance criteria — implementer surfaces these in the work item)
@@ -96,3 +98,4 @@ The trigger fires after the PR has merged to `origin/main` and the publisher (Gi
 - `retrospectives/LSN-004-s2s-fallback-cache.md` — separate-PR ship of page vs SUMMARY caused GitBook to cache a `github.com/.../blob/main/...` fallback for the index link; live-site fetch was the only thing that would have caught it (build-time rendering passed).
 - `retrospectives/LSN-027-meta-description-truncation-not-caught-by-webfetch.md` — WebFetch markdown extraction missed `<meta>` truncation in `<head>` AND the visible `<p>` page-subtitle directly under H1; 25 docs pages shipped truncated descriptions across multiple batches because Gate 8 had no raw-HTML inspection step. Added the step above.
 - `retrospectives/LSN-028-yaml-frontmatter-parse-error-stalled-gitbook-sync.md` — `: ` (colon-space) inside an unquoted description: frontmatter value parses as a YAML mapping separator and stalls GitBook sync entirely (worse than truncation — the publisher couldn't import the merged commit at all). Pre-commit + Gate 8 now run a PyYAML parse check.
+- `retrospectives/LSN-034-docs-work-branch-bare-push-published-main-early.md` — a docs change published to main (and the live site within minutes) before its code PR merged. Release-gated content now rides `release/{version}` and publishes only at the release gate; this protocol's release-train trigger is the scheduled verification of that publication (`adrs/drafts/release-train-doc-gating.md`).

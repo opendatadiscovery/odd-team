@@ -4,14 +4,14 @@ github_issue_number: 1752
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1752
 class: bug
 milestone: "0.28.0"
-status: planned
+status: pr-draft
 reproduced: "live 2026-06-11 on the shared odd-minimal stack (AUTH_TYPE=DISABLED), image odd-platform:odd-team-sut built from the PR-#1771 tip 5cbf60a3 = content of current main 39b54eef. Seeded ctrib006_* rows (healthy/DELETED/excluded ERD + GRAPH relationship entities, ids 20691-20696; cleaned after capture). API: list ?query=ctrib006 type=ALL -> total 4 INCLUDING status=5 + exclude_from_search=true rows (D2); catalog search 'ctrib006' (FTS vectors seeded for all 3) -> total 1, only the healthy row (the sibling-surface contrast); ?type=foo -> 400 USR001 'Type mismatch.' (D4 BE, post-#1771); erd detail 20691 -> 200 with erd_relationship_id=777001, GET /erd/777001 -> 404 USR002 (D5 trap; graph twin identical); ?query=ctrib006_src (source dataset name) -> total 0 vs ?query=ctrib006_rel -> 4 (D6). UI (Playwright vs the live stack, screenshots /tmp/ctrib006-U*.png): U1 source name x2 / target name x0 on the list (D1); U2 ?type=foo -> '0 relationships overall' + EmptyContentPlaceholder + NO error text (D4 UI); U3 graph overview Source-block='Source:ctrib006_tgt', Target-block='Target:ctrib006_src' (Finding A swap). IT-077 H-002 pin GREEN (bug present) in both 2026-06-11 feature-complete runs on this same SUT content (run-log)."
 adr_required: false
-plan_approved_by: ""
-plan_approved_at: ""
-docs_routing: ""
-pr_url: ""
-pr_draft: ""
+plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-11 — 'Approve as written': full plan incl. Finding A label swap + Finding B dataset-tab predicates, one PR, scope comment posting)"
+plan_approved_at: "2026-06-11"
+docs_routing: "release/0.28.0 — SHIPPED on the train (documentation@f61b9c2, pushed same-name; feature page + API-reference page caveats version-anchored; paired item DOC-446 review-ready/milestone-gated; docs main untouched; live no-leak verified)"
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1772"
+pr_draft: true
 ---
 
 # CTRIB-006 — Relationships page hardening: six-defect cluster on `/data-modelling/relationships` (#1752)
@@ -407,9 +407,149 @@ client is NOT committed, regenerated at build → zero committed-file churn):
 - PLT-NNN draft: `GraphRelationshipAttributes` required-vs-properties spec bug (Finding C).
 - PLT-NNN draft or REFACTOR item: dead `getRelationshipByDataEntityIds` (Finding D).
 
+## Branch / commits (odd-platform)
+
+Branch `contrib/CTRIB-006-relationships-hardening` (from `main` @ `39b54eef`), author +
+committer `odd-contributor[bot]`:
+
+- `122a0823` fix(relationships): catalog default visibility predicates on both listings
+  (BE + the 2 failing-first Testcontainers test classes).
+- `46a37f59` fix(ui): Target column renders the target; `?type=` validated with ALL
+  fallback in BOTH consumers (new `parseRelationshipsType.ts`); GraphRelationship
+  Source/Target labels un-swapped.
+- `abe51417` docs(spec): `relationship_id` contract descriptions on the param + both
+  `*_relationship_id` payload fields.
+
+## Test ledger (implement run, 2026-06-11/12)
+
+- **Unit — failing-first (RED on unfixed main):** `scripts/run-platform-tests.sh --tests`
+  both new classes on pre-fix code → **3 tests completed, 3 failed**, each for exactly the
+  injected condition (gradle report verbatim: the global list returned
+  ok+deleted+excluded+hollow+graph against expected ok+graph; the ERD filter returned 4
+  incl. hidden; the dataset tab returned 4 against expected ok+excluded).
+- **Unit — GREEN on the fix:** same targeted run → **BUILD SUCCESSFUL in 1m 29s** (3/3).
+- **Unit — full CI replica:** `scripts/run-platform-tests.sh` (no-arg
+  `:odd-platform-api:build` = test + checkstyle + assemble) on the fixed tree →
+  **BUILD SUCCESSFUL in 6m 4s**.
+- **FE compile gates:** `tsc --noEmit` clean; `eslint` on all 5 touched TS files clean.
+- **Integration — impacted IT (inner loop):** IT-077 re-grounded (LSN-029 — the H-002 pin
+  flips to the fixed contract; flip pre-authored in the 2026-06-07 protocol entry) +
+  extended (visibility, ?type=foo fallback, graph labels, D5 id-contract green-locks).
+  **GREEN on the working-tree SUT @ abe51417: 6/6 (8.9s).** **RED proof vs
+  `ODD_SUT=ref:main` (39b54eef): 4 failed / 2 passed — exactly as pre-authored** (✘ H-002
+  source×2; ✘ visibility — hidden rows listed; ✘ ?type=foo dead state; ✘ graph labels
+  swapped; ✓ H-001 surface; ✓ D5 green-locks). One honest interlude: the first ref:main
+  attempt died building the throwaway SUT (gradle daemon GC-thrash, 512 MiB heap — the
+  CTRIB-005 transient class); retried clean. Run-log:
+  `integration-tests/run-log/2026-06-12-IT-077.md` (3 attributed entries).
+- **Integration — FULL regression (the gate, 2026-06-11 directive), all on the
+  working-tree SUT, one suite at a time, actual counts read:**
+  - `feature-complete`: **277 passed / 0 failed (4.0m)** — +4 vs the 2026-06-11 273
+    baseline = exactly IT-077's four new asserts. Zero regressions.
+  - `multi-stack`: **9 passed / 0 failed (3.5m)** — MinIO, auth-boundary, LDAP RBAC,
+    WAL ×2, LOGIN_FORM ×2 unaffected.
+  - `known-bugs`: **6 failed / 0 passed — EXPECTED all-RED**, every failure its
+    documented pin (IT-007 LSN-001/PLT-086; IT-006 TEST-GAP-1013; IT-004 PLT-052;
+    IT-003 ×2 PLT-090/PLT-127; IT-005 PLT-026). **Zero unexpected GREENs** — no fix
+    landed un-flipped. Run-logs: `2026-06-12-{feature-complete,multi-stack,known-bugs}.md`
+    (attributed, narrative fields filled).
+
+## Docs (G-C10 + G-C11) — READ + CHANGED + ROUTED
+
+- **READ:** `documentation/docs/data-modelling/relationships.md` end-to-end (113 lines;
+  train @ HEAD = origin/main for this file — no pre-existing train delta) +
+  `documentation/docs/developer-guides/api-reference/relationships.md` end-to-end. The
+  live page additionally curl-verified serving the PRE-fix caveats ("is being patched
+  upstream") — the shipped page already carries DOC-229's corrected "read-collaborative"
+  framing, so NO released-truth correction for docs main was needed.
+- **CHANGED + ROUTED to the `release/0.28.0` train** (G-C11): commit `f61b9c2` pushed
+  same-name (`1d43d6e..f61b9c2`). Feature page: D1 + D4 caveats → fixed-in-0.28.0 notes;
+  RBAC caveat now access-only (severity danger→warning, editorial decision recorded in
+  DOC-446) with the visibility half stated positively in the walkthrough incl. the
+  dataset-tab exclude nuance; D5 caveat gains the payload-field trap + the
+  now-in-spec note; intro re-counted (4 contracts + 2 fixed). API-reference page: the
+  list-endpoint hint reworded version-anchored. D3 + D6 caveats kept verbatim (still
+  true). Frontmatter PyYAML-parses; descriptions 118/114 chars.
+- **Live no-leak verified post-push:** the published page still serves the 0.27.x
+  caveats; zero "Fixed in 0.28.0" phrases live — release-gating intact.
+- **Paired item:** `backlog/docs/DOC-446.md` (milestone 0.28.0, review-ready →
+  pending-release at review; post-merge URLs + expected phrases recorded).
+
+## Ontology refresh (G-C10)
+
+- **Sidecars re-enriched at `abe51417`** (file-analyser/0.5.0, both validated `1 ok`,
+  enrichment.log appended): `RelationshipController` controller-class (visibility trio +
+  spec-documented id contract; `relationship_id` drift reclassified TRANSLATES_SILENTLY →
+  TRANSLATES_LEGITIMATELY; NEW finding recorded: detail-by-id still serves
+  DELETED/excluded/hollow — deliberate, mirrors the data-entity detail posture) +
+  `relationships` route (all four FE/BE fixes verified first-hand; read-open posture
+  unchanged-and-documented; P-167 Block D marked superseded).
+- **NEW pre-existing finding surfaced by the route re-enrichment** (verified against the
+  query shape read this session): the `?type=` filter applies in the JOIN **after** the
+  CTE pagination window, and the count/total ignores type entirely → ERD/GRAPH tabs
+  under-fill pages + over-count. Probe `lineage/odd-platform/probes/P-248.yaml` (agent-
+  pinned) + **PLT-220** filed (excluded from this PR per G-C5 — needs its own
+  pagination-correctness design).
+- **F-037 feature flow:** facets bracket-stamped (D1 FIXED; D2 PART-FIXED — access half
+  stands; D5 DOCUMENTED), node entry `unresolved: false`, use_cases H-001/2/3/4/6/9
+  flipped verified/confirmed + **UC-13 added** (the visibility-defaults promise),
+  `use_case_coverage` 0/12 → **7/13**, `test_matrix` unit+integration → covered
+  (control_summary 2/4). PyYAML-validated.
+- **Flip-on-fix sweep** (the TST-044 class, swept BEFORE review this time): suites.yaml
+  I6 lane comment + wave-2 GREEN-pins comment flipped; IT-077 protocol re-grounded
+  (result-log carries the flip provenance); PLT-056.md in-flight status note added;
+  `promise-test-worklist.md` left untouched (explicit do-not-hand-edit snapshot,
+  ADR-0077); DOC-229 left untouched (`done` historical record);
+  `feature-reflections/detail/F-037.yaml` left untouched (dated hypothesis artefact —
+  the projection carries the flips, F-017/CTRIB-005 convention).
+- **Graph re-embed:** queued after the suite runs (CPU contention); recorded below.
+
+## Branch / PR
+
+- Branch `contrib/CTRIB-006-relationships-hardening` pushed to
+  `opendatadiscovery/odd-platform` (3 commits `122a0823` / `46a37f59` / `abe51417`,
+  authored + committed `odd-contributor[bot]`; 10 files — exactly the approved plan).
+- **Draft PR #1772** — https://github.com/opendatadiscovery/odd-platform/pull/1772
+  (`draft: true`, `Closes #1752`, `Milestone: 0.28.0` line — the issue's milestone
+  re-verified open/unchanged via API at PR time (G-C11); docs note
+  `documentation@release/0.28.0 (f61b9c2) — publishes with the 0.28.0 release`; review
+  requested from `RamanDamayeu`, HTTP 201; the bot cannot merge — GATE 2 is the human's).
+- Scope/root-cause comment on #1752 (GATE-1-approved, posted pre-code):
+  https://github.com/opendatadiscovery/odd-platform/issues/1752#issuecomment-4685460651
+- Docs train: documentation@`release/0.28.0` commit `f61b9c2` (pushed same-name); paired
+  item `backlog/docs/DOC-446.md`.
+
+## Definition of Done (LSN-032 four gates)
+
+1. **Unit (full build, working tree = branch content):** ✅ BUILD SUCCESSFUL 6m04s
+   (test + checkstyle + assemble) + failing-first RED (3/3, verbatim reasons) → GREEN.
+2. **Integration (FULL regression on the working-tree SUT):** ✅ feature-complete 277/0 +
+   multi-stack 9/9 + known-bugs 6/6-still-RED; impacted IT-077 6/6 GREEN with the
+   ref:main 4-fail RED proof (LSN-033 honoured — SUT a run parameter, built from the
+   tree each run).
+3. **Docs:** ✅ READ (both pages end-to-end + live curl) + CHANGED + ROUTED to the
+   `release/0.28.0` train (`f61b9c2`, same-name push; main untouched; live no-leak
+   verified); paired DOC-446 (milestone 0.28.0, post-merge URLs recorded).
+4. **Ontology:** ✅ two sidecars re-enriched at `abe51417` (validated), F-037 flow
+   flipped (facets + use_cases 7/13 + matrix 2/4), enrichment.log, suites.yaml lane
+   comments, IT-077 protocol re-grounded, PLT-056 in-flight note; graph re-embedded
+   (build-info recorded below); ALL COMMITTED (workspace commit hash in the log).
+
+## Follow-ups filed on disk (G-C5 / follow-up-on-disk)
+
+- `issues/odd-platform/PLT-218.md` — spec `GraphRelationshipAttributes` requires `field`
+  which doesn't exist (Finding C).
+- `issues/odd-platform/PLT-219.md` — dead `getRelationshipByDataEntityIds` (Finding D).
+- `issues/odd-platform/PLT-220.md` — type filter after pagination + type-blind total
+  (the re-enrichment finding; probe P-248).
+- `backlog/docs/DOC-446.md` — the paired release-train doc item (milestone 0.28.0).
+
 ## Comments (issue thread)
 
 - Clarify comment: **none warranted** (G-C6) — recorded above.
 - Root-cause + scope comment: ONE comment (drafted above), posts immediately after GATE 1
   approval, before any code (G-C5; github-write rate-limit honoured).
+- **POSTED 2026-06-11 (post-GATE-1, pre-code):**
+  https://github.com/opendatadiscovery/odd-platform/issues/1752#issuecomment-4685460651
+  (author `odd-contributor[bot]`, HTTP 201; ASCII-verified before post).
 

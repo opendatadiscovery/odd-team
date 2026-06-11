@@ -2,16 +2,16 @@
 node_id: "odd-platform ts routes route:relationships"
 node_kind: route
 axis: ui_routes
-extracted_at_commit: 4ec2b20
-enriched_at_commit: 4ec2b20
+extracted_at_commit: abe51417
+enriched_at_commit: abe51417
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.4.0
+prompt_version: file-analyser/0.5.0
 schema_version: v0.3.0
 enrichment_status: complete
 confidence_overall: HIGH
-session_id: session-2026-05-26-ZI-relationships-route
-feature_hint: "P-02 Data Modelling — Relationships sub-route. Pairs with ZE (RelationshipController) which has ZERO authz at any layer (no @PreAuthorize, no SECURITY_RULES match for /api/relationships/**, no service check, no owner-scoping). This route is the UI entry point that exposes the un-gated relationship catalog to every authenticated user. Sibling of ZH (dataModelling pillar root) and the queryExamplesRoutes module."
-related_features: []
+session_id: session-2026-06-12-refresh-relationships-route
+feature_hint: "F-037 Data Modelling — Relationships sub-route, refreshed on contrib/CTRIB-006-relationships-hardening @ abe51417 (the #1752 fix, ships 0.28.0). The pre-fix sidecar's Target-column bug, ?type= 400 dead-end, and graph-label swap findings are HISTORICAL at this commit; the read-open posture (no WithPermissionsProvider, no backend authz) is UNCHANGED and deliberate. Pairs with ZE (RelationshipController) and ZH (dataModelling pillar root)."
+related_features: ["F-037"]
 related_pillar_features: ["P-02"]
 ---
 
@@ -19,93 +19,116 @@ related_pillar_features: ["P-02"]
 
 ## understanding
 
-A 7-line module (`odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1-7`) that exports one path builder: `relationshipsPath()`. The function returns `generatePath('${BASE_PATH}/relationships')` where `BASE_PATH = '/data-modelling'` is imported from the sibling `./dataModelling` module — net result is the literal string `'/data-modelling/relationships'`. The module owns NO rendering, NO auth gate, NO data fetch. The path produced here is consumed at exactly TWO call sites: (a) the in-page tab declaration at `components/DataModelling/DataModellingTabs.tsx:19` (`link: relationshipsPath()`, second tab after Query Examples), and (b) the inner React Router declaration at `components/DataModelling/DataModellingRoutes.tsx:40` which mounts `<Relationships />` at the bare child path `'relationships'` (NOT via `relationshipsPath()` — that file hard-codes the sub-path literal). The route is reached either by clicking the in-page tab from `/data-modelling/query-examples` OR by direct deep-link to `/data-modelling/relationships`; the AppToolbar tab labelled 'Data Modelling' (`ToolbarTabs.tsx:50-54`) sends the user to `queryExamplesPath()` not to relationships, so the relationships URL is exercised by the second click only. Critically — and consistent with the live doc page at `https://docs.opendatadiscovery.org/features/data-modelling` (WebFetched 2026-05-26, status 200) which does NOT specify visibility scoping for Relationships — the route has NO `WithPermissionsProvider` wrapper at `DataModellingRoutes.tsx:40` (contrast siblings at lines 19-25, 31-37 which wrap Query Examples with `QUERY_EXAMPLE_CREATE` / `QUERY_EXAMPLE_UPDATE+DELETE` contexts). Combined with the ZE finding that RelationshipController has zero authorization at any layer, the URL exposes every relationship in the catalog to every authenticated user (and to every caller at all under `auth.type=DISABLED`). The Relationships component itself (`components/DataModelling/Relationships.tsx:16-84`) reads `?q` (free-text search) and `?type` (ALL/ERD/GRAPH) from `useSearchParams` and forwards both to `useSearchRelationships` which hits `relationshipApi.getRelationships`; the ERD vs GRAPH discrimination is a `type` query-param ping with no client-side filtering. **Statically-visible UI bug**: `components/DataModelling/Relationships/RelationshipsListItem.tsx:73-81` renders the Target column with `dataEntityId={item.sourceDataEntity.id}` (a copy of the Source column) instead of `item.targetDataEntity.id` — the Target column displays Source data for every row.
+A 7-line module (`odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1-7`) exporting one path builder, `relationshipsPath()`, which concatenates the shared `BASE_PATH` (`'/data-modelling'`, imported from the sibling `./dataModelling` module) with `/relationships` through a parameterless — hence pass-through — `generatePath` call, yielding the literal `'/data-modelling/relationships'`. The builder's only runtime consumer is the in-page tab strip (`DataModellingTabs.tsx:19`); the React Router mount hard-codes the bare child literal instead (`DataModellingRoutes.tsx:40`), still WITHOUT a `WithPermissionsProvider` wrapper — the deliberate read-open posture, now stated on the live doc page. The mounted `<Relationships />` page reads `?q` (free-text, relationship-row-name scope) and `?type` (ALL/ERD/GRAPH) from the URL; at HEAD abe51417 (the #1752 hardening, ships 0.28.0) the raw `?type=` value is validated through the new `parseRelationshipsType` (unknown values degrade to the ALL view with the All tab active, instead of propagating to the API as an enum-bind 400 rendered as a dead empty state), the row renderer's Target cell reads `item.targetDataEntity` (the pre-fix copy-paste that mirrored Source into Target is gone), and the backend list applies the catalog default visibility trio (soft-DELETED / exclude_from_search / hollow relationship entities are hidden). The live doc page still describes the 0.27.x behaviour — its Target-column and `?type=` caveats retire on the `release/0.28.0` documentation train (DOC-446, review-ready).
 
 ## concepts
 
 - entities: [
     "`relationshipsPath()` — the only export (`relationshipsRoutes.ts:4-6`); a 1-line wrapper around `react-router-dom.generatePath` that returns the literal `/data-modelling/relationships`",
-    "`BASE_PATH` — imported from `./dataModelling` (line 2); the cross-file shared constant `/data-modelling` that the entire Data Modelling pillar's URL surface concatenates against. Refactoring the sibling file's `BASE_PATH` cascades to this builder silently with no compile-time warning",
-    "**Component-tier consumers** (declared elsewhere, surfaced here for cross-file context): `<Relationships />` lazy-loaded at `DataModellingRoutes.tsx:11` and mounted at `:40`; `<RelationshipsTabs />` at `Relationships/RelationshipsTabs.tsx:6-54` (the ALL/ERD/Graph tab strip); `<RelationshipsSearchInput />` at `Relationships/RelationshipsSearchInput.tsx:5-23` (the `?q` writer); `<RelationshipsListItem />` at `Relationships/RelationshipsListItem.tsx:49-83` (the row renderer with the Target-column bug); `RelationshipsTitle` at `Relationships/RelationshipsTitle.tsx:17-25` (header with the `<NumberFormatted value={total} />` count)",
-    "**Query-string state** (held in URL by `react-router-dom`'s `useSearchParams`): `q` (free-text, written by `RelationshipsSearchInput.tsx:9-12`, read by `Relationships.tsx:18`); `type` (ALL/ERD/GRAPH, written by `RelationshipsTabs.tsx:34-43`, read by `Relationships.tsx:19`). Both default to ALL/empty-string when absent",
-    "**Backend boundary**: `useSearchRelationships` at `lib/hooks/api/dataModelling/relatioships.ts:20-41` calls `relationshipApi.getRelationships({query, size, type, page})` with hard-coded `size: 30` (`Relationships.tsx:23`). The hook uses `useInfiniteQuery` from `@tanstack/react-query`; pagination via `pageParam` + `getNextPageParam: lastPage => lastPage.pageInfo.nextPage`",
-    "`RelationshipsType` enum (ERD / GRAPH / ALL) — declared OpenAPI-side at `components.yaml:4193-4198` (verified by Read); the UI enum is generated and imported from `'generated-sources'` (`Relationships.tsx:6`, `RelationshipsTabs.tsx:2`)"
+    "`BASE_PATH` — imported from `./dataModelling` (`relationshipsRoutes.ts:2`; declared at `dataModelling.ts:3`); the cross-file shared constant the entire Data Modelling URL surface concatenates against. A typo in the parent file cascades to this builder silently",
+    "**Component-tier consumers** (declared elsewhere, surfaced for cross-file context): `<Relationships />` lazy-loaded at `DataModellingRoutes.tsx:11`, mounted at `:40`; `<RelationshipsTabs />` (`Relationships/RelationshipsTabs.tsx:7-55`, the ALL/ERD/Graph strip); `<RelationshipsSearchInput />` (`Relationships/RelationshipsSearchInput.tsx:5-22`, the `?q` writer); `<RelationshipsListItem />` (`Relationships/RelationshipsListItem.tsx:49-83`, the row renderer — Target cell FIXED at this commit); `RelationshipsTitle` (`Relationships/RelationshipsTitle.tsx:17-24`, H1 + `<NumberFormatted value={total} /> relationships overall`)",
+    "**`parseRelationshipsType`** (`components/DataModelling/Relationships/parseRelationshipsType.ts:1-9`, NEW at this commit) — membership check of the raw `?type=` string against `Object.values(RelationshipsType)`; non-members (including case variants like `erd`) return `RelationshipsType.ALL`. Consumed by BOTH read paths: `Relationships.tsx:19` (the API-driving read) and `RelationshipsTabs.tsx:29` (the active-tab read), so an unknown deep-link value renders the ALL list WITH the All tab visibly active",
+    "**Query-string state** (URL-held via `useSearchParams`): `q` (written by `RelationshipsSearchInput.tsx:8-12`, read by `Relationships.tsx:18`); `type` (written by `RelationshipsTabs.tsx:35-45`, read via the validator at `Relationships.tsx:19`). Both writers use `new URLSearchParams(searchParams)` + `set`, preserving the OTHER parameter across writes — a `?q` search survives a tab switch and vice versa",
+    "**Backend boundary**: `useSearchRelationships` (`lib/hooks/api/dataModelling/relatioships.ts:20-41`) calls `relationshipApi.getRelationships({query, size, type, page})` with hard-coded `size: 30` (`Relationships.tsx:23`); `useInfiniteQuery` paginates via `initialPageParam: 1` + `getNextPageParam: lastPage => lastPage.pageInfo.nextPage`, where `nextPage` is derived client-side by `addNextPage` from `ceil(pageInfo.total / size)` (`lib/hooks/api/utils.ts:13-14`)",
+    "`RelationshipsType` enum (ERD / GRAPH / ALL) — OpenAPI-declared at `odd-platform-specification/components.yaml:4199-4204` (re-verified this pass); the UI imports the generated enum (`parseRelationshipsType.ts:1`, `RelationshipsTabs.tsx:2`)"
   ]
 - operations: [
-    "**Build the `/data-modelling/relationships` URL** — `relationshipsPath()` at lines 4-6; called from `DataModellingTabs.tsx:19` to make the in-page tab `link` and from no other site (the React Router mount at `DataModellingRoutes.tsx:40` hard-codes the bare sub-path string `'relationships'`)",
-    "**Provide the URL constant to the Data Modelling tab strip** — the sole runtime purpose of the export; refactoring the path requires updating both this file and `DataModellingRoutes.tsx:40` (the inner Routes literal is NOT derived from this builder)"
+    "**Build the `/data-modelling/relationships` URL** — `relationshipsPath()` at `relationshipsRoutes.ts:4-6`; called from `DataModellingTabs.tsx:19` (tab `link`) and from no other site (the mount at `DataModellingRoutes.tsx:40` hard-codes the bare sub-path literal)",
+    "**Provide the URL constant to the Data Modelling tab strip** — the sole runtime purpose of the export; a path refactor requires updating this file AND `DataModellingRoutes.tsx:40` in lockstep (nothing enforces the sync)"
   ]
 - invariants: [
-    "**`relationshipsPath()` is parameterless** — returns the literal `/data-modelling/relationships` unconditionally. There is no `:relationshipId` segment in the route; the per-relationship detail pages live OUTSIDE the `/data-modelling` subtree (per `RelationshipController` sidecar's `concepts.operations`, the detail endpoints are `GET /api/relationships/erd/{relationship_id}` and `/graph/{relationship_id}` — these are API endpoints; the UI navigates to `/dataentities/{id}/overview` via `RelationshipsListItem.tsx:52` `dataEntityDetailsPath(item.id)` for the per-relationship view, NOT to a separate Data Modelling detail URL)",
-    "**The route module is decoupled from the inner Routes string literal** — `DataModellingRoutes.tsx:40` declares `<Route path='relationships' element={<Relationships />} />` with the bare sub-path hard-coded; changing `relationshipsRoutes.ts` to return a different sub-path (e.g. via concatenation with `'/relations'`) silently breaks the toolbar tab link without breaking the mount. The two strings MUST stay in sync; nothing enforces this",
-    "**No `WithPermissionsProvider` wrapper** at `DataModellingRoutes.tsx:40` — the Relationships route is the only inner route of the Data Modelling pillar that is NOT wrapped in a permission context (Query Examples and Query Example details ARE wrapped at lines 19-25, 31-37). Combined with the ZE finding (RelationshipController has zero authz), the entire chain from URL to repository is open to any authenticated caller",
-    "**`q` and `type` query parameters are URL-state, not component-state** — every change writes to `setSearchParams` (`RelationshipsSearchInput.tsx:10-11`, `RelationshipsTabs.tsx:38-41`) which updates the browser URL; a refresh restores the filter state from URL; a deep-link with `?q=foo&type=ERD` lands directly on the filtered view. The route module itself does NOT declare these parameters — they are dynamic and added by the inner components",
-    "**Pagination is `size: 30` hard-coded** at `Relationships.tsx:23` — the only PAGE_SIZE constant in the file. There is no URL parameter, no user-configurable control, and no client-side override. The backend honors this via `useInfiniteQuery`'s `pageParam` mechanism (`relatioships.ts:20-41`)",
-    "**Search query free-text matches relationship-row external_name** — per ZE sidecar `concepts.invariants.[search query filters relationship-row external_name, NOT source/target entity names]`, the `q` parameter binds to `DATA_ENTITY.EXTERNAL_NAME.containsIgnoreCase` on the relationship-class data_entity row at `ReactiveDataEntityRelationshipRepositoryImpl.java:69`. The UI label is 'Search relationships' (`RelationshipsSearchInput.tsx:17`), which matches the SQL behaviour — name and behaviour align here (NOT a Category F drift)"
+    "**`relationshipsPath()` is parameterless** — returns the literal unconditionally; there is no `:relationshipId` segment. Per-relationship views are reached by the row link to `/dataentities/{id}/overview` (`RelationshipsListItem.tsx:52`, `dataEntityDetailsPath(item.id)` where `item.id` is the relationship-class data_entity's own id), not via a `/data-modelling` detail URL",
+    "**The route module is decoupled from the inner Routes literal** — `DataModellingRoutes.tsx:40` declares `<Route path='relationships' ...>` with the sub-path duplicated, not derived from this builder; the two strings drift independently with no build-time signal",
+    "**No `WithPermissionsProvider` wrapper** at `DataModellingRoutes.tsx:40` — the only unwrapped child of the Data Modelling pillar (Query Examples wrapped at `:17-26`, details at `:27-39`). Combined with the backend's zero authz (per ZE sidecar; UNCHANGED at this commit — CTRIB-006 scope exclusion `contributor/CTRIB-006.md:343-344` names the read-open posture as deliberate), the chain is open to every authenticated caller",
+    "**Unknown `?type=` values cannot reach the API** — both read paths route through `parseRelationshipsType` (`Relationships.tsx:19`, `RelationshipsTabs.tsx:29`), and the WRITE path (`RelationshipsTabs.tsx:37-41`) only writes canonical enum values; the API receives one of ALL/ERD/GRAPH always. The pre-fix bare cast (any string → enum-bind 400 → dead empty state) is historical at this commit",
+    "**The list shows only catalog-visible relationship entities** — the repository adds the default trio `HOLLOW = false`, `STATUS != DELETED`, `EXCLUDE_FROM_SEARCH null-or-false` to the listing's conditionList (`ReactiveDataEntityRelationshipRepositoryImpl.java:75-80`, comment cites #1752), and the page total reuses the same conditionList (`:136-138`) so list and badge stay consistent for the visibility dimension",
+    "**Pagination is `size: 30` hard-coded** at `Relationships.tsx:23` — no URL parameter, no user control",
+    "**`?q` matches the relationship-row external_name only** — `DATA_ENTITY.EXTERNAL_NAME.containsIgnoreCase(inputQuery)` on the relationship-class row (`ReactiveDataEntityRelationshipRepositoryImpl.java:69-71`), NOT source/target entity names; the UI label 'Search relationships' (`RelationshipsSearchInput.tsx:17`) and the live doc's search-scope caveat both align with the SQL"
   ]
 - audiences: [
-    "**Every authenticated user** — the 'Relationships' tab is visible in the Data Modelling Sidebar (`DataModellingTabs.tsx:13-22`, second item after Query Examples) for every authenticated session; the URL `/data-modelling/relationships` is reachable by any auth'd user; no permission discrimination at any layer (route, controller, service, repository). Under `auth.type=DISABLED` the URL is reachable unauthenticated (per ZE sidecar `security.auth_mode_relevance.[DISABLED]`)",
-    "**Doc-page silence on visibility**: per the live doc at `https://docs.opendatadiscovery.org/features/data-modelling` (WebFetched 2026-05-26, status 200), the Relationships subsection is described without any RBAC posture (`'entity-to-entity links rendered as ERD diagrams'` — the only Relationships text). Contrast Query Examples which IS described as `'RBAC-gated by QUERY_EXAMPLE_CREATE'` (creation) / `'QUERY_EXAMPLE_UPDATE + QUERY_EXAMPLE_DELETE'` (details/edit). The doc's silence on Relationships permissions is consistent with the code — there are none — but a future maintainer reading the doc cannot tell whether 'view-only' is intentional or a missing requirement"
+    "**Every authenticated user** — the 'Relationships' tab renders for every session (`DataModellingTabs.tsx:17-20`); no permission discrimination at any layer; under `auth.type=DISABLED` the URL is reachable unauthenticated. The live doc page NOW STATES this posture explicitly (WebFetched 2026-06-12, status 200, verbatim: 'There is no RBAC gate on the Relationships endpoints — any authenticated caller can list every relationship in the catalog') — the prior sidecar's 'doc silent on visibility' finding is RESOLVED",
+    "**Doc readers get the 0.27.x picture until 0.28.0 publishes** — the live page's Target-column and `?type=` caveats describe behaviour that is fixed at this commit; the corrected page rides the `release/0.28.0` documentation train (DOC-446)"
   ]
 
 ## dependencies_semantic
 
 - requires-feature: [
-    "Data Modelling pillar UI (`components/DataModelling/DataModelling.tsx`) — the route only makes sense when the parent `<DataModeling>` tree is mounted at `App.tsx:74`",
-    "Relationships UI surface (`components/DataModelling/Relationships.tsx`) — the destination of the route",
-    "RelationshipsTabs (`components/DataModelling/Relationships/RelationshipsTabs.tsx`) — the in-page strip that drives the `?type` query parameter; without it the URL still works but the user cannot switch ALL/ERD/GRAPH",
-    "ZE: RelationshipController (`odd-platform-api/.../controller/RelationshipController.java`) — backend boundary for `GET /api/relationships` calls fired by `useSearchRelationships`. ZE sidecar documents the zero-authz posture this route surfaces"
+    "Data Modelling pillar UI — the parent `<DataModeling>` tree mounts at `App.tsx:80` (`<Route path={`${dataModellingPath()}/*`} ...>`); the line shifted from :74 since the prior pass",
+    "Relationships UI surface (`components/DataModelling/Relationships.tsx`) — the destination of the route, including the NEW `parseRelationshipsType` validator module",
+    "RelationshipsTabs (`components/DataModelling/Relationships/RelationshipsTabs.tsx`) — drives the `?type` parameter and renders the active tab from the SAME validator",
+    "ZE: RelationshipController (`odd-platform-api/.../controller/RelationshipController.java`) — backend boundary for `GET /api/relationships`; the repository beneath it gained the visibility trio at this commit (`ReactiveDataEntityRelationshipRepositoryImpl.java:75-80`)"
   ]
 - requires-config: []
 - requires-runtime: [
-    "`react-router-dom` — `generatePath` imported on line 1; same pattern as the sibling `dataModelling.ts` (ZH sidecar `dependencies_semantic.requires-runtime`)",
-    "**Import asymmetry vs `alertsRoutes.ts`** — alerts uses plain template-literal concatenation (no `generatePath` import); the dataModelling subtree (this file + `queryExamplesRoutes.ts` + `dataModelling.ts`) uniformly uses `generatePath` even when the path has no parameters. Cross-pillar convention drift, documented in the ZH sidecar `implicit_adrs`"
+    "`react-router-dom` — `generatePath` imported at `relationshipsRoutes.ts:1`; the dataModelling subtree uniformly uses `generatePath` even for parameterless paths (cross-pillar convention drift vs `alertsRoutes.ts` documented in the ZH sidecar)",
+    "`@tanstack/react-query` — the destination page's fetch layer; the app-global `QueryClient` sets only `retry: false` + `refetchOnWindowFocus: false` (`index.tsx:39-43`), no staleTime/gcTime override"
   ]
 - additional_coupling:
-  - "Exposed via `routes/dataModelling/index.ts:2` (`export * from './relationshipsRoutes'`) which is in turn re-exported via `routes/index.ts:10` (`export * from './dataModelling'`). Consumers import from `'routes'` (`DataModellingTabs.tsx:5` — `import { queryExamplesPath, relationshipsPath } from 'routes'`), not from the file directly. Refactoring this file's path is safe; renaming `relationshipsPath` breaks the toolbar tab. Same shape as the parent `dataModelling.ts` (ZH sidecar)"
-  - "**`BASE_PATH` consumption is silent** — line 2 imports `BASE_PATH` from `./dataModelling`; a typo in the parent file (`'/data-modelling'` → `'/data-modeling'`) silently breaks this builder's output AND the toolbar tab AND every deep-link without any build-time signal. Documented identically in the ZH sidecar (`bugs_limitations_corner_cases.[silent sibling coupling]`)"
-  - "**The inner `<Route path='relationships'>` declaration at `DataModellingRoutes.tsx:40` does NOT consume this module** — the literal sub-path string is duplicated, not derived from `relationshipsPath()`. Refactoring `relationshipsPath` to return `/data-modelling/relations` (a typo) would update the toolbar tab href but NOT the mount path; the user would click the tab, navigate to a route that no longer exists, and see the bare `<DataModeling>` shell with no inner content"
+  - "Exposed via `routes/dataModelling/index.ts:2` (`export * from './relationshipsRoutes'`), re-exported via `routes/index.ts:10`; consumers import from `'routes'` (`DataModellingTabs.tsx:5`)"
+  - "**`BASE_PATH` consumption is silent** — `relationshipsRoutes.ts:2`; a typo in `dataModelling.ts:3` breaks this builder's output, the toolbar tab, and every deep-link with no build-time signal (same shape as the ZH sidecar's finding)"
+  - "**The inner `<Route path='relationships'>` at `DataModellingRoutes.tsx:40` does NOT consume this module** — the literal is duplicated; a builder-side rename updates the tab href but not the mount, stranding the tab on a dead URL"
 
 ## tests_coverage_semantic
 
-- covered_behaviours: []
+- covered_behaviours:
+  - behaviour: "The global listing hides soft-DELETED, exclude_from_search and hollow relationship entities; the page total shares the condition list; the DTO carries DISTINCT source and target datasets"
+    test_class: integration
+    test_files: ["odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRelationshipRepositoryImplTest.java:44-72 (Testcontainers, failing-first; javadoc `@validates F-037` / `@regresses PLT-056` at :31-32)"]
+  - behaviour: "ERD type filter and name filter keep working on the visibility-filtered listing"
+    test_class: integration
+    test_files: ["odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRelationshipRepositoryImplTest.java:74-95"]
+  - behaviour: "The list page renders the fixed two-column contract — source entity exactly once (Source column), target entity exactly once (Target column)"
+    test_class: integration
+    test_files: ["integration-tests/e2e/specs/erd-graph-relationships.spec.ts (IT-077 H-002, re-grounded 2026-06-12 from the LSN-029 characterization pin of the pre-fix bug to the regression guard; RED proven vs ODD_SUT=ref:main per integration-tests/protocols/IT-077-erd-graph-relationships.md:82-88)"]
+  - behaviour: "Hidden (DELETED / excluded) relationship entities do not render and the H1 total counts only visible rows"
+    test_class: integration
+    test_files: ["integration-tests/protocols/IT-077-erd-graph-relationships.md:57-58 (step 3) + integration-tests/e2e/specs/erd-graph-relationships.spec.ts"]
+  - behaviour: "A mistyped `?type=foo` deep-link degrades to the ALL view — the API request goes out with `type=ALL`, 200s, the row renders, the All tab has `aria-selected=true`"
+    test_class: integration
+    test_files: ["integration-tests/protocols/IT-077-erd-graph-relationships.md:59-60 (step 4) + integration-tests/e2e/specs/erd-graph-relationships.spec.ts"]
+  - behaviour: "The graph-relationship overview labels its endpoints correctly ('Source:' = source dataset, 'Target:' = target dataset)"
+    test_class: integration
+    test_files: ["integration-tests/protocols/IT-077-erd-graph-relationships.md:61-62 (step 5) — adjacent surface (/dataentities/{id}/overview), recorded here because the pre-fix label swap was part of the same #1752 contract"]
+  - behaviour: "Id contract green-locks: the list `id` IS the `{relationship_id}` path param; the payload's `erd_relationship_id` does NOT round-trip (404 USR002)"
+    test_class: integration
+    test_files: ["integration-tests/protocols/IT-077-erd-graph-relationships.md:63-65 (step 6)"]
 - uncovered_behaviours:
-  - behaviour: "`relationshipsPath()` returns the literal `/data-modelling/relationships`"
+  - behaviour: "`relationshipsPath()` returns the literal `/data-modelling/relationships` (build-time pin of the builder + the duplicated mount literal)"
     test_class: unit
     criticality: LOW
-    note: "Trivial pure function; a regression (typo in concatenation) would be caught at first navigation, but a pinning test would catch it at build time. Same shape as the `dataModellingPath()` gap in ZH sidecar."
+    note: "Trivial pure function; a concatenation typo surfaces only at first navigation. Same gap shape as the ZH sidecar."
   - behaviour: "Refactoring `BASE_PATH` cascades silently — no pinning test catches the cross-file dependency"
     test_class: unit
     criticality: LOW
-    note: "Same as the parent file's gap. The shared-constant pattern (`implicit_adrs[shared BASE_PATH constant pattern]` in ZH) requires a pinning test per consumer."
-  - behaviour: "`?type=ERD` and `?type=GRAPH` translate into backend round-trips with the corresponding `RelationshipsType` enum value AND return distinct row subsets"
-    test_class: integration
-    criticality: MEDIUM
-    note: "The end-to-end shape — tab click writes URL, URL drives backend call, backend returns type-filtered rows — is the load-bearing behaviour for ERD/GRAPH discrimination. No test pins this; covered by emitted P-167 (Block B + C)."
-  - behaviour: "**Target column on `RelationshipsListItem.tsx:73-81` renders Source data, not Target data** — the buggy assignment statically visible in the file"
-    test_class: integration
-    criticality: HIGH
-    note: "Pure DOM observation — Source.href == Target.href for every row. P-167 Block D pins this. No regression test would catch this until shipped. The interface field `targetDataEntity` IS available (used correctly by `RelationshipTypes/EntityRelationship.tsx:33-35` and `GraphRelationship.tsx:32-34`); the bug is a copy-paste in the list-item renderer only."
-  - behaviour: "Route is reachable by every authenticated user (no `WithPermissionsProvider` wrapper at `DataModellingRoutes.tsx:40`); under `auth.type=DISABLED` reachable unauthenticated"
+    note: "Same as the parent module's gap."
+  - behaviour: "Route renders identically for a reader-only (no write permissions) authenticated user"
     test_class: security
     criticality: MEDIUM
-    note: "Same posture as the ActivityController route (P-166 pins for /activity; P-167 Block A pins for /data-modelling/relationships). Read-collaborative intent per the platform-wide pattern."
-- test_files: []
+    note: "P-167 Block A remains the open runtime question — IT-077 runs on the odd-minimal stack with AUTH_TYPE=DISABLED, so no per-role render check exists anywhere yet."
+  - behaviour: "Type-filtered pagination window semantics: ERD/Graph tab badge total vs listed rows on a mixed-type catalog; infinite-scroll behaviour across an empty type window"
+    test_class: integration
+    criticality: MEDIUM
+    note: "NEW finding this pass (see bugs_limitations_corner_cases) — neither the repo test (asserts row subsets, not totals, for type-filtered calls) nor IT-077 (single-window seed) pins it. P-248 emitted."
+- test_files: [
+    "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRelationshipRepositoryImplTest.java",
+    "integration-tests/protocols/IT-077-erd-graph-relationships.md (status: ready; validates F-037, regresses PLT-056)",
+    "integration-tests/e2e/specs/erd-graph-relationships.spec.ts",
+    "integration-tests/run-log/2026-06-12-IT-077.md (RED-vs-ref:main + GREEN-on-working-tree record)"
+  ]
 - gaps: |
-    No unit tests target `relationshipsRoutes.ts`, and no integration tests
-    target the `/data-modelling/relationships` route or the
-    `RelationshipsListItem` row renderer (confirmed by Grep across
-    `odd-platform-ui/src/` for `relationshipsPath` / `RelationshipsListItem`
-    in `*.test.*` / `*.spec.*` — zero matches at commit 4ec2b20). The
-    most-likely class of regression that the current zero-test posture
-    misses is the Target-column copy-paste bug at
-    `RelationshipsListItem.tsx:73-81` — the file Reads cleanly in TypeScript
-    (`item.sourceDataEntity.id` is type-correct) and the bug is only visible
-    as `Source.href == Target.href` at runtime. A single integration test
-    asserting `Source !== Target` on a seeded row would catch it. The
-    second-most-likely class: a future maintainer refactoring `BASE_PATH`
-    in `dataModelling.ts` without updating the duplicated mount-path
-    literal at `DataModellingRoutes.tsx:40`.
+    The zero-test posture of the prior pass is gone: the #1752 contract (two-column
+    render, visibility trio, ?type= fallback, graph labels, id round-trip) is pinned
+    by the failing-first repository test plus the re-grounded IT-077 e2e rail. The
+    remaining regression classes the current tests would miss: (1) the route-builder /
+    mount-literal sync (unit pin absent — a `relationshipsPath` refactor that misses
+    `DataModellingRoutes.tsx:40` strands the tab); (2) per-role rendering (every
+    existing rail runs AUTH_TYPE=DISABLED; P-167 Block A still pending); (3) the
+    type-filtered pagination window class — badge overcount and the possible
+    infinite-scroll stall over an empty type window (P-248). In-repo UI unit tests
+    for `parseRelationshipsType` do not exist (grep for `parseRelationshipsType` and
+    `relationshipsPath` across `odd-platform-ui/src/` in `*.test.*` / `*.spec.*` —
+    zero matches at abe51417); the fallback behaviour is covered only via the
+    odd-team e2e rail.
 
 ## docs_link_semantic
 
@@ -113,219 +136,272 @@ A 7-line module (`odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.t
 - inferred_docs:
   - url: "https://docs.opendatadiscovery.org/features/data-modelling/relationships"
     anchor: ""
-    rationale: "Most-specific canonical URL for the Relationships sub-feature. Verified live (WebFetched 2026-05-26, status 200). The page explicitly describes the `/data-modelling/relationships` URL, the table columns (Name, Type, Namespace+Datasource, Source, Target), the ALL/ERD/GRAPH tab strip, the search filter, and the 30-row pagination — every claim is aligned with the code I read EXCEPT for the Target-column display (the page describes a `Target entity` column; the code at `RelationshipsListItem.tsx:73-81` renders Source data in that cell — see doc_drift_findings)."
-    last_verified_at: "2026-05-26T00:00:00Z"
+    rationale: "Most-specific canonical URL for the Relationships sub-feature. The page now carries DOC-229's six operational caveats — several describe the 0.27.x (pre-fix) behaviour and retire on the 0.28.0 train (see pending_release below)."
+    last_verified_at: "2026-06-12T00:00:00Z"
     last_verified_status: 200
     confidence: HIGH
     fetched_excerpts: |
-      H1: "Relationships Page Overview"
-      Verbatim:
-        - "The `/data-modelling/relationships` page serves as the central hub
-           for viewing entity-to-entity connections"
-        - "A table displaying 'Name, Type (ERD or GRAPH), Namespace +
-           Datasource, Source entity, Target entity'"
-        - "Type filtering via tabs for 'ALL / ERD / GRAPH'"
-        - "Search functionality for filtering by name"
-        - "Pagination with 30 items per page using infinite scroll"
-      Relationship types (verbatim):
-        - "ERD (ENTITY_RELATIONSHIP) — 'Foreign-key-style edges between two
-           table-class entities'"
-        - "GRAPH (GRAPH_RELATIONSHIP) — 'Free-form graph edges between
-           graph-store entities (e.g., relationships between nodes in a
-           Neo4j database)'"
-      Per-entity view (verbatim):
-        - "only the relationships in which the current entity participates
-           as Parent or Child"
-        - "Users can click any row to open the relationship's detail page,
-           with routing determined by the relationship type."
+      Title: "Relationships". Columns: "Name, Type (ERD or GRAPH), Namespace +
+      Datasource, Source entity, Target entity."
+      Target-column caveat (verbatim): "The Target column on the Data Modelling →
+      Relationships list page shows the SOURCE entity, not the target — every row
+      is currently affected." — describes the PRE-fix behaviour; FIXED at abe51417.
+      ?type= caveat (verbatim): "The `?type=` URL parameter accepts arbitrary
+      strings and silently renders a blank tab." (backend 400, no UI error) —
+      PRE-fix; FIXED at abe51417 (validated fallback to ALL).
+      RBAC caveat (verbatim): "There is no RBAC gate on the Relationships
+      endpoints — any authenticated caller can list every relationship in the
+      catalog." — still TRUE at abe51417 (deliberate posture). Its elaboration
+      ("Neither GET /api/relationships nor the type-specific detail endpoints
+      filter by owner, namespace, or search-exclusion flags ... including those
+      on hidden entities") is PARTIALLY stale: the LIST endpoint now hides
+      hidden/excluded/deleted entities; owner/namespace openness remains true.
+      Id caveat (verbatim): "The `relationship_id` path parameter on the API is
+      the relationship's data-entity id, not the `relationships` table primary
+      key." — still TRUE; green-locked by IT-077 step 6.
+      Search caveat (verbatim): "The search input filters by relationship name
+      only — not by source or target entity name." — still TRUE
+      (ReactiveDataEntityRelationshipRepositoryImpl.java:69-71).
+      Row-click: "Clicking a list-row name link routes to /dataentities/{id}
+      (the entity-detail page), not a relationship-specific URL." — matches
+      RelationshipsListItem.tsx:52.
+  - pending_release: "0.28.0"
+    train_ref: "release/0.28.0 (DOC-446, review-ready) documentation/docs/data-modelling/relationships.md"
+    rationale: "The 0.28.0 train edit version-anchors/retires the caveats fixed at abe51417 (Target column; ?type= dead-end; the hidden-entities half of the visibility statement) and keeps the still-true ones (routing, search scope, id contract, RBAC posture). Live WebFetch skipped for the train content — GitBook publishes the release at the gate; the live site cannot show it yet. Confidence stays LOW until a post-release enrichment verifies live."
+    confidence: LOW
   - url: "https://docs.opendatadiscovery.org/features/data-modelling"
     anchor: "Relationships"
-    rationale: "Pillar-level page that surfaces Relationships as a subsection. Same fetch as the ZH sidecar (WebFetched 2026-05-26, status 200). Recorded so cross-pillar nav from a maintainer reading the dataModelling sidecar lands on this finer-grained URL."
-    last_verified_at: "2026-05-26T00:00:00Z"
+    rationale: "Pillar-level page surfacing Relationships as a subsection plus the URL-surface table."
+    last_verified_at: "2026-06-12T00:00:00Z"
     last_verified_status: 200
     confidence: HIGH
     fetched_excerpts: |
-      Relationships description (verbatim):
-        - "Relationships — entity-to-entity links rendered as ERD diagrams.
-          Covers two relationship classes: ENTITY_RELATIONSHIP
-          (foreign-key-style ERD edges) and GRAPH_RELATIONSHIP (free-form
-          graph edges)"
-      URL surface table (verbatim row): "/data-modelling/relationships —
-      Discovered relationships across all data sources"
+      Relationships subsection (verbatim): "entity-to-entity links rendered as ERD
+      diagrams. Covers two relationship classes: `ENTITY_RELATIONSHIP`" ...
+      "`GRAPH_RELATIONSHIP` (free-form graph edges, e.g. between Neo4j nodes)."
+      URL table row (verbatim): "`/data-modelling/relationships` | Relationships
+      list — ERD and graph relationships discovered across all data sources."
+      RBAC: Query Examples permissions documented (QUERY_EXAMPLE_CREATE / UPDATE /
+      DELETE); "no permission model is described for Relationships" at pillar level
+      (the per-feature page carries the posture statement).
   - url: "https://docs.opendatadiscovery.org/active-platform-features/relationships"
     anchor: ""
-    rationale: "Stale URL convention; verified 404 (WebFetched 2026-05-26). Recorded so orchestrator templates do not accidentally cite the wrong path."
+    rationale: "Stale URL convention; verified 404 on the 2026-05-26 pass (NOT re-fetched this pass — kept as a guard so templates do not cite the wrong path)."
     last_verified_at: "2026-05-26T00:00:00Z"
     last_verified_status: 404
     confidence: LOW
-    fetched_excerpts: |
-      "Page Not Found"; suggested alternatives include
-      `/features/data-modelling/relationships.md`.
 - doc_drift_findings:
-  - "**Target column doc-vs-code drift (operator-visible UI bug)**: the live doc at `https://docs.opendatadiscovery.org/features/data-modelling/relationships` describes the table as having `'Source entity, Target entity'` columns. The code at `RelationshipsListItem.tsx:73-81` renders the Target cell with `dataEntityId={item.sourceDataEntity.id} name={item.sourceDataEntity.internalName || item.sourceDataEntity.externalName || ''} oddrn={item.sourceDataEntity.oddrn || ''}` — identical to the Source cell (lines 64-72). The `item.targetDataEntity` field IS present on the `DataEntityRelationship` interface and IS consumed correctly by sibling components (`RelationshipTypes/EntityRelationship.tsx:33-35`, `RelationshipTypes/GraphRelationship.tsx:32-34`). The bug is a copy-paste in the list-item renderer. The doc is RIGHT; the code is WRONG. Severity HIGH — operator viewing the table sees no Target indication for any row. P-167 Block D pins the runtime observation."
-  - "**Doc says 'Type filtering via tabs for ALL / ERD / GRAPH'** — the code at `RelationshipsTabs.tsx:6-23` matches exactly (three tab values from `RelationshipsType.ALL | ERD | GRAPH` per the OpenAPI enum at `components.yaml:4193-4198`). NOT a drift."
-  - "**Doc says 'Pagination with 30 items per page using infinite scroll'** — the code at `Relationships.tsx:23` hard-codes `size: 30`. The InfiniteScroll component at `Relationships.tsx:63-77` consumes `useInfiniteQuery`'s next-page callback. NOT a drift; the `30` value is undocumented as a tunable but is doc-consistent."
-  - "**Doc is silent on visibility scoping for Relationships** — neither the pillar page nor the per-feature page mentions who can VIEW relationships. The code has no @PreAuthorize, no SECURITY_RULES match, no owner scoping (per ZE sidecar). This is consistent (silent on both sides) but the absence is operator-relevant: a future operator deploying ODD assumes their relationship catalog is gated based on the platform's overall RBAC story (`enable-security/authorization` doc) and is wrong. Route as a doc-gap-finder follow-up rather than a hard drift."
-  - "**Doc says 'Users can click any row to open the relationship's detail page, with routing determined by the relationship type'** — the code at `RelationshipsListItem.tsx:52` always navigates to `dataEntityDetailsPath(item.id)` (the data-entity overview page), NOT to a relationship-type-specific detail URL. The two ZE-documented endpoints `/api/relationships/erd/{id}` and `/api/relationships/graph/{id}` are reached by the data-entity overview page's relationship-card rendering (`OverviewRelationshipStats/OverviewRelationshipType/*.tsx`), not by the row click on this list page. The doc's 'routing determined by the relationship type' phrasing is misleading — from THIS list page, every click routes to the same `/dataentities/{id}/overview` URL regardless of type. The TYPE-specific rendering happens INSIDE that overview page. Route as doc-gap-finder follow-up — the doc overstates client-side type discrimination."
+  - "**Target-column caveat is stale at HEAD (expected, release-gated)**: the live page describes the pre-fix copy-paste bug; `RelationshipsListItem.tsx:73-81` reads `item.targetDataEntity` at abe51417. NOT a docs-main defect — the behaviour ships at 0.28.0 and the corrected page rides the `release/0.28.0` train (DOC-446). A post-release enrichment must confirm the caveat retired live."
+  - "**`?type=` caveat is stale at HEAD (expected, release-gated)**: live page says arbitrary strings reach the backend (400, blank tab); at abe51417 `parseRelationshipsType` (`parseRelationshipsType.ts:6-9`) degrades unknown values to ALL with the All tab active (`RelationshipsTabs.tsx:28-31`). Same train routing as above. Note the live page's advice 'omitting the parameter defaults safely to ALL' was true pre-fix and stays true."
+  - "**Visibility elaboration is HALF stale at HEAD**: the live page's claim that the endpoints do not filter 'search-exclusion flags ... including those on hidden entities' no longer holds for the LIST endpoint (`ReactiveDataEntityRelationshipRepositoryImpl.java:78-80`); the owner/namespace (RBAC) half remains true and deliberate (CTRIB-006 scope exclusion, `contributor/CTRIB-006.md:343-344`). Detail-endpoint visibility filtering was deliberately NOT added (`contributor/CTRIB-006.md:352-353`), so the detail-endpoint half of the sentence stays accurate. Train-gated split edit per DOC-446."
+  - "**Search-scope caveat MATCHES code** — name-only scope confirmed at `:69-71`; deliberately unchanged (D6 exclusion, `contributor/CTRIB-006.md:345-348`). NOT a drift."
+  - "**Id-contract caveat MATCHES code and is now green-locked** (IT-077 step 6) and documented in the OpenAPI spec per the IT-077 re-ground notes. NOT a drift."
+  - "**RESOLVED since the prior pass**: (a) the live page now documents the read-open RBAC posture explicitly — the prior 'doc silent on visibility scoping' finding is closed; (b) the row-click description now matches the code ('routes to /dataentities/{id} ... not a relationship-specific URL') — the prior 'doc overstates type-specific row-click routing' finding is closed."
+  - "**NEW, un-documented at HEAD**: the type-filtered tab's total badge counts BOTH types (see bugs_limitations_corner_cases) — no doc surface mentions it; route to doc-gap-finder only after P-248 settles the runtime half."
 
 ## implicit_adrs
 
-- "**The Relationships sub-route does NOT carry a `WithPermissionsProvider` wrapper at `DataModellingRoutes.tsx:40`** (contrast siblings at lines 19-25, 31-37 which wrap Query Examples). This is the deliberate read-collaborative shape — Relationships are platform-wide metadata that every authenticated user can read; only the write paths are gated (and per ZE there ARE no write paths on RelationshipController — it is read-only). The decision: pillar members can choose to skip the permission wrapper when the underlying controller is read-only and the read posture is collaborative across owners." — evidence: `components/DataModelling/DataModellingRoutes.tsx:40` (bare `element={<Relationships />}`, no `WithPermissionsProvider`) + RelationshipController sidecar `understanding` (zero authz at any layer) — intent_anchor: "(no explicit comment; the pattern is observable across the three DataModellingRoutes children — two wrapped, one not — and the wrapped/unwrapped split aligns with the controller-side write/read split for the three feature surfaces)" — confidence: MEDIUM
-- "**The sub-path string `'relationships'` is duplicated between `relationshipsRoutes.ts:5` (concatenated against `BASE_PATH`) and `DataModellingRoutes.tsx:40` (hard-coded `<Route path='relationships'>`).** The decision: the inner Routes declaration uses bare React Router child-path syntax rather than re-importing the path builder. Same pattern is used by `queryExamplesRoutes.ts:30` / `DataModellingRoutes.tsx:18,28`. The intent: keep the inner Routes file independent of the builder module so they can be moved separately." — evidence: `relationshipsRoutes.ts:4-6` + `DataModellingRoutes.tsx:40` + `queryExamplesRoutes.ts:30` + `DataModellingRoutes.tsx:18,28` (identical pattern for the sibling) — intent_anchor: "(no explicit comment; the convention is observable across both Data Modelling sub-routes)" — confidence: MEDIUM
-- "**Relationships is the SECOND tab in the Data Modelling Sidebar** — Query Examples is the canonical first (per ZH sidecar `implicit_adrs.[Query Examples is canonical first tab]`). The DataModellingTabs order at lines 11-23 puts Query Examples first, Relationships second; the AppToolbar deep-link goes directly to Query Examples; the bare-URL redirect goes to Query Examples. Relationships is reachable ONLY via the secondary in-page tab (or a direct deep-link). The decision: Query Examples is the primary surface, Relationships is the supporting view." — evidence: `DataModellingTabs.tsx:11-23` (tab order) + `DataModellingRoutes.tsx:16` (bare URL redirect target) + `ToolbarTabs.tsx:50-54` (toolbar deep-link target) — intent_anchor: "(no explicit comment; the convention is enforced by three independent code sites converging on the same default)" — confidence: HIGH
+- "**Unknown URL filter values degrade to the default view; raw query-param strings never propagate to a typed API parameter.** The NEW `parseRelationshipsType` module carries the intent in a comment: validation-at-the-URL-boundary with a silent fallback to the tab strip's own default, chosen over surfacing an error state." — evidence: `components/DataModelling/Relationships/parseRelationshipsType.ts:3-9` — intent_anchor: "The ?type= search param arrives as a raw string from deep links; an unknown value must degrade to the ALL view (the tab strip's own default) instead of propagating to the API as an enum-bind 400 that renders like an empty catalog (#1752)." — confidence: HIGH
+- "**The Relationships sub-route deliberately carries NO `WithPermissionsProvider`** (contrast the two wrapped Query Examples siblings): relationships are read-collaborative catalog metadata; only write paths are gated, and this surface has none. Upgraded from MEDIUM since the prior pass: the posture is now stated on the live doc page AND named as a deliberate scope exclusion in the #1752 fix." — evidence: `components/DataModelling/DataModellingRoutes.tsx:17-26, 27-39 vs :40` + `contributor/CTRIB-006.md:343-344` — intent_anchor: "No RBAC for relationship endpoints (platform-wide read-open posture — the issue's own corrected scope)" (CTRIB-006 scope exclusions) + live doc verbatim "There is no RBAC gate on the Relationships endpoints" (WebFetched 2026-06-12, status 200) — confidence: HIGH
+- "**The sub-path string `'relationships'` is duplicated** between `relationshipsRoutes.ts:5` (concatenated against `BASE_PATH`) and `DataModellingRoutes.tsx:40` (bare React Router child path) — the inner Routes file stays independent of the builder module; same convention as the queryExamples sibling (`queryExamplesRoutes.ts:29-38` + `DataModellingRoutes.tsx:18,28`)." — evidence: `relationshipsRoutes.ts:4-6` + `DataModellingRoutes.tsx:40` — intent_anchor: "(no explicit comment; the convention is observable across both Data Modelling sub-routes)" — confidence: MEDIUM
+- "**Relationships is the SECOND tab of the pillar** — Query Examples is canonical-first: tab order (`DataModellingTabs.tsx:11-23`), the bare-URL redirect (`DataModellingRoutes.tsx:16` → `query-examples`), and the AppToolbar deep-link (`ToolbarTabs.tsx:50-54` → `queryExamplesPath()`) all converge on Query Examples; Relationships is reached by the second click or a deep-link only." — evidence: the three convergent sites listed — intent_anchor: "(no explicit comment; three independent code sites converge on the same default)" — confidence: HIGH
 
 ## bugs_limitations_corner_cases
 
-- "**HIGH-severity UI bug — Target column displays Source data**: `RelationshipsListItem.tsx:73-81` renders the Target cell with `RelationshipDatasetInfo dataEntityId={item.sourceDataEntity.id} name={item.sourceDataEntity.internalName || item.sourceDataEntity.externalName || ''} oddrn={item.sourceDataEntity.oddrn || ''}` — identical to the Source cell at lines 64-72. The `item.targetDataEntity` field IS present on the `DataEntityRelationship` interface (used correctly by sibling components at `elements/Relationships/RelationshipTypes/EntityRelationship.tsx:33-35` and `GraphRelationship.tsx:32-34`). The bug is a copy-paste in the list-item renderer; the user sees the same dataset in both columns for every row. The doc page at `https://docs.opendatadiscovery.org/features/data-modelling/relationships` describes the table as having distinct Source and Target columns — the doc is correct and the code is wrong. **Not a route-module finding per se** but surfaced here because the route this sidecar declares is the URL where the bug becomes operator-visible; route as a `RelationshipsListItem.tsx` follow-up bug on the next maintainer pass. P-167 Block D pins the runtime observation." — evidence: `RelationshipsListItem.tsx:64-81` (Source and Target both reading `item.sourceDataEntity`) + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-05-26, status 200) — severity: HIGH
-- "**Zero-authz exposure of the relationship catalog to every authenticated user**: the route at `DataModellingRoutes.tsx:40` is unwrapped (no `WithPermissionsProvider`); the backend at ZE (`RelationshipController`) has no @PreAuthorize, no SECURITY_RULES match for `/api/relationships/**`, no service check, no owner-scoping. Under `LOGIN_FORM | OAUTH2 | LDAP` every authenticated user sees the entire relationship catalog; under `DISABLED` every caller able to reach the application port sees it. This is consistent with the read-collaborative intent (per ZH sidecar `implicit_adrs`), but the absence is undocumented — the operator deploying ODD with RBAC expectations from the `/configuration-and-deployment/enable-security/authorization` doc has no signal that Relationships are exempt. P-167 Block A confirms runtime. Route to doc-gap-finder for an explicit doc statement." — evidence: `DataModellingRoutes.tsx:40` + RelationshipController sidecar `understanding` (zero authz at any layer) + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (silent on visibility) — severity: MEDIUM
-- "**`size: 30` is hard-coded at `Relationships.tsx:23`** — no URL parameter, no user-configurable control. A power-user on a large catalog cannot increase page size to reduce scroll fatigue, and a small-catalog operator cannot decrease it for visual density. The 30 matches the documented value, but a runtime-tunable would be more flexible. Cosmetic; same shape as many list pages." — evidence: `components/DataModelling/Relationships.tsx:23` — severity: LOW
-- "**Inner Routes literal `'relationships'` is decoupled from `relationshipsPath()`** — `DataModellingRoutes.tsx:40` hard-codes the sub-path; `relationshipsRoutes.ts:5` concatenates it against `BASE_PATH`. Refactoring `relationshipsPath` to return `/data-modelling/relations` (typo) would break the toolbar tab href but NOT the mount path, leaving the user unable to reach the page via the tab while a direct URL still works. Same shape as ZH sidecar's `bugs_limitations_corner_cases.[silent sibling coupling]`." — evidence: `relationshipsRoutes.ts:4-6` + `DataModellingRoutes.tsx:40` — severity: LOW
-- "**No unit tests** target `relationshipsRoutes.ts` or any module under `routes/dataModelling/`** — confirmed by Grep across `odd-platform-ui/src/` for `relationshipsPath` in `*.test.*` / `*.spec.*` (zero matches at commit 4ec2b20). A typo in the concatenation (`/data-modelling/relationships` → `/data-modelling/relationship`) would not be caught by build or tests; only manual navigation would reveal it. Same shape as ZH sidecar." — evidence: Grep across `odd-platform-ui/src/` for `relationshipsPath` in test/spec files returned no matches — severity: LOW
-- "**`generatePath` is a no-op for the parameterless path** — `relationshipsRoutes.ts:5` calls `generatePath('${BASE_PATH}/relationships')` which has no `:param` placeholders. The function returns the input string verbatim; the `import { generatePath }` could be removed and the builder could `return '${BASE_PATH}/relationships'` for identical behaviour. Same shape as ZH sidecar's `bugs_limitations_corner_cases.[generatePath is no-op]`." — evidence: `relationshipsRoutes.ts:1, 4-6` + `react-router-dom` generatePath docs — severity: LOW
+- "**MEDIUM — type-filtered listing paginates BEFORE the type filter and counts WITHOUT it** (NEW finding this pass; pre-existing structure, NOT introduced by the #1752 fix, which added only the visibility trio at `:78-80`). The repository builds `conditionList` from name query + relationship class + visibility only (`ReactiveDataEntityRelationshipRepositoryImpl.java:67-80`); pagination (`ORDER BY data_entity.id ASC`, offset `(page-1)*size`, limit `size`) applies to that homogeneous query (`:85-87`); the ERD/GRAPH narrowing lives ONLY in the subsequent INNER JOIN (`:107-109`); and the page total reuses `conditionList` (`:136-138`), so it never narrows by type. Operator-visible on a mixed-type catalog: (a) the ERD/Graph tab's H1 badge '`N` relationships overall' (`RelationshipsTitle.tsx:21`, fed by `Relationships.tsx:36`) counts BOTH types while the list shows one — and since the `?q` search DOES narrow the badge (`:69-71` is in `conditionList`), the badge narrows with search but not with tab, side by side; (b) a 30-entity id-window containing zero rows of the selected type returns an EMPTY page with `nextPage` still set (`lib/hooks/api/utils.ts:13-14` derives `nextPage` from the un-narrowed total), and whether the infinite scroll keeps fetching when a page appends zero items (dataLength unchanged, nothing scrollable) is runtime-dependent — if it stalls, type rows beyond the empty window are unreachable from the UI while the badge claims they exist. Also applies in miniature to the ALL tab: a class-9 entity with no `relationships` row occupies a window slot and is dropped by the INNER JOIN (`:105-106`). Not among CTRIB-006's deliberate exclusions (`contributor/CTRIB-006.md:341-357`); not pinned by the repo test (type-filtered assertions check row subsets, not totals — `ReactiveDataEntityRelationshipRepositoryImplTest.java:80-86`) nor by IT-077 (single-window seed). P-248 pins both halves." — evidence: `ReactiveDataEntityRelationshipRepositoryImpl.java:67-87, 99-121, 136-138` + `lib/hooks/api/utils.ts:8-20` + `Relationships.tsx:36` + `RelationshipsTitle.tsx:21` — severity: MEDIUM
+- "**LOW — read-open exposure of the relationship catalog (documented posture)**: the route at `DataModellingRoutes.tsx:40` is unwrapped; the backend chain has no authz at any layer (per ZE sidecar; deliberately unchanged — `contributor/CTRIB-006.md:343-344`). Downgraded from the prior pass's MEDIUM: the live doc page now states the posture verbatim with a perimeter-isolation mitigation note (WebFetched 2026-06-12), so the operator-signal gap that justified MEDIUM is closed. Residual: the pillar-level page still describes Query Examples permissions without a Relationships counterpart — cosmetic asymmetry." — evidence: `DataModellingRoutes.tsx:40` + ZE sidecar + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-06-12, 200) — severity: LOW
+- "**HISTORICAL (fixed at abe51417)** — the prior pass's HIGH-severity Target-column bug (`RelationshipsListItem` rendering `item.sourceDataEntity` in BOTH columns) and the `?type=` enum-bind 400 dead-end and the GraphRelationship Source:/Target: label swap are all FIXED on this branch: Target cell reads `item.targetDataEntity` (`RelationshipsListItem.tsx:73-81`), unknown types degrade via `parseRelationshipsType.ts:6-9`, and each graph endpoint sits under its own label (`GraphRelationship.tsx:28-35` Source over source, `:55-62` Target over target; the ERD sibling labels target as 'Parent:' — `EntityRelationship.tsx:29-36` — which is the ERD parent/child vocabulary, not a swap). Kept as one line so a reader of the prior sidecar version sees the explicit close-out; regression guards: IT-077 H-002 + steps 4-5, repo test." — evidence: the three files at the cited lines, read at abe51417 — severity: LOW (historical)
+- "**LOW — `size: 30` hard-coded** at `Relationships.tsx:23` — no URL parameter, no user-configurable control; matches the documented 30-row infinite scroll." — evidence: `Relationships.tsx:23` — severity: LOW
+- "**LOW — inner Routes literal decoupled from `relationshipsPath()`** — `DataModellingRoutes.tsx:40` hard-codes the sub-path; a builder-side refactor updates the tab href but not the mount, stranding the tab on a dead URL while a direct deep-link still works." — evidence: `relationshipsRoutes.ts:4-6` + `DataModellingRoutes.tsx:40` — severity: LOW
+- "**LOW — no in-repo unit tests** target `relationshipsRoutes.ts` or `parseRelationshipsType.ts` — grep for `relationshipsPath` / `parseRelationshipsType` across `odd-platform-ui/src/` in `*.test.*` / `*.spec.*` files returns zero matches at abe51417 (search root named per the absence-claim rule; the odd-team e2e rail covers the fallback behaviour end-to-end but no build-time pin exists in the UI package)." — evidence: Grep across `odd-platform-ui/src/` (glob `*.{test,spec}.{ts,tsx}`) — zero matches — severity: LOW
+- "**LOW — `generatePath` is a no-op for this parameterless path** — `relationshipsRoutes.ts:5` has no `:param` placeholders; the import could be dropped for identical behaviour. Convention-consistency choice within the subtree." — evidence: `relationshipsRoutes.ts:1, 4-6` — severity: LOW
+- "**Probe-state note**: P-167 (`lineage/odd-platform/probes/P-167.yaml`, still `pending-stress-protocol`) was emitted by the 0.4.0 pass of this sidecar; its Block D pinned the PRE-fix Target-column bug as the hypothesis and is superseded by IT-077 H-002 (the fixed contract, RED-proven vs ref:main); Blocks B/C (?type round-trips) are covered by IT-077 step 4 + the repo test's type-filter assertions. Block A (reader-only render under a permission-bearing auth mode) remains the only live question in that probe." — evidence: lineage/odd-platform/probes/P-167.yaml:6 + integration-tests/protocols/IT-077-erd-graph-relationships.md:82-88 — severity: LOW
 
 ## stress_findings
 
 ```yaml
 stress_findings:
-  tunables: []
+  tunables:
+    - location: "components/DataModelling/Relationships.tsx:23"
+      name: "size (page size passed to useSearchRelationships)"
+      value: "30"
+      questions:
+        - q: "What at N = 0 visible rows? At a single page (total <= 30)?"
+          a: "Zero rows + not loading renders EmptyContentPlaceholder (Relationships.tsx:31-34, 76). At total <= 30, addNextPage computes totalPageCount = 1 and nextPage = undefined (utils.ts:13-14) — hasNextPage false, no further fetches."
+          confidence: STATIC-INFERRED
+          evidence: "Relationships.tsx:31-34, 76 + lib/hooks/api/utils.ts:13-14"
+        - q: "What at N > 30 (catalog larger than one window)?"
+          a: "InfiniteScroll fires fetchNextPage at scrollThreshold 200px inside the #relationships-list container (Relationships.tsx:63-71); pages accumulate via data.pages flatMap (:26-29). The backend window is offset (page-1)*30, ORDER BY data_entity.id ASC (ReactiveDataEntityRelationshipRepositoryImpl.java:85-87)."
+          confidence: STATIC-INFERRED
+          evidence: "Relationships.tsx:26-29, 63-71 + ReactiveDataEntityRelationshipRepositoryImpl.java:85-87"
+        - q: "What does the operator see at the type-filtered window boundary (a 30-id window devoid of the selected type)?"
+          a: "Statically: an empty page with nextPage still set (total is type-blind). Whether the scroll component re-fires next when dataLength is unchanged needs runtime — P-248 (the stall hypothesis: ERD rows beyond an all-GRAPH window unreachable from the UI while the badge claims them)."
+          confidence: PROBE-NEEDED
+          evidence: "P-248 (lineage/odd-platform/probes/P-248.yaml)"
   name_behavior_pairs:
     - name: "relationshipsPath()"
-      promise: "Build the canonical URL for the Relationships sub-feature — returns a string callers use as `Link to` or React Router `path`."
-      implementation: "Returns `generatePath('/data-modelling/relationships')` which is identically `'/data-modelling/relationships'` (parameterless generatePath is a passthrough). The function is the URL builder for the bare relationships URL only; deep-links with `?q` or `?type` are appended at the call site by the inner components."
+      promise: "Build the canonical URL for the Relationships sub-feature."
+      implementation: "Returns generatePath('/data-modelling/relationships') — a pass-through for the parameterless literal. Deep-link query params (?q, ?type) are appended by the inner components, not this builder."
       drift: NONE
       operator_visible_consequence: "n/a — name and implementation match."
       confidence: STATIC-INFERRED
-      evidence: "relationshipsRoutes.ts:4-6 + react-router-dom generatePath docs"
-    - name: "Relationships (route name + pillar member name)"
-      promise: "The URL `/data-modelling/relationships` lands the operator on a page where they can browse the platform's relationship catalog (per the live doc page) — a list of entity-to-entity links with ALL/ERD/GRAPH filter, search, and infinite-scroll pagination."
-      implementation: "Lands on `<Relationships />` (`components/DataModelling/Relationships.tsx:16-84`) which renders: H1 title 'Relationships' with total count + free-text search input + ALL/ERD/GRAPH tab strip + table headers (Name, Type, Namespace+Datasource, Source, Target) + InfiniteScroll list of `<RelationshipsListItem>` rows. **The Target column is bugged** (renders Source data per `RelationshipsListItem.tsx:73-81`) — the rest matches the documented promise."
-      drift: MINOR
-      operator_visible_consequence: "Per `bugs_limitations_corner_cases.[0]`: every row's Target column displays the Source entity. The user has no way to see what each relationship POINTS TO from this list page. Backend correctness is unaffected; the bug is in the row renderer only."
+      evidence: "relationshipsRoutes.ts:4-6"
+    - name: "Relationships (route destination / pillar member)"
+      promise: "Land on a browsable catalog of entity-to-entity links: 5-column table (Name, Type, Namespace+Datasource, Source, Target), ALL/ERD/GRAPH tabs, name search, 30-row infinite scroll — the live doc's description."
+      implementation: "Matches at abe51417: header cells at Relationships.tsx:46-62 (Source :57, Target :60); row renderer binds sourceDataEntity to Source (:64-72) and targetDataEntity to Target (:73-81); tabs (RelationshipsTabs.tsx:8-24); search (RelationshipsSearchInput.tsx); infinite scroll (Relationships.tsx:63-78). The prior pass's MINOR drift (Target cell mirrored Source) is FIXED; regression-guarded by IT-077 H-002."
+      drift: NONE
+      operator_visible_consequence: "n/a at code level. The LIVE doc still describes the pre-fix bug until the 0.28.0 train publishes — recorded under docs_link_semantic, not as a code drift."
       confidence: STATIC-INFERRED
-      evidence: "RelationshipsListItem.tsx:64-81 + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-05-26, status 200)"
+      evidence: "Relationships.tsx:46-62 + RelationshipsListItem.tsx:64-81 + WebFetch (2026-06-12, 200)"
+    - name: "parseRelationshipsType(raw)"
+      promise: "Parse the raw ?type= string into a RelationshipsType."
+      implementation: "Membership test against Object.values(RelationshipsType); members pass through, everything else (null, 'foo', case variants like 'erd') returns ALL. Parse-with-documented-fallback, intent stated in the module comment (#1752). The degrade is silent by design — a typo'd deep-link renders the full ALL view with the All tab active, no toast."
+      drift: NONE
+      operator_visible_consequence: "A caller mistyping ?type= sees ALL rows rather than an error — strictly better than the pre-fix dead empty screen; the silent aspect is the documented trade-off."
+      confidence: STATIC-INFERRED
+      evidence: "parseRelationshipsType.ts:1-9 + RelationshipsTabs.tsx:28-31"
   orderings:
-    - location: "Relationships.tsx:20-24"
+    - location: "Relationships.tsx:20-24 → relatioships.ts:20-41 → ReactiveDataEntityRelationshipRepositoryImpl.java:82-121"
       questions:
         - q: "What is the actual ORDER BY at the lowest layer?"
-          a: "**REFERENCE to ZE (RelationshipController) sidecar `concepts.invariants.[ordering]`**: the backend SQL at `ReactiveDataEntityRelationshipRepositoryImpl.java:77-79` paginates over `data_entity` rows where `entity_class_ids = [DATA_RELATIONSHIP.getId()=9]` ordered by `data_entity.id ASC` with offset = `(page - 1) * size`. This route module does NOT control the ordering — the backend does. The UI does NOT re-sort client-side (the InfiniteScroll component renders rows in the order they arrive from `useInfiniteQuery`)."
-          confidence: REFERENCE
-          evidence: "odd-platform__java__RelationshipController__controller-class__RelationshipController"
+          a: "ORDER BY data_entity.id ASC with offset (page-1)*size, limit size, applied to the homogeneous relationship-class query (conditionList: optional name LIKE + class = {9} + visibility trio) via jooqQueryHelper.paginate (:85-87). The type narrowing is NOT part of the paginated query — it lives in the INNER JOIN on the relationships table (:107-109). First-hand read this pass (the prior pass held this as a REFERENCE to the ZE sidecar)."
+          confidence: STATIC-INFERRED
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:67-87, 99-121"
         - q: "What is the tie-breaker when sort-key values are equal?"
-          a: "**REFERENCE** — `data_entity.id` is a PK column, no two rows can share it; no tie-breaker is needed at the data layer. The UI displays rows in arrival order; if the backend returned two pages with overlapping IDs (it does not), the duplicate would render twice — `RelationshipsListItem` is keyed by `item.id` (`Relationships.tsx:72-73`). Backend ordering is monotonic per ZE."
-          confidence: REFERENCE
-          evidence: "ZE sidecar + Relationships.tsx:72-73 (key={item.id})"
+          a: "None needed — data_entity.id is the PK; no two rows share it. The UI renders arrival order, keyed by item.id (Relationships.tsx:72-74)."
+          confidence: STATIC-INFERRED
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:87 + Relationships.tsx:72-74"
         - q: "Which subset is returned when result-set > page size?"
-          a: "Pagination via `useInfiniteQuery`'s `pageParam` mechanism (`relatioships.ts:30-33, 38-39`). Page 1 is the first 30 rows; subsequent pages are fetched on InfiniteScroll trigger (`Relationships.tsx:63-77` — `next={fetchNextPage}` + `scrollThreshold='200px'`). The backend returns `pageInfo.total` + `pageInfo.nextPage`; the UI keeps `data?.pages` accumulating and flattens via `flatMap(page => page.items)` (`Relationships.tsx:26-29`). Zero rows returned without `nextPage` means the catalog is exhausted."
-          confidence: STATIC-INFERRED
-          evidence: "Relationships.tsx:20-29, 63-77 + relatioships.ts:20-41"
+          a: "The page-N window = visible relationship-class entities ranked by id ASC, rows (N-1)*30..N*30 — REGARDLESS of type; the type JOIN then drops non-matching rows from the window, so a type-filtered page returns 0..30 rows and an empty page is possible while later windows still hold matches. nextPage derives from ceil(un-narrowed total / 30) client-side (utils.ts:13-14). Whether the UI traverses an empty window is the P-248 runtime question."
+          confidence: PROBE-NEEDED
+          evidence: "P-248 (lineage/odd-platform/probes/P-248.yaml) + ReactiveDataEntityRelationshipRepositoryImpl.java:85-87, 107-109 + lib/hooks/api/utils.ts:13-14"
         - q: "Does any upstream layer re-sort or filter the result?"
-          a: "**No.** The UI does NOT sort client-side — `relationships = useMemo(() => data?.pages.flatMap(page => page.items) ?? [], [data?.pages])` (`Relationships.tsx:26-29`) preserves backend order. The `?type` filter is the only client-side input that changes the result; the `?q` free-text search is also forwarded backend-side. NO secondary client-side filter / sort / re-bucketing happens between the API response and the rendered table."
+          a: "No — relationships = data.pages.flatMap(page => page.items) with no sort (Relationships.tsx:26-29); no client-side filtering; ?q and ?type are both forwarded backend-side."
           confidence: STATIC-INFERRED
-          evidence: "Relationships.tsx:26-29 (useMemo with no sort) + lib/hooks/api/dataModelling/relatioships.ts:20-41 (no client-side post-processing in useSearchRelationships)"
+          evidence: "Relationships.tsx:26-29 + relatioships.ts:20-41"
   auth_gates:
     - location: "components/DataModelling/DataModellingRoutes.tsx:40"
-      endpoint: "<Route path='relationships' element={<Relationships />} />"
+      endpoint: "<Route path='relationships' element={<Relationships />} /> → GET /api/relationships"
       questions:
         - q: "What does this route return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?"
-          a: "**Identical behaviour across all four auth modes at the ROUTE layer** (the route is a client-side declaration; auth.type does not branch it). Under `LOGIN_FORM | OAUTH2 | LDAP`, an authenticated session reaches the route, the SPA mounts `<Relationships />`, and `useSearchRelationships` calls `GET /api/relationships?query=&size=30&type=ALL&page=1`. Per ZE sidecar, this backend call succeeds for every authenticated user with no role/permission discrimination — every relationship in the catalog is returned. Under `DISABLED`, an UNAUTHENTICATED caller reaches the SPA bundle, lands on the route, and the backend call ALSO succeeds (per ZE — no SECURITY_RULES match for `/api/relationships/**`, no @PreAuthorize, no service check). Operator-visible: in DISABLED mode the relationship catalog is public to any caller reaching the application port."
+          a: "Identical at the route layer (client-side declaration; auth.type does not branch it). Under LOGIN_FORM/OAUTH2/LDAP an authenticated session mounts the page and the backend call succeeds with no role/permission discrimination; under DISABLED an unauthenticated caller gets the same. NEW at abe51417: the rows returned are narrowed by the visibility trio — hidden/deleted/excluded relationship entities no longer appear in ANY mode (a catalog-hygiene filter, not an authz gate)."
           confidence: STATIC-INFERRED
-          evidence: "DataModellingRoutes.tsx:40 (no auth wrapper) + RelationshipController sidecar `understanding` + alerts route sidecar `security.auth_mode_relevance` (cross-reference for the 4-mode wiring)"
+          evidence: "DataModellingRoutes.tsx:40 + ReactiveDataEntityRelationshipRepositoryImpl.java:78-80 + ZE sidecar understanding"
         - q: "What does an unauthenticated caller see?"
-          a: "Under `LOGIN_FORM | OAUTH2 | LDAP`: Spring Security at the resource layer (per ZH sidecar's cross-reference to OAuthSecurityConfiguration.java) redirects to the auth provider BEFORE the SPA bundle is served — the user never reaches the route. Under `DISABLED`: the SPA bundle ships, `<Relationships />` mounts, and the backend list call returns the full catalog. The UI shows the full Relationships page with no auth challenge."
+          a: "Under LOGIN_FORM/OAUTH2/LDAP the Spring Security resource layer challenges before the SPA serves — the route is never reached. Under DISABLED the full page renders with the full (visible) catalog."
           confidence: STATIC-INFERRED
-          evidence: "DataModellingRoutes.tsx:40 + alerts route sidecar security.auth_mode_relevance + RelationshipController sidecar `security.auth_mode_relevance.[DISABLED]`"
+          evidence: "DataModellingRoutes.tsx:40 + ZE sidecar security.auth_mode_relevance"
         - q: "What does a wrong-role caller see?"
-          a: "**No role-based discrimination.** A caller authenticated with NO write permissions (e.g. only DATA_ENTITY_VIEW) still reaches the route, still sees the full table, still can search and switch tabs, still can navigate to any row's data-entity detail page (which has its own gating per `DataEntityController` — out of scope for this sidecar). A caller authenticated with EVERY permission sees identical behaviour. P-167 Block A pins this with a fresh reader-only user; the static prediction is that page H1 renders and row count >= seeded count."
+          a: "No role discrimination statically; a reader-only user gets the identical page. Runtime confirmation under a permission-bearing auth mode is STILL pending — P-167 Block A (IT-077 runs AUTH_TYPE=DISABLED and cannot answer it)."
           confidence: PROBE-NEEDED
-          evidence: "P-167 (lineage/odd-platform/probes/P-167.yaml — Block A)"
-        - q: "Where does the gate live — route, controller annotation, downstream service, or nowhere?"
-          a: "**NOWHERE.** (a) Route mount at `App.tsx:74` — `WithPermissionsProvider` is absent (contrast LookupTables at lines 75-87 which DOES wrap). (b) Inner route at `DataModellingRoutes.tsx:40` — bare `element={<Relationships />}`, no wrapper (contrast siblings at lines 19-25, 31-37). (c) Component layer — `Relationships.tsx:16-84` reads URL state and dispatches API calls; no permission checks. (d) Backend controller — `RelationshipController.java` has no @PreAuthorize (per ZE sidecar). (e) SECURITY_RULES table — no entry for `/api/relationships/**` (per ZE sidecar). (f) Service — `RelationshipsServiceImpl` has no permission check (per ZE sidecar). (g) Repository — no owner JOIN, no permission filter (per ZE sidecar). The chain is open end-to-end for every authenticated caller."
+          evidence: "P-167 (lineage/odd-platform/probes/P-167.yaml — Block A; Blocks B/C/D superseded by IT-077 + the repo test)"
+        - q: "Where does the gate live — route, controller annotation, downstream service, repository, or nowhere?"
+          a: "NOWHERE, unchanged and now doubly documented as deliberate: route unwrapped (DataModellingRoutes.tsx:40, contrast :17-26/:27-39), no @PreAuthorize / SECURITY_RULES / service / repository gate (per ZE sidecar), CTRIB-006 scope exclusion names the read-open posture (contributor/CTRIB-006.md:343-344), and the live doc page states it verbatim (WebFetched 2026-06-12)."
           confidence: STATIC-INFERRED
-          evidence: "App.tsx:74 + DataModellingRoutes.tsx:40 + components/DataModelling/Relationships.tsx:16-84 + RelationshipController sidecar `understanding` + RelationshipController sidecar `concepts.invariants.[No authorization gate at any layer]`"
-  resource_boundaries: []
+          evidence: "DataModellingRoutes.tsx:17-40 + ZE sidecar + contributor/CTRIB-006.md:343-344 + WebFetch (2026-06-12, 200)"
+  resource_boundaries:
+    - location: "lib/hooks/api/dataModelling/relatioships.ts:25-26 (useInfiniteQuery cache) + src/index.tsx:30-48 (app QueryClient)"
+      kind: cache
+      questions:
+        - q: "Can two simultaneous calls produce corrupted state?"
+          a: "No server-side state — the surface is read-only GET. Client-side, react-query deduplicates in-flight fetches per queryKey ['searchRelationships', query, size, type]; two components reading the same key share one request."
+          confidence: STATIC-INFERRED
+          evidence: "relatioships.ts:25-33"
+        - q: "Is the call replay-safe?"
+          a: "Yes — pure read; same params return the same page modulo concurrent catalog mutations. No write side effects anywhere on the chain (contrast e.g. the data-entity detail view_count increment)."
+          confidence: STATIC-INFERRED
+          evidence: "relatioships.ts:20-41 + ReactiveDataEntityRelationshipRepositoryImpl.java:57-139 (SELECT-only)"
+        - q: "If a cache fronts this, what is the TTL / eviction key / staleness window?"
+          a: "The app QueryClient overrides only retry: false and refetchOnWindowFocus: false (index.tsx:39-43); staleTime/gcTime are NOT raised, so tanstack's library defaults govern staleness — observable: switching ?type or ?q changes the queryKey (fresh fetch); returning to a previously-fetched key inside the gc window paints cached pages, then revalidates on remount. Window-focus revalidation is OFF, so a stale list persists across alt-tab until remount or key change."
+          confidence: STATIC-INFERRED
+          evidence: "src/index.tsx:30-48 + relatioships.ts:25-26"
   request_inputs:
-    - location: "Relationships.tsx:17-19"
+    - location: "Relationships.tsx:17-18 (read) + RelationshipsSearchInput.tsx:8-12 (write)"
       input_kind: query-param
       input_name: "q"
       questions:
         - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "`?q` is the conventional shorthand for free-text search query — the operator-facing label on the input field is 'Search relationships' (`RelationshipsSearchInput.tsx:17`). The name promises: filter the rendered relationship list by free-text match against relationship-row display names."
+          a: "Free-text search; the control's label is 'Search relationships' (RelationshipsSearchInput.tsx:17) — filter the list by relationship name."
           confidence: STATIC-INFERRED
-          evidence: "Relationships.tsx:18 + RelationshipsSearchInput.tsx:17"
+          evidence: "RelationshipsSearchInput.tsx:17 + Relationships.tsx:18"
         - q: "When supplied, what does the implementation USE the input for?"
-          a: "Forwarded verbatim to `useSearchRelationships({ query, type, size })` at `Relationships.tsx:20-24`; that hook passes `query` to `relationshipApi.getRelationships({query, size, type, page})` at `relatioships.ts:30`. Per ZE sidecar, the backend binds `query` to `DATA_ENTITY.EXTERNAL_NAME.containsIgnoreCase(inputQuery)` at `ReactiveDataEntityRelationshipRepositoryImpl.java:69` — the SCANNED relationship-class data_entity's external_name, NOT source/target entity names."
+          a: "Relationships.tsx:18 → useSearchRelationships({query,...}) :20-24 → relationshipApi.getRelationships :28-33 → repository binds DATA_ENTITY.EXTERNAL_NAME.containsIgnoreCase(inputQuery) on the relationship-class row (ReactiveDataEntityRelationshipRepositoryImpl.java:69-71). First-hand SQL read this pass."
           confidence: STATIC-INFERRED
-          evidence: "Relationships.tsx:18-24 + relatioships.ts:30 + ZE sidecar `concepts.invariants.[Search query filters relationship-row external_name]`"
+          evidence: "Relationships.tsx:18-24 + relatioships.ts:28-33 + ReactiveDataEntityRelationshipRepositoryImpl.java:69-71"
         - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "**MATCHES.** Label is 'Search relationships' — backend searches relationship-row name. The input's promise (free-text search by relationship name) aligns with the SQL (LIKE on relationship-row external_name). The UI label does NOT promise to search by source/target entity name; if it did, this would be a Category F drift. Operator-visible alignment: typing 'orders→customers' (a relationship name) returns the matching relationship row; typing 'customers' (an entity name) does NOT return relationships pointing to a customers table (per ZE — only relationship-row external_name is matched)."
+          a: "MATCHES — the label promises relationship-name search; the SQL matches the relationship-row external_name. It does NOT search source/target entity names — and that boundary is now a DOCUMENTED caveat on the live page (verbatim: 'The search input filters by relationship name only — not by source or target entity name'), plus a deliberate D6 scope exclusion in CTRIB-006."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "RelationshipsSearchInput.tsx:17 + ZE sidecar concepts.invariants.[Search query filters relationship-row external_name]"
+          evidence: "RelationshipsSearchInput.tsx:17 + ReactiveDataEntityRelationshipRepositoryImpl.java:69-71 + WebFetch (2026-06-12, 200) + contributor/CTRIB-006.md:345-348"
         - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "n/a — MATCHES."
+          a: "n/a — MATCHES; the one foreseeable wrong assumption (searching by an endpoint dataset's name) is pre-empted by the live doc caveat pointing at the dataset detail page's Relationships tab."
           confidence: STATIC-INFERRED
-          evidence: "n/a"
-        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "**NONE for `?q`** — the backend does NOT have a sibling search column that would be more aligned with operator intent; relationship-row external_name IS the canonical user-facing identifier for a relationship. The unused-by-search columns are source/target entity names — but the UI label does not promise to search those, so this is not an available-but-unused smell for THIS input."
+          evidence: "WebFetch (2026-06-12, 200)"
+        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used?"
+          a: "NONE for 'q' — relationship-row external_name IS the user-facing relationship identifier. The unsearched source/target name columns are a scope boundary, not an available-but-unused smell for THIS input name."
           confidence: STATIC-INFERRED
-          evidence: "ZE sidecar"
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:69-71, 110-113"
       routes_to_finding: "n/a — MATCHES (no drift)"
-    - location: "Relationships.tsx:19"
+    - location: "Relationships.tsx:19 (read, validated) + RelationshipsTabs.tsx:28-31 (read, validated) + :35-45 (write, canonical values only)"
       input_kind: query-param
       input_name: "type"
       questions:
         - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "`?type` is driven by the ALL/ERD/Graph tab strip (`RelationshipsTabs.tsx:6-23`). The tab labels promise: filter the list to only ERD relationships (ENTITY_RELATIONSHIP class) OR only Graph relationships (GRAPH_RELATIONSHIP class) OR ALL types. The name + tab labels promise a CLASS filter on the rendered relationships."
+          a: "Filter the list to one relationship class — tab labels All / ERD / Graph map to RelationshipsType.ALL | ERD | GRAPH (RelationshipsTabs.tsx:8-24; enum at components.yaml:4199-4204, re-verified this pass)."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipsTabs.tsx:6-23 + Relationships.tsx:19"
+          evidence: "RelationshipsTabs.tsx:8-24 + odd-platform-specification/components.yaml:4199-4204"
         - q: "When supplied, what does the implementation USE the input for?"
-          a: "Read from URL search params at `Relationships.tsx:19` and cast to `RelationshipsType` enum (default ALL). Forwarded to `useSearchRelationships({ query, type, size })` at line 23 → `relationshipApi.getRelationships({query, size, type, page})` at `relatioships.ts:31` → backend `RelationshipController.getRelationships(page, size, type, query, exchange)` per ZE → `relationshipsService.getRelationships(page, size, type, query)` → repository filters per ZE."
+          a: "Raw string → parseRelationshipsType (Relationships.tsx:19; unknown → ALL) → useSearchRelationships :20-24 → API :28-33 → repository JOIN condition: type == ALL ? noCondition : RELATIONSHIPS.RELATIONSHIP_TYPE.eq(type.getValue()) (ReactiveDataEntityRelationshipRepositoryImpl.java:107-109). NOTE: the narrowing is applied AFTER pagination and is absent from the COUNT — see bugs_limitations_corner_cases + P-248."
           confidence: STATIC-INFERRED
-          evidence: "Relationships.tsx:19-24 + relatioships.ts:31 + ZE sidecar `concepts.operations.[getRelationships]`"
+          evidence: "Relationships.tsx:19-24 + parseRelationshipsType.ts:6-9 + ReactiveDataEntityRelationshipRepositoryImpl.java:107-109"
         - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "**MATCHES.** The enum values ERD / GRAPH / ALL at `components.yaml:4193-4198` align with the tab labels at `RelationshipsTabs.tsx:9-21` (`name: 'All'`, `name: 'ERD'`, `name: 'Graph'` mapped to `RelationshipsType.ALL | ERD | GRAPH`). The backend filtering by type is class-id based per ZE — ERD/GRAPH are two narrowings of the DATA_RELATIONSHIP entity class. P-167 Block B and Block C pin the runtime confirmation that URL → backend round-trip → distinct row subsets."
+          a: "MATCHES for row CONTENT (each listed row is of the selected type — pinned by the repo test's ERD assertion and IT-077's e2e round-trip, GREEN on the working-tree SUT per the run-log). The page-level COUNT does NOT honor the type narrowing — recorded as the new MEDIUM finding rather than a Category F drift, because the parameter does filter what it names; it is the total metadata that ignores it."
           drift: NONE
-          confidence: PROBE-NEEDED
-          evidence: "P-167 Blocks B and C (lineage/odd-platform/probes/P-167.yaml)"
+          confidence: STATIC-INFERRED
+          evidence: "ReactiveDataEntityRelationshipRepositoryImplTest.java:80-86 + integration-tests/protocols/IT-077-erd-graph-relationships.md:59-60, 82-88 + ReactiveDataEntityRelationshipRepositoryImpl.java:136-138"
         - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "n/a — MATCHES expected."
+          a: "n/a — MATCHES on row content. The adjacent wrong assumption (the badge total reflects the active tab) is the P-248 finding."
           confidence: STATIC-INFERRED
-          evidence: "n/a"
-        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "**NONE** — `type` is the canonical filter name; no alternative entity field would more closely match the input's name. The `RelationshipsType` enum has exactly the three values the UI exposes."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:136-138"
+        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used?"
+          a: "NONE — RELATIONSHIPS.RELATIONSHIP_TYPE is exactly the column the name implies, and it IS used (in the JOIN). The mis-aligned artifact is the COUNT query's conditionList lacking the same predicate."
           confidence: STATIC-INFERRED
-          evidence: "components.yaml:4193-4198"
-      routes_to_finding: "n/a — MATCHES (no drift)"
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:107-109 vs :136-138"
+      routes_to_finding: "bugs_limitations_corner_cases.[type-filtered pagination/count] (MEDIUM) — not a Category F drift"
   probes_emitted:
+    - probe_id: P-248
+      question: "On a mixed-type catalog whose first 30-id window is all-GRAPH: does the ERD tab badge claim the un-narrowed total, does page 1 come back empty with nextPage set, and does the UI infinite scroll stall on the empty window (leaving reachable-by-API ERD rows unreachable in the UI)?"
+      probe_path: "lineage/odd-platform/probes/P-248.yaml"
     - probe_id: P-167
-      question: "Does the /data-modelling/relationships route render for a reader-only user with no write permissions; does the ?type tab switch translate into distinct backend calls and distinct row subsets; and does the Target column on RelationshipsListItem render Source data (the statically visible UI bug)?"
+      question: "(Emitted by the 0.4.0 pass.) Reader-only render under a permission-bearing auth mode — Block A still live; Blocks B/C/D superseded by IT-077 + the repository test at abe51417."
       probe_path: "lineage/odd-platform/probes/P-167.yaml"
   stress_summary:
-    triggers_total: 7
-    questions_total: 17
-    answers_static_inferred: 13
-    answers_probe_needed: 2
-    answers_reference: 2
-    drift_flags: 1
+    triggers_total: 9
+    questions_total: 27
+    answers_static_inferred: 24
+    answers_probe_needed: 3
+    answers_reference: 0
+    drift_flags: 0
 ```
 
 ## security
 
-- **auth_mode_relevance**: `INTERNAL_ONLY` — this module is a TypeScript URL-string export consumed by React Router on the client side; it carries no auth predicates, no fetch calls, and no role/permission checks. The route DESTINATION (`<Relationships />`) is reachable under all four `auth.type` values once the user clears the server-side auth-mode gate (which happens at the Spring Security resource layer before the SPA is served — under DISABLED, the resource layer permits anonymous access per ZE sidecar). The route module itself does not branch under any `auth.type` value. — evidence: `relationshipsRoutes.ts:1-7` (no auth-related imports or branches)
-- **ingestion_filter_relevance**: `N/A — UI route declaration, not on the ingestion HTTP surface`. The `auth.ingestion.filter.enabled` flag only gates `POST /ingestion/entities` server-side. — evidence: `relationshipsRoutes.ts:1-7` (not on ingestion path)
+- **auth_mode_relevance**: `INTERNAL_ONLY` — a TypeScript URL-string export consumed client-side; no auth predicates, no fetch, no permission checks in the module. The route DESTINATION is reachable under all four `auth.type` values once the server-side resource layer is cleared (under DISABLED: anonymously). Unchanged at abe51417. — evidence: `relationshipsRoutes.ts:1-7`
+- **ingestion_filter_relevance**: `N/A — UI route declaration, not on the ingestion HTTP surface.` — evidence: `relationshipsRoutes.ts:1-7`
 - **authorization_assertions**: []
-- **owner_scoping**: `N/A — code is not data-scoped`. The Relationships sub-feature has no per-owner scoping at any layer (per ZE sidecar `security.owner_scoping`); the route module surfaces an URL whose downstream behavior is owner-blind across the entire chain.
-- **data_exposure**: `"The literal string '/data-modelling/relationships' is emitted into the rendered HTML/JS bundle for every authenticated session and discoverable to anyone who can fetch the SPA bundle → no audience restriction at this layer; under auth.type=DISABLED the bundle is reachable unauthenticated. The route's downstream behavior (rendering the full relationship catalog) is documented in ZE sidecar's `security.data_exposure` and is out-of-scope for this route-module file but is the operator-relevant consequence of mounting this URL"`
+- **owner_scoping**: `N/A — code is not data-scoped.` The downstream chain remains owner-blind end-to-end (per ZE sidecar; CTRIB-006 deliberately excluded RBAC). NEW at this commit: the chain is no longer VISIBILITY-blind — the list hides soft-DELETED/excluded/hollow entities (`ReactiveDataEntityRelationshipRepositoryImpl.java:78-80`) — a hygiene filter, not owner scoping. — evidence: cited lines + `contributor/CTRIB-006.md:343-344`
+- **data_exposure**: `"The literal '/data-modelling/relationships' ships in the SPA bundle to every session. The downstream page exposes the relationship catalog to every authenticated caller (anonymous under DISABLED) — NARROWED at abe51417 to catalog-visible entities only: soft-DELETED, exclude_from_search and hollow relationship rows no longer appear in the list (they did at 0.27.x). Detail endpoints deliberately retain DELETED-entity reachability (contributor/CTRIB-006.md:352-353). The posture is now documented on the live page with a perimeter-isolation mitigation."`
 - **known_security_gaps**:
-  - "**The `/data-modelling/relationships` route is ungated end-to-end** — no `WithPermissionsProvider` at the route, no @PreAuthorize on `RelationshipController`, no SECURITY_RULES entry for `/api/relationships/**`, no service check, no owner scoping. Any authenticated user sees every relationship across every data source. Under `auth.type=DISABLED`, any unauthenticated caller reaches the page. The doc page (WebFetched 2026-05-26) is silent on visibility scoping. This is route-relevant because the route is the URL that exposes the un-gated chain to the operator; the broader chain-wide finding lives in the ZE sidecar." — evidence: `DataModellingRoutes.tsx:40` + RelationshipController sidecar `security.known_security_gaps` — severity: LOW (the gap is intentional per platform-wide read-collaborative posture; the absence of doc-side disclosure is the operator-relevant part)
+  - "**The route is ungated end-to-end for RBAC** — unchanged, deliberate, and now documented on the live doc page (WebFetched 2026-06-12: 'There is no RBAC gate on the Relationships endpoints'). Severity stays LOW: the read-collaborative intent is named in the fix's scope exclusions and disclosed to operators; the residual operator risk is per-team isolation, which the doc routes to the network perimeter." — evidence: `DataModellingRoutes.tsx:40` + `contributor/CTRIB-006.md:343-344` + WebFetch (2026-06-12, 200) — severity: LOW
 
 ## performance
 
 - **hot_paths**:
-  - "`relationshipsPath()` is invoked at App render time by `DataModellingTabs.tsx:19` (tab declaration, evaluated each time the Sidebar renders) — the function body is `generatePath('${BASE_PATH}/relationships')` with no parameters, returning the literal `/data-modelling/relationships`. The cost is O(1); React Router memoizes the tab strip via the parent's `useMemo` (`DataModellingTabs.tsx:11-23`) so the function is called once per parent re-render at most." — evidence: `relationshipsRoutes.ts:4-6` + `DataModellingTabs.tsx:11-23`
-- **throughput_characteristics**: `N/A — declarative URL-shape module, not on a request/response or streaming path. No batching, no async, no I/O. Page-load and infinite-scroll throughput characteristics live in the Relationships.tsx + useSearchRelationships sidecars (not this route module).`
-- **resource_allocation**: `Trivial — one wrapper function. Bundle-size cost is a few dozen bytes after minification. The 'react-router-dom' import for generatePath is already loaded by every sibling route module.` — evidence: `relationshipsRoutes.ts:1-7`
-- **scaling_characteristics**: `Stateless and pure — relationshipsPath is referentially transparent with no closure over mutable state. Called once per component-tree render that needs the URL; the resulting string is interned by React.` — evidence: `relationshipsRoutes.ts:4-6`
+  - "`relationshipsPath()` is invoked at tab-strip memo time (`DataModellingTabs.tsx:11-23`) — O(1) string build, once per parent re-render at most." — evidence: `relationshipsRoutes.ts:4-6` + `DataModellingTabs.tsx:11-23`
+  - "Every page fetch on the destination runs TWO queries server-side: the windowed list query AND a full `selectCount` over `conditionList` (`ReactiveDataEntityRelationshipRepositoryImpl.java:136-138`) — the count re-executes per infinite-scroll page, not once per filter change. Pre-existing; cheap at catalog scale, linear in relationship-class rows." — evidence: `ReactiveDataEntityRelationshipRepositoryImpl.java:123-138`
+- **throughput_characteristics**: `N/A — declarative URL-shape module; the destination's fetch cadence (30-row windows on scroll) is recorded under stress_findings.orderings.`
+- **resource_allocation**: `Trivial — one wrapper function; bundle cost a few dozen bytes; the react-router-dom import is shared with every sibling route module.` — evidence: `relationshipsRoutes.ts:1-7`
+- **scaling_characteristics**: `Stateless and pure — referentially transparent, no closure over mutable state.` — evidence: `relationshipsRoutes.ts:4-6`
 - **known_performance_gaps**: []
 
 ## upstream_callers
@@ -333,79 +409,72 @@ stress_findings:
 - entry_point: "ui_route:/data-modelling/relationships (in-page tab click)"
   caller_node: "ts react-component:components/DataModelling/DataModellingTabs.tsx:19"
   multiplicity_per_trigger: 1
-  evidence: "DataModellingTabs.tsx:19 — `{ name: t('Relationships'), link: relationshipsPath() }`. `relationshipsPath()` is invoked once per useMemo evaluation; React Router uses the returned string as the tab `link`. Subsequent clicks on the tab fire the React Router navigation but do NOT re-invoke `relationshipsPath()` (the link was computed at memo time)."
+  evidence: "DataModellingTabs.tsx:17-20 — `{ name: t('Relationships'), link: relationshipsPath() }`; invoked once per useMemo evaluation; clicks navigate via the memoised string without re-invoking the builder."
   observation_class: ui-call
 - entry_point: "ui_route:/data-modelling/relationships (direct URL navigation or deep-link)"
   caller_node: "ts react-router:components/DataModelling/DataModellingRoutes.tsx:40"
   multiplicity_per_trigger: 0
-  evidence: "DataModellingRoutes.tsx:40 — `<Route path='relationships' element={<Relationships />} />`. The inner Routes file HARD-CODES the sub-path literal 'relationships' rather than importing `relationshipsPath()` and stripping the BASE_PATH prefix. So this route module is NOT involved in the mount-time URL pattern declaration. The route module's only consumer is the toolbar tab `link` attribute. Recorded with multiplicity 0 to make the asymmetry visible — the inner Routes module duplicates the literal."
+  evidence: "DataModellingRoutes.tsx:40 hard-codes the child literal 'relationships' rather than deriving it from relationshipsPath(); the builder is NOT involved in mount-time pattern matching. Multiplicity 0 keeps the duplication asymmetry visible."
   observation_class: ui-call
   unresolved: false
 
 ## downstream_side_effects
 
 - side_effect_class: page-render
-  description: "When a user clicks the in-page 'Relationships' tab (which uses `relationshipsPath()` as `link`), React Router navigates to `/data-modelling/relationships`. The mount at `DataModellingRoutes.tsx:40` lazy-loads `<Relationships />` (`DataModellingRoutes.tsx:11`) and renders it inside the `<S.Content>` slot of `<DataModelling>` (`DataModelling.tsx:11-13`). The Relationships component fires `useSearchRelationships({ query: '', type: 'ALL', size: 30 })` on mount (`Relationships.tsx:20-24`), causing a backend round-trip to `GET /api/relationships?query=&size=30&type=ALL&page=1`. The route module itself does NOT cause the fetch — the destination component does — but this is the observable consequence of the URL the route module produces."
-  evidence: "DataModellingTabs.tsx:19 + DataModellingRoutes.tsx:40 + DataModelling.tsx:11-13 + Relationships.tsx:20-24 + lib/hooks/api/dataModelling/relatioships.ts:20-41"
-  cardinality_per_call: 1
+  description: "Navigation to the URL this builder produces mounts lazy-loaded `<Relationships />` inside the pillar shell and fires `GET /api/relationships?query=&size=30&type=ALL&page=1` on mount (empty `q`; `type=ALL` is now the parseRelationshipsType fallback for an absent/unknown param). Each scroll past the threshold fires one further page fetch. The response at abe51417 contains only catalog-visible relationship entities, each row carrying DISTINCT source and target dataset refs rendered in their own columns."
+  evidence: "DataModellingTabs.tsx:19 + DataModellingRoutes.tsx:11, 40 + Relationships.tsx:17-24, 63-78 + parseRelationshipsType.ts:6-9 + relatioships.ts:20-41 + ReactiveDataEntityRelationshipRepositoryImpl.java:67-87"
+  cardinality_per_call: "1 mount fetch + 0..N scroll fetches per navigation (N bounded by ceil(total/30) - 1)"
   reachable_from_entry_points:
-    - "ui_route:/data-modelling/relationships (any deep-link or tab click)"
+    - "ui_route:/data-modelling/relationships (tab click or deep-link)"
 
 ## sources
 
-- understanding ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1-7 + odd-platform-ui/src/routes/dataModelling/dataModelling.ts:1-7 + odd-platform-ui/src/routes/dataModelling/index.ts:1-3 + odd-platform-ui/src/routes/index.ts:10 + odd-platform-ui/src/components/App.tsx:74 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:1-45 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:1-32 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:1-84 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:1-57 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:1-85 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:1-25 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTitle.tsx:1-27 + odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:1-41 + odd-platform-specification/components.yaml:4193-4198 + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-05-26, status 200) + RelationshipController sidecar + dataModelling route sidecar
+- frontmatter.extracted_at_commit / enriched_at_commit ← orchestrator-provided HEAD of contrib/CTRIB-006-relationships-hardening (abe51417); no Bash in this subagent, so the commit id is taken from the refresh input rather than `git rev-parse`
+- understanding ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1-7 + odd-platform-ui/src/routes/dataModelling/dataModelling.ts:1-7 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:1-46 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:1-33 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:1-85 + odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:1-9 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:49-83 + odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRelationshipRepositoryImpl.java:57-139 + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-06-12, 200) + backlog/docs/DOC-446.md:3-11
 - concepts.entities.[relationshipsPath] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6
-- concepts.entities.[BASE_PATH import] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:2
-- concepts.entities.[component-tier consumers] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:11, 40 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:6-54 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:5-23 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:49-83 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTitle.tsx:17-25
-- concepts.entities.[query-string state] ← odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:9-12 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:18 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:34-43
-- concepts.entities.[backend boundary] ← odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:20-41 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:23
-- concepts.entities.[RelationshipsType enum] ← odd-platform-specification/components.yaml:4193-4198 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:6
-- concepts.operations.[build URL] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:19
-- concepts.invariants.[parameterless] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:52 (navigates to dataEntityDetailsPath, not to a /data-modelling sub-detail URL)
-- concepts.invariants.[route module decoupled from inner Routes literal] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:5 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40
-- concepts.invariants.[no WithPermissionsProvider wrapper] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:19-25, 31-37, 40 + RelationshipController sidecar `understanding`
-- concepts.invariants.[q and type are URL-state] ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:17-19 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:9-12 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:34-43
-- concepts.invariants.[size 30 hard-coded] ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:23
-- concepts.invariants.[search query free-text matches relationship-row external_name] ← RelationshipController sidecar concepts.invariants + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:17
-- concepts.audiences.[every authenticated user] ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:13-22 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + RelationshipController sidecar
-- concepts.audiences.[doc-page silence on visibility] ← WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-05-26, status 200) + WebFetch https://docs.opendatadiscovery.org/features/data-modelling (2026-05-26, status 200)
-- dependencies_semantic.requires-feature ← odd-platform-ui/src/components/App.tsx:74 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:11, 40 + odd-platform-ui/src/components/DataModelling/Relationships.tsx + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx + RelationshipController sidecar
-- dependencies_semantic.requires-runtime.[react-router-dom] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1
-- dependencies_semantic.requires-runtime.[import asymmetry] ← dataModelling route sidecar implicit_adrs.[generatePath uniformly within dataModelling subtree]
-- dependencies_semantic.additional_coupling.[exposed via routes/index] ← odd-platform-ui/src/routes/dataModelling/index.ts:2 + odd-platform-ui/src/routes/index.ts:10 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:5
-- dependencies_semantic.additional_coupling.[BASE_PATH consumption silent] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:2 + dataModelling route sidecar bugs_limitations_corner_cases
-- dependencies_semantic.additional_coupling.[inner Route literal not derived] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:5
-- tests_coverage_semantic.test_files ← Grep across odd-platform-ui/src/ for `relationshipsPath` and `RelationshipsListItem` in `*.test.*` / `*.spec.*` returned no matches at commit 4ec2b20
-- docs_link_semantic.inferred_docs.[0] ← WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-05-26, status 200)
-- docs_link_semantic.inferred_docs.[1] ← WebFetch https://docs.opendatadiscovery.org/features/data-modelling (2026-05-26, status 200)
-- docs_link_semantic.inferred_docs.[2] ← WebFetch https://docs.opendatadiscovery.org/active-platform-features/relationships (2026-05-26, status 404)
-- docs_link_semantic.doc_drift_findings.[Target column bug] ← WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:64-81
-- docs_link_semantic.doc_drift_findings.[type tabs match] ← WebFetch + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:6-23 + odd-platform-specification/components.yaml:4193-4198
-- docs_link_semantic.doc_drift_findings.[size 30 match] ← WebFetch + odd-platform-ui/src/components/DataModelling/Relationships.tsx:23, 63-77
-- docs_link_semantic.doc_drift_findings.[doc silent on visibility scoping] ← WebFetch + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + RelationshipController sidecar
-- docs_link_semantic.doc_drift_findings.[doc overstates type-specific row-click routing] ← WebFetch + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:52
-- implicit_adrs.[no permission wrapper deliberate] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + RelationshipController sidecar understanding
-- implicit_adrs.[sub-path literal duplicated] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:5 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + odd-platform-ui/src/routes/dataModelling/queryExamplesRoutes.ts:30 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:18, 28
-- implicit_adrs.[Relationships is second tab] ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:11-23 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:16 + odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/ToolbarTabs.tsx:50-54
-- bugs_limitations_corner_cases.[Target column bug] ← odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:64-81 + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships
-- bugs_limitations_corner_cases.[zero-authz exposure] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + RelationshipController sidecar
-- bugs_limitations_corner_cases.[size 30 hard-coded] ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:23
-- bugs_limitations_corner_cases.[inner Routes literal decoupled] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40
-- bugs_limitations_corner_cases.[no unit tests] ← Grep across odd-platform-ui/src/ for `relationshipsPath` in test/spec files returned no matches
-- bugs_limitations_corner_cases.[generatePath no-op] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1, 4-6 + dataModelling route sidecar
-- stress_findings.name_behavior_pairs.[relationshipsPath] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6
-- stress_findings.name_behavior_pairs.[Relationships pillar member] ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:16-84 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:64-81 + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships
-- stress_findings.orderings ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:20-29, 63-77 + odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:20-41 + RelationshipController sidecar
-- stress_findings.auth_gates ← odd-platform-ui/src/components/App.tsx:74 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:16-84 + RelationshipController sidecar
-- stress_findings.request_inputs.[q] ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:17-24 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:5-23 + odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:30 + RelationshipController sidecar
-- stress_findings.request_inputs.[type] ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:19-24 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:6-54 + odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:31 + odd-platform-specification/components.yaml:4193-4198 + RelationshipController sidecar
-- stress_findings.probes_emitted.[P-167] ← lineage/odd-platform/probes/P-167.yaml
-- security.auth_mode_relevance ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1-7 + RelationshipController sidecar security.auth_mode_relevance
-- security.known_security_gaps ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + RelationshipController sidecar
-- performance.hot_paths ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:11-23
-- upstream_callers.[DataModellingTabs tab link] ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:19
-- upstream_callers.[DataModellingRoutes mount] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40
-- downstream_side_effects.[page-render] ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:19 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + odd-platform-ui/src/components/DataModelling/DataModelling.tsx:11-13 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:20-24 + odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:20-41
+- concepts.entities.[BASE_PATH] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:2 + odd-platform-ui/src/routes/dataModelling/dataModelling.ts:3
+- concepts.entities.[component-tier consumers] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:11, 40 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:7-55 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:5-22 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:49-83 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTitle.tsx:17-24
+- concepts.entities.[parseRelationshipsType] ← odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:1-9 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:14, 19 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:5, 28-31
+- concepts.entities.[query-string state] ← odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:8-12 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:17-19 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:35-45
+- concepts.entities.[backend boundary] ← odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:20-41 + odd-platform-ui/src/lib/hooks/api/utils.ts:8-20 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:23
+- concepts.entities.[RelationshipsType enum] ← odd-platform-specification/components.yaml:4199-4204 (re-verified this pass; the prior cite 4193-4198 is stale)
+- concepts.operations ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:19 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40
+- concepts.invariants.[parameterless] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:52
+- concepts.invariants.[decoupled literal] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:5 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40
+- concepts.invariants.[no WithPermissionsProvider] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:17-26, 27-39, 40 + contributor/CTRIB-006.md:343-344
+- concepts.invariants.[unknown type cannot reach API] ← odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:6-9 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:19 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTabs.tsx:28-31, 37-41
+- concepts.invariants.[visibility trio] ← odd-platform-api/.../repository/reactive/ReactiveDataEntityRelationshipRepositoryImpl.java:75-80, 136-138
+- concepts.invariants.[size 30] ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:23
+- concepts.invariants.[q scope] ← odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:69-71 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsSearchInput.tsx:17
+- concepts.audiences ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:17-20 + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-06-12, 200) + backlog/docs/DOC-446.md:3-11
+- dependencies_semantic ← odd-platform-ui/src/components/App.tsx:17, 40, 80 + odd-platform-ui/src/routes/dataModelling/index.ts:2 + odd-platform-ui/src/routes/index.ts:10 + odd-platform-ui/src/index.tsx:30-48 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:5
+- tests_coverage_semantic.covered ← odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRelationshipRepositoryImplTest.java:18-95 + integration-tests/protocols/IT-077-erd-graph-relationships.md:1-88 + integration-tests/e2e/specs/erd-graph-relationships.spec.ts:1-54
+- tests_coverage_semantic.uncovered.[type-window] ← ReactiveDataEntityRelationshipRepositoryImplTest.java:80-86 (type assertions check subsets, not totals) + lineage/odd-platform/probes/P-248.yaml
+- tests_coverage_semantic.gaps.[no UI unit tests] ← Grep for `relationshipsPath` / `parseRelationshipsType` across odd-platform-ui/src/ in `*.{test,spec}.{ts,tsx}` — zero matches at abe51417
+- docs_link_semantic.inferred_docs.[0] ← WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-06-12, status 200)
+- docs_link_semantic.inferred_docs.[pending_release] ← backlog/docs/DOC-446.md:3-11 + contributor/CTRIB-006.md:324-335
+- docs_link_semantic.inferred_docs.[pillar page] ← WebFetch https://docs.opendatadiscovery.org/features/data-modelling (2026-06-12, status 200)
+- docs_link_semantic.inferred_docs.[404 guard] ← WebFetch https://docs.opendatadiscovery.org/active-platform-features/relationships (2026-05-26 pass, status 404; not re-fetched)
+- docs_link_semantic.doc_drift_findings ← the two 2026-06-12 WebFetches + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:73-81 + odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:6-9 + odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:69-71, 78-80, 136-138 + contributor/CTRIB-006.md:341-357
+- implicit_adrs.[validated fallback] ← odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:3-9
+- implicit_adrs.[read-open deliberate] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:17-40 + contributor/CTRIB-006.md:343-344 + WebFetch (2026-06-12, 200)
+- implicit_adrs.[duplicated literal] ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:5 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:18, 28, 40 + odd-platform-ui/src/routes/dataModelling/queryExamplesRoutes.ts:29-38
+- implicit_adrs.[second tab] ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:11-23 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:16 + odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/ToolbarTabs.tsx:50-54
+- bugs_limitations_corner_cases.[type-window/count] ← odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:67-87, 99-121, 136-138 + odd-platform-ui/src/lib/hooks/api/utils.ts:8-20 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:36 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsTitle.tsx:21 + contributor/CTRIB-006.md:341-357
+- bugs_limitations_corner_cases.[read-open documented] ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40 + WebFetch (2026-06-12, 200) + contributor/CTRIB-006.md:343-344
+- bugs_limitations_corner_cases.[historical fixes] ← odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:64-81 + odd-platform-ui/src/components/shared/elements/Relationships/RelationshipTypes/GraphRelationship.tsx:28-35, 55-62 + odd-platform-ui/src/components/shared/elements/Relationships/RelationshipTypes/EntityRelationship.tsx:29-36 + odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:6-9
+- bugs_limitations_corner_cases.[P-167 state] ← lineage/odd-platform/probes/P-167.yaml:6 + integration-tests/protocols/IT-077-erd-graph-relationships.md:82-88
+- stress_findings.tunables ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:23, 31-34, 63-76 + odd-platform-ui/src/lib/hooks/api/utils.ts:13-14
+- stress_findings.name_behavior_pairs ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:46-62 + odd-platform-ui/src/components/DataModelling/Relationships/RelationshipsListItem.tsx:64-81 + odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:1-9
+- stress_findings.orderings ← odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:67-121 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:26-29, 72-74 + odd-platform-ui/src/lib/hooks/api/utils.ts:13-14
+- stress_findings.auth_gates ← odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:17-40 + odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:78-80 + contributor/CTRIB-006.md:343-344
+- stress_findings.resource_boundaries ← odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:20-41 + odd-platform-ui/src/index.tsx:30-48
+- stress_findings.request_inputs ← odd-platform-ui/src/components/DataModelling/Relationships.tsx:17-24 + odd-platform-ui/src/components/DataModelling/Relationships/parseRelationshipsType.ts:6-9 + odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:69-71, 107-109, 136-138 + odd-platform-specification/components.yaml:4199-4204
+- stress_findings.probes_emitted ← lineage/odd-platform/probes/P-248.yaml (written this pass) + lineage/odd-platform/probes/P-167.yaml (0.4.0 pass)
+- security ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:1-7 + odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:78-80 + contributor/CTRIB-006.md:343-353 + WebFetch (2026-06-12, 200)
+- performance ← odd-platform-ui/src/routes/dataModelling/relationshipsRoutes.ts:4-6 + odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:11-23 + odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:123-138
+- upstream_callers ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:17-20 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:40
+- downstream_side_effects ← odd-platform-ui/src/components/DataModelling/DataModellingTabs.tsx:19 + odd-platform-ui/src/components/DataModelling/DataModellingRoutes.tsx:11, 40 + odd-platform-ui/src/components/DataModelling/Relationships.tsx:17-24, 63-78 + odd-platform-ui/src/lib/hooks/api/dataModelling/relatioships.ts:20-41 + odd-platform-api/.../ReactiveDataEntityRelationshipRepositoryImpl.java:67-87
 
 ## confidence_per_field
 
@@ -413,13 +482,13 @@ stress_findings:
 - concepts: HIGH
 - dependencies_semantic: HIGH
 - tests_coverage_semantic: HIGH
-- docs_link_semantic: HIGH
+- docs_link_semantic: HIGH (live pages re-fetched this session; the 0.28.0 train entry is LOW by rule until post-release verification)
 - implicit_adrs: HIGH
-- bugs_limitations_corner_cases: HIGH
+- bugs_limitations_corner_cases: HIGH (the new type-window finding is fully static-traced; only its scroll-stall CONSEQUENCE is probe-gated — P-248)
 - security: HIGH
 - performance: HIGH
 - upstream_callers: HIGH
 - downstream_side_effects: HIGH
-- stress_findings: HIGH
+- stress_findings: HIGH (24/27 STATIC-INFERRED; the 3 PROBE-NEEDED items are corner-case multiplicities, not the node's load-bearing claims)
 
 ## Maintainer notes

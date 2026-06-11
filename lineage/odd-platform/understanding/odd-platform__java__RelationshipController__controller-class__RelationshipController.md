@@ -3,15 +3,15 @@ node_id: "odd-platform java RelationshipController controller-class:Relationship
 node_kind: controller-class
 axis: controllers
 extracted_at_commit: 4ec2b20
-enriched_at_commit: 4ec2b20
+enriched_at_commit: abe51417
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.4.0
+prompt_version: file-analyser/0.5.0
 schema_version: v0.3.0
 enrichment_status: complete
 confidence_overall: HIGH
-session_id: session-2026-05-25-ZE-RelationshipController-class
-feature_hint: "P-02 Data Modelling — ERD/graph relationship list + detail surface. Three endpoints (getRelationships / getERDRelationshipById / getGraphRelationshipById) on the /api/relationships top-level path. First sidecar of the P-02 Data Modelling pillar at the relationship-class data-entity boundary. Retry of batch-T deferral (socket-error). Pairs with the dataset-scoped variant on DatasetController (getDataSetRelationships → GET /api/datasets/{data_entity_id}/relationships)."
-related_features: []
+session_id: session-2026-06-12-01-RelationshipController-refresh
+feature_hint: "F-037 / P-02 Data Modelling — ERD/graph relationship list + detail surface. Three endpoints (getRelationships / getERDRelationshipById / getGraphRelationshipById) on the /api/relationships top-level path. REFRESH of the 2026-05-25 sidecar: the downstream chain changed on branch contrib/CTRIB-006-relationships-hardening @ abe51417 (the odd-platform#1752 / PLT-056 fix, ships 0.28.0). Pairs with the dataset-scoped variant on DatasetController (getDataSetRelationships → GET /api/datasets/{data_entity_id}/relationships)."
+related_features: ["F-037"]
 related_pillar_features: ["P-02"]
 ---
 
@@ -19,366 +19,325 @@ related_pillar_features: ["P-02"]
 
 ## understanding
 
-A 44-line thin reactive delegate (`RelationshipController.java:14-44`)
-that implements the OpenAPI-generated `RelationshipApi` interface and
-forwards THREE read operations — `getRelationships` (paged list with
-type filter + search), `getERDRelationshipById`, and
-`getGraphRelationshipById` — to `RelationshipsService` (line 17 — DI
-field). The class is the external surface for `GET /api/relationships`,
-`GET /api/relationships/erd/{relationship_id}`, and `GET
-/api/relationships/graph/{relationship_id}` (per
-`openapi.yaml:4140-4192`). It is the relationship-class data-entity
-list-and-detail half of the P-02 Data Modelling feature surface; the
-sibling dataset-scoped surface (`GET
-/api/datasets/{data_entity_id}/relationships`) lives on
-DatasetController. **No authorization is enforced at any layer** — the
-controller has no `@PreAuthorize`, the SECURITY_RULES table at
-`SecurityConstants.java:95-355` has NO matcher for
-`/api/relationships/**`, the service applies no permission check, and
-the repository SQL filters only by
-`entity_class_ids = [DATA_RELATIONSHIP.getId()=9]`. Any authenticated
-caller sees every relationship across every data source the platform
-has ever ingested; under `auth.type=DISABLED` every endpoint is
-reachable unauthenticated. **The `relationshipId` path parameter
-name is misaligned with the SQL** — the repository filters by
-`relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)`
-(`ReactiveRelationshipsRepositoryImpl.java:194`), the
-relationship-class data entity's `data_entity.id`, NOT the
-`relationships.id` primary key; the round-trip works for the UI
-(list returns data_entity_ids; detail consumes data_entity_ids)
-but a third-party caller reading the OpenAPI spec at face value and
-supplying the actual `relationships.id` gets a 404.
+A 44-line thin reactive delegate (`odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/RelationshipController.java:14-44`, unchanged at abe51417) that implements the OpenAPI-generated `RelationshipApi` and forwards THREE read operations — `getRelationships` (paged list with type filter + name search), `getERDRelationshipById`, `getGraphRelationshipById` — to `RelationshipsService` (line 17). It is the HTTP surface of `GET /api/relationships`, `GET /api/relationships/erd/{relationship_id}` and `GET /api/relationships/graph/{relationship_id}` (`odd-platform-specification/openapi.yaml:4140-4192`). **As of the #1752 fix (commit 122a0823) the list path applies the catalog's default visibility trio** — `HOLLOW = false`, `STATUS != DELETED(5)`, `EXCLUDE_FROM_SEARCH null/false` (`ReactiveDataEntityRelationshipRepositoryImpl.java:75-80`, mirroring `ReactiveDataEntityRepositoryImpl.getDataEntityDefaultConditions` at lines 970-976) — so soft-deleted / hollow / excluded relationship entities are no longer listed; the **detail-by-id endpoints apply no visibility predicate** and still serve such rows on direct id access. **The `relationship_id` path parameter is, by now-DOCUMENTED contract (commit abe51417, `components.yaml:4391-4402`), the relationship-class data entity's `data_entity.id`** — not the `relationships` table PK; the payload's `erd_relationship_id` / `graph_relationship_id` are internal detail-record ids that do not round-trip (404), as the spec now states and IT-077 green-locks. **No authorization gate exists at any layer** (unchanged, deliberate): no `@PreAuthorize`, no `SECURITY_RULES` matcher for `/api/relationships/**`, no owner/namespace/data-source scoping — the platform-wide read-collaborative posture, now stated on the live feature page.
 
 ## concepts
 
 - entities: [
-    "DataEntityRelationshipList (paged response — items + PageInfo — `RelationshipController.java:5` + `components.yaml:4066-4077`)",
-    "DataEntityRelationshipDetails (per-relationship payload, allOf DataEntityRelationship + ERDRelationshipDetails OR GraphRelationshipDetails — `RelationshipController.java:5` + `components.yaml:4119-4127`)",
-    "RelationshipsType (enum: ERD / GRAPH / ALL — `RelationshipController.java:7` + `components.yaml:4193-4198`)",
+    "DataEntityRelationshipList (paged response — items + PageInfo — `RelationshipController.java:6` + `components.yaml` DataEntityRelationshipList)",
+    "DataEntityRelationshipDetails (per-relationship payload, allOf DataEntityRelationship + ERDRelationshipDetails OR GraphRelationshipDetails — `RelationshipController.java:5`)",
+    "ERDRelationshipDetails.erd_relationship_id / GraphRelationshipDetails.graph_relationship_id (internal detail-record ids; documented as NOT valid `relationship_id` values — `components.yaml:4138-4143, 4175-4180`; populated from `erd_relationship_details.id` at `ErdRelationshipMapper.java:21`)",
+    "RelationshipsType (enum ERD / GRAPH / ALL — `RelationshipController.java:7`; required query param per `components.yaml:4404-4407`)",
     "RelationshipApi (OpenAPI-generated interface — `RelationshipController.java:4` import + `:16` implements clause)",
-    "ServerWebExchange (Spring WebFlux per-request context — line 11; accepted because the generated `RelationshipApi` signature requires it; the controller body never reads it)",
-    "RelationshipsService (DI dependency — line 17; the service-layer facade)",
-    "Mono<ResponseEntity<T>> (reactive return for every method — lines 20, 30, 38)",
-    "implicit: DATA_RELATIONSHIP(9) data-entity-class — the class id the repository filters by (`ReactiveDataEntityRelationshipRepositoryImpl.java:72` + `DataEntityClassDto.java:51`)",
-    "implicit: relationship-class data_entity row — the canonical row the UI sees; the actual `relationships` table row is hidden behind the data_entity facade"
+    "ServerWebExchange (accepted because the generated signature requires it; never read by the body — lines 24, 32, 40)",
+    "RelationshipsService (DI dependency — line 17)",
+    "implicit: DATA_RELATIONSHIP(9) data-entity-class — the class the list filters by (`ReactiveDataEntityRelationshipRepositoryImpl.java:73`)",
+    "implicit: catalog default visibility trio — HOLLOW=false, STATUS != DELETED(5), EXCLUDE_FROM_SEARCH null/false (`ReactiveDataEntityRelationshipRepositoryImpl.java:78-80`; DELETED id=5 per `DataEntityStatusDto.java:16`)"
   ]
 - operations: [
-    "getRelationships(page, size, type, query, exchange) — `RelationshipController.java:19-27`: forwards to `relationshipsService.getRelationships(page, size, type, query)` and maps to ResponseEntity.ok. The OpenAPI path is `GET /api/relationships` (`openapi.yaml:4140-4158`); accepts `page`, `size`, `query` (free-text), `type` (ERD/GRAPH/ALL). The service routes to `ReactiveDataEntityRelationshipRepository.getRelationships` which paginates over `data_entity` rows where `entity_class_ids = [9]` ordered by `data_entity.id ASC` (`ReactiveDataEntityRelationshipRepositoryImpl.java:77-79`). Returns `DataEntityRelationshipList` (items + PageInfo).",
-    "getERDRelationshipById(relationshipId, exchange) — `RelationshipController.java:29-35`: forwards to `relationshipsService.getERDRelationshipById(relationshipId)`. The OpenAPI path is `GET /api/relationships/erd/{relationship_id}` (`openapi.yaml:4160-4175`). Service hardcodes `RelationshipsType.ERD` (`RelationshipsServiceImpl.java:39`); switchIfEmpty raises `NotFoundException(\"Relationship\", relationshipId)` → HTTP 404 via ControllerAdvice. Returns `DataEntityRelationshipDetails` with the ERD payload populated.",
-    "getGraphRelationshipById(relationshipId, exchange) — `RelationshipController.java:37-43`: forwards to `relationshipsService.getGraphRelationshipById(relationshipId)`. The OpenAPI path is `GET /api/relationships/graph/{relationship_id}` (`openapi.yaml:4177-4192`). Service hardcodes `RelationshipsType.GRAPH` (`RelationshipsServiceImpl.java:46`); same NotFoundException shape on empty. Returns `DataEntityRelationshipDetails` with the graph payload populated."
+    "getRelationships(page, size, type, query, exchange) — `RelationshipController.java:19-27`: forwards to `relationshipsService.getRelationships(page, size, type, query)`. Repository (`ReactiveDataEntityRelationshipRepositoryImpl.java:57-139`) paginates `data_entity` rows WHERE entity_class_ids=[9] AND the visibility trio AND optional `external_name containsIgnoreCase(query)`, ORDER BY data_entity.id ASC, offset `(page-1)*size`; then JOINs relationships + source/target data_entity + data_source + 2× namespace. Type filter sits in the JOIN ON clause (`:107-109`; ALL → DSL.noCondition()). Returns DataEntityRelationshipList.",
+    "getERDRelationshipById(relationshipId, exchange) — `RelationshipController.java:29-35`: service hardcodes `RelationshipsType.ERD` (`RelationshipsServiceImpl.java:38-42`); repository `getRelationshipByIdAndType` (`ReactiveRelationshipsRepositoryImpl.java:159-215`) JOINs relationships ON data_entity_id + relationship_type, WHERE `data_entity.id = relationshipId` (`:201`); empty → `NotFoundException(\"Relationship\", id)` → 404. NO visibility predicate on this path.",
+    "getGraphRelationshipById(relationshipId, exchange) — `RelationshipController.java:37-43`: symmetric, hardcoded `RelationshipsType.GRAPH` (`RelationshipsServiceImpl.java:44-49`); same SQL site, same 404 shape."
   ]
 - invariants: [
-    "**Thin-delegate posture**: every method body is exactly two chained calls — `service.invoke(...).map(ResponseEntity::ok)`. No try/catch, no conditional branching, no parameter normalisation, no metric emission, no log line. The controller is a routing + serialisation surface. Consistent with sibling controllers (Role, Policy, Owner, Tag, Namespace).",
-    "**`relationshipId` path parameter name vs SQL filter alignment**: the OpenAPI parameter `relationship_id` (components.yaml:4385-4391) and the Java parameter `relationshipId` (line 31, 39) PROMISE the relationships-table primary key. The actual SQL at `ReactiveRelationshipsRepositoryImpl.java:194` filters by `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` — the data_entity.id column. The UI list endpoint returns data_entity_ids in the `id` field (`RelationshipMapper.java:53`), so the UI round-trip is self-consistent. A third-party API consumer who reads the OpenAPI spec at face value (where `relationship_id` plus the operation summary `Get erd relationship by id` reads as the relationships-table id) and supplies `relationships.id` gets a 404. **Category F TRANSLATES_SILENTLY — `unresolved` until P-128 runs**.",
-    "**No authorization gate at any layer**: (a) the controller has no `@PreAuthorize` / no programmatic `permissionService.hasPermission(...)`; (b) the SECURITY_RULES table at `SecurityConstants.java:95-355` has NO entry matching `/api/relationships/**` (verified by reading the full 357-line file end-to-end); (c) the service applies no check (`RelationshipsServiceImpl.java:30-49`); (d) the repository SQL does NOT JOIN against `OWNERSHIP`, has no `data_source_id` filter, has no `namespace_id` filter, has no `exclude_from_search = false` filter, has no `hollow = false` filter. Every authenticated caller (or every caller under `auth.type=DISABLED`) sees every relationship in the catalog. Symmetric to the F-006 audit-silence pattern's read-collaborative posture, but stronger: even the EXCLUDE_FROM_SEARCH filter that protects `/api/dataentities` does NOT apply here.",
-    "**Pagination uses `(page - 1) * size` arithmetic without bounds check**: `ReactiveDataEntityRelationshipRepositoryImpl.java:79` computes `offset = (page - 1) * size`. Page=0 → offset = -size (negative). The Java arithmetic doesn't throw; the result is passed unchecked to JOOQ → Postgres, which rejects negative OFFSET with `OFFSET must not be negative`. Page=null → NullPointerException at the unboxing. The OpenAPI spec at PageParam (components.yaml — not read this pass) does NOT declare `minimum: 1` and Spring's binding layer does NOT reject page=0 by default for this endpoint. Result: a 0-indexed caller (the typical JavaScript-developer default) sees an opaque 500 or 400, not a graceful first-page response. **P-130 pins the boundary**.",
-    "**Search query filters relationship-row external_name, NOT source/target entity names**: the `query` parameter passes through to `ReactiveDataEntityRelationshipRepositoryImpl.java:69` — `DATA_ENTITY.EXTERNAL_NAME.containsIgnoreCase(inputQuery)`. The DATA_ENTITY in the conditionList is the SCANNED relationship-class data entity, not the source/target dataset entities. The UI's RelationshipsSearchInput labels the field `'Search relationships'` (`RelationshipsSearchInput.tsx:17`), which matches the SQL behaviour (search by relationship name). The operator-mental-model alignment IS correct here — the label does NOT promise to search by source/target entity name.",
-    "**ServerWebExchange parameter is a no-op acceptance**: every method accepts `final ServerWebExchange exchange` (lines 24, 32, 40) because the generated `RelationshipApi` interface declares it; the controller body never reads it. Cannot be removed without breaking the @Override.",
-    "**Forensic silence at the controller tier**: no `@Slf4j` annotation, no Logger field, no log.* call (verified by reading lines 1-44 end-to-end). The controller produces zero application log lines on success or failure — error context comes from the ControllerAdvice exception handler only.",
-    "**Service-layer dispatch is hardcoded per endpoint**: `getERDRelationshipById` and `getGraphRelationshipById` both call the same repository method `getRelationshipByIdAndType` but with different hardcoded `RelationshipsType` values (`RelationshipsServiceImpl.java:39 = ERD`, `:46 = GRAPH`). The controller-tier therefore canNOT call `getRelationshipByIdAndType(id, ALL)` — `RelationshipsType.ALL` is reachable only via the list endpoint's `type` query param. This is a defensive narrowing — fine.",
-    "**`relationships.data_entity_id` has no UNIQUE constraint**: `V0_0_87__create_relation_tables.sql:1-10` declares `data_entity_id bigint` with only a FK constraint, no UNIQUE. One relationship-class data_entity COULD own multiple `relationships` rows. The detail endpoint uses `jooqReactiveOperations.mono(query)` (`ReactiveRelationshipsRepositoryImpl.java:197`) which expects one row — on multi-row matches the behaviour is JOOQ-driver-specific (TooManyResultsException OR silent first-row). No current collector produces two ERD rows for one data_entity (per docs/data-modelling/relationships.md ingestion matrix — PostgreSQL and Snowflake adapters only), but the schema admits it. **P-128 pins both the name-vs-SQL drift AND the multi-row sub-case**."
+    "**Thin-delegate posture** (unchanged): every method body is `service.invoke(...).map(ResponseEntity::ok)` — no branching, no validation, no logging at the controller tier (`RelationshipController.java:19-43`).",
+    "**List visibility = catalog default trio** (NEW at 122a0823): the list conditionList carries HOLLOW=false + STATUS != DELETED + EXCLUDE_FROM_SEARCH null/false, with an intent comment citing #1752 and the mirror source (`ReactiveDataEntityRelationshipRepositoryImpl.java:75-80`). The page-total count query shares the SAME conditionList (`:136-138`), so totals count only visible rows — pinned by `ReactiveDataEntityRelationshipRepositoryImplTest.java:58-60`.",
+    "**Detail-by-id applies NO visibility predicate** (asymmetry): `getRelationshipByIdAndType` (`ReactiveRelationshipsRepositoryImpl.java:179-202`) has no HOLLOW/STATUS/EXCLUDE_FROM_SEARCH condition — a DELETED/hollow/excluded relationship hidden from the list still returns 200 on direct id access.",
+    "**`relationship_id` = relationship-class data entity id, by documented contract** (abe51417): `components.yaml:4391-4398` — 'Id of the relationship-class data entity, i.e. the `id` field of `DataEntityRelationship` / `DataEntityRelationshipDetails` items. The `erd_relationship_id` and `graph_relationship_id` fields ... are internal detail-record ids and are NOT valid values for this parameter.' SQL: `data_entity.id` bind at `ReactiveRelationshipsRepositoryImpl.java:201`; list/detail payload `id` = data_entity.id (`RelationshipMapper.java:53, 67`). Round-trip green-locked by IT-077 step 6 (id resolves detail; erd_relationship_id fed back → 404 USR002).",
+    "**No authorization gate at any layer** (unchanged, deliberate per CTRIB-006 scope): no `@PreAuthorize` (`RelationshipController.java:1-44`); zero case-insensitive 'relationship' matches in `auth/util/SecurityConstants.java` (grep scope: that file — the sole definer of SECURITY_RULES — plus its only consumer `AuthorizationCustomizer.java` read end-to-end); no service/repository permission check. Only the catch-all `.pathMatchers(\"/**\").authenticated()` (`AuthorizationCustomizer.java:29-30`) gates non-DISABLED modes.",
+    "**Pagination is 1-indexed by arithmetic convention**: `(page - 1) * size` at `ReactiveDataEntityRelationshipRepositoryImpl.java:87`; PageParam/SizeParam declare no minimum/maximum (`components.yaml:4219-4235`). page=0 → negative OFFSET (P-130 pins the observable result).",
+    "**Search scope = relationship-row external_name only** (`ReactiveDataEntityRelationshipRepositoryImpl.java:69-71`) — NOT source/target dataset names; now documented on the live feature page ('The search input filters by relationship name only — not by source or target entity name').",
+    "**Invalid `type` → enum-bind 400 at the backend; the UI sanitizes since #1752**: `parseRelationshipsType.ts:3-9` degrades unknown `?type=` deep-link values to ALL, its comment naming the backend behaviour ('propagating to the API as an enum-bind 400 that renders like an empty catalog'). `type` is required:true (`components.yaml:4404-4407`).",
+    "**Multi-row detail match resolves to silent first row**: `relationships.data_entity_id` has no UNIQUE constraint (V0_0_87__create_relation_tables.sql); on a multi-row match, `jooqReactiveOperations.mono(query)` is `Mono.from(publisher)` (`JooqReactiveOperations.java:37-42`), which emits the first record and cancels — no error, row choice database-plan-dependent (no ORDER BY on the detail query).",
+    "**Service-layer dispatch hardcodes the type per endpoint** (unchanged): ERD vs GRAPH are URL-level distinctions; `RelationshipsType.ALL` is reachable only via the list `type` param (`RelationshipsServiceImpl.java:38-49`)."
   ]
 - audiences: [
-    "End-users browsing the Data Modelling → Relationships UI page (`/data-modelling/relationships`) — the React surface at `odd-platform-ui/src/components/DataModelling/Relationships.tsx:38-82` calls `useSearchRelationships` (`relatioships.ts:20-41`) which infinite-scrolls the `getRelationships` endpoint with page-size=30.",
-    "End-users opening an individual relationship's detail panel — the detail page (not located this pass; routing via `relationshipsRoutes.ts`) dispatches `useGetEDRRelationshipById` or `useGetGraphRelationshipById` (`relatioships.ts:6-18`) on click of a list row.",
-    "Direct API consumers — any S2S API-key holder (granted ADMIN globally by S2sAuthenticationFilter per REFACTOR-108) OR any authenticated user, both have unfettered access.",
-    "Anyone under `auth.type=DISABLED` — the endpoints are reachable unauthenticated under the LSN-001-shape default-insecure posture.",
-    "OpenAPI-generated client developers — these read the spec and call `relationshipApi.getERDRelationshipById({ relationshipId })` expecting `relationshipId` to be `relationships.id`; they get 404s on real data unless they discover the UI round-trip semantics."
+    "End-users browsing Data Modelling → Relationships (`/data-modelling/relationships`) — `Relationships.tsx:20-24` infinite-scrolls getRelationships at size 30 with the `?type=` value sanitized through `parseRelationshipsType` (line 19).",
+    "End-users opening a relationship-class entity's overview — the list row links to `dataEntityDetailsPath(item.id)` (`RelationshipsListItem.tsx:52`); the overview stats fire `useGetEDRRelationshipById(dataEntityDetails.id)` / `useGetGraphRelationshipById(dataEntityDetails.id)` (`OverviewEntityRelationship.tsx:18`, `OverviewGraphRelationship.tsx:14`).",
+    "Direct API consumers — any authenticated caller (or any X-API-Key holder where S2S grants ADMIN globally); the spec now tells them the id contract (`components.yaml:4391-4402`).",
+    "Anyone under `auth.type=DISABLED` — endpoints reachable unauthenticated (LSN-001-shape posture; documented on the live feature page as the no-RBAC caveat).",
+    "The IT-077 e2e rail (`integration-tests/e2e/specs/erd-graph-relationships.spec.ts` in odd-team) — a test-class entry point driving all three endpoints."
   ]
 
 ## dependencies_semantic
 
 - requires-feature: [
-    "P-02 Data Modelling — Relationships (ERD + Graph) — the entire controller surface IS the HTTP boundary of this feature. Pairs with the dataset-scoped variant on DatasetController (getDataSetRelationships) per `documentation/docs/developer-guides/api-reference/relationships.md`.",
-    "OpenAPI-generated `RelationshipApi` interface — `RelationshipController.java:4` import + `:16` implements clause. The routing + serialisation contract lives in `odd-platform-specification/openapi.yaml:4140-4192` + `components.yaml:4066-4127, 4193-4198, 4385-4398`. Without regenerating after a spec change, the @Override fails.",
-    "Spring WebFlux reactive stack — Mono<ResponseEntity<...>> signature; imports `ResponseEntity` (line 9), `RestController` (line 10), `ServerWebExchange` (line 11), `Mono` (line 12).",
-    "Lombok `@RequiredArgsConstructor` (line 3 + line 15) — generates the constructor for `private final RelationshipsService relationshipsService` (line 17).",
-    "`RelationshipsService` interface — implemented by `RelationshipsServiceImpl` (4 public methods, three exposed via this controller; the fourth — `getRelationsByDatasetId` — is invoked by DatasetController for the dataset-scoped endpoint).",
-    "Downstream: `ReactiveDataEntityRelationshipRepository.getRelationships` (list path) AND `ReactiveRelationshipsRepository.getRelationshipByIdAndType` (detail path); the two distinct repository surfaces reflect the list-vs-detail SQL shape divergence.",
-    "Downstream: `RelationshipMapper.mapListToRelationshipPage` (list mapping → `DataEntityRelationship[]`) + `mapToDatasetRelationshipDetails` (detail mapping → `DataEntityRelationshipDetails`); the mapper composes per-entity sub-mappers (`ErdRelationshipMapper`, `GraphRelationshipMapper`, `DataSourceSafeMapper`, `DataEntityMapper`)."
+    "F-037 / P-02 Data Modelling — Relationships: this controller IS the feature's global HTTP boundary; the dataset-scoped sibling (`getRelationsByDatasetIdAndType`, now with STATUS+HOLLOW-only visibility, `ReactiveRelationshipsRepositoryImpl.java:135-144`) is exposed via DatasetController and is NOT this node's surface.",
+    "OpenAPI-generated `RelationshipApi` (`RelationshipController.java:4, :16`); contract at `odd-platform-specification/openapi.yaml:4140-4192` + `components.yaml` (RelationshipIdParam 4391-4402; PageParam 4219-4226; SizeParam 4228-4235; RelationshipTypeParam 4404-4407).",
+    "Spring WebFlux reactive stack + Lombok `@RequiredArgsConstructor` (lines 9-15).",
+    "`RelationshipsService` → `RelationshipsServiceImpl` (list → `ReactiveDataEntityRelationshipRepository.getRelationships`; detail → `ReactiveRelationshipsRepository.getRelationshipByIdAndType`).",
+    "`RelationshipMapper` (+ `ErdRelationshipMapper`, `GraphRelationshipMapper`, `DataSourceSafeMapper`, `DataEntityMapper`) — payload `id` = data_entity.id (`RelationshipMapper.java:53, 67`); `erd_relationship_id` = erd_relationship_details.id (`ErdRelationshipMapper.java:21`).",
+    "Adjacent, not on this path: `ReactiveRelationshipsRepository.getRelationshipByDataEntityIds` (`ReactiveRelationshipsRepositoryImpl.java:76-84`) has no callers — drafted upstream issue `issues/odd-platform/PLT-219.md`."
   ]
 - requires-config: [
-    "No `@Value` reads, no env-driven configuration knobs at the controller class level.",
-    "Indirectly depends on `auth.type` — controls whether the AuthorizationCustomizer's catch-all `.pathMatchers(\"/**\").authenticated()` (`AuthorizationCustomizer.java:29-30`) fires. Under DISABLED the controller endpoints are unauthenticated.",
-    "Indirectly depends on `auth.s2s.enabled` + S2sAuthenticationFilter wiring — under non-DISABLED with S2S enabled, X-API-Key callers get ADMIN globally (REFACTOR-108), still no relationship-specific gate to enforce."
+    "No `@Value` reads at the controller. Indirect: `auth.type` decides whether the catch-all `.authenticated()` fires (`AuthorizationCustomizer.java:29-30`); `auth.s2s.enabled` admits ADMIN-granting X-API-Key callers (REFACTOR-108 cross-ref)."
   ]
 - requires-runtime: [
-    "PostgreSQL connection with `relationships` + `erd_relationship_details` + `graph_relationship` tables migrated through V0_0_87 (per `V0_0_87__create_relation_tables.sql`).",
-    "Spring Security context populated by the active *SecurityConfiguration — without it, AuthorizationCustomizer rejects every request unauthenticated under non-DISABLED.",
-    "MapStruct-generated mappers (RelationshipMapper, ErdRelationshipMapper, GraphRelationshipMapper, DataSourceSafeMapper, DataEntityMapper).",
-    "Reactor Core (Mono.map, Mono.error, .switchIfEmpty) — controller + service request-handling pipeline.",
-    "JOOQ + JooqQueryHelper.paginate / pageifyResult helpers — the paged-result envelope is built here, including the empty-result count fallback (`JooqQueryHelper.java:119-127`)."
+    "PostgreSQL with `relationships` + `erd_relationship_details` + `graph_relationship` tables (V0_0_87) and `data_entity.status/hollow/exclude_from_search` columns the trio reads.",
+    "Reactor + JOOQ + `JooqQueryHelper.paginate/pageifyResult` (paged envelope; count fallback shares the conditionList — `ReactiveDataEntityRelationshipRepositoryImpl.java:123-138`).",
+    "`JooqReactiveOperations.mono` = `Mono.from` first-row semantics on the detail query (`JooqReactiveOperations.java:37-42`)."
   ]
 
 ## tests_coverage_semantic
 
-- covered_behaviours: []
+- covered_behaviours:
+  - behaviour: "GET /api/relationships hides soft-DELETED, exclude_from_search and hollow relationship entities AND the page total counts only visible rows (the #1752 Defect 2 fix). Failing-first Testcontainers test over the real repository."
+    test_class: integration
+    test_files: ["odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRelationshipRepositoryImplTest.java:44-72 (@validates F-037, @regresses PLT-056)"]
+  - behaviour: "type=ERD and name-query filters keep working on the visibility-filtered listing; the DTO carries DISTINCT source and target datasets."
+    test_class: integration
+    test_files: ["ReactiveDataEntityRelationshipRepositoryImplTest.java:61-69, 74-95"]
+  - behaviour: "Dataset-tab sibling (DatasetController surface, same service): deleted/hollow hidden, exclude_from_search KEPT — both halves of the deliberate scoping pinned. Recorded here because it pins the exclude_from_search-is-a-discovery-flag decision that also explains this controller's list behaviour."
+    test_class: integration
+    test_files: ["odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveRelationshipsRepositoryImplTest.java:41-79"]
+  - behaviour: "E2E (UI→API→DB): 5-column render; Source ×1 / Target ×1 (D1 fix); DELETED+excluded rows absent with total counting visible rows (D2); `?type=foo` deep-link degrades to ALL with the All tab active and a 200 (D4); graph overview labels Source/Target correctly; id-contract green-locks (list `id` resolves the erd detail; `erd_relationship_id` fed back → 404 USR002) (D5). Run log 2026-06-12: RED proof vs `ODD_SUT=ref:main` + GREEN on the working-tree SUT."
+    test_class: integration
+    test_files: ["integration-tests/protocols/IT-077-erd-graph-relationships.md (status: ready)", "integration-tests/e2e/specs/erd-graph-relationships.spec.ts"]
 - uncovered_behaviours:
-  - behaviour: "GET /api/relationships returns 200 with paged DataEntityRelationshipList. Pin the page=1 happy-path response shape (items[].id, items[].type, items[].sourceDataEntity / targetDataEntity refs)."
-    test_class: integration
-    criticality: HIGH
-  - behaviour: "GET /api/relationships?type=ERD returns ONLY ENTITY_RELATIONSHIP items (`type='ERD'` → SQL filter `relationships.relationship_type='ERD'` at ReactiveDataEntityRelationshipRepositoryImpl.java:99-101)."
-    test_class: integration
-    criticality: HIGH
-  - behaviour: "GET /api/relationships?type=GRAPH returns ONLY GRAPH_RELATIONSHIP items."
-    test_class: integration
-    criticality: HIGH
-  - behaviour: "GET /api/relationships?type=ALL returns BOTH types — DSL.noCondition() at line 100 disables the type filter."
-    test_class: integration
-    criticality: HIGH
-  - behaviour: "GET /api/relationships?query=foo filters by case-insensitive substring match on the relationship-class data_entity.external_name (NOT the source/target entity names). Verify the UI's `placeholder='Search relationships'` semantic alignment."
+  - behaviour: "GET /api/relationships?page=0 boundary — negative OFFSET; observable status (500 vs 400) unpinned. Same for page=null / size=0 / size=Integer.MAX_VALUE."
     test_class: integration
     criticality: MEDIUM
-  - behaviour: "GET /api/relationships?page=0 — the page-zero boundary (offset=-size). Expected: 500 or 400 — no graceful empty page. **P-130 covers this**."
-    test_class: integration
+    note: "P-130 pending-stress-protocol."
+  - behaviour: "Auth-mode matrix: 200-to-anonymous under DISABLED; 200 to any authenticated caller under LOGIN_FORM/OAUTH2/LDAP; no owner/cross-data-source narrowing anywhere."
+    test_class: security
     criticality: HIGH
-  - behaviour: "GET /api/relationships/erd/{id} returns 404 when the id is a relationships.id (NOT a data_entity.id). The contract violation surfaced by P-128."
-    test_class: integration
-    criticality: HIGH
-  - behaviour: "GET /api/relationships/erd/{data_entity_id} returns 200 with DataEntityRelationshipDetails for an ERD-type relationship row pointed at by that data_entity. **P-128 covers this**."
-    test_class: integration
-    criticality: HIGH
-  - behaviour: "GET /api/relationships/graph/{data_entity_id} — symmetric to the ERD path; verifies the GRAPH branch."
-    test_class: integration
-    criticality: HIGH
-  - behaviour: "GET /api/relationships/erd/{data_entity_id} on a GRAPH-type relationship row returns 404 (type mismatch at SQL WHERE clause line 178). Test the cross-type negative."
+    note: "P-131 pending-stress-protocol; zero automated security coverage on this surface."
+  - behaviour: "Cross-type negative: GET /api/relationships/erd/{id} on a GRAPH-type row → 404 (type bind in the JOIN ON at ReactiveRelationshipsRepositoryImpl.java:184-185)."
     test_class: integration
     criticality: MEDIUM
-  - behaviour: "GET /api/relationships is reachable unauthenticated under auth.type=DISABLED — the canonical LSN-001-shape default-insecure posture. **P-131 covers this**."
-    test_class: security
-    criticality: HIGH
-  - behaviour: "GET /api/relationships does NOT filter by data_source_id permission, namespace permission, EXCLUDE_FROM_SEARCH, or HOLLOW. Cross-tenant + hidden-row visibility test. **P-131 covers this**."
-    test_class: security
-    criticality: HIGH
-  - behaviour: "GET /api/relationships/erd/{data_entity_id} returns the SAME payload to every user, regardless of whether the caller has any owner / policy / role over the underlying data source. Pin the no-access-control invariant."
-    test_class: security
-    criticality: HIGH
-  - behaviour: "When two relationships rows share one data_entity_id (admissible per schema — no UNIQUE constraint), getRelationshipByIdAndType behaviour at the mono() expected-one-row site is undefined. **P-128 covers this**."
+  - behaviour: "Detail-by-id of a DELETED/excluded/hollow relationship returns 200 (no visibility predicate on getRelationshipByIdAndType) — the list/detail asymmetry is unpinned in either direction."
     test_class: integration
     criticality: MEDIUM
-  - behaviour: "When the response payload's relationships data_entity has DATA_RELATIONSHIP class id but a relationship_type value not in {ERD, GRAPH} (corrupted ingestion), the mapper at `RelationshipMapper.java:60-62` silently defaults to GRAPH_RELATIONSHIP. Verify the type-mapper fallback behaviour with a corrupt row."
+  - behaviour: "Multi-row data_entity_id match → silent first row via Mono.from (no UNIQUE constraint; row choice plan-dependent)."
     test_class: integration
     criticality: LOW
-- test_files: []
+    note: "Statically derived (JooqReactiveOperations.java:37-42); a runtime pin would need a two-row seed."
+  - behaviour: "Mapper defaults any non-'ERD' relationship_type value (null/lowercase/corrupt) to GRAPH_RELATIONSHIP (RelationshipMapper.java:60-62, 74-76)."
+    test_class: integration
+    criticality: LOW
+- test_files: ["ReactiveDataEntityRelationshipRepositoryImplTest.java", "ReactiveRelationshipsRepositoryImplTest.java", "integration-tests/e2e/specs/erd-graph-relationships.spec.ts (odd-team)"]
 - gaps: |
-    Zero existing tests for any of the three endpoints. Both
-    relationship-class repositories (`ReactiveDataEntityRelationshipRepositoryImpl`
-    and `ReactiveRelationshipsRepositoryImpl`) have zero direct test
-    coverage. The list endpoint's `query` param is the cleanest unit-test
-    candidate — pure SQL filter behaviour, isolated from the larger
-    JOIN graph. The CRITICAL gap is `security` — no test exercises the
-    no-authorization posture under any of the four auth modes, and no
-    test pins the cross-data-source visibility behaviour. The HIGH
-    integration gap is the Category F drift between `relationship_id`
-    (OpenAPI promise) and `data_entity.id` (SQL reality) — a single
-    integration test calling the detail endpoint with both a real
-    relationships.id and a real data_entity.id would surface the entire
-    finding. Worst test_class coverage: security (zero) — also the
-    test_class that would catch the highest-leverage gap (the
-    cross-tenant + EXCLUDE_FROM_SEARCH bypass).
+    The 2026-05-25 zero-coverage state is closed for the #1752 defect cluster:
+    the visibility fix is pinned failing-first at the repository tier (both
+    listings) and end-to-end by the re-grounded IT-077, which also green-locks
+    the documented id contract. The worst remaining bucket is SECURITY — still
+    zero automated tests across the four auth modes for a surface that is
+    deliberately catalog-global (P-131 pending). Next-worst: the page=0/size
+    boundaries (P-130 pending) and the detail-by-id visibility asymmetry,
+    which no test asserts in either direction.
 
 ## docs_link_semantic
 
 - declared_docs: []
 - inferred_docs:
-  - url: "https://docs.opendatadiscovery.org/active-platform-features/data-modelling/relationships"
+  - url: "https://docs.opendatadiscovery.org/features/data-modelling/relationships"
     anchor: ""
-    rationale: "The /data-modelling/relationships.md file in the local docs repo at `documentation/docs/data-modelling/relationships.md:1-74` describes this feature in full — list page, ERD vs GRAPH distinction, cardinality model, UI walkthrough, adapter ingestion coverage. The HTTP path `/api/relationships` is mentioned at line 52. Live verification deferred — network unreachable this session per orchestrator note."
-    last_verified_at: "2026-05-25T00:00:00Z"
-    last_verified_status: network-error
-    confidence: LOW
+    rationale: "The feature page for the Relationships surface; documents the list columns, ERD/GRAPH classes, search scope, id contract and the no-RBAC caveat. Matches `documentation/docs/data-modelling/relationships.md`."
+    last_verified_at: "2026-06-12T00:00:00Z"
+    last_verified_status: 200
+    confidence: HIGH
+    fetched_excerpts: |
+      "page size is 30 by default" — matches Relationships.tsx:23.
+      "The search input filters by relationship name only — not by source or
+      target entity name." — matches ReactiveDataEntityRelationshipRepositoryImpl.java:69-71.
+      The `relationship_id` parameter represents "the relationship's data-entity
+      id, not the `relationships` table primary key." — matches the abe51417 spec
+      contract + ReactiveRelationshipsRepositoryImpl.java:201.
+      "There is no RBAC gate on the Relationships endpoints — any authenticated
+      caller can list every relationship in the catalog." — matches the unchanged
+      auth posture.
+      Known Caveats (live page, describing 0.27.x): "The Target column displays
+      the source entity on list pages (data-binding error)"; "The `?type=`
+      parameter accepts invalid values and silently renders blank results"; the
+      repository "does not filter by owner, namespace, or `exclude_from_search`".
   - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/relationships"
     anchor: ""
-    rationale: "The /developer-guides/api-reference/relationships.md file at `documentation/docs/developer-guides/api-reference/relationships.md:1-19` tabulates the three endpoints by Method + Path + Operation + Description. The local-repo page is the closest API-reference doc for this controller."
-    last_verified_at: "2026-05-25T00:00:00Z"
-    last_verified_status: network-error
-    confidence: LOW
+    rationale: "API-reference page tabulating the three endpoints this controller serves."
+    last_verified_at: "2026-06-12T00:00:00Z"
+    last_verified_status: 200
+    confidence: HIGH
+    fetched_excerpts: |
+      "The `{relationship_id}` path parameter is the relationships-class data
+      entity id, not the row id of the relationship itself" — matches the code +
+      spec.
+      "The list endpoint is a full enumeration of the relationship class — it
+      does not apply the catalog-visibility rules" — TRUE for the published
+      0.27.x release; STALE versus HEAD (see drift findings).
+  - pending_release: "0.28.0"
+    train_ref: "release/0.28.0 @ f61b9c2 docs/data-modelling/relationships.md + docs/developer-guides/api-reference/relationships.md"
+    rationale: "DOC-446 (review-ready, milestone 0.28.0) re-words both pages on the documentation train: Target-column + ?type= caveats become fixed-in-0.28.0 notes; visibility defaults stated positively incl. the dataset-tab exclude_from_search nuance; the erd_relationship_id/graph_relationship_id round-trip trap added; the API-reference visibility hint re-worded to 'applies as of 0.28.0'. Live WebFetch deliberately not used for these — GitBook publishes the released train only."
+    confidence: HIGH
 - doc_drift_findings:
-  - "Live-fetch deferred (network unreachable). Local-repo `documentation/docs/developer-guides/api-reference/relationships.md:11` declares `GET /api/relationships/erd/{relationship_id}` — `Full ERD relationship details (source / target / cardinality / owner).` — but DOES NOT warn that the path parameter `{relationship_id}` is actually consumed as `data_entity.id` at the SQL layer, NOT as the `relationships` table primary key. A third-party API consumer calling the endpoint with a relationships.id obtained out-of-band (e.g. from a direct DB query, or guessed from the OpenAPI spec semantics) gets a 404. **CATEGORY F doc-drift candidate** — surfaces only after P-128 runs."
-  - "Local-repo `data-modelling/relationships.md:33-38` documents the UI page including `page size is 30 by default` — the size value MATCHES `Relationships.tsx:23` (`size: 30`). No code-vs-doc drift on the page-size tunable."
-  - "Local-repo `data-modelling/relationships.md` does NOT mention that the list endpoint applies NO owner-scoping, NO EXCLUDE_FROM_SEARCH filter, NO HOLLOW filter, and NO data_source-permission filter — every authenticated user sees every relationship across every data source in the catalog. The /api/dataentities endpoint applies the EXCLUDE_FROM_SEARCH filter (per batch-T REFACTOR-425 finding); the relationships list does NOT. The asymmetry is undocumented. **DOC-GAP candidate** — surfaces only after P-131 runs."
-  - "Local-repo `data-modelling/relationships.md` mentions `/api/relationships` (line 52) but does NOT document the page=0 boundary behaviour (HTTP 500 / 400 per P-130 hypothesis). The API-reference page's `getRelationships` row mentions `?page=N` but does not specify `N >= 1`."
+  - "EXPECTED-STALE (release-train, tracked): the live feature page's Known Caveats still describe the pre-fix 0.27.x behaviour (Target column data-binding error; `?type=` silent blank results; list 'does not filter by ... exclude_from_search') while HEAD (abe51417, ships 0.28.0) fixes all three. NOT a doc bug: the live manual describes the latest published release; `backlog/docs/DOC-446.md` (review-ready) rides the 0.28.0 train and flips these at the release gate. No action for this sidecar beyond recording the status."
+  - "RESOLVED since the 2026-05-25 sidecar: the id-contract drift finding (parameter documented nowhere) is closed — the OpenAPI spec (`components.yaml:4391-4402` + the `*_relationship_id` field descriptions at 4138-4143/4175-4180, commit abe51417) AND both live pages now state the contract; IT-077 step 6 verifies it end-to-end."
+  - "RESOLVED since the 2026-05-25 sidecar: the undocumented EXCLUDE_FROM_SEARCH asymmetry between /api/dataentities and /api/relationships is closed in code (the trio now applies to the relationships list) and the remaining deliberate nuance (dataset tab keeps excluded rows) is documented on the 0.28.0 train per DOC-446."
+  - "Still-open minor: neither live page documents the page>=1 convention (page=0 yields an error, not an empty first page) — PageParam carries no minimum in the spec (`components.yaml:4219-4226`). Surfaces with P-130."
 
 ## implicit_adrs
 
-- "**Pagination is 1-indexed BY ARITHMETIC CONVENTION**, not by validation enforcement — `(page - 1) * size` at `ReactiveDataEntityRelationshipRepositoryImpl.java:79` IS the convention. The convention is applied identically across every paginated endpoint that uses `JooqQueryHelper.paginate` (verified by grepping the platform). The implicit ADR is *the maintainer assumes UI callers send page>=1 and accepts arithmetic failure for page<1*. Pillar-wide convention with no defending validation." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:79 — intent_anchor: "the `(page - 1) * size` literal arithmetic with no Math.max(0,...) guard" — confidence: MEDIUM
-- "**The relationship list endpoint is a CATALOG-GLOBAL surface, not an owner-scoped one** — distinct from `/api/dataentities/my` which IS owner-scoped (batch-G `getMyObjects`). The intent is that relationships are PUBLIC METADATA across the catalog: a consumer should be able to discover that table A links to table B even if they have no permissions on either. The code embodies this by the absence of any OWNERSHIP JOIN; the data-modelling/relationships.md doc embodies it by NOT documenting any scoping at all. Symmetric to `/api/lineage` (per batch-J Lineage UI) — both are read-collaborative catalog surfaces." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:66-72 (conditionList omits OWNERSHIP and EXCLUDE_FROM_SEARCH) + the parallel pattern in lineage — intent_anchor: "the conditionList contains ONLY `DATA_ENTITY.EXTERNAL_NAME` (when query provided) AND `ENTITY_CLASS_IDS = [9]`; no owner / namespace / exclude_from_search clause" — confidence: MEDIUM
-- "**Service-layer dispatch hardcodes the relationship type per endpoint**: `getERDRelationshipById` and `getGraphRelationshipById` are TWO endpoints (not one with a discriminator) because the API surface deliberately exposes the type as a path-segment, not a query parameter. The decision is to make ERD vs GRAPH a first-class API distinction at the URL level." — evidence: RelationshipsServiceImpl.java:38-49 + openapi.yaml:4160-4192 (two separate path entries) — intent_anchor: "the API surface splits at the URL level, not at the query-parameter level, and the service hardcodes the type per method" — confidence: HIGH
+- "**Relationship listings apply the catalog's default visibility predicates; exclude_from_search scopes DISCOVERY surfaces only.** The list mirrors `getDataEntityDefaultConditions` verbatim (trio at `ReactiveDataEntityRelationshipRepositoryImpl.java:78-80`); the dataset-tab sibling applies STATUS+HOLLOW but deliberately NOT exclude_from_search. Both decisions carry in-code rationale." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:75-80 + ReactiveRelationshipsRepositoryImpl.java:138-143 + ReactiveDataEntityRepositoryImpl.java:970-976 — intent_anchor: "'the catalog's default visibility predicates (mirrors getDataEntityDefaultConditions): soft-DELETED, hollow and exclude_from_search relationship entities are hidden from the listing, exactly as the data-entity list/search tier hides them (#1752)' and 'DELIBERATELY NOT exclude_from_search: that flag scopes discovery surfaces ... hiding a dataset's real relationship from its own contextual detail tab would be silent incompleteness (#1752)'" — confidence: HIGH
+- "**`relationship_id` is the relationship-class data entity id — keep the behaviour, document the contract.** #1752 Defect 5 was resolved by spec documentation (abe51417), not by re-keying the endpoints to relationships.id: the param description names the contract and explicitly bans the payload's internal detail-record ids." — evidence: components.yaml:4391-4402 + components.yaml:4138-4143 + components.yaml:4175-4180 + ReactiveRelationshipsRepositoryImpl.java:201 — intent_anchor: "'Id of the relationship-class data entity, i.e. the `id` field of `DataEntityRelationship` / `DataEntityRelationshipDetails` items. The `erd_relationship_id` and `graph_relationship_id` fields exposed in the details payload are internal detail-record ids and are NOT valid values for this parameter.'" — confidence: HIGH
+- "**The relationships surface is a CATALOG-GLOBAL read-collaborative surface** — the #1752 hardening fixed visibility but deliberately did NOT add owner/namespace/data-source scoping, and the live docs state the posture ('no RBAC gate ... any authenticated caller can list every relationship'). DOC-446's editorial note downgrades the caveat danger→warning as 'the documented platform-wide read-collaborative posture'." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:67-80 (conditionList has no OWNERSHIP/namespace/data-source clause) + live feature page (WebFetched 2026-06-12, 200) + backlog/docs/DOC-446.md:52-54 — intent_anchor: "live-page caveat text + DOC-446 'the remaining content is the documented platform-wide read-collaborative posture'" — confidence: HIGH
+- "**Malformed `?type=` deep-links are sanitized at the UI boundary, not the backend**: the fix point for #1752 Defect 4 is `parseRelationshipsType` falling back to ALL ('the tab strip's own default') rather than loosening the backend enum bind — the API keeps rejecting invalid enums with 400." — evidence: parseRelationshipsType.ts:3-9 + Relationships.tsx:19 — intent_anchor: "'an unknown value must degrade to the ALL view (the tab strip's own default) instead of propagating to the API as an enum-bind 400 that renders like an empty catalog (#1752)'" — confidence: HIGH
+- "**Pagination is 1-indexed by arithmetic convention** (unchanged): `(page - 1) * size` with no guard, platform-wide via JooqQueryHelper.paginate; the UI always starts at `initialPageParam: 1` (`relatioships.ts:38`)." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:87 — intent_anchor: "the `(page - 1) * size` literal arithmetic, uniform across paginated endpoints" — confidence: MEDIUM
+- "**ERD vs GRAPH are URL-level API distinctions** (unchanged): two path entries + per-method hardcoded type; ALL reachable only via the list filter." — evidence: RelationshipsServiceImpl.java:38-49 + openapi.yaml:4160-4192 — intent_anchor: "the API surface splits at the URL level; the service hardcodes the type per method" — confidence: HIGH
 
 ## bugs_limitations_corner_cases
 
-- "**CATEGORY F TRANSLATES_SILENTLY — `relationshipId` parameter name vs SQL filter target**: the OpenAPI parameter `relationship_id` and Java parameter `relationshipId` promise the relationships-table primary key; the SQL at `ReactiveRelationshipsRepositoryImpl.java:194` filters by `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` — the data_entity.id, NOT relationships.id. The list endpoint's response maps `.id(item.dataEntityRelationship().getId())` (RelationshipMapper.java:53) — the data_entity id. UI round-trip works (list→detail with same id). Third-party API consumers reading the OpenAPI spec and supplying actual relationships.id values get 404. **Pinned by P-128**." — evidence: RelationshipController.java:31 + RelationshipsServiceImpl.java:38-39 + ReactiveRelationshipsRepositoryImpl.java:194 + RelationshipMapper.java:53 + V0_0_87__create_relation_tables.sql:1-10 — severity: HIGH
-- "**No authorization gate at any layer — every endpoint is reachable by any authenticated caller (or anonymous under DISABLED)**: no @PreAuthorize, no SECURITY_RULES entry in SecurityConstants.java:95-355 for `/api/relationships/**`, no service-layer permission check, no repository OWNERSHIP JOIN. Cross-data-source visibility, cross-namespace visibility, and visibility of EXCLUDE_FROM_SEARCH=true relationships are all unrestricted. Whether this is intentional (catalog-as-public-metadata) or a security gap is the doc-drift question — the live data-modelling/relationships.md doc does NOT articulate the choice. **Pinned by P-131**." — evidence: RelationshipController.java:1-44 (no annotations) + SecurityConstants.java:95-355 (no matching matcher) + RelationshipsServiceImpl.java:30-49 (no check) + ReactiveDataEntityRelationshipRepositoryImpl.java:66-75 (conditionList) — severity: HIGH
-- "**Page-zero boundary triggers HTTP 500/400, not a graceful empty page**: `(page - 1) * size` at ReactiveDataEntityRelationshipRepositoryImpl.java:79 produces a negative offset for page=0. The OpenAPI PageParam (components.yaml — not read; verified by grep) lacks a `minimum: 1` constraint; Spring's binding accepts page=0. A JavaScript-style 0-indexed caller (typical) hits an opaque error instead of the first page. **Pinned by P-130**." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:79 + RelationshipController.java:20-26 (no validation) — severity: MEDIUM
-- "**No UNIQUE constraint on `relationships.data_entity_id`**: schema admits one relationship-class data_entity owning multiple `relationships` rows. The detail endpoint uses `mono()` expecting one row (`ReactiveRelationshipsRepositoryImpl.java:197`); behaviour on multi-match is undefined (JOOQ driver-specific — either TooManyResultsException or silent first-row). No collector currently produces multi-row (per docs/data-modelling/relationships.md ingestion matrix), but a collector regression or manual SQL UPSERT could trigger it. **Pinned by P-128 multi-row sub-case**." — evidence: V0_0_87__create_relation_tables.sql:1-10 (no UNIQUE on data_entity_id) + ReactiveRelationshipsRepositoryImpl.java:197 (mono() expects single row) — severity: MEDIUM
-- "**Search-query field semantics surface only the relationship NAME, not source/target entity names**: a user typing the source-table's name in the Relationships page search box sees no results unless the relationship-class data_entity's own external_name happens to contain that text. The UI's `placeholder='Search relationships'` (RelationshipsSearchInput.tsx:17) matches the SQL behaviour — no false promise. But operators who expect entity-graph-search semantics (typing 'orders' to find all relationships involving the ORDERS table) get an empty result." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:68-69 (DATA_ENTITY.EXTERNAL_NAME match — the relationship row, not source/target) + RelationshipsSearchInput.tsx:14-22 — severity: LOW
-- "**Mapper silently defaults to GRAPH_RELATIONSHIP for unknown relationship_type values**: `RelationshipMapper.java:60-62` reads `RelationshipTypeDto.ERD.name().equals(item.relationshipPojo().getRelationshipType()) ? ENTITY_RELATIONSHIP : GRAPH_RELATIONSHIP`. Any value that is NOT exactly 'ERD' falls into GRAPH_RELATIONSHIP — including null, lowercase 'erd', misspellings, or new types added without code updates. The schema's `relationship_type` column is `varchar(256)` with no CHECK constraint (V0_0_87__create_relation_tables.sql:7), so corrupted ingestion is admissible." — evidence: RelationshipMapper.java:60-62 + V0_0_87__create_relation_tables.sql:7 — severity: LOW
-- "**`navigation/domains/relationships.md` claims the feature is `Documentation: None`** while in fact `documentation/docs/data-modelling/relationships.md` AND `documentation/docs/developer-guides/api-reference/relationships.md` both exist. Navigation pointer is stale." — evidence: navigation/domains/relationships.md:20 + documentation/docs/data-modelling/relationships.md (exists, 74 lines) + documentation/docs/developer-guides/api-reference/relationships.md (exists, 19 lines) — severity: LOW
-- "**Status-code drift check**: openapi.yaml:4151-4173 declares 200 for all three relationship endpoints; the controller returns 200 via `ResponseEntity::ok` on all three. No drift. (Recorded explicitly so the maintainer doesn't have to re-verify.)" — evidence: openapi.yaml:4150-4192 + RelationshipController.java:26, 34, 42 — severity: N/A (no defect, explicit clean-bill-of-health)
+- "**No authorization gate at any layer — deliberate, now documented, still unprobed at runtime**: no `@PreAuthorize`; zero 'relationship' matches in `auth/util/SecurityConstants.java` (the SECURITY_RULES definer; consumer `AuthorizationCustomizer.java` read end-to-end); no service/repository check; catch-all `.authenticated()` only (non-DISABLED). Cross-data-source + cross-namespace visibility unrestricted; under DISABLED, unauthenticated. The live feature page states the posture; P-131 pins the runtime matrix." — evidence: RelationshipController.java:1-44 + AuthorizationCustomizer.java:29-30 + live feature page (2026-06-12, 200) — severity: MEDIUM (documented deliberate posture; was HIGH when undocumented)
+- "**Page-zero boundary still unguarded**: `(page - 1) * size` at ReactiveDataEntityRelationshipRepositoryImpl.java:87; PageParam has no `minimum` (`components.yaml:4219-4226`); a 0-indexed caller gets an opaque error, not a first page. Unchanged by #1752. P-130 pins the observable status." — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:87 + components.yaml:4219-4226 — severity: MEDIUM
+- "**Detail-by-id serves rows the list hides**: `getRelationshipByIdAndType` applies no visibility predicate (`ReactiveRelationshipsRepositoryImpl.java:179-202`), so a DELETED/excluded/hollow relationship entity returns 200 with full payload on direct id access while being absent from `GET /api/relationships`. No comment defends the asymmetry on this method (the #1752 fix scoped visibility to the two LISTING queries only); whether direct-id access to soft-deleted rows is intended is undecided in code." — evidence: ReactiveRelationshipsRepositoryImpl.java:179-202 (no trio) vs ReactiveDataEntityRelationshipRepositoryImpl.java:78-80 (trio) — severity: LOW
+- "**`relationship_id` id-translation is now a documented trap rather than a silent one**: the param consumes data_entity.id (`ReactiveRelationshipsRepositoryImpl.java:201`); payload `erd_relationship_id`/`graph_relationship_id` do NOT round-trip (404). Documented in the spec (abe51417) + both live pages; green-locked by IT-077 step 6. Residual risk: a consumer who skips the description and feeds the payload's detail-record id still gets a plausible-looking 404 (or, on bigserial collision, an unrelated 200)." — evidence: components.yaml:4391-4402 + ReactiveRelationshipsRepositoryImpl.java:201 + ErdRelationshipMapper.java:21 + IT-077 result log 2026-06-12 — severity: LOW (was HIGH pre-documentation)
+- "**No UNIQUE on `relationships.data_entity_id` → silent first-row on multi-match**: `mono()` = `Mono.from` (first record, cancel) at `JooqReactiveOperations.java:37-42`; the detail query has no ORDER BY, so which row wins is plan-dependent. Admissible-but-unproduced data shape (no current collector emits two rows per entity)." — evidence: ReactiveRelationshipsRepositoryImpl.java:204 + JooqReactiveOperations.java:37-42 — severity: LOW
+- "**Mapper defaults unknown relationship_type to GRAPH_RELATIONSHIP**: any value not exactly 'ERD' (null, 'erd', corruption) maps to GRAPH_RELATIONSHIP (`RelationshipMapper.java:60-62, 74-76`); `relationship_type` is unconstrained varchar." — evidence: RelationshipMapper.java:60-62 — severity: LOW
+- "**Spec defect on the graph detail payload (adjacent)**: `GraphRelationshipAttributes` requires a 'field' property that does not exist (properties are name/value) — drafted as `issues/odd-platform/PLT-218.md`; affects generated-client validation of getGraphRelationshipById responses." — evidence: issues/odd-platform/PLT-218.md (draft) — severity: LOW
+- "**Uncapped `size`**: SizeParam has no `maximum` (`components.yaml:4228-4235`); a direct caller can pull the entire relationship catalog in one page." — evidence: components.yaml:4228-4235 + ReactiveDataEntityRelationshipRepositoryImpl.java:87 — severity: LOW
+- "**Status-code clean bill**: openapi.yaml declares 200 for all three endpoints; controller returns ResponseEntity::ok on all three; 404 via NotFoundException ControllerAdvice. No drift." — evidence: openapi.yaml:4150-4192 + RelationshipController.java:26, 34, 42 — severity: N/A (explicit clean-bill-of-health)
 
 ## stress_findings
 
 ```yaml
 stress_findings:
   tunables:
-    - location: "ReactiveDataEntityRelationshipRepositoryImpl.java:79"
+    - location: "ReactiveDataEntityRelationshipRepositoryImpl.java:87"
       name: "(page - 1) * size — offset arithmetic"
-      value: "page * size arithmetic, no Math.max guard"
+      value: "no Math.max guard; PageParam/SizeParam carry no minimum/maximum (components.yaml:4219-4235)"
       questions:
         - q: "What at page=0?"
-          a: "offset = -size (negative). Postgres rejects negative OFFSET with `OFFSET must not be negative`. Hypothesis: 500 from R2DBC; possibly 400 if WebFlux wraps the SQLException. P-130 pins."
+          a: "offset = -size; Postgres rejects negative OFFSET. Observable status (500 vs 400) unpinned."
           confidence: PROBE-NEEDED
-          evidence: "P-130"
+          evidence: "P-130 (pending-stress-protocol)"
         - q: "What at page=null?"
-          a: "NPE at unboxing `Integer page` to int for the arithmetic. The controller does not guard against null. The OpenAPI PageParam declares the parameter required, but Spring's reactive binding may permit absent values through. P-130 covers this boundary too."
+          a: "NPE at unboxing in the arithmetic; param is required:true but reactive binding behaviour on absence unpinned."
           confidence: PROBE-NEEDED
           evidence: "P-130"
         - q: "What at size=0?"
-          a: "LIMIT 0 returns no rows; total count CTE still works. Expected: 200 with items=[] and total=N. P-130 pins."
+          a: "LIMIT 0 → items=[]; count query still runs. Expected 200 with total=N."
           confidence: PROBE-NEEDED
           evidence: "P-130"
         - q: "What at size=Integer.MAX_VALUE?"
-          a: "Postgres accepts LIMIT 2147483647. No int overflow at page=1 * MAX. P-130 confirms."
+          a: "Postgres accepts LIMIT 2147483647 — whole-catalog pull admissible (no cap)."
           confidence: PROBE-NEEDED
           evidence: "P-130"
-        - q: "What does the operator see at the page=0 boundary?"
-          a: "Opaque 500 (most likely) — no graceful empty-page. Falls foul of JavaScript 0-indexed convention. P-130 pins the operator-visible behaviour."
+        - q: "What does the operator see at each boundary?"
+          a: "page=0 → opaque error rather than a graceful first page (JS 0-indexed callers hit it)."
           confidence: PROBE-NEEDED
           evidence: "P-130"
     - location: "odd-platform-ui/src/components/DataModelling/Relationships.tsx:23"
       name: "size: 30 — UI page size"
       value: "30"
       questions:
-        - q: "What at size=30?"
-          a: "30 rows per page; total page-count = ceil(N/30). Matches data-modelling/relationships.md:38 doc claim of `page size is 30 by default`. No drift."
+        - q: "Does the value match the docs?"
+          a: "Yes — live feature page says 'page size is 30 by default' (WebFetched 2026-06-12, 200)."
           confidence: STATIC-INFERRED
-          evidence: "Relationships.tsx:23 + documentation/docs/data-modelling/relationships.md:38"
-        - q: "Is the page size configurable from the UI?"
-          a: "No — hardcoded literal at the useSearchRelationships call site; no env var, no settings page, no react-query option to override at runtime. To change, a developer edits the literal and rebuilds the UI."
+          evidence: "Relationships.tsx:23 + live feature page excerpt"
+        - q: "Is it configurable at runtime?"
+          a: "No — hardcoded literal at the useSearchRelationships call site (developer edit + rebuild to change)."
           confidence: STATIC-INFERRED
-          evidence: "Relationships.tsx:23 + relatioships.ts:20-41"
+          evidence: "Relationships.tsx:20-24 + relatioships.ts:20-41"
   name_behavior_pairs:
     - name: "getRelationships"
-      promise: "Returns a paginated list of relationships matching the type filter and the search query."
-      implementation: "ReactiveDataEntityRelationshipRepositoryImpl.java:57-131. Selects from data_entity WHERE entity_class_ids = [9] AND (optional external_name match), JOOQ paginate with ORDER BY data_entity.id ASC, then JOINs to relationships + source_data_entity + target_data_entity + data_source + namespaces and aggregates per row. Returns Page<RelationshipDto> mapped to DataEntityRelationshipList."
+      promise: "Paginated list of the catalog's VISIBLE relationships matching type filter and name query."
+      implementation: "data_entity WHERE entity_class_ids=[9] AND HOLLOW=false AND STATUS!=DELETED(5) AND EXCLUDE_FROM_SEARCH null/false AND optional external_name match; paginate ORDER BY data_entity.id ASC; JOIN relationships (type bind in ON) + source/target/data_source/namespaces. Count shares the conditionList."
       drift: NONE
       operator_visible_consequence: ""
       confidence: STATIC-INFERRED
-      evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:57-131"
+      evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:57-139 + ReactiveDataEntityRelationshipRepositoryImplTest.java:44-95"
     - name: "getERDRelationshipById"
-      promise: "Get information about an ERD relationship by its id (per openapi.yaml:4162-4163 description)."
-      implementation: "RelationshipsServiceImpl.java:38-42 hardcodes RelationshipsType.ERD and calls getRelationshipByIdAndType(relationshipId, ERD). SQL at ReactiveRelationshipsRepositoryImpl.java:194 filters by `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)`. The parameter is consumed as a data_entity.id, NOT a relationships.id (verified by reading the SQL end-to-end)."
-      drift: DRIFT_NAME_VS_BEHAVIOR
-      operator_visible_consequence: "A third-party API consumer reading the OpenAPI spec literally and supplying the relationships.id value gets a 404; UI clients work because the list response returns data_entity.id as the `id` field, so list-then-detail is a self-consistent round-trip."
-      confidence: PROBE-NEEDED
-      evidence: "P-128"
+      promise: "Get an ERD relationship by 'id' — where 'id' is, per the documented contract, the relationship-class data entity id."
+      implementation: "WHERE data_entity.id = relationshipId AND relationship_type='ERD' (join bind); 404 on miss. Contract documented at components.yaml:4391-4402 (abe51417)."
+      drift: MINOR
+      operator_visible_consequence: "Face-value readers of the NAME alone can still feed relationships.id or erd_relationship_id and get 404 — but the spec description now warns them; IT-077 green-locks both directions."
+      confidence: PROBE-VERIFIED
+      evidence: "IT-077 step 6 + result log 2026-06-12 (RED vs ref:main, GREEN on working tree) + ReactiveRelationshipsRepositoryImpl.java:184-185, 201"
     - name: "getGraphRelationshipById"
-      promise: "Get information about a graph relationship by its id."
-      implementation: "Symmetric to ERD path — same SQL site, same data_entity.id-not-relationships.id binding."
-      drift: DRIFT_NAME_VS_BEHAVIOR
-      operator_visible_consequence: "Same as ERD path — third-party API consumer pain."
-      confidence: PROBE-NEEDED
-      evidence: "P-128"
+      promise: "Symmetric to ERD."
+      implementation: "Same SQL site with relationship_type='GRAPH'."
+      drift: MINOR
+      operator_visible_consequence: "Same as ERD path."
+      confidence: PROBE-VERIFIED
+      evidence: "IT-077 + ReactiveRelationshipsRepositoryImpl.java:159-215"
   orderings:
-    - location: "ReactiveDataEntityRelationshipRepositoryImpl.java:77-79"
+    - location: "ReactiveDataEntityRelationshipRepositoryImpl.java:85-87"
       questions:
         - q: "What is the actual ORDER BY at the lowest layer?"
-          a: "JOOQ paginate is called with `List.of(new OrderByField(DATA_ENTITY.ID, SortOrder.ASC))` — the wrapper builds a Postgres `ORDER BY data_entity.id ASC` clause inside the paginate CTE. The OUTER SELECT at line 91-113 (with the CTE + 6-table JOIN) does NOT have its own ORDER BY, so the result is implicitly ordered by the inner row_number() over the paginate output, which is the data_entity.id ASC order."
+          a: "jooqQueryHelper.paginate builds ORDER BY data_entity.id ASC inside the CTE; the outer 6-table JOIN select adds no ORDER BY of its own."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:77-79 + JooqQueryHelper.java:63-90"
-        - q: "What is the tie-breaker?"
-          a: "data_entity.id is the table PK (bigserial), so values are unique by construction. No tie-breaker needed. Order is fully deterministic across calls."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:85-87, 99-121"
+        - q: "Tie-breaker on equal sort keys?"
+          a: "None needed — data_entity.id is the PK (unique). Fully deterministic."
           confidence: STATIC-INFERRED
-          evidence: "V0_0_87__create_relation_tables.sql:1-3 implies + standard data_entity table schema (PK on id)"
-        - q: "Which subset is returned when result-set > page size?"
-          a: "The (page-1)*size to page*size slice in data_entity.id ASC order. Oldest-first paging — the UI's infinite-scroll appends NEWER entries last (data_entity.id grows monotonically with creation). A newly-ingested relationship lands at the END of the infinite-scroll, not the top — operator-visible behaviour that may or may not match the UI's mental model."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:87"
+        - q: "Which subset when result-set > page size?"
+          a: "The (page-1)*size..page*size slice in id ASC order — oldest-first; newly-ingested relationships append at the END of the infinite scroll."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:79 + JooqQueryHelper.java:81-83"
-        - q: "Does any upstream layer re-sort?"
-          a: "RelationshipMapper.mapListToRelationshipPage iterates the input list and maps each — NO re-sort. The InfiniteScroll component on the UI appends pages in arrival order (Relationships.tsx:63-77). No backend-shaped order is hidden by UI re-sorting."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:87"
+        - q: "Does any upstream layer re-sort or filter?"
+          a: "No — mapper iterates in order; InfiniteScroll appends pages in arrival order. The UI DOES narrow the type param (parseRelationshipsType) before the request, never after."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipMapper.java:39-49 + Relationships.tsx:63-77"
+          evidence: "RelationshipMapper.java:39-49 + Relationships.tsx:63-77 + Relationships.tsx:19"
   auth_gates:
     - location: "RelationshipController.java:14-44 (entire file)"
-      endpoint: "GET /api/relationships + GET /api/relationships/erd/{relationship_id} + GET /api/relationships/graph/{relationship_id}"
+      endpoint: "GET /api/relationships + /api/relationships/erd/{relationship_id} + /api/relationships/graph/{relationship_id}"
       questions:
-        - q: "What does each endpoint return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?"
-          a: "DISABLED: 200 to anonymous (no auth chain wired by DisabledAuthSecurityConfiguration). LOGIN_FORM / OAUTH2 / LDAP: 200 to any authenticated caller (the catch-all `.pathMatchers(\"/**\").authenticated()` at AuthorizationCustomizer.java:29-30 admits any signed-in user; no SECURITY_RULES entry narrows further). NO role / permission gate fires for relationships.* paths."
+        - q: "What does each endpoint return per auth mode (DISABLED / LOGIN_FORM / OAUTH2 / LDAP)?"
+          a: "DISABLED: 200 to anonymous. LOGIN_FORM/OAUTH2/LDAP: 200 to ANY authenticated caller — no SECURITY_RULES narrowing. Unchanged by #1752 (deliberately out of fix scope). P-131 pins at runtime."
           confidence: STATIC-INFERRED
-          evidence: "AuthorizationCustomizer.java:14-32 + SecurityConstants.java:95-355 (no relationships matcher)"
-        - q: "What does an unauthenticated caller see?"
-          a: "Under DISABLED: 200 with full payload. Under LOGIN_FORM / OAUTH2 / LDAP: 401 (or redirect to login) from the catch-all `.authenticated()` rule."
+          evidence: "AuthorizationCustomizer.java:20-31 + grep -i relationship auth/util/SecurityConstants.java → zero matches"
+        - q: "Unauthenticated caller?"
+          a: "DISABLED: full payload. Other modes: 401/redirect from the catch-all .authenticated()."
           confidence: STATIC-INFERRED
           evidence: "AuthorizationCustomizer.java:29-30"
-        - q: "What does a wrong-role caller see?"
-          a: "200 — there is NO role gate. Even a READ_ONLY role hits the endpoint. The role-collection model in ODD's authorization is mutation-focused (POLICY → PERMISSION → ROLE mapped to permissions like ROLE_CREATE); read endpoints generally accept any authenticated caller. For relationships specifically, no permission narrowing is wired."
+        - q: "Wrong-role caller?"
+          a: "200 — no role/permission gate exists for these paths."
           confidence: STATIC-INFERRED
-          evidence: "SecurityConstants.java:95-355 + RelationshipController.java:1-44 (no @PreAuthorize)"
+          evidence: "auth/util/SecurityConstants.java (no matcher) + RelationshipController.java:1-44 (no @PreAuthorize)"
         - q: "Where does the gate live?"
-          a: "Catch-all `.authenticated()` at AuthorizationCustomizer.java:29-30 (NON-DISABLED modes only). Under DISABLED there is NO gate at any layer."
+          a: "Only the catch-all .pathMatchers(\"/**\").authenticated() under non-DISABLED; nowhere under DISABLED."
           confidence: STATIC-INFERRED
-          evidence: "AuthorizationCustomizer.java:29-30 + DisabledAuthSecurityConfiguration"
+          evidence: "AuthorizationCustomizer.java:29-30"
   resource_boundaries:
-    - location: "ReactiveDataEntityRelationshipRepositoryImpl.java:91-130"
+    - location: "ReactiveDataEntityRelationshipRepositoryImpl.java:99-138 + ReactiveRelationshipsRepositoryImpl.java:179-215"
       kind: concurrency
       questions:
-        - q: "Can two simultaneous calls produce corrupted state?"
-          a: "Read-only endpoint. SELECTs only — no UPDATE, INSERT, DELETE in this code path. Two simultaneous calls see the same row set at the SQL snapshot isolation level used by R2DBC + Postgres default (READ COMMITTED). No state corruption possible."
+        - q: "Can two simultaneous calls corrupt state?"
+          a: "No — pure SELECTs end-to-end; no write on any of the three paths."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:91-130 (SELECT only) + RelationshipsServiceImpl.java:30-49 (no write)"
-        - q: "Is the call replay-safe?"
-          a: "Yes — pure GET, no side effects."
+          evidence: "RelationshipController.java:19-43 + both repository methods (SELECT only)"
+        - q: "Replay-safe?"
+          a: "Yes — pure GETs, no side effects."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipController.java:19-43 (all three operations are reads)"
-        - q: "If a cache fronts this, what is the TTL?"
-          a: "No cache annotation on RelationshipController, RelationshipsService, RelationshipsServiceImpl, ReactiveRelationshipsRepository, or ReactiveDataEntityRelationshipRepository. The UI's react-query layer (`useGetEDRRelationshipById`, `useGetGraphRelationshipById`, `useSearchRelationships` in relatioships.ts) caches per-query-key on the CLIENT, but the BACKEND has no cache."
+          evidence: "RelationshipController.java:19-43"
+        - q: "Cache TTL / staleness?"
+          a: "No backend cache (@Cacheable absent across controller/service/repositories). Client-side react-query caches per queryKey only."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipController.java:1-44 (no @Cacheable) + RelationshipsServiceImpl.java:1-50 (no @Cacheable) + relatioships.ts:1-41 (UI-side react-query keys are the only cache)"
+          evidence: "RelationshipController.java:1-44 + RelationshipsServiceImpl.java:1-50 + relatioships.ts:6-41"
+    - location: "ReactiveRelationshipsRepositoryImpl.java:204"
+      kind: concurrency
+      questions:
+        - q: "What happens when the detail query matches MULTIPLE rows (no UNIQUE on relationships.data_entity_id)?"
+          a: "jooqReactiveOperations.mono = Mono.from(publisher): first record emitted, subscription cancelled — silent first-row, no error; winner is plan-dependent (no ORDER BY). Resolved statically this refresh (was PROBE-NEEDED in the 2026-05-25 sidecar)."
+          confidence: STATIC-INFERRED
+          evidence: "JooqReactiveOperations.java:37-42 + ReactiveRelationshipsRepositoryImpl.java:179-202"
   request_inputs:
-    - location: "RelationshipController.java:20-24"
+    - location: "RelationshipController.java:20"
       input_kind: query-param
       input_name: "page"
       questions:
-        - q: "What does the input NAME promise the caller?"
-          a: "1-indexed page number for the paginated list result."
+        - q: "Name promise?"
+          a: "Page number of the paginated list (1-indexed by platform convention; UI initialPageParam: 1)."
           confidence: STATIC-INFERRED
-          evidence: "openapi.yaml:4146 + components.yaml/PageParam (referenced) + UI's Relationships.tsx:38 sets initialPageParam: 1"
-        - q: "When supplied, what does the implementation USE the input for?"
-          a: "Forwarded unmodified to RelationshipsServiceImpl.getRelationships (line 31-33) → ReactiveDataEntityRelationshipRepositoryImpl.getRelationships (line 57-58) → consumed as `(page - 1) * size` to produce the JOOQ offset (line 79). 1-indexed by arithmetic convention."
+          evidence: "relatioships.ts:38 + components.yaml:4219-4226"
+        - q: "Actual use?"
+          a: "controller → RelationshipsServiceImpl.java:33 → offset (page-1)*size at ReactiveDataEntityRelationshipRepositoryImpl.java:87."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipController.java:25 → RelationshipsServiceImpl.java:33 → ReactiveDataEntityRelationshipRepositoryImpl.java:79"
-        - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "MATCHES — the arithmetic convention treats page>=1 as the valid range; the name 'page' is generic enough that the 1-indexed convention is unspecified at the name level. Boundary failure at page=0 is a validation gap, not a name-vs-implementation drift."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:87"
+        - q: "MATCH?"
+          a: "MATCHES (generic name; 1-indexed convention unstated in the spec — boundary gap, not name drift)."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:79"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see when wrong?"
-          a: "N/A — no silent translation."
-          confidence: STATIC-INFERRED
-          evidence: "N/A"
-        - q: "Is there an available-but-unused column?"
-          a: "NONE."
-          confidence: STATIC-INFERRED
-          evidence: "N/A"
-      routes_to_finding: "bugs_limitations_corner_cases.[2] (page=0 boundary)"
-    - location: "RelationshipController.java:20-24"
-      input_kind: query-param
-      input_name: "size"
-      questions:
-        - q: "What does the input NAME promise?"
-          a: "Number of items per page in the paginated list result."
-          confidence: STATIC-INFERRED
-          evidence: "openapi.yaml:4147 + components.yaml/SizeParam (referenced)"
-        - q: "What does the implementation USE it for?"
-          a: "Forwarded to JOOQ LIMIT clause at ReactiveDataEntityRelationshipRepositoryImpl.java:79 (`jooqQueryHelper.paginate(...,(page-1)*size, size)`). MATCHES the LIMIT semantic."
-          confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:79"
-        - q: "Does the implementation MATCH?"
-          a: "MATCHES."
-          drift: NONE
-          confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:79"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see?"
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:87"
+        - q: "TRANSLATES_SILENTLY consequence?"
           a: "N/A."
           confidence: STATIC-INFERRED
           evidence: "N/A"
@@ -386,25 +345,51 @@ stress_findings:
           a: "NONE."
           confidence: STATIC-INFERRED
           evidence: "N/A"
-      routes_to_finding: "N/A"
+      routes_to_finding: "bugs_limitations_corner_cases.[1] (page-zero boundary, P-130)"
+    - location: "RelationshipController.java:21"
+      input_kind: query-param
+      input_name: "size"
+      questions:
+        - q: "Name promise?"
+          a: "Items per page."
+          confidence: STATIC-INFERRED
+          evidence: "components.yaml:4228-4235"
+        - q: "Actual use?"
+          a: "LIMIT bind via paginate at ReactiveDataEntityRelationshipRepositoryImpl.java:87."
+          confidence: STATIC-INFERRED
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:87"
+        - q: "MATCH?"
+          a: "MATCHES; no maximum declared (uncapped pull)."
+          drift: NONE
+          confidence: STATIC-INFERRED
+          evidence: "components.yaml:4228-4235"
+        - q: "TRANSLATES_SILENTLY consequence?"
+          a: "N/A."
+          confidence: STATIC-INFERRED
+          evidence: "N/A"
+        - q: "Available-but-unused column?"
+          a: "NONE."
+          confidence: STATIC-INFERRED
+          evidence: "N/A"
+      routes_to_finding: "bugs_limitations_corner_cases.[7] (uncapped size)"
     - location: "RelationshipController.java:22"
       input_kind: query-param
       input_name: "type"
       questions:
-        - q: "What does the input NAME promise?"
-          a: "Filter the result list by relationship type — ERD, GRAPH, or ALL (per the RelationshipsType enum at components.yaml:4193-4198)."
+        - q: "Name promise?"
+          a: "Filter by relationship type — ERD / GRAPH / ALL (required param)."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipController.java:22 + openapi.yaml:4149 + components.yaml:4193-4198"
-        - q: "What does the implementation USE it for?"
-          a: "At RelationshipsServiceImpl.java:33 → ReactiveDataEntityRelationshipRepositoryImpl.java:99-101: if `RelationshipsType.ALL == type`, DSL.noCondition() disables the filter; else applies `relationships.field(RELATIONSHIPS.RELATIONSHIP_TYPE).eq(type.getValue())`. Filter on the `relationship_type` column of the `relationships` table — the relationship row's type, which IS what the parameter name promises."
+          evidence: "components.yaml:4404-4407"
+        - q: "Actual use?"
+          a: "JOIN ON bind: relationships.relationship_type = type.getValue(); ALL → DSL.noCondition() (ReactiveDataEntityRelationshipRepositoryImpl.java:107-109). Invalid raw values never reach the SQL: the enum bind 400s at the WebFlux boundary; since #1752 the UI sanitizes deep-link values to ALL before sending (parseRelationshipsType.ts:3-9; IT-077 D4 verifies the UI path)."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:99-101"
-        - q: "Does the implementation MATCH?"
-          a: "MATCHES — `type` param filters by the relationship's type column."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:107-109 + parseRelationshipsType.ts:3-9"
+        - q: "MATCH?"
+          a: "MATCHES — the param filters by the relationship row's type column."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:99-101"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see?"
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:107-109"
+        - q: "TRANSLATES_SILENTLY consequence?"
           a: "N/A."
           confidence: STATIC-INFERRED
           evidence: "N/A"
@@ -412,249 +397,232 @@ stress_findings:
           a: "NONE."
           confidence: STATIC-INFERRED
           evidence: "N/A"
-      routes_to_finding: "N/A"
+      routes_to_finding: "implicit_adrs.[3] (UI-boundary sanitization decision)"
     - location: "RelationshipController.java:23"
       input_kind: query-param
       input_name: "query"
       questions:
-        - q: "What does the input NAME promise?"
-          a: "Free-text search filter for the paginated list. Generic name — promise is 'filter the list by this text'."
+        - q: "Name promise?"
+          a: "Free-text list filter; UI placeholder 'Search relationships'."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipController.java:23 + components.yaml:4231-4237 (SearchParam) + RelationshipsSearchInput.tsx:17 (UI placeholder='Search relationships')"
-        - q: "What does the implementation USE it for?"
-          a: "ReactiveDataEntityRelationshipRepositoryImpl.java:68-69: if non-blank, appends `DATA_ENTITY.EXTERNAL_NAME.containsIgnoreCase(inputQuery)` to the conditionList. The DATA_ENTITY in scope is the relationship-class data entity (entity_class_ids contains 9), so the match is against the RELATIONSHIP's external_name, NOT the source/target dataset entity names."
+          evidence: "RelationshipsSearchInput.tsx (placeholder) + openapi.yaml:4148"
+        - q: "Actual use?"
+          a: "DATA_ENTITY.EXTERNAL_NAME containsIgnoreCase on the RELATIONSHIP-class entity row (ReactiveDataEntityRelationshipRepositoryImpl.java:69-71) — not on source/target dataset names."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:68-69 + :74 (DSL.selectFrom(DATA_ENTITY))"
-        - q: "Does the implementation MATCH?"
-          a: "MATCHES — `query` filters list items by relationship NAME, which matches the UI placeholder 'Search relationships' and the spec's `Search text` description. The match does NOT extend to source/target entity names — an operator hoping to find relationships involving table X by typing 'X' may see empty results unless the relationship row's own external_name contains 'X'."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:69-71"
+        - q: "MATCH?"
+          a: "MATCHES — and the scope is now DOCUMENTED on the live feature page ('filters by relationship name only — not by source or target entity name')."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:68-74 + RelationshipsSearchInput.tsx:14-22"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see?"
-          a: "N/A — no silent translation; UI label and SQL semantic are aligned."
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:69-71 + live feature page excerpt (2026-06-12)"
+        - q: "TRANSLATES_SILENTLY consequence?"
+          a: "N/A — UI label, SQL semantic and live docs aligned."
           confidence: STATIC-INFERRED
           evidence: "N/A"
         - q: "Available-but-unused column?"
-          a: "`source_data_entity.external_name` and `target_data_entity.external_name` are JOINed (lines 102-105) and SELECTed (line 94) but NOT included in the WHERE clause's text-match. An operator-friendlier variant of this search would also match against these — a feature gap, not a bug."
+          a: "source/target data_entity.external_name are JOINed+SELECTed (lines 110-113, 102) but not text-matched — a friendlier search would include them; feature gap, tracked as the documented search-scope limitation."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:68-69 (WHERE only on relationship-row external_name) + :102-105 (source/target JOINed but not filtered)"
-      routes_to_finding: "bugs_limitations_corner_cases.[4] (search semantics scope)"
+          evidence: "ReactiveDataEntityRelationshipRepositoryImpl.java:69-71 vs :110-113"
+      routes_to_finding: "docs_link_semantic (documented limitation; no code defect)"
     - location: "RelationshipController.java:31"
       input_kind: path-param
-      input_name: "relationshipId"
+      input_name: "relationshipId (ERD)"
       questions:
-        - q: "What does the input NAME promise?"
-          a: "The primary key of the relationships table — i.e. an integer id obtained from the relationships table directly. The name `relationship_id` (OpenAPI) plus the operation summary `Get erd relationship by id` reads as the relationships-table id."
+        - q: "Name promise?"
+          a: "Face value: 'the relationship's id'. Documented contract (abe51417): the relationship-class data entity's id — the `id` field of list/detail payloads; payload `erd_relationship_id`/`graph_relationship_id` explicitly banned."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipController.java:31 + openapi.yaml:4162-4166 + components.yaml:4385-4391"
-        - q: "What does the implementation USE it for?"
-          a: "Forwarded to RelationshipsServiceImpl.getERDRelationshipById (line 39) → ReactiveRelationshipsRepository.getRelationshipByIdAndType (line 153) → SQL WHERE clause at ReactiveRelationshipsRepositoryImpl.java:194: `.where(relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId))` — filters by `data_entity.id`, NOT `relationships.id`. The list endpoint returns `id` = `data_entity.id` (RelationshipMapper.java:53), so the round-trip works for callers using the list response; standalone callers using actual `relationships.id` values get 404."
+          evidence: "components.yaml:4391-4402"
+        - q: "Actual use?"
+          a: "RelationshipsServiceImpl.java:39 → WHERE data_entity.id = relationshipId (ReactiveRelationshipsRepositoryImpl.java:201) with relationship_type='ERD' in the JOIN ON (:184-185); payload id = data_entity.id (RelationshipMapper.java:53, 67) — self-consistent round-trip."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipsServiceImpl.java:39 → ReactiveRelationshipsRepositoryImpl.java:194 + RelationshipMapper.java:53"
-        - q: "Does the implementation MATCH the name's promise?"
-          a: "TRANSLATES_SILENTLY — the name promises `relationships.id`; the implementation consumes `data_entity.id`. No comment, no Javadoc, no ADR documents the translation. The UI round-trip masks the drift because the list response also uses data_entity.id as the surfaced `id`."
-          drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION
-          confidence: PROBE-NEEDED
-          evidence: "P-128"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see when wrong?"
-          a: "A third-party API consumer who reads the OpenAPI spec literally and supplies an actual relationships.id (e.g. queried directly from the DB or generated from a Postman test set) gets HTTP 404 — NotFoundException at RelationshipsServiceImpl.java:40-47. Worse, a consumer that gets 200 (because they happened to supply a data_entity.id that coincidentally matches a relationships.id — both are bigserial — would receive a payload for an UNRELATED relationship. Collision is unlikely but admissible (two independent bigserial counters). When two relationships rows share one data_entity.id (admissible per schema, no UNIQUE constraint), mono() at line 197 hits multi-row case (driver behaviour undefined)."
-          confidence: PROBE-NEEDED
-          evidence: "P-128"
-        - q: "Is there a column / field that DOES match the input's name and is NOT used?"
-          a: "YES — `relationships.id` IS the column the name promises; the SQL at line 194 uses `relationshipsDataEntity.field(DATA_ENTITY.ID)` (the data_entity.id column of the relationship-class entity) INSTEAD OF `RELATIONSHIPS.ID`. The fix candidate is changing line 194 from `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` to `RELATIONSHIPS.ID.eq(relationshipId)` — AND updating the list endpoint's mapper to surface `relationshipPojo().getId()` as the `id` instead of `dataEntityRelationship().getId()`. Both halves needed for the rename; either half alone breaks round-trip."
+          evidence: "ReactiveRelationshipsRepositoryImpl.java:184-185, 201 + RelationshipMapper.java:53, 67"
+        - q: "MATCH?"
+          a: "TRANSLATES_LEGITIMATELY — the data_entity.id consumption is documented in the spec param description + both live doc pages (reason citation: components.yaml:4391-4398, commit abe51417). Was TRANSLATES_SILENTLY in the 2026-05-25 sidecar."
+          drift: MINOR
           confidence: STATIC-INFERRED
-          evidence: "ReactiveRelationshipsRepositoryImpl.java:194 (uses data_entity.id) + RELATIONSHIPS.ID column (exists, unused at filter) + RelationshipMapper.java:53 (surfaces data_entity.id, not relationship.id)"
-      routes_to_finding: "bugs_limitations_corner_cases.[0] + docs_link_semantic.doc_drift_findings.[0]"
+          evidence: "components.yaml:4391-4402 + live pages (2026-06-12, 200)"
+        - q: "What does a caller see when their assumption is wrong?"
+          a: "Feeding erd_relationship_id (or relationships.id) → 404 USR002 — VERIFIED end-to-end by IT-077 step 6 (run 2026-06-12: RED vs ref:main spec-blind expectation, GREEN with the documented contract). Residual: bigserial collision can return an unrelated 200."
+          confidence: PROBE-VERIFIED
+          evidence: "IT-077 result log 2026-06-12 + integration-tests/e2e/specs/erd-graph-relationships.spec.ts"
+        - q: "Available-but-unused column matching the name?"
+          a: "RELATIONSHIPS.ID exists and is never filtered on — by documented design, not omission, as of abe51417. Re-keying would require flipping the payload id mapping in lockstep (RelationshipMapper.java:53, 67)."
+          confidence: STATIC-INFERRED
+          evidence: "ReactiveRelationshipsRepositoryImpl.java:201 + components.yaml:4391-4398"
+      routes_to_finding: "bugs_limitations_corner_cases.[3] + implicit_adrs.[1]"
     - location: "RelationshipController.java:39"
       input_kind: path-param
-      input_name: "relationshipId"
+      input_name: "relationshipId (GRAPH)"
       questions:
-        - q: "What does the input NAME promise?"
-          a: "Same as ERD path — relationships-table primary key."
+        - q: "Name promise?"
+          a: "Same documented contract as the ERD path."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipController.java:39 + openapi.yaml:4181-4183"
-        - q: "What does the implementation USE it for?"
-          a: "Same SQL site (getRelationshipByIdAndType called with RelationshipsType.GRAPH instead of ERD). Same data_entity.id filter."
+          evidence: "components.yaml:4391-4402"
+        - q: "Actual use?"
+          a: "Same SQL site with relationship_type='GRAPH' (RelationshipsServiceImpl.java:46)."
           confidence: STATIC-INFERRED
-          evidence: "RelationshipsServiceImpl.java:46 → ReactiveRelationshipsRepositoryImpl.java:194"
-        - q: "Does the implementation MATCH?"
-          a: "TRANSLATES_SILENTLY — same drift as ERD path."
-          drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION
-          confidence: PROBE-NEEDED
-          evidence: "P-128"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see?"
-          a: "Same as ERD — third-party consumer pain."
-          confidence: PROBE-NEEDED
-          evidence: "P-128"
+          evidence: "ReactiveRelationshipsRepositoryImpl.java:159-215"
+        - q: "MATCH?"
+          a: "TRANSLATES_LEGITIMATELY — same documentation."
+          drift: MINOR
+          confidence: STATIC-INFERRED
+          evidence: "components.yaml:4391-4402"
+        - q: "Wrong-assumption consequence?"
+          a: "Same as ERD: 404 on the internal detail-record id (graph_relationship_id) — documented at components.yaml:4175-4180."
+          confidence: PROBE-VERIFIED
+          evidence: "IT-077 (id-contract green-locks) + components.yaml:4175-4180"
         - q: "Available-but-unused column?"
-          a: "YES — RELATIONSHIPS.ID (same as ERD path)."
+          a: "RELATIONSHIPS.ID — same as ERD path."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveRelationshipsRepositoryImpl.java:194"
-      routes_to_finding: "bugs_limitations_corner_cases.[0]"
+          evidence: "ReactiveRelationshipsRepositoryImpl.java:201"
+      routes_to_finding: "bugs_limitations_corner_cases.[3]"
   probes_emitted:
-    - probe_id: P-128
-      question: "relationshipId name vs SQL filter target; multi-row sub-case"
-      probe_path: "lineage/odd-platform/probes/P-128.yaml"
     - probe_id: P-130
-      question: "page-zero / page-null / size-zero / size-MAX / query-omitted boundaries"
-      probe_path: "lineage/odd-platform/probes/P-130.yaml"
+      question: "page=0 / page=null / size=0 / size=MAX boundary statuses on GET /api/relationships"
+      probe_path: "lineage/odd-platform/probes/P-130.yaml (on disk, status pending-stress-protocol; emitted by the 2026-05-25 pass, still valid at abe51417 — the arithmetic moved to line 87 unchanged)"
     - probe_id: P-131
-      question: "no-authorization posture; cross-tenant + EXCLUDE_FROM_SEARCH + HOLLOW visibility"
-      probe_path: "lineage/odd-platform/probes/P-131.yaml"
+      question: "auth-mode matrix + cross-data-source visibility posture at runtime"
+      probe_path: "lineage/odd-platform/probes/P-131.yaml (on disk, status pending-stress-protocol; the EXCLUDE_FROM_SEARCH half of its hypothesis is now FIXED in code — the probe's expected_outcome needs a refresh before the probe-runner executes it)"
   stress_summary:
-    triggers_total: 11
-    questions_total: 46
-    answers_static_inferred: 33
-    answers_probe_needed: 13
+    triggers_total: 15
+    questions_total: 53
+    answers_static_inferred: 42
+    answers_probe_needed: 5
+    answers_probe_verified: 6
     answers_reference: 0
-    drift_flags: 4
+    drift_flags: 2   # both MINOR — the documented relationship_id translation (ERD + GRAPH)
 ```
 
-Note: although `probes_emitted` references P-128 in the list, the actual on-disk file at `lineage/odd-platform/probes/P-128.yaml` was claimed by a sibling agent (LinksController batch) racing this batch — the relationship probe content per this sidecar lives at P-128 conceptually but the writable artifact was deferred; the on-disk probes I authored are P-130 + P-131. The maintainer should rename one of the colliding P-128 entries (P-128.yaml is currently LinksController's) and re-emit the relationship probe at a free P-NNN slot during the next reducer pass.
+Note on probe hygiene: the 2026-05-25 sidecar referenced "P-128" for the id-contract question, but the on-disk `lineage/odd-platform/probes/P-128.yaml` belongs to LinksController (a slot-allocation race recorded in that sidecar). No replacement probe is needed: the id-contract question is now answered by the spec documentation (abe51417) + the IT-077 e2e green-locks (run log 2026-06-12), and the multi-row sub-case resolved statically via `JooqReactiveOperations.mono` = `Mono.from` first-row semantics. The stale P-128 references are removed by this refresh.
 
 ## security
 
-- auth_mode_relevance: ["DISABLED (200 to anonymous — full payload, all relationships, no filter)", "LOGIN_FORM (200 to any authenticated user)", "OAUTH2 (200 to any authenticated user)", "LDAP (200 to any authenticated user)", "S2S (200 to any X-API-Key holder; S2sAuthenticationFilter grants ADMIN globally per REFACTOR-108 — strictly broader than authenticated mode)"]
+- auth_mode_relevance: ["DISABLED (200 to anonymous — full payload)", "LOGIN_FORM (200 to any authenticated user)", "OAUTH2 (200 to any authenticated user)", "LDAP (200 to any authenticated user)", "S2S (200 to any X-API-Key holder; the filter grants ADMIN globally per REFACTOR-108 cross-ref)"]
 - ingestion_filter_relevance: "NO — UI/API surface, not ingestion."
 - authorization_assertions: []
-- owner_scoping: "BYPASSES — the SQL at ReactiveDataEntityRelationshipRepositoryImpl.java:66-75 (list) and ReactiveRelationshipsRepositoryImpl.java:152-208 (detail) has NO OWNERSHIP JOIN, NO data_source_id filter, NO namespace_id filter, NO exclude_from_search filter, NO hollow filter. The result returns relationships across ALL data sources regardless of caller's owner scope."
-- data_exposure: ["DataEntityRelationship list (id, name, oddrn, sourceDataEntity, targetDataEntity, dataSource ref, type) → any authenticated user (or anyone under DISABLED). Discloses the existence of every catalogued relationship and the source/target table names — operator should know that the relationships list is a CATALOG-GLOBAL surface, not owner-scoped (intentional per implicit_adrs[1], but undocumented in data-modelling/relationships.md).", "DataEntityRelationshipDetails (allOf above + erdRelationship.fields_pairs OR graphRelationship.specific_attributes) → same audience. The fields_pairs payload discloses the FK column names of both source and target dataset for ERD relationships — schema-level metadata that may carry implicit confidentiality (e.g. internal naming conventions)."]
+- owner_scoping: "BYPASSES — deliberate, documented catalog-global read posture. The list now applies the VISIBILITY trio (ReactiveDataEntityRelationshipRepositoryImpl.java:78-80) but still no OWNERSHIP JOIN, no data_source/namespace permission filter (conditionList at :67-80); detail path likewise (ReactiveRelationshipsRepositoryImpl.java:179-202). Live feature page states: 'There is no RBAC gate on the Relationships endpoints'."
+- data_exposure: ["DataEntityRelationship list (id, name, oddrn, source/target entity refs, dataSource ref, type) → any authenticated caller (anyone under DISABLED). Since 122a0823 the list NO LONGER discloses soft-deleted / hollow / exclude_from_search relationship entities — the 0.27.x leak of operator-hidden rows is closed on this surface.", "DataEntityRelationshipDetails (+ erd fields_pairs with FK column oddrns/ids, or graph attributes) → same audience; ALSO still serves DELETED/excluded/hollow rows on direct id access (no visibility predicate on the detail path)."]
 - known_security_gaps:
-  - "controller has no @PreAuthorize; the OpenAPI-generated RelationshipApi interface (build artifact, not in source tree) has no annotations either; the SECURITY_RULES table at SecurityConstants.java:95-355 has NO matcher for /api/relationships/**. The catch-all .authenticated() at AuthorizationCustomizer.java:29-30 is the ONLY gate (and only under non-DISABLED) — evidence: RelationshipController.java:1-44 + SecurityConstants.java:95-355 + AuthorizationCustomizer.java:14-32 — severity: HIGH"
-  - "endpoint reachable unauthenticated under auth.type=DISABLED — the AuthorizationCustomizer (which contains the catch-all .authenticated() rule) is not wired by DisabledAuthSecurityConfiguration. LSN-001-shape default-insecure posture — evidence: DisabledAuthSecurityConfiguration.java + RelationshipController.java:1-44 — severity: MEDIUM (DISABLED is dev-only per docs; production deployments should run LOGIN_FORM / OAUTH2 / LDAP)"
-  - "no exclude_from_search or hollow filter — the conditionList at ReactiveDataEntityRelationshipRepositoryImpl.java:66-72 selects ONLY by entity_class_ids and optional external_name. /api/dataentities applies EXCLUDE_FROM_SEARCH (per batch-T REFACTOR-425); /api/relationships does not. A relationship-class data_entity flagged exclude_from_search=true (e.g. via an operator-marked HIDE action OR a corrupted ingestion) IS NEVERTHELESS RETURNED here. Asymmetry between the two list surfaces is undocumented — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:66-75 — severity: MEDIUM"
-  - "no cross-data-source visibility filter — a caller with policy/role grants over data_source_1 only nonetheless sees relationships from data_source_2 in the list and detail payloads. Whether this is intentional (catalog-as-public-metadata per implicit_adrs[1]) or a security gap depends on the maintainer's stance; the data-modelling/relationships.md doc does NOT articulate the choice — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:66-75 (no data_source filter) — severity: MEDIUM"
-  - "S2sAuthenticationFilter grants ADMIN to any X-API-Key holder (REFACTOR-108); a caller who acquires (or guesses) the S2S key has unfettered read access to every relationship across every data source — evidence: cross-reference REFACTOR-108 from batch-E — severity: HIGH (when S2S is enabled)"
+  - "no @PreAuthorize on the controller; no SECURITY_RULES matcher (grep -i 'relationship' in odd-platform-api/src/main/java/.../auth/util/SecurityConstants.java → zero matches; wiring consumer AuthorizationCustomizer.java read end-to-end); only the catch-all .authenticated() under non-DISABLED — evidence: RelationshipController.java:1-44 + AuthorizationCustomizer.java:20-31 — severity: MEDIUM (documented read-collaborative posture; DOC-446 downgrades the doc caveat danger→warning on the 0.28.0 train)"
+  - "reachable unauthenticated under auth.type=DISABLED (LSN-001-shape default-insecure posture; DISABLED is dev-only per docs) — evidence: AuthorizationCustomizer wiring absent under DisabledAuthSecurityConfiguration — severity: MEDIUM"
+  - "cross-data-source / cross-namespace visibility unrestricted for any authenticated caller — deliberate (implicit_adrs.[2]), documented on the live page; P-131 pins the runtime matrix — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:67-80 (no owner/namespace/data-source clause) — severity: MEDIUM"
+  - "detail-by-id serves rows the operator hid (DELETED / exclude_from_search / hollow) — the visibility fix covers the two LISTING queries only — evidence: ReactiveRelationshipsRepositoryImpl.java:179-202 — severity: LOW"
+  - "S2S X-API-Key holders get ADMIN globally (REFACTOR-108); key compromise = full relationship-catalog read — evidence: REFACTOR-108 cross-ref — severity: HIGH (when S2S enabled)"
+  - "RESOLVED at 122a0823: the 0.27.x EXCLUDE_FROM_SEARCH bypass on the list (hidden rows enumerated by /api/relationships while /api/dataentities hid them) is closed — pinned by ReactiveDataEntityRelationshipRepositoryImplTest — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:78-80 — severity: N/A (recorded as closed)"
 
 ## performance
 
 - hot_paths:
-  - "list endpoint scans all data_entity rows with entity_class_ids = [9] then JOINs 6 tables (relationships + source_data_entity + target_data_entity + data_source + 2x namespace) per page. Catalogs with >100K relationships hit visible response-time degradation. No index on `data_entity.entity_class_ids` (array GIN) is verified this pass — depends on the platform's standard data_entity indexes — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:74-113"
-  - "list endpoint runs an additional COUNT(*) query inside the empty-result fallback (`jooqQueryHelper.pageifyResult` line 129 supplies `DSL.selectCount().from(DATA_ENTITY).where(conditionList)`) — this fires ONLY when the result page is empty (e.g. on a hard-miss search). For non-empty pages the count is embedded in the paginate window-function (`COUNT(*) OVER()` at JooqQueryHelper.java:73). So the COUNT round-trip is a SLOW-PATH cost only — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:117-130 + JooqQueryHelper.java:73"
+  - "list endpoint: data_entity scan WHERE entity_class_ids=[9] + the trio, then 6-table JOIN per page — the three new predicates ride the same scan (no new round-trip); large catalogs degrade as before — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:82-121"
+  - "count query shares the conditionList and fires inside pageifyResult's empty-result fallback; non-empty pages use the paginate window-function count — evidence: ReactiveDataEntityRelationshipRepositoryImpl.java:123-138"
 - throughput_characteristics:
-  - "Read-only endpoint; non-blocking reactive Mono/Flux signature. No bulk-fetch endpoint — each detail page is a single GET. A UI that opens 10 detail tabs simultaneously fires 10 independent SQL queries."
-  - "List response includes hasNext + total (computed in-band via the window function); the UI's react-query useInfiniteQuery pre-fetches when hasNext=true — predictable per-page load pattern."
+  - "read-only, non-blocking Mono/Flux; one SQL round-trip per list page; one per detail open (UI fires one useQuery per overview mount)."
 - resource_allocation:
-  - "Each list-page row materialises a RelationshipDto with NESTED pojos (RelationshipsPojo, DataEntityPojo x3, DataSourcePojo, NamespacePojo x2) — 6+ object allocations per row, page=30 means ~180 transient pojos per request. For typical loads this is negligible; for a 1000-row scan (size=1000 if a caller bypasses the UI), it grows linearly."
-  - "Detail endpoint additionally aggregates an array of DatasetFieldPojo via JSON_ARRAY_AGG (ReactiveRelationshipsRepositoryImpl.java:111 + :174) — the dataset-field projection size depends on the relationship's source_dataset_field_oddrn[] length. Foreign-key relationships with many columns produce larger payloads."
+  - "each list row materialises ~7 nested pojos (RelationshipDto builder at :127-135); ~210 transient pojos per UI page of 30."
+  - "detail aggregates DATASET_FIELD rows via jsonArrayAgg (ReactiveRelationshipsRepositoryImpl.java:181) — payload grows with FK column count."
 - scaling_characteristics:
-  - "Stateless controller — instances scale horizontally."
-  - "No advisory lock, no synchronized block, no @Transactional on this code path — read-only reactive stack."
-  - "No pagination cap at the controller layer. size=Integer.MAX_VALUE is accepted (subject to Postgres LIMIT handling). A malicious caller can request the entire catalog in one page; the JOOQ window function COUNT(*) OVER() still runs once. The list endpoint is therefore O(N) over the relationship-class catalog per call — DoS-class concern when N is large."
+  - "stateless controller; horizontal scale safe; no lock, no @Transactional on these paths."
+  - "no size cap (SizeParam has no maximum — components.yaml:4228-4235): whole-catalog single-page pull remains possible; O(N) per call DoS-class concern at large N."
 - known_performance_gaps:
-  - "no maximum-size guard at the controller — a caller supplying size=10000 can pull 10000 RelationshipDto objects in one response. The OpenAPI SizeParam (not read this pass) does not declare a `maximum` constraint as of the schema I read — evidence: RelationshipController.java:21 (Integer size, no @Max) + ReactiveDataEntityRelationshipRepositoryImpl.java:79 (LIMIT size literal) — severity: MEDIUM"
-  - "the COUNT(*) OVER() window function on the paginate inner query runs the count on EVERY page, not just the first — for very large catalogs this is wasted work. The pattern is universal to the platform's JooqQueryHelper.paginate helper, so not a relationship-specific gap — evidence: JooqQueryHelper.java:73 — severity: LOW (cross-cutting, defer to the JooqQueryHelper sidecar)"
+  - "no maximum-size guard at any layer — evidence: components.yaml:4228-4235 + ReactiveDataEntityRelationshipRepositoryImpl.java:87 — severity: MEDIUM"
+  - "window-function COUNT runs on every page (platform-wide JooqQueryHelper pattern, not relationship-specific) — evidence: JooqQueryHelper paginate pattern — severity: LOW (defer to the JooqQueryHelper sidecar)"
 
 ## upstream_callers
 
 - entry_point: "ui_route:/data-modelling/relationships"
   caller_node: "ts react-component:Relationships.tsx"
   multiplicity_per_trigger: 1
-  evidence: "Relationships.tsx:20-24 dispatches useSearchRelationships → calls relationshipApi.getRelationships once per page-fetch; useInfiniteQuery pages on scroll, so total multiplicity per route mount is 1 + N (one per visible page) — but per page boundary, exactly 1 backend call"
+  evidence: "Relationships.tsx:20-24 — useSearchRelationships (useInfiniteQuery, size 30, initialPageParam 1 at relatioships.ts:38); 1 call per page boundary; ?type= sanitized via parseRelationshipsType (Relationships.tsx:19) so the backend never sees raw deep-link values"
   observation_class: ui-call
-- entry_point: "ui_route:/data-modelling/relationships (detail panel — exact route not located this pass)"
-  caller_node: "ts react-hook:useGetEDRRelationshipById"
+- entry_point: "ui_route:/dataentities/{id}/overview (relationship-class entity, ERD)"
+  caller_node: "ts react-component:OverviewEntityRelationship.tsx"
   multiplicity_per_trigger: 1
-  evidence: "relatioships.ts:6-11 — useQuery fires once on mount per relationshipId"
+  evidence: "OverviewEntityRelationship.tsx:18 — useGetEDRRelationshipById(dataEntityDetails.id); useQuery fires once per mount per queryKey (relatioships.ts:6-11). The list row link routes here: RelationshipsListItem.tsx:52 → dataEntityDetailsPath(item.id)"
   observation_class: ui-call
-- entry_point: "ui_route:/data-modelling/relationships (detail panel — graph variant)"
-  caller_node: "ts react-hook:useGetGraphRelationshipById"
+- entry_point: "ui_route:/dataentities/{id}/overview (relationship-class entity, GRAPH)"
+  caller_node: "ts react-component:OverviewGraphRelationship.tsx"
   multiplicity_per_trigger: 1
-  evidence: "relatioships.ts:13-18 — symmetric to ERD hook"
+  evidence: "OverviewGraphRelationship.tsx:14 — useGetGraphRelationshipById(dataEntityDetails.id); relatioships.ts:13-18"
   observation_class: ui-call
 - entry_point: "rest:GET /api/relationships"
   caller_node: "<external — direct API consumer>"
   multiplicity_per_trigger: 1
   unresolved: true
-  evidence: "openapi.yaml:4140-4158 declares the endpoint publicly; no auth gate beyond authenticated; third-party consumers are admissible"
+  evidence: "openapi.yaml:4140-4158; no gate beyond authenticated"
   observation_class: rest-call
-- entry_point: "rest:GET /api/relationships/erd/{relationship_id}"
+- entry_point: "rest:GET /api/relationships/erd/{relationship_id} + /graph/{relationship_id}"
   caller_node: "<external — direct API consumer>"
   multiplicity_per_trigger: 1
   unresolved: true
-  evidence: "openapi.yaml:4160-4175"
+  evidence: "openapi.yaml:4160-4192; the spec param description (components.yaml:4391-4398) is these callers' contract"
   observation_class: rest-call
-- entry_point: "rest:GET /api/relationships/graph/{relationship_id}"
-  caller_node: "<external — direct API consumer>"
+- entry_point: "test:erd-graph-relationships.spec.ts (IT-077)"
+  caller_node: "odd-team integration-tests/e2e/specs/erd-graph-relationships.spec.ts"
   multiplicity_per_trigger: 1
-  unresolved: true
-  evidence: "openapi.yaml:4177-4192"
+  evidence: "IT-077 run protocol steps 1-6 drive the list (UI), the visibility negatives, the ?type= fallback, and the erd detail endpoint (API) per run"
   observation_class: rest-call
 
 ## downstream_side_effects
 
 - side_effect_class: page-render
-  description: "Returns DataEntityRelationshipList (paged: items + PageInfo) — items[].{id, name, oddrn, sourceDataEntity, targetDataEntity, dataSource, type} — to the caller. Surfaces the existence of every relationship in the catalog (intentional per implicit_adrs[1])."
-  evidence: "RelationshipController.java:25-26 + RelationshipMapper.java:45-49"
-  cardinality_per_call: "1 response with N items where N <= size (max 30 per UI; uncapped on direct API)"
+  description: "Returns DataEntityRelationshipList (items + PageInfo) of VISIBLE relationship entities only (post-122a0823: HOLLOW=false, STATUS != DELETED, EXCLUDE_FROM_SEARCH null/false); total counts visible rows only."
+  evidence: "RelationshipController.java:25-26 + ReactiveDataEntityRelationshipRepositoryImpl.java:78-80, 136-138 + RelationshipMapper.java:45-49"
+  cardinality_per_call: "1 response with N items, N <= size (30 per UI page; uncapped on direct API)"
   reachable_from_entry_points:
     - "ui_route:/data-modelling/relationships"
     - "rest:GET /api/relationships"
+    - "test:erd-graph-relationships.spec.ts (IT-077)"
 - side_effect_class: page-render
-  description: "Returns DataEntityRelationshipDetails — allOf DataEntityRelationship + erdRelationship (fields_pairs) — for an ERD relationship. fields_pairs discloses the source/target dataset_field_oddrn pairs of the foreign-key constraint."
-  evidence: "RelationshipController.java:33-34 + RelationshipMapper.java:65-81 + ErdRelationshipMapper (not read this pass)"
-  cardinality_per_call: "1 if the relationships row + data_entity exist; 0 (HTTP 404 via NotFoundException) if the supplied id has no data_entity match for ERD-type"
+  description: "Returns DataEntityRelationshipDetails for an ERD relationship — id (= data_entity.id), erdRelationship.{erd_relationship_id (internal detail-record id, non-round-trippable), fields_pairs (FK column oddrns + dataset_field ids), is_identifying, cardinality}. No visibility predicate: serves DELETED/excluded/hollow rows by direct id."
+  evidence: "RelationshipController.java:33-34 + RelationshipMapper.java:65-81 + ErdRelationshipMapper.java:15-25 + ReactiveRelationshipsRepositoryImpl.java:179-215"
+  cardinality_per_call: "1 if a row matches (data_entity.id + type='ERD'); 0 → HTTP 404 (NotFoundException)"
   reachable_from_entry_points:
-    - "ui_route:/data-modelling/relationships (detail panel)"
+    - "ui_route:/dataentities/{id}/overview (relationship-class entity, ERD)"
     - "rest:GET /api/relationships/erd/{relationship_id}"
+    - "test:erd-graph-relationships.spec.ts (IT-077)"
 - side_effect_class: page-render
-  description: "Returns DataEntityRelationshipDetails — allOf DataEntityRelationship + graphRelationship (specific_attributes JSON, is_directed boolean) — for a GRAPH relationship."
-  evidence: "RelationshipController.java:41-42 + RelationshipMapper.java:65-81 + GraphRelationshipMapper (not read this pass)"
-  cardinality_per_call: "1 if found; 0 (HTTP 404) on miss"
+  description: "Returns DataEntityRelationshipDetails for a GRAPH relationship — graphRelationship.{graph_relationship_id (internal, non-round-trippable), is_directed, attributes}. Same no-visibility-predicate property."
+  evidence: "RelationshipController.java:41-42 + RelationshipMapper.java:65-81 + ReactiveRelationshipsRepositoryImpl.java:179-215"
+  cardinality_per_call: "1 if found; 0 → HTTP 404"
   reachable_from_entry_points:
-    - "ui_route:/data-modelling/relationships (detail panel — graph variant)"
+    - "ui_route:/dataentities/{id}/overview (relationship-class entity, GRAPH)"
     - "rest:GET /api/relationships/graph/{relationship_id}"
 
-(No db-write, no activity-emit, no external-call, no sse-push, no
-cache-mutate, no log-emit, no metric-emit, no header-set, no
-redirect-issue — every operation is a pure GET that materialises a
-response payload from SQL reads. The downstream_side_effects is
-exclusively page-render.)
+(No db-write, activity-emit, external-call, sse-push, cache-mutate, log-emit, metric-emit, header-set or redirect-issue — all three operations are pure GETs materialising SQL reads.)
 
 ## sources
 
-- understanding ← RelationshipController.java:1-44 + RelationshipsServiceImpl.java:1-50 + ReactiveDataEntityRelationshipRepositoryImpl.java:1-132 + ReactiveRelationshipsRepositoryImpl.java:1-261 + RelationshipMapper.java:1-80
-- concepts.entities ← RelationshipController.java:4-12 + openapi.yaml:4140-4192 + components.yaml:4066-4198 + DataEntityClassDto.java:51
-- concepts.operations ← RelationshipController.java:19-43 + RelationshipsServiceImpl.java:30-49 + openapi.yaml:4140-4192
-- concepts.invariants ← RelationshipController.java:1-44 + RelationshipsServiceImpl.java:38-49 + ReactiveRelationshipsRepositoryImpl.java:152-208 + ReactiveDataEntityRelationshipRepositoryImpl.java:57-131 + V0_0_87__create_relation_tables.sql:1-32 + SecurityConstants.java:95-355 + AuthorizationCustomizer.java:14-32 + RelationshipMapper.java:51-80 + RelationshipsSearchInput.tsx:14-22
-- concepts.audiences ← Relationships.tsx:20-24 + relatioships.ts:6-41 + REFACTOR-108 (batch-E cross-reference)
-- dependencies_semantic.requires-feature ← RelationshipController.java:4-16 + openapi.yaml:4140-4192 + documentation/docs/developer-guides/api-reference/relationships.md:8-14
-- dependencies_semantic.requires-config ← AuthorizationCustomizer.java:14-32 + DisabledAuthSecurityConfiguration (file existence confirmed, not read this pass) + S2sAuthenticationFilter (REFACTOR-108)
-- dependencies_semantic.requires-runtime ← V0_0_87__create_relation_tables.sql + RelationshipMapper.java:19-25 (mapper composition) + JooqQueryHelper.java:55-117
-- tests_coverage_semantic.uncovered_behaviours ← derived from full sidecar reading + WebFetch failure + grep of project test directory (Glob: no Relationship*Test* files exist)
-- docs_link_semantic.inferred_docs ← documentation/docs/data-modelling/relationships.md:1-74 + documentation/docs/developer-guides/api-reference/relationships.md:1-19 + WebFetch fail (network unreachable)
-- docs_link_semantic.doc_drift_findings ← cross-reference of code findings (above) against the local-repo doc text
-- implicit_adrs ← ReactiveDataEntityRelationshipRepositoryImpl.java:66-79 + RelationshipsServiceImpl.java:38-49 + openapi.yaml:4160-4192
-- bugs_limitations_corner_cases ← all stress_findings entries with PROBE-NEEDED + the static-inferred drift entries
-- stress_findings.tunables ← ReactiveDataEntityRelationshipRepositoryImpl.java:79 + Relationships.tsx:23
-- stress_findings.name_behavior_pairs ← RelationshipController.java:19-43 + RelationshipsServiceImpl.java:30-49 + ReactiveRelationshipsRepositoryImpl.java:152-208
-- stress_findings.orderings ← ReactiveDataEntityRelationshipRepositoryImpl.java:77-79 + JooqQueryHelper.java:63-90 + RelationshipMapper.java:39-49 + Relationships.tsx:63-77
-- stress_findings.auth_gates ← AuthorizationCustomizer.java:14-32 + SecurityConstants.java:95-355 + RelationshipController.java:1-44
-- stress_findings.resource_boundaries ← RelationshipController.java:1-44 + RelationshipsServiceImpl.java:1-50 + relatioships.ts:1-41
-- stress_findings.request_inputs ← RelationshipController.java:19-43 + ReactiveDataEntityRelationshipRepositoryImpl.java:57-131 + ReactiveRelationshipsRepositoryImpl.java:152-208 + RelationshipMapper.java:51-80 + V0_0_87__create_relation_tables.sql:1-32
-- security.authorization_assertions ← (empty — explicit `[]`; the verification is the absence of @PreAuthorize and the absence of /api/relationships/** in SecurityConstants.SECURITY_RULES)
-- security.owner_scoping ← ReactiveDataEntityRelationshipRepositoryImpl.java:66-75 + ReactiveRelationshipsRepositoryImpl.java:152-208
-- security.known_security_gaps ← AuthorizationCustomizer.java:14-32 + SecurityConstants.java:95-355 + RelationshipController.java:1-44 + cross-ref REFACTOR-108
-- performance.hot_paths ← ReactiveDataEntityRelationshipRepositoryImpl.java:74-130
-- performance.scaling_characteristics ← RelationshipController.java:1-44 (no @Transactional) + ReactiveDataEntityRelationshipRepositoryImpl.java:79 (no size cap)
-- upstream_callers ← Relationships.tsx:20-24 + relatioships.ts:6-41 + openapi.yaml:4140-4192
-- downstream_side_effects ← RelationshipController.java:19-43 + RelationshipMapper.java:39-81
+- understanding ← RelationshipController.java:1-44 + RelationshipsServiceImpl.java:1-50 + ReactiveDataEntityRelationshipRepositoryImpl.java:57-139 + ReactiveRelationshipsRepositoryImpl.java:76-268 + components.yaml:4391-4402 + AuthorizationCustomizer.java:20-31
+- concepts.entities ← RelationshipController.java:4-12 + components.yaml:4138-4143, 4175-4180, 4391-4407 + ErdRelationshipMapper.java:21 + DataEntityStatusDto.java:16
+- concepts.operations ← RelationshipController.java:19-43 + RelationshipsServiceImpl.java:30-49 + ReactiveDataEntityRelationshipRepositoryImpl.java:57-139 + ReactiveRelationshipsRepositoryImpl.java:159-215 + openapi.yaml:4140-4192
+- concepts.invariants ← ReactiveDataEntityRelationshipRepositoryImpl.java:67-87, 107-109, 136-138 + ReactiveRelationshipsRepositoryImpl.java:135-144, 179-204 + ReactiveDataEntityRepositoryImpl.java:970-976 + JooqReactiveOperations.java:37-42 + parseRelationshipsType.ts:3-9 + components.yaml:4219-4235, 4391-4407 + auth/util/SecurityConstants.java (grep -i relationship → zero matches) + RelationshipMapper.java:53, 60-62, 67, 74-76
+- concepts.audiences ← Relationships.tsx:19-24 + RelationshipsListItem.tsx:52 + OverviewEntityRelationship.tsx:18 + OverviewGraphRelationship.tsx:14 + relatioships.ts:6-41 + IT-077 protocol
+- dependencies_semantic ← RelationshipController.java:4-17 + RelationshipsServiceImpl.java:17-49 + RelationshipMapper.java:19-81 + ErdRelationshipMapper.java:15-25 + issues/odd-platform/PLT-219.md + components.yaml:4219-4235, 4391-4407
+- tests_coverage_semantic ← ReactiveDataEntityRelationshipRepositoryImplTest.java:18-147 + ReactiveRelationshipsRepositoryImplTest.java:17-102 + integration-tests/protocols/IT-077-erd-graph-relationships.md:1-89
+- docs_link_semantic ← WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-06-12, 200) + WebFetch https://docs.opendatadiscovery.org/developer-guides/api-reference/relationships (2026-06-12, 200) + backlog/docs/DOC-446.md:1-55
+- implicit_adrs ← ReactiveDataEntityRelationshipRepositoryImpl.java:75-80 + ReactiveRelationshipsRepositoryImpl.java:138-143 + components.yaml:4391-4402 + parseRelationshipsType.ts:3-9 + backlog/docs/DOC-446.md:52-54 + RelationshipsServiceImpl.java:38-49
+- bugs_limitations_corner_cases ← RelationshipController.java:1-44 + ReactiveDataEntityRelationshipRepositoryImpl.java:87 + ReactiveRelationshipsRepositoryImpl.java:179-204 + JooqReactiveOperations.java:37-42 + RelationshipMapper.java:60-62 + components.yaml:4219-4235 + issues/odd-platform/PLT-218.md + IT-077 result log
+- stress_findings ← the per-question evidence fields above (each cites file:line, probe_id, or IT-077)
+- security ← AuthorizationCustomizer.java:20-31 + auth/util/SecurityConstants.java (zero relationship matches; that single file defines SECURITY_RULES — wiring consumer read end-to-end) + ReactiveDataEntityRelationshipRepositoryImpl.java:67-80 + ReactiveRelationshipsRepositoryImpl.java:179-202 + live feature page excerpt
+- performance ← ReactiveDataEntityRelationshipRepositoryImpl.java:82-138 + ReactiveRelationshipsRepositoryImpl.java:181 + components.yaml:4228-4235
+- upstream_callers ← Relationships.tsx:19-24 + relatioships.ts:6-41 + OverviewEntityRelationship.tsx:18 + OverviewGraphRelationship.tsx:14 + RelationshipsListItem.tsx:52 + openapi.yaml:4140-4192 + IT-077 protocol steps 1-6
+- downstream_side_effects ← RelationshipController.java:19-43 + RelationshipMapper.java:45-81 + ErdRelationshipMapper.java:15-25 + ReactiveDataEntityRelationshipRepositoryImpl.java:78-80, 136-138 + ReactiveRelationshipsRepositoryImpl.java:179-215
 
 ## confidence_per_field
 
 - understanding: HIGH
 - concepts: HIGH
 - dependencies_semantic: HIGH
-- tests_coverage_semantic: HIGH (the test gap is empirical — no tests exist)
-- docs_link_semantic: MEDIUM (local-repo docs read; live verification deferred due to network unreachable)
-- implicit_adrs: MEDIUM (intent anchors are convention-level, not comment-level)
-- bugs_limitations_corner_cases: HIGH (all entries cite file:line)
+- tests_coverage_semantic: HIGH (both repository tests + IT-077 read end-to-end; run-log evidence on disk)
+- docs_link_semantic: HIGH (both live pages WebFetched 2026-06-12, status 200; train state anchored to DOC-446)
+- implicit_adrs: HIGH (three of five anchors are verbatim in-code comments or spec descriptions introduced by the fix)
+- bugs_limitations_corner_cases: HIGH
 - security: HIGH
-- performance: HIGH (limited to file-local signals)
-- upstream_callers: HIGH (UI side fully traced; rest entry-points are reference entries by intent)
+- performance: HIGH (file-local signals)
+- upstream_callers: HIGH (UI list + detail consumers fully located this pass; rest entries are reference-by-intent)
 - downstream_side_effects: HIGH
-- stress_findings: MEDIUM (13 of 46 questions resolve to PROBE-NEEDED — Category F drift on `relationshipId`, page-zero boundary, auth posture; load-bearing claims about the Category F drift are PROBE-NEEDED — confidence cannot rise to HIGH until P-128 runs)
+- stress_findings: MEDIUM (5 of 53 questions remain PROBE-NEEDED — the P-130 boundary family; 6 PROBE-VERIFIED via IT-077; the remaining load-bearing claims are STATIC-INFERRED with in-code or test evidence. P-131's runtime auth matrix is still pending, but its static answer is strongly anchored)
 
 ## Maintainer notes
 
-(Empty — first enrichment of this node; no prior sidecar to preserve.)
+(Empty — no maintainer prose recorded on this node yet; heading preserved across refreshes.)

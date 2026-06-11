@@ -1,0 +1,133 @@
+---
+probe_id: P-248
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__relationships.md
+emitted_at: 2026-06-12T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-037
+test_class: integration
+verified_against_commit: abe51417
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A/C, fired while refreshing the relationships route
+  sidecar at abe51417): the Relationships list backend paginates the homogeneous
+  relationship-class query (ORDER BY data_entity.id ASC, offset/limit — repository
+  ReactiveDataEntityRelationshipRepositoryImpl.java:85-87) BEFORE the ERD/GRAPH
+  narrowing, which lives only in the INNER JOIN condition (:107-109); the page
+  total reuses the un-narrowed conditionList (:136-138). The UI derives nextPage
+  from that total (odd-platform-ui utils.ts:13-14) and renders it in the H1 badge
+  "N relationships overall" (RelationshipsTitle.tsx:21). Hypothesis, not
+  confirmable statically: on a mixed-type catalog whose first 30-id window is
+  all-GRAPH, the ERD tab (a) reports total = ALL visible relationship entities
+  (both types) in the badge, (b) returns an EMPTY page 1 while the 5 ERD rows sit
+  in page 2 (reachable by direct API call), and (c) the UI infinite scroll never
+  fires the page-2 fetch because react-infinite-scroll-component's dataLength
+  never changes and an empty list gives nothing to scroll — leaving the ERD rows
+  unreachable from the UI while the badge claims 35.
+---
+arrange:
+  - kind: docker-compose-up
+    note: "odd-minimal (AUTH_TYPE=DISABLED). On a shared stack (ODD_STACK_EXTERNAL=1) skip and rely on cleanup SQL — leftover seeds break sibling runs (see IT-068 lesson)."
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, active)
+      VALUES (24800, 'p248_ds', '//probe-p248/ds', true)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      -- source + target datasets (class 1)
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids,
+                               view_count, hollow, status, exclude_from_search, source_created_at, source_updated_at)
+      VALUES
+        (24801, '//probe-p248/db/tables/p248_src', 'p248_src', 24800, 1, '{1}', 0, false, 1, false, NOW(), NOW()),
+        (24802, '//probe-p248/db/tables/p248_tgt', 'p248_tgt', 24800, 1, '{1}', 0, false, 1, false, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      -- 30 GRAPH relationship entities occupy the FIRST 30-id window (ids 24803-24832, type 26),
+      -- then 5 ERD relationship entities (ids 24833-24837, type 25). All healthy/visible.
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids,
+                               view_count, hollow, status, exclude_from_search, source_created_at, source_updated_at)
+      SELECT 24802 + i,
+             '//probe-p248/db/relationships/p248_rel_' || i,
+             'p248_rel_' || lpad(i::text, 2, '0'),
+             24800,
+             CASE WHEN i <= 30 THEN 26 ELSE 25 END,
+             '{9}', 0, false, 1, false, NOW(), NOW()
+      FROM generate_series(1, 35) AS i
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO relationships (data_entity_id, source_dataset_oddrn, target_dataset_oddrn, relationship_type)
+      SELECT 24802 + i,
+             '//probe-p248/db/tables/p248_src',
+             '//probe-p248/db/tables/p248_tgt',
+             CASE WHEN i <= 30 THEN 'GRAPH' ELSE 'ERD' END
+      FROM generate_series(1, 35) AS i
+      ON CONFLICT DO NOTHING;
+act:
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=1&size=30&type=ERD&query=p248_rel
+    capture_as: erd_page1
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=2&size=30&type=ERD&query=p248_rel
+    capture_as: erd_page2
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=1&size=30&type=ALL&query=p248_rel
+    capture_as: all_page1
+  - kind: dom-probe
+    url: /data-modelling/relationships?type=ERD&q=p248_rel
+    steps:
+      - wait_for_response: "GET /api/relationships*type=ERD*"
+      - capture_text:
+          selector: "h1 + * >> text=/relationships overall/"
+          capture_as: badge_text
+      - capture_count:
+          selector: "#relationships-list a[href*='/dataentities/']"
+          capture_as: rendered_rows_initial
+      - idle_ms: 3000
+      - capture_count:
+          selector: "#relationships-list a[href*='/dataentities/']"
+          capture_as: rendered_rows_after_idle
+observe:
+  - kind: sql
+    query: |
+      SELECT count(*) AS erd_total
+      FROM data_entity de JOIN relationships r ON r.data_entity_id = de.id
+      WHERE de.external_name LIKE 'p248_rel_%' AND r.relationship_type = 'ERD'
+    capture_as: db_erd_count
+assert:
+  - "erd_page1.items.length == 0  # first 30-id window is all-GRAPH; INNER JOIN drops every row"
+  - "erd_page1.page_info.total == 35  # count reuses conditionList — type does NOT narrow it (the badge overcount)"
+  - "erd_page2.items.length == 5  # the ERD rows ARE reachable by direct API paging — no data loss at the API tier"
+  - "all_page1.items.length == 30 && all_page1.page_info.total == 35  # ALL-tab control"
+  - "db_erd_count.erd_total == 5  # seed sanity"
+  - "badge_text contains '35'  # H1 badge claims 35 'relationships overall' on the ERD tab"
+  - "rendered_rows_initial == 0  # empty page 1 rendered as empty state"
+  - "rendered_rows_after_idle == 0  # STALL hypothesis: infinite scroll never fires page 2 (dataLength unchanged, nothing scrollable). If this assertion FAILS (rows == 5), the library auto-fetched — record the actual behaviour and drop the stall half of the finding, keeping the badge-overcount half."
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM relationships WHERE source_dataset_oddrn = '//probe-p248/db/tables/p248_src';
+      DELETE FROM data_entity WHERE id BETWEEN 24801 AND 24837;
+      DELETE FROM data_source WHERE id = 24800;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__ts__routes__route__relationships]
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins the paginate-before-type-filter window semantics with a worst-case
+  id distribution (30 contiguous GRAPH ids ahead of 5 ERD ids). Real catalogs with
+  interleaved ids produce SHORT pages rather than empty ones — the badge overcount
+  assert holds regardless, but the stall assert only triggers on a fully-empty
+  window. The DOM selectors are skeleton-level (the row anchor + badge locators
+  mirror IT-077's spec) and the probe-runner adjusts them against the live DOM. The
+  arrange SQL mirrors the IT-077 seed shape; column lists must be re-checked against
+  the schema at run time. On a shared stack the cleanup SQL is mandatory (IT-068:
+  leftover seeds corrupt sibling suite runs). Local-only: odd-minimal compose stack,
+  no remote infrastructure.

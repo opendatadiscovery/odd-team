@@ -4,7 +4,7 @@ github_issue_number: 1760
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1760
 class: bug
 milestone: "0.28.0"
-status: review-ready
+status: merged  # PR #1771 merged by RamanDamayeu 2026-06-11T21:25:30Z as 39b54eef (GATE 2 complete; verified via PR API + origin/main, recorded at the CTRIB-006 review 2026-06-12)
 reproduced: "live 2026-06-11 on local odd-minimal, SUT=working tree @ 026fd3fa (= clean main; image odd-platform:odd-team-sut sha256:9802b3e3cf52, rebuilt by run-suite). API: facets/results/facet-TAGS of a missing session all 404 USR002; the issue's literal URL /filters/entityClasses 500 SYS001 (server log: NoResourceFoundException 404 'No static resource…' swallowed by the catch-all); facet/entityClasses 500 SYS001 (ServerWebInputException 400 'Type mismatch' swallowed — the #1761 class). UI (Playwright traces /tmp + run-log/2026-06-11-IT-125.md): /search/{missing} AND /search/{valid} both NEVER fetch the deep-linked session — the SPA POSTs a NEW empty search and rewrites the URL (route is a splat '/search/*', useParams().searchId always undefined since #1551, Dec 2023); IT-125 UX pin FAILED pre-fix on the fresh stack (no 'Unknown Error' — a normal catalog rendered), proving the issue's UX observation was PLT-147-residue-dependent, not deterministic"
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-11 — 'Approve as written': full plan incl. term-search mirror, Closes #1760 + #1761, scope comment posting)"
@@ -771,3 +771,12 @@ second rewrite was authored from the LIVE body, not from a workspace artifact.
   probe-verification + two controller sidecars re-stamped by the harness to the committed
   tip `5cbf60a3` — stronger provenance than the implementer's working-tree runs (CTRIB-004
   precedent), committed with this review.
+
+## GATE 2 — complete (recorded 2026-06-12, CTRIB-006 review session)
+
+PR #1771 merged by **RamanDamayeu** 2026-06-11T21:25:30Z, merge commit `39b54eef`
+(squash; verified via the PR API `merged: true` + `origin/main` = `39b54eef`). The human
+owned the entire flip: ready-for-review 20:38:37Z, merge 21:25:30Z. `review-ready` →
+`merged`. Docs (DOC-444) remain `pending-release` for the 0.28.0 release gate; TST-044
+(flip residue) remains the next tests-pillar batch. CTRIB-006 (#1752) builds on this very
+merge commit.

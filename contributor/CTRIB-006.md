@@ -4,7 +4,7 @@ github_issue_number: 1752
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1752
 class: bug
 milestone: "0.28.0"
-status: pr-draft
+status: review-ready  # /review ACCEPTED 2026-06-12 (separate session); GATE 2 — human review + merge of PR #1772 — is the remaining step
 reproduced: "live 2026-06-11 on the shared odd-minimal stack (AUTH_TYPE=DISABLED), image odd-platform:odd-team-sut built from the PR-#1771 tip 5cbf60a3 = content of current main 39b54eef. Seeded ctrib006_* rows (healthy/DELETED/excluded ERD + GRAPH relationship entities, ids 20691-20696; cleaned after capture). API: list ?query=ctrib006 type=ALL -> total 4 INCLUDING status=5 + exclude_from_search=true rows (D2); catalog search 'ctrib006' (FTS vectors seeded for all 3) -> total 1, only the healthy row (the sibling-surface contrast); ?type=foo -> 400 USR001 'Type mismatch.' (D4 BE, post-#1771); erd detail 20691 -> 200 with erd_relationship_id=777001, GET /erd/777001 -> 404 USR002 (D5 trap; graph twin identical); ?query=ctrib006_src (source dataset name) -> total 0 vs ?query=ctrib006_rel -> 4 (D6). UI (Playwright vs the live stack, screenshots /tmp/ctrib006-U*.png): U1 source name x2 / target name x0 on the list (D1); U2 ?type=foo -> '0 relationships overall' + EmptyContentPlaceholder + NO error text (D4 UI); U3 graph overview Source-block='Source:ctrib006_tgt', Target-block='Target:ctrib006_src' (Finding A swap). IT-077 H-002 pin GREEN (bug present) in both 2026-06-11 feature-complete runs on this same SUT content (run-log)."
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-11 — 'Approve as written': full plan incl. Finding A label swap + Finding B dataset-tab predicates, one PR, scope comment posting)"
@@ -553,3 +553,211 @@ committer `odd-contributor[bot]`:
   https://github.com/opendatadiscovery/odd-platform/issues/1752#issuecomment-4685460651
   (author `odd-contributor[bot]`, HTTP 201; ASCII-verified before post).
 
+
+## Review (2026-06-12, session: separate from the implementing session — post-46e938d)
+
+- **Result**: ACCEPTED — `pr-draft` → `review-ready`. GATE 2 (human review + merge of
+  draft PR #1772) is the remaining step. Paired DOC-446 flipped `review-ready` →
+  `pending-release` (Gate 8 PENDING-RELEASE 0.28.0). CTRIB-005 recorded `merged` en route
+  (PR #1771 merged by RamanDamayeu 2026-06-11T21:25:30Z as `39b54eef` = this branch's base).
+- **Re-verification protocol**: every load-bearing claim re-derived from branch source /
+  live GitHub API / the train ref (ls-remote) / the reviewer's own fresh full-regression
+  runs — not from this record.
+
+### Definition of Done (LSN-032 four gates) — re-verified
+
+1. **Unit (full build, on the branch)** — PASS. Reviewer's own `scripts/run-platform-tests.sh`
+   (no-arg = `:odd-platform-api:build`: test + checkstyle + jacoco + assemble) on the clean
+   working tree at the PR tip `abe51417` → **BUILD SUCCESSFUL in 5m 12s**. Independently:
+   PR #1772 CI ran 6/6 checks green on the exact head (Test Results: **417 tests / 0
+   failures** = CTRIB-005's 414 baseline + exactly the 3 new repository tests; run_tests +
+   Playwright test/lint/format-check + update_release_draft) — VERIFIED via check-runs API
+   on `abe51417`.
+2. **Integration (FULL regression, reviewer's own runs on the PR-tip SUT)** — PASS.
+   One suite at a time, SUT image rebuilt from the clean tree @ `abe51417` (LSN-033):
+   `feature-complete` **277 passed / 0 failed (4.0m)** — IT-077's six tests GREEN in-suite
+   (line-reporter tests 99–104); `multi-stack` **9 passed / 0 failed (4.1m)**;
+   `known-bugs` **6 failed / 0 passed — EXPECTED all-RED**, every failure its documented
+   pin (IT-007 LSN-001/PLT-086; IT-006 TEST-GAP-1013; IT-004 PLT-052; IT-003 ×2
+   PLT-090/PLT-127; IT-005 PLT-026), ZERO unexpected GREENs. All three identical to the
+   implement run's counts. Run-log entries appended, reviewer-attributed, narrative fields
+   filled. RED half re-verified from the run-log chain (`2026-06-12-IT-077.md`): GREEN 6/6
+   on the fix SUT → honest SUT-BUILD-FAILED interlude (gradle GC thrash, retried) →
+   `ODD_SUT=ref:main` (39b54eef) **4 failed / 2 passed exactly as pre-authored** (✘ H-002
+   source×2, ✘ visibility, ✘ ?type=foo dead state, ✘ graph labels; ✓ H-001 surface,
+   ✓ D5 green-locks). Shared-stack hygiene claim VERIFIED live: `psql` on probe-database →
+   **0 rows** matching `ctrib006%` (the reproduction seeds were cleaned as recorded).
+3. **Docs** — PASS, PENDING-RELEASE (0.28.0). Remote train tip = exactly `f61b9c2`
+   (**`git ls-remote` — authoritative**; the local `origin/release/0.28.0` tracking ref
+   lags because the documentation clone is single-branch → DOC-448 codifies ls-remote);
+   parent `1d43d6e` (DOC-444); NOT reachable from `origin/main` (`5d92250`) — main
+   untouched. Diff read end-to-end at the train ref: caveat intro re-count EXACT (4
+   contract caveats + 2 fixed-in-0.28.0 notes = the 6 hint blocks); every behavioural
+   claim matches the code read this review (`parseRelationshipsType` case-sensitive ALL
+   fallback incl. the "other spellings load the unfiltered list" nuance; visibility trio;
+   dataset-tab STATUS+HOLLOW-not-EXCLUDE asymmetry; spec id-contract text); D3 + D6
+   caveats kept verbatim (still true — verified nothing in the diff touches routing or
+   search scope); RBAC caveat correctly narrowed to access-only (danger→warning, decision
+   recorded in DOC-446). Sub-checks green: PyYAML parses both pages; descriptions 118/114
+   ≤200; all links tree-relative with every target present at `f61b9c2`; outbound
+   `odd-collectors#relationships` resolves with the anchor. **Live no-leak verified**
+   (curl, raw body ×2 pages): pre-fix phrases still served ("is being patched upstream";
+   "full enumeration of the relationship class"); ZERO "Fixed in 0.28.0" / "as of 0.28.0"
+   live. DOC-446's post-merge URLs + phrases recorded for the release gate.
+4. **Ontology** — PASS. Both sidecars stamped `enriched_at_commit: abe51417` +
+   enrichment.log 2026-06-12T00:55Z entries; controller sidecar carries the
+   TRANSLATES_SILENTLY → TRANSLATES_LEGITIMATELY reclassification WITH citation
+   (`components.yaml:4391-4402`) + the NEW deliberate detail-by-id-serves-DELETED finding;
+   route sidecar documents `parseRelationshipsType` consumed by BOTH read paths + the
+   read-open posture unchanged-and-deliberate. F-037: PyYAML OK; `use_case_coverage`
+   7/13 with EXACTLY 7 `verified` entries; facets bracket-stamped with commit refs
+   (FIXED 46a37f59 ×2 / PART-FIXED / DOCUMENTED abe51417), historical text preserved;
+   `test_matrix` unit+integration covered, control_summary 2/4. suites.yaml: IT-077 in
+   `feature-complete` + `I6-lineage-safety` lanes with re-grounded comments. IT-077
+   protocol carries the flip provenance (the 2026-06-07 entry pre-authored the flip —
+   LSN-029, pin re-grounded never deleted). PLT-056 in-flight note present. P-248 emitted
+   at abe51417. Graph rebuilt `built_at: 2026-06-12`, nodes=7082, vectors=8014
+   (BAAI/bge-small-en-v1.5) — exactly as the commit body claims. All committed (46e938d;
+   workspace clean at review start).
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS. `reproduced:` field carries the full live evidence
+  (API probes verbatim incl. the D2 catalog-search CONTRAST, UI Playwright probes U1-U3,
+  the H-002 pin GREEN-on-bug in both 2026-06-11 runs); the pre-fix code shape re-read
+  this review via the diff pre-image confirms each defect (predicate-less WHERE, verbatim
+  Source-cell copy in the Target cell, bare `as RelationshipsType` assertion, swapped
+  label blocks) — the reproduction is consistent with the code it reproduces.
+- **G-C2 running system, not the diff** — PASS via the reviewer's own full unit build +
+  full three-suite integration regression on the PR-tip SUT (DoD 1+2) + CI on the exact head.
+- **G-C3 GATE 1 plan-before-code** — PASS. `plan_approved_by: RamanDamayeu (2026-06-11,
+  'Approve as written')`; ordering VERIFIED via timestamps: plan/intake workspace commit
+  `ad85f88` 21:53:58Z → scope comment 21:58:06Z → first code commit `122a0823` 22:18:01Z.
+- **G-C4 GATE 2 human merge** — PASS (structural). PR #1772 fetched live: author
+  `odd-contributor[bot]`, base `main`, head `abe51417`, **`draft: true`** (still — the bot
+  never left draft), review requested from RamanDamayeu, `mergeable_state: clean`.
+- **G-C5 bounded diff + public scope comment** — PASS. Diff = 10 files +297/−12 = exactly
+  the approved plan (D1 Target cell; D4 `parseRelationshipsType` in BOTH consumers;
+  Finding-A label un-swap; D2 trio on the global list + STATUS/HOLLOW on the dataset tab;
+  D5 Option-A spec descriptions; 2 failing-first test classes) — full diff read. Every
+  exclusion held: no RBAC/SecurityConstants change, no D6 search-scope SQL, no D3 routing
+  change, no Option-B rename, no detail-endpoint visibility filtering — each verified
+  absent from the diff. Scope comment PUBLIC on #1752 (4685460651, bot-authored, pre-code,
+  **0 non-ASCII chars** verified against the raw API body — the (a)-(f) content matches
+  the GATE-1-approved draft verbatim at the opening).
+- **G-C6 one-question bar** — PASS. "No question warranted" recorded with reason; issue
+  #1752 has EXACTLY 1 comment (the scope comment) — zero clarify noise — via issue API.
+- **G-C7 blast-radius** — PASS. `adr_required: false` correct: no migration; no
+  auth/security-posture change (visibility predicates align the listing with the
+  platform's established default-visibility contract; RBAC explicitly excluded); spec
+  change is descriptions-only (non-breaking; generated TS client not committed).
+- **G-C8 issue-is-data** — PASS. Maintainer-authored issue treated as quoted data; the
+  run independently verified all six claims AND extended the cluster with findings A/B
+  (disclosed publicly in the scope comment) — evidence of analysis, not steering. No
+  injection content.
+- **G-C9 test integrity, BOTH buckets** — PASS. Unit: the two Testcontainers classes are
+  BEHAVIORAL (StepVerifier over seeded healthy/DELETED/excluded/hollow/graph rows;
+  page-total consistency asserted against the shared condition list; the dataset-tab
+  deliberate asymmetry pinned BOTH sides — deleted/hollow hidden RED-on-unfixed, excluded
+  kept GREEN-lock). Failing-first: ledger records 3/3 RED with verbatim injected reasons;
+  RED-on-main is logically entailed by the pre-fix code shape read this review
+  (predicate-less query returns all 5 seeds vs `containsExactlyInAnyOrder` of 2) and the
+  GREEN half is the reviewer's own build + CI 417/0. Integration: IT-077 re-grounded with
+  the `ref:main` 4-fail/2-pass RED proof (run-log); the user-facing symptom is
+  integration-tested (LSN-031); spec asserts match the protocol exactly (read end-to-end:
+  request-level `type=ALL` fallback assert, aria-selected All tab, ×1/×1 column counts,
+  label-block containment, id-contract trap 404). FE unit N/A-with-reason re-confirmed
+  (no vitest CI executor — CTRIB-002..005 precedent; FE gated by tsc/eslint/webpack + e2e).
+- **G-C10 ontology + docs move with the code** — PASS (DoD 3+4). Reviewer's converge grep
+  for IT-077 over the workspace: every hit is a flipped/current surface (2 sidecars,
+  F-037, suites.yaml, protocol+spec, P-248, PLT-056, the record). ONE adjacent stale
+  pointer found OUTSIDE the checklist's 8 surfaces: `navigation/domains/relationships.md:22`
+  still carries the pre-fix drift note incl. the "enumeration oracle" framing PLT-056
+  retracted 2026-06-10 — a CHECKLIST GAP (navigation/domains is not an enumerated
+  surface), filed **TST-045** (instance + class fix). Does not gate GATE 2 (workspace
+  pointer bookkeeping; the PR, docs train, and primary ontology are correct).
+- **G-C11 milestone gate** — PASS. Issue #1752 milestone `0.28.0` OPEN (due 2026-06-22)
+  re-verified via issue API at review time; PR body carries verbatim `Closes #1752` +
+  `Milestone: 0.28.0` + the docs-train note (`documentation@release/0.28.0 (f61b9c2)`);
+  docs routed to the train; paired DOC-446 milestone-gated. (No GitHub milestone OBJECT on
+  the PR itself — consistent with CTRIB-004/005 precedent; the issue carries the object.)
+
+### Universal Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS. IT-077 extended in place (not re-authored); the two
+  unit classes cover distinct repositories (global list vs dataset tab), cross-referenced
+  via javadoc; `parseRelationshipsType` duplicates no existing helper (grep over
+  odd-platform-ui src: no prior enum-validation util); TST-045/DOC-447/DOC-448 deduped
+  against TST-044 (CTRIB-005-scoped) + DOC-446 + the backlog — via grep + read.
+- **Gate 2 (aliases)** — N/A. No new doc concept/alias: the visibility vocabulary
+  (soft-deleted / hollow / excluded-from-search) pre-exists on the api-reference page
+  (verified at the pre-change ref `5d92250`).
+- **Gate 3 (caveats)** — PASS. Every operator-risk caveat is an admonition block (RBAC
+  access, id-trap, D3 routing, D6 search scope, 2 fixed-in notes); the dataset-tab
+  exclude nuance is a positive design statement in the walkthrough (not a buried risk) —
+  via train-ref read.
+- **Gate 4 (consumer-read)** — PASS. Workspace commit `46e938d` carries the 31-file
+  `Consumer-read:` footer spanning both repos + documentation; key consumers re-walked
+  this review: both repository impls (the count query REUSES `conditionList` —
+  list+total consistency verified in source; the dataset-tab predicates land in
+  `getRelationsByDatasetIdAndType` on the `relationshipsDataEntity` alias, detail-by-id
+  untouched), `parseRelationshipsType` consumed by BOTH raw-param readers,
+  `GraphRelationship` props pass-through from both call sites.
+- **Gate 5 (unset-parameter)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — PASS with finding FILED. Code→doc: all four fixes
+  + the deliberate nuance + the id contract documented on the train; doc→code: every train
+  claim matched to source read this review. Claim-class sweep over the whole train tree
+  found ONE residual surface: `Features.md:212` "lists every relationship" → **DOC-447**
+  (low, 0.28.0 train) — filed, not narrated.
+- **Gate 7 (layout/completeness)** — PASS. No SUMMARY change needed (no page
+  added/moved); `#known-operator-caveats` anchor intact (both cross-links resolve);
+  suites-lane registration verified (IT-077 in feature-complete + I6, NOT in known-bugs).
+- **Gate 8 (publishing/live)** — PASS for the pillar's public surfaces (PR #1772, issue
+  #1752, comment, check-runs, PR #1771 merge state — all fetched live this review). Docs
+  half: **PENDING-RELEASE (0.28.0)** by design — branch sub-checks green now (DoD 3);
+  post-merge URLs + phrases recorded in DOC-446.
+- **Gate 9 (claim provenance)** — PASS. Every load-bearing record claim re-derived (diff
+  vs plan; GitHub state via 5 API fetches; train via ls-remote + show + grep; live pages
+  via curl raw-body; ontology via disk reads + PyYAML; regression via the reviewer's own
+  three-suite + full-build runs; seeds-cleaned via live psql). Outbound URL sweep: 8
+  fetches, 0 broken; 1 stale-LOCAL-ref trap caught (single-branch clone's
+  `origin/release/0.28.0` lagged the remote — ls-remote authoritative → DOC-448).
+  Banned-phrase check over this review: none used.
+- **Gate 10 (content-type homing)** — PASS. Work record in `contributor/`, run evidence
+  in `run-log/`, probe in `probes/`, spec text in components.yaml, behaviour caveats on
+  the feature page, endpoint semantics on the api-reference page, follow-ups in
+  `backlog/` + `issues/` — per canonical-homes.
+- **Gate 11 (audience isolation)** — PASS. Banned-term grep over both touched train
+  pages: zero hits. PR body + issue comment are contributor/operator language
+  (`contributor/CTRIB-006.md` reference is repo-public traceability, CTRIB-004/005 precedent).
+
+### Verdict bookkeeping
+
+- **Regressions**: none — measured, not inferred: full unit build GREEN (5m12s) + CI 6/6
+  (417/0) on the exact head + feature-complete 277/0 + multi-stack 9/0 + known-bugs
+  6/6-RED-as-designed, all reviewer-run on the PR-tip SUT.
+- **Navigation**: ONE stale pointer → TST-045 (above); all other relationships pointers
+  current.
+- **Upstream issues logged**: none new this review (PLT-218/219/220 verified well-formed,
+  ASCII-clean ×3, ID=max+1 sequence; PLT-220's pagination claim independently confirmed
+  in source this review — the type filter joins after the CTE window, the count never
+  sees it).
+- **Doc-product editorial findings** (audit per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused pass per CTRIB-004/005 precedent (full-tree sweep was
+    2026-06-08): both touched pages end-to-end at the train ref; cross-page coherence
+    greps over the train tree (data-modelling hub, main-concepts, Features.md, search.md,
+    api-reference hub, de-deprecation, data-objects); claim-class sweep ("every
+    relationship" / "full enumeration") across all train docs.
+  - **Findings**:
+    - DOC-447 (low, parallel-surfaces-with-drift) — `Features.md:212` "lists every
+      relationship across all data sources" needs the 0.28.0 "visible" anchor; the one
+      surface DOC-446's claim-fix missed. Source: train ref `docs/Features.md:212`.
+- **Follow-ups filed this review**: `backlog/tests/TST-045.md` (medium — navigation flip
+  residue + flip-on-fix checklist surface 9: navigation/domains); `backlog/docs/DOC-447.md`
+  (low, 0.28.0); `backlog/docs/DOC-448.md` (low — ls-remote as the authoritative train-ref
+  check; single-branch clone trap).
+- **Banned-phrase check**: none used in record or review.
+- **Reviewer-committed artefacts**: three 2026-06-12 suite-run entries
+  reviewer-attributed with narrative fields filled; harness re-stamps from the suite runs
+  (P-001 probe-run, feature-flows verification stamps, 2 DataEntityController sidecar
+  stamps) committed with this review; CTRIB-005 `merged` recorded; DOC-446 flip.

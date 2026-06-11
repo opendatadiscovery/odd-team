@@ -150,8 +150,8 @@ Cross-reference re-points DONE (dup pointers -> canonical):
 - DOC-292 / DOC-298 / DOC-308 / DOC-302: PLT-103 -> PLT-078 (actuator/env two-way links; PLT-108 refs preserved; DOC-302 review-record prose annotated, not blind-swapped).
 - TST-008 -> PLT-144: LEFT as-is (informational dedup note that already names the canonical PLT-021; rejection does not change its meaning).
 
-### Maintainer follow-ups (still open, recorded)
-1. Filing-time reconciliation for the NON-rejected near-duplicates: PLT-054<->PLT-099 (consolidate the /api/slack/events HMAC fix on one PR), PLT-032<->PLT-010 (Defect 1).
-2. Reverse back-links (non-blocking bookkeeping): add DOC-292/298/302/308 to PLT-078's body, and DOC-362 to PLT-120's body.
+### Maintainer follow-ups
+1. (OPEN) Filing-time reconciliation for the NON-rejected near-duplicates: PLT-054<->PLT-099 (consolidate the /api/slack/events HMAC fix on one PR), PLT-032<->PLT-010 (Defect 1). These stay as two drafts each because each carries a distinct surviving defect; they only need to be filed/fixed together, not merged on disk.
+2. (DONE 2026-06-11) Reverse back-links added: PLT-078 body now lists DOC-292/298/302/308; PLT-120 body now lists DOC-362. Bidirectional pointers complete for every dup re-point.
 3. Consider class-level items for two cross-cutting roots the sweep surfaced: (a) dead UI error-toasts platform-wide (handleResponseThunk/errorHandling ResponseError wrapper never unwrapped — affects every thunk + react-query mutation error path); (b) SecurityConstants singular-vs-plural path mismatches that make several gates inert (PLT-098/101 class).
 4. The soft-delete-aware partial unique index convention (falsified PLT-207) is a candidate implicit-ADR datum.

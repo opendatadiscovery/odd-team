@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: CTRIB-005 full-regression: 9/9 GREEN (3.3m) — MinIO attachment, LOGIN_FORM x2 (incl. session-cookie posture), LDAP x2, notifications WAL x2, multi-stack auth flows; no interaction with the #1760 advice/route/UI changes.
 
+## 2026-06-11 — suite/protocol: multi-stack
+- runner: AI-assisted Claude Fable 5 (CTRIB-005 /contribute run)
+- odd-platform working-tree HEAD: 5cbf60a3 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 5cbf60a3  (image odd-platform:odd-team-sut, digest sha256:66e54645cb50aa5ea14db29c420f5da12ed34e40d51942d92bbada85945ee0ab)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: CTRIB-005 correction run (the 5 multi-stack compose files also lost the exposure override): 9/9 GREEN (3.6m) — the removal is behaviour-neutral for these specs (only actuator exposure widened to the shipped default).
+

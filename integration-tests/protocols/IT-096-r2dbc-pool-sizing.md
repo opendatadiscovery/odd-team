@@ -32,12 +32,18 @@ maxSize=10, minIdle=0). Falsifiable claims:
   pool is built unconditionally (`R2DBCConfiguration.java:54`) but r2dbc-pool warms `initialSize`
   lazily via `warmup()` on first acquire (and the manual `new ConnectionPool(...)` never warms it), so
   the total r2dbc footprint is strictly below 2×maxSize=20.
-- **F-120-UC-8 (pin)**: pool utilisation is NOT observable — no Micrometer R2DBC binder; `/actuator`
-  exposes only health+info on odd-minimal, so `/actuator/prometheus` and
-  `/actuator/metrics/r2dbc.pool.acquired` do not return 200.
+- **F-120-UC-8 (green-lock — RE-GROUNDED twice 2026-06-11, CTRIB-005 correction)**: pool utilisation
+  IS observable on the shipped default. The original "not observable" rested on two stacked errors:
+  the harness compose override that masked `/actuator/prometheus` entirely (removed; the shipped
+  default serves it — PLT-078), and a static read that missed Spring Boot's
+  `ConnectionPoolMetricsAutoConfiguration` (no manual binder needed). The live scrape body carries
+  `r2dbc_pool_acquired_connections` (+ siblings) for BOTH pools (`connectionFactory` +
+  `customConnectionPool`); the `/actuator/metrics` family stays un-exposed (404). PLT-198 rejected
+  on this evidence.
 
 If the success claim FAILS, the deployed ceiling differs from the documented framework default. The
-UC-8 pin is GREEN today and FLIPS RED when a metrics binder is added.
+UC-8 green-lock FLIPS RED if the r2dbc pool series disappear from the scrape (an
+autoconfigure/dependency regression).
 
 **Refinement of the drift's "20/replica"**: that is the both-pools-warm worst case; the observed
 baseline on a Lookup-Tables-free stack is the primary pool alone (~10).
@@ -59,17 +65,19 @@ baseline on a Lookup-Tables-free stack is the primary pool alone (~10).
 1. Read the live r2dbc-postgresql connection count; assert it ∈ [maxSize-2, maxSize+1].
 2. Read total app connections vs `max_connections`; assert single-replica footprint < server ceiling.
 3. Assert the r2dbc count < 2×maxSize (custom pool not warm).
-4. GET `/actuator/prometheus`, `/actuator/metrics/r2dbc.pool.acquired`, `/actuator/metrics`; assert none
-   returns 200.
+4. GET `/actuator/prometheus` → 200 with `r2dbc_pool_acquired_connections` for both pool names;
+   GET `/actuator/metrics/r2dbc.pool.acquired` + `/actuator/metrics` → not 200 (not in the shipped
+   exposure list).
 
 **Automated rail**: `cd integration-tests/e2e && PATH="$HOME/.local/node/bin:$PATH" ODD_STACK_EXTERNAL=1 npx playwright test specs/r2dbc-pool-sizing.spec.ts --reporter=line`
 
 ## 5. What it checks — assertions
 - **PASS** when: r2dbc-postgresql count ≤ maxSize+1 and ≥ maxSize-2 (at the framework-default ceiling);
-  total app conns < `max_connections`; r2dbc count < 20; the three actuator metrics paths are not 200.
+  total app conns < `max_connections`; r2dbc count < 20; the scrape serves the r2dbc pool series for
+  both pools; the `/actuator/metrics` family is not 200.
 - **FAIL** when: the r2dbc count exceeds maxSize+1 (ceiling raised, or both pools warm) or sits far below
-  10 on a warm stack; OR an actuator metrics path returns 200 (pool metrics became observable — move the
-  UC-8 pin to the observability promise).
+  10 on a warm stack; OR the r2dbc pool series vanish from the scrape (observability regression); OR the
+  `/actuator/metrics` family starts serving (exposure widened — check config provenance).
 
 ## 6. Result log
 Every run appends a dated entry to `integration-tests/run-log/{YYYY-MM-DD}-{suite-or-IT}.md`.

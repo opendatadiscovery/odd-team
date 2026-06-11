@@ -66,11 +66,20 @@ is what this IT pins: the **reachability** posture (env/prometheus whitelisted, 
 
 1. `GET /actuator/health` → 200, body `status==UP`.
 2. `GET /actuator/info` → 200, body has non-empty `build.version`.
-3. `GET /actuator/env` → status is NOT 401/403 and NOT 302 (not auth-gated); current behaviour **404**
-   (no route is mapped despite enabled+exposed config — the pre-2026-06-11 "500" was the advice
-   catch-all swallowing this `NoResourceFoundException`; re-grounded by CTRIB-005/#1760, evidence on PLT-078).
-4. `GET /actuator/prometheus` → status is NOT 401/403 and NOT 302; current behaviour **404** (same — the
-   scrape surface is dead config; PLT-078/PLT-198).
+3. `GET /actuator/env` → NOT 401/403/302 (not auth-gated) and **200** to an anonymous caller — the
+   SHIPPED posture (whitelist + application.yml exposure; no override in the shipped compose files;
+   maintainer-confirmed live on demo.oddp.io @ 0.27.13). Every property VALUE in the body is masked
+   `******` (Spring `show-values=NEVER` default — PLT-078; demo-verified 203/203 masked); the anonymous
+   yield is the config-KEY schema.
+4. `GET /actuator/prometheus` → NOT 401/403/302 and **200** with real metrics (same shipped posture;
+   demo-confirmed; PLT-198's scrape premise holds).
+
+> **Correction history (2026-06-11, CTRIB-005):** earlier same-day re-ground asserted 404 "no route /
+> dead config" — WRONG, maintainer-caught. The 404 (and the pre-fix 500 = that 404 swallowed by the
+> advice catch-all) came from the HARNESS's own `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info`
+> override in `lineage/_extractor/probe-stacks/*.yml`, which silently narrowed the e2e stack below the
+> shipped default. The override (boilerplate authored under the false belief health needed it) was
+> removed from all probe stacks the same day, so the harness now mirrors the shipped exposure.
 
 Reachability assertions read NO response body and assert NO property value (responsible disclosure).
 
@@ -78,12 +87,12 @@ Reachability assertions read NO response body and assert NO property value (resp
 
 ## 5. Assertions
 
-- **PASS** when: health+info serve 200 bodies anon (info discloses version); env+prometheus are not auth-rejected
-  (no 401/403/302) and serve no route (404 — dead config, PLT-078).
-- **FLIPS** when: `/actuator/env` or `/actuator/prometheus` returns 401/403/302 (placed behind auth / removed from
-  the whitelist / moved to a separate management port — the surface narrowed, GOOD; re-scope the pin); OR either
-  starts returning a 200 body (the endpoint came alive — for env, escalate: the config-key schema is now directly
-  reachable; verify masking against PLT-078 and re-assess; for prometheus, PLT-198's gauge work unblocks).
+- **PASS** when: health+info serve 200 bodies anon (info discloses version); env serves 200 anon with EVERY
+  property value masked `******`; prometheus serves 200 anon with real metrics.
+- **FLIPS** when: any of the four returns 401/403/302 (placed behind auth / removed from the whitelist / moved
+  to a separate management port — the surface narrowed, GOOD; re-scope the pin); env or prometheus returns 404
+  (exposure narrowed by config, or a harness override regressed — check the probe-stack compose first); OR any
+  env property value appears UNMASKED (escalate immediately: PLT-078's key-schema exposure became value leakage).
 
 ## 6. Result log
 

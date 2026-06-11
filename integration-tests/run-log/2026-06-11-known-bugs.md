@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: CTRIB-005 full-regression: 6/6 still RED as designed (attachment LOCAL durability LSN-001/PLT-086; error-boundary containment; quality-dashboard unknown enum PLT-052; tsquery poisoning catalog PLT-090 + dictionary PLT-127; top-tags ordering PLT-026). ZERO unexpected GREENs — notably the tsquery REDs prove the #1760 ResponseStatusException pass-through did NOT mask the jOOQ/PG 500 class (different exception family, still catch-all).
 
+## 2026-06-11 — suite/protocol: known-bugs
+- runner: AI-assisted Claude Fable 5 (CTRIB-005 /contribute run)
+- odd-platform working-tree HEAD: 5cbf60a3 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 5cbf60a3  (image odd-platform:odd-team-sut, digest sha256:1381946acf0fb11593626aa029b97a41f177809a7b55299ba5e456341dc36c18)
+- protocols: IT-003 IT-004 IT-005 IT-006 IT-007
+- api probes: none; ui e2e: specs/search-tsquery-poisoning.spec.ts specs/quality-dashboard-unknown-status.spec.ts specs/top-tags-ordering.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: CTRIB-005 correction run: 6 failed = all six known-bug pins still RED as designed (attachment durability, error boundary, dashboard enum, tsquery x2, top-tags); zero unexpected GREENs on the corrected harness.
+

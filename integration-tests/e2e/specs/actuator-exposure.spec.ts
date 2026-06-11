@@ -46,8 +46,13 @@ const LOGIN_REDIRECT = 302;
  * default auth.type=DISABLED nothing is gated; combined with the /actuator/** whitelist this is the posture
  * F-122 UC-001 characterizes. Reachability-only: the body is never read.
  */
-async function reachableUnauthenticated(request: APIRequestContext, path: string): Promise<number> {
-  const res = await request.get(path, { headers: { accept: ACTUATOR_MEDIA }, maxRedirects: 0 });
+async function reachableUnauthenticated(
+  request: APIRequestContext,
+  path: string,
+  // prometheus serves text/plain, not the actuator JSON media type — a v3+json Accept gets 406 there.
+  accept: string = ACTUATOR_MEDIA,
+): Promise<number> {
+  const res = await request.get(path, { headers: { accept }, maxRedirects: 0 });
   const status = res.status();
   expect(AUTH_REJECT, `${path} must not be auth-rejected (401/403) — it is whitelisted/open`).not.toContain(status);
   expect(status, `${path} must not redirect to a login form`).not.toBe(LOGIN_REDIRECT);
@@ -74,46 +79,58 @@ test.describe('F-122 Operator Management-Endpoint Exposure Surface (actuator)', 
     ).toBe(true);
   });
 
-  test('it20651_UC-001 [SECURITY pin]: /actuator/env is NOT auth-gated (whitelisted) — and serves NO route on this build', async ({
+  test('it20651_UC-001 [SECURITY pin]: /actuator/env serves ANONYMOUSLY (shipped default) with every property value masked', async ({
     request,
   }) => {
-    // Characterization of the SECURITY posture (LSN-029). /actuator/env sits under the /actuator/** whitelist
-    // (SecurityConstants.java:26), so the security layer never gates it: the request always reaches the
-    // routing layer, never a 401/403/302. RE-GROUNDED 2026-06-11 (CTRIB-005): the old "500 via the catch-all"
-    // assert was a misreading — that 500 was the advice swallowing NoResourceFoundException(404). The live
-    // truth the pass-through exposed: env is enabled+exposed in application.yml (:228-238) yet NO route is
-    // mapped on source-built images — the endpoint is dead config, so no env body (masked or otherwise) is
-    // served at all (evidence appended to PLT-078). The pin now asserts both facts: not auth-gated AND 404.
-    // Goes RED when env is placed behind auth (401/403/302 — surface narrowed) OR starts serving (200 —
-    // PLT-078's exposure becomes live and needs re-assessment).
+    // Characterization of the SHIPPED posture (LSN-029). /actuator/env sits under the /actuator/** whitelist
+    // (SecurityConstants.java:26) AND application.yml exposes+enables it (:227-239); the shipped compose files
+    // (docker/demo.yaml + examples) add no override — so a default deployment serves the full environment
+    // document to an anonymous caller (maintainer-confirmed on demo.oddp.io @ 0.27.13: HTTP 200). The values
+    // are masked '******' by Spring Boot's show-values=NEVER default (no override in the repo — PLT-078;
+    // demo-verified 203/203 properties masked), so the anonymous yield is the config-KEY schema, not values.
+    // RE-GROUND HISTORY: the 2026-06-11 morning re-ground asserted 404 "no route / dead config" — WRONG
+    // (CTRIB-005 correction, maintainer-caught): the 404 came from the HARNESS's own
+    // MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info override in the probe-stack compose, removed the
+    // same day so the e2e stack mirrors the shipped default. (The pre-fix "500" was that same harness-404
+    // swallowed by the advice catch-all.)
+    // RED when: 401/403/302 (auth-gated — surface narrowed, GOOD: re-scope) · 404 (exposure narrowed or the
+    // harness override regressed) · any UNMASKED value (escalate: PLT-078's exposure becomes value-leaking).
     const status = await reachableUnauthenticated(request, '/actuator/env');
     expect(
-      [401, 403, 302].includes(status),
-      'SECURITY posture: /actuator/env is never auth-rejected (whitelisted in every auth mode)',
-    ).toBe(false);
-    expect(
       status,
-      '/actuator/env serves no route on this build (enabled+exposed config, no mapping) — a truthful 404 via the advice pass-through',
-    ).toBe(404);
+      'SECURITY: the shipped default serves /actuator/env to an anonymous caller (whitelist + exposure)',
+    ).toBe(200);
+    const res = await request.get('/actuator/env');
+    const body = (await res.json()) as {
+      propertySources?: Array<{ properties?: Record<string, { value?: unknown }> }>;
+    };
+    const values = (body.propertySources ?? []).flatMap((ps) => Object.values(ps.properties ?? {}));
+    expect(values.length, 'the env document carries the property catalog (key schema)').toBeGreaterThan(0);
+    const unmasked = values.filter((v) => v.value !== '******');
+    expect(
+      unmasked.length,
+      'every property VALUE is masked ****** (show-values=NEVER framework default — PLT-078); an unmasked value is a live credential-schema leak',
+    ).toBe(0);
   });
 
-  test('it20652_UC-005 [SECURITY pin]: /actuator/prometheus is NOT auth-gated — and serves NO route on this build', async ({
+  test('it20652_UC-005 [SECURITY pin]: /actuator/prometheus (operator metrics) serves ANONYMOUSLY (shipped default)', async ({
     request,
   }) => {
-    // Second whitelisted surface. RE-GROUNDED 2026-06-11 (CTRIB-005, same as env above): the old 500 was the
-    // swallowed NoResourceFoundException — the Prometheus scrape endpoint is configured-exposed
-    // (application.yml:230 + management.endpoint.prometheus.enabled=true, micrometer-registry-prometheus on
-    // the classpath at build.gradle:29) yet NO route is mapped on source-built images: the metrics surface is
-    // dead, which also undercuts PLT-198's premise (R2DBC gauge for a scrape endpoint that does not serve).
-    // Evidence on PLT-078. RED on 401/403/302 (auth narrowed) or 200 (the scrape surface comes alive).
-    const status = await reachableUnauthenticated(request, '/actuator/prometheus');
-    expect(
-      [401, 403, 302].includes(status),
-      'SECURITY posture: /actuator/prometheus is never auth-rejected (whitelisted in every auth mode)',
-    ).toBe(false);
+    // Second whitelisted surface: exposed+enabled in application.yml (:230,:235-236) with
+    // micrometer-registry-prometheus on the classpath (build.gradle:29); maintainer-confirmed live on
+    // demo.oddp.io @ 0.27.13 (HTTP 200, real metrics). Same re-ground history as env above: the prior
+    // 404/500 observations were the harness exposure override, not the platform (CTRIB-005 correction).
+    // PLT-198 (R2DBC pool gauge) is unblocked — the scrape surface is real.
+    // RED when: 401/403/302 (auth narrowed) or 404 (exposure narrowed/harness override regressed).
+    const status = await reachableUnauthenticated(request, '/actuator/prometheus', 'text/plain');
     expect(
       status,
-      '/actuator/prometheus serves no route on this build — the operator metrics surface is dead config (PLT-078 evidence)',
-    ).toBe(404);
+      'SECURITY: the shipped default serves /actuator/prometheus to an anonymous caller — operator metrics are open',
+    ).toBe(200);
+    const res = await request.get('/actuator/prometheus');
+    expect(
+      await res.text(),
+      'the scrape body carries real Prometheus metrics',
+    ).toContain('jvm_memory');
   });
 });

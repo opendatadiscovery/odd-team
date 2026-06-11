@@ -122,20 +122,37 @@ test.describe('IT-096 F-120 R2DBC pool sizing — deployed-ceiling contract + UC
 
   // ─────────────────────────────────────────────────────────────────────────
   // CORNER PIN 2 — F-120-UC-8 (GREEN now, RED on fix): pool utilisation is NOT observable.
-  // R2DBCConfiguration registers no Micrometer binder; /actuator exposes only health + info on
-  // odd-minimal. An operator cannot answer "am I pool-bound?" from the metrics endpoint. We assert
-  // the pool-metrics surfaces are NOT served (no 200) — neither /actuator/prometheus nor
-  // /actuator/metrics/r2dbc.pool.acquired. FLIPS RED when a Micrometer R2DBC binder + metrics
-  // exposure is added (the F-120 follow-up PERF item).
+  // RE-GROUNDED TWICE 2026-06-11 (CTRIB-005 corrections — full history): the original pin
+  // ("pool utilisation is NOT observable from /actuator") rested on TWO stacked errors: (a) the
+  // harness's own MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info compose override masked
+  // /actuator/prometheus entirely (removed — the shipped default serves it, demo-confirmed); and
+  // (b) "R2DBCConfiguration registers no Micrometer binder" was a static read that missed Spring
+  // Boot's ConnectionPoolMetricsAutoConfiguration — the live scrape body DOES carry the pool
+  // series (r2dbc_pool_acquired_connections / r2dbc_pool_max_pending_connections / …) for BOTH
+  // pools (name="connectionFactory" + name="customConnectionPool"). So the operator CAN answer
+  // "am I pool-bound?" on the shipped default — UC-8's promise is FULFILLED, and PLT-198's
+  // register-a-gauge ask is moot. This is now a GREEN-LOCK of that observability.
+  // RED when: the r2dbc pool series disappear from the scrape (an autoconfigure/dependency
+  // regression) or the scrape endpoint stops serving (IT-065 owns the exposure posture).
   // ─────────────────────────────────────────────────────────────────────────
-  test('CORNER UC-8 [GREEN-now]: R2DBC pool utilisation is not observable from /actuator', async ({ request }) => {
-    for (const path of ['/actuator/prometheus', '/actuator/metrics/r2dbc.pool.acquired', '/actuator/metrics']) {
+  test('CORNER UC-8 [green-lock]: R2DBC pool utilisation IS observable from /actuator/prometheus (both pools)', async ({ request }) => {
+    const prom = await request.get('/actuator/prometheus');
+    expect(prom.status(), 'the scrape endpoint serves on the shipped default (PLT-078/IT-065)').toBe(200);
+    const body = await prom.text();
+    expect(
+      body,
+      'F-120-UC-8: the autoconfigured R2DBC pool gauges are in the scrape body (ConnectionPoolMetricsAutoConfiguration)',
+    ).toContain('r2dbc_pool_acquired_connections');
+    for (const pool of ['name="connectionFactory"', 'name="customConnectionPool"']) {
+      expect(body, `both platform pools are instrumented — ${pool}`).toContain(pool);
+    }
+
+    // The /actuator/metrics family stays outside the shipped exposure list (health, prometheus, env, info).
+    for (const path of ['/actuator/metrics/r2dbc.pool.acquired', '/actuator/metrics']) {
       const res = await request.get(path);
       expect(
         res.status(),
-        `F-120-UC-8 (GREEN-now): pool utilisation must currently be UNobservable — '${path}' must not return 200 ` +
-          `(no Micrometer R2DBC binder, actuator exposes only health/info on odd-minimal). A 200 here means pool ` +
-          `metrics became observable → this pin FLIPS RED (the desired fix). Got ${res.status()}.`,
+        `'${path}' is not in the shipped exposure list — must not serve 200. Got ${res.status()}.`,
       ).not.toBe(200);
     }
   });

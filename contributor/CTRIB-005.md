@@ -477,12 +477,16 @@ Branch commit: `074c9927` (`contrib/CTRIB-005-search-session-not-found`, author
   - `known-bugs`: **6/6 still RED** — no unexpected GREEN (notably the tsquery-poisoning
     REDs prove the pass-through did NOT mask the PLT-090/PLT-127 jOOQ-500 class)
     (`run-log/2026-06-11-known-bugs.md`).
-- **Actuator discovery en route:** the IT-065 flip exposed that `/actuator/env` +
-  `/actuator/prometheus` serve NO route on source-built images (enabled+exposed config
-  notwithstanding) — the old "reachable, 500" was the swallowed `NoResourceFoundException`.
-  Evidence appended to **PLT-078** (the canonical exposure item; PLT-103 was already
-  folded/rejected) + a premise caveat on **PLT-198**; IT-065 protocol re-grounded
-  (asserts: not-auth-gated AND 404; RED if either starts serving 200).
+- **Actuator discovery en route — CORRECTED same day (maintainer-caught, see the
+  Post-shipping correction section below):** the IT-065 flip exposed env+prometheus
+  returning 404 on the e2e stack. The first interpretation ("no route on source-built
+  images / dead config") was WRONG — the 404 came from the harness's own
+  `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info` compose override. The shipped
+  default serves both (demo.oddp.io @ 0.27.13: env 200 with 203/203 values masked,
+  prometheus 200). Override removed from all probe stacks; IT-065 re-grounded to the
+  SHIPPED posture (env 200-anon + all-masked, prometheus 200-anon); PLT-078 carries the
+  corrected live evidence (its masking claim is now demo-confirmed), PLT-198's premise
+  re-confirmed.
 
 ## Definition of Done (LSN-032 four gates)
 
@@ -507,3 +511,46 @@ Branch commit: `074c9927` (`contrib/CTRIB-005-search-session-not-found`, author
    IT-125/IT-045/IT-056/IT-059/IT-063/IT-065 protocols re-grounded; enrichment.log +
    manifest sidecar count; graph re-embedded (nodes=7083, vectors=8014,
    BAAI/bge-small-en-v1.5; retrieval spot-check: the new App sidecar is a top-2 hit).
+
+## Post-shipping corrections (2026-06-11, maintainer-caught — same day as the PR)
+
+**1. The actuator "dead config" claim was FALSE.** The maintainer pointed at
+`https://demo.oddp.io/actuator/env` — HTTP 200 on release 0.27.13 (and `/actuator/prometheus`
+200 with real metrics; env values masked `******` 203/203 sampled, finally live-confirming
+PLT-078's masking analysis). The 404 I observed (and generalized from) was the e2e harness's
+OWN compose override `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info`
+(`lineage/_extractor/probe-stacks/*.yml`, authored as wait-for-ready boilerplate under the
+false belief health needed it) — one `docker inspect` away the whole time.
+- **Why I missed it:** the `feedback_verify_absence_by_reading_config` class, repeated at the
+  config-LAYERING level — I read `application.yml` but never inspected the running container's
+  environment overrides before claiming platform-level absence; I even wrote "confirm on the
+  published image before filing" into PLT-078 and still shipped the claim as "dead config" in
+  five artefacts. No excuse; the memory file is updated with the layering instance.
+- **Fixed (same day):** override removed from ALL probe stacks (the shipped compose files set
+  none — the harness now mirrors the shipped posture); IT-065 spec + protocol re-grounded to
+  the SHIPPED truth (env 200-anon + every value masked — RED on any unmasked value;
+  prometheus 200-anon + real metrics; correction history recorded in both); PLT-078 note
+  rewritten (retraction + the demo evidence; `user_facing_verified` flippable true);
+  PLT-198 premise re-confirmed; this record corrected; stack recreated + IT-065 + full
+  feature-complete re-run green (see below).
+
+**2. PR coverage drop (CI report: ControllerAdvice.java 82.16% −4.32%, overall −0.02%).**
+Root cause: the new `handleResponseStatus` has branches NO HTTP-level test can naturally
+reach — a framework-raised **5xx** `ResponseStatusException` (nothing in the running app
+emits one) and the **reason-less** fallback (`status.toString()` message path) — so the new
+method shipped partially covered, diluting the file. Fixed: `ControllerAdviceResponseStatusTest`
+(plain direct-call unit, the GATE-1 plan's "plain handler unit" option) covers the 5xx→SYS001
+branch, the empty-reason fallback, and the 404/other-4xx code split; pushed to the PR branch.
+
+**3. Second-order correction surfaced by the re-ground itself (IT-096 / PLT-198):** with the
+harness override gone, IT-096's UC-8 pin ("R2DBC pool utilisation is NOT observable from
+/actuator") failed — and my first re-write asserted "scrape serves but carries NO r2dbc series"
+straight from PLT-198's claim, which the next run promptly falsified: the live scrape body
+CARRIES the full pool series for both pools (`r2dbc_pool_acquired_connections{name=
+"connectionFactory"|"customConnectionPool"}` + siblings) via Spring Boot's
+`ConnectionPoolMetricsAutoConfiguration` — the original "no Micrometer binder" claim was a
+static read that missed autoconfigured binders, and the harness override had been masking the
+disproof all along. Fixed: IT-096 UC-8 re-grounded as a GREEN-LOCK of the fulfilled
+observability promise (RED if the series vanish); protocol updated; **PLT-198 rejected** with
+the live evidence (its ask is already shipped behaviour). Lesson applied on the spot: the
+second rewrite was authored from the LIVE body, not from a workspace artifact.

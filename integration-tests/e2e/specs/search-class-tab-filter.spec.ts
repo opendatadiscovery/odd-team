@@ -81,6 +81,20 @@ async function typeQuery(page: import('@playwright/test').Page, query: string): 
 }
 
 test.describe('F-148 Search Class-Tab Filter — narrows results by entity class', () => {
+  // The PLT-147 characterization seed (a class-2 transformer with NULL specific_attributes, id 20682)
+  // is TOXIC to the shared stack if left behind: an EMPTY-query search matches every entity, so the
+  // poisoned row 500s the results list of the plain Catalog page and of every expired-search recovery
+  // for ALL later users of the stack (maintainer hit it live, 2026-06-11 — CTRIB-005). The FTS-token
+  // isolation only protects other SPECS' queries, not empty searches. Clean ALL three seeds up.
+  test.afterAll(async () => {
+    await dbQuery('DELETE FROM search_entrypoint WHERE data_entity_id = ANY($1::bigint[])', [
+      [DATASET_ID, GROUP_ID, TRANSFORMER_ID],
+    ]);
+    await dbQuery('DELETE FROM data_entity WHERE id = ANY($1::bigint[])', [
+      [DATASET_ID, GROUP_ID, TRANSFORMER_ID],
+    ]);
+  });
+
   test('clicking the Datasets tab filters the results to dataset-class entities', async ({ page }) => {
     await seedSearchableEntity(DATASET_ID, DATASET_NAME); // DATA_SET class {1}, type TABLE
     await seedSearchableOfClass(GROUP_ID, GROUP_NAME, '{8}', 17); // DATA_ENTITY_GROUP class {8}, type DAG

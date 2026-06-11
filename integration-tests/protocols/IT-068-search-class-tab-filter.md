@@ -38,6 +38,11 @@ disqualified for the happy path precisely because of PLT-147.
   DATA_ENTITY_GROUP entity (class {8}, via `dbQuery` on the test's own id) sharing term T_a.
 - **Seed (pin):** a searchable DATA_TRANSFORMER entity (class {2}, via `dbQuery`) on a DISJOINT term T_b
   (must not share an FTS token with T_a, or the success search would also match the transformer and 500).
+- **Cleanup (MANDATORY — added 2026-06-11, CTRIB-005):** `test.afterAll` deletes all three seeded rows
+  (+ their `search_entrypoint` rows). The PLT-147 transformer seed is TOXIC residue on the persistent
+  stack: an EMPTY-query search matches every entity, so a leftover row 500s the plain Catalog page and
+  every expired-search recovery for all later users (the maintainer hit it live browsing the stack).
+  The FTS-token isolation protects other specs' queries, NOT empty searches.
 
 ## 3. Readiness check
 

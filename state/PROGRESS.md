@@ -1,4 +1,8 @@
-# Last updated 2026-06-10 — contributor pillar: **CTRIB-003 MERGED (GATE 2 complete)**. PR #1749 squash-merged by RamanDamayeu 18:20:28Z → odd-platform `main` @ `8c142e15` (tree identical to branch head `3049b9af`, content grep-confirmed); issue #1748 auto-closed. **The LSN-034 live-claim window is CLOSED** — the docs fixed-note published early on documentation `main` is now true; remaining LSN-034 action for the maintainer: enable branch protection (require PR) on `opendatadiscovery/documentation` `main`. Contributor scoreboard: CTRIB-001/-002/-003 all merged. Next candidate work: PLT-215 (the 70 remaining i18n keys + CI key-parity guard) is paste-ready for filing.
+# Last updated 2026-06-11 — docs pillar: **/implement batch `docs/health-monitoring` shipped (DOC-440 + DOC-373 + DOC-361 → `review-ready`)**. New canonical operational-monitoring page + two observability caveats; branch pushed, PR pending (see section below). Follow-up PLT-216 drafted (housekeeping telemetry). NEXT: `/review` the batch in a separate session, then merge the docs PR. Prior milestone (2026-06-10): contributor pillar CTRIB-003 MERGED (GATE 2 complete).
+
+## /implement 2026-06-11 (docs pillar — batch `docs/health-monitoring`) — **DOC-440 + DOC-373 + DOC-361 → `review-ready`** (3 items, 3 atomic commits on documentation branch `docs/health-monitoring`, pushed)
+
+Theme: the platform's health/monitoring surface — discovered via the maintainer's "is there a healthcheck?" question being unanswerable from the manual. **DOC-440** (`862ab9b`): NEW page `configuration-and-deployment/health-and-monitoring.md` — canonical home for operational monitoring (Cornerstone-5 row added to `pillars/documentation/canonical-homes.md`): `/actuator/health` semantics incl. a **measured** 200/`{"status":"UP"}` citation from probe-run R-20260611T113031Z-P-001, the three blind spots (Redis sessions / advisory-lock wedge / ingestion no-op 201), K8s + Compose probe stanzas (shipped compose files have none — Compose example mirrors the probe-stack's working wget stanza), Prometheus scrape target + Metrics-Ingestion disambiguation, security cross-link (posture stays canonical on odd-platform.md). SUMMARY entry + main-concepts alias row in the same commit. **DOC-373** (`1f1c3bb`): REDIS-subsection warning — health endpoint blind to Redis (`management.health.redis.enabled` ships `false`, `RedisSessionConfiguration` empty); mitigation = enable the indicator. **DOC-361** (`4cc197e`): housekeeping observability-absence warning (zero Micrometer in the package — re-verified by grep; DEBUG-only counts below the shipped `info` level; stuck-cycle + compliance angles; debug-level + `n_tup_del` recipes); follow-up **PLT-216** drafted (deletion counter by job + cycle gauge + structured audit event; ASCII-clean; ID=max+1). All SoT re-verified this session by direct read; Gate 11 zero hits on full branch diff; description 163 bytes; PyYAML OK. First-use anchors for /review to verify live are listed in each item's Implementation block. **Backlog: docs review-ready +3.** Bookkeeping: deployment.md navigation domain refreshed (health surface pointers + dead HealthAPITest note); file-registry appended. **NEXT: /review in a separate session; PR URL in the items + final report.**
 
 ## /review 2026-06-10 (contributor pillar — CTRIB-003, #1748 / PR #1749) — **ACCEPTED, `pr-draft` → `review-ready`** *(CTRIB-003 has since flipped `merged` — PR #1749 squash-merged 18:20:28Z as `8c142e15`.)*
 
@@ -4095,13 +4099,17 @@ Ready for human review of priority ordering before implementation begins (per `b
 
 Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in `issues/README.md`. The `draft → filed` transition is a deliberate human action — the ODD Team drafts on disk; the maintainer files into the target repo's GitHub tracker.
 
-| Target Repo | Draft | Filed | Closed | Rejected | Total |
-|-------------|-------|-------|--------|----------|-------|
-| odd-platform | 6 | 0 | 0 | 0 | 6 |
-| odd-collectors | 5 | 0 | 0 | 0 | 5 |
-| **Total** | **11** | **0** | **0** | **0** | **11** |
+**The canonical tracker is the `issues/{repo}/` directories** — counts below refreshed 2026-06-11 (`grep -h "^status:" | sort | uniq -c` per repo dir); the per-draft narrative list underneath is a historical April-2026 snapshot kept for context, NOT maintained.
 
-### Active drafts
+| Target Repo | Draft | Filed | Rejected | Total files |
+|-------------|-------|-------|----------|-------------|
+| odd-platform | 190 | 1 (filed-security-advisory) | 18 | 209 |
+| odd-collectors | 6 | 0 | 0 | 6 |
+| opendatadiscovery-specification | 0 | 0 | 0 | 0 |
+
+Latest drafts: PLT-216 (housekeeping telemetry — deletion metric + audit event; follow-up of DOC-361, 2026-06-11), PLT-215 (i18n missing keys + CI parity guard, 2026-06-10).
+
+### Active drafts (historical snapshot, April 2026)
 
 - **PLT-001** (bug, low severity) — Defensive null handling in `S2sTokenProvider.isValidToken`. Discovered during `/review` of DOC-003 (2026-04-23). Unreachable NPE path under normal deployment because the S2S filter is conditionally registered; but the method is `public` and a 1-line `StringUtils.isBlank(s2sToken)` guard closes it permanently. Doc-side: no caveat needed; DOC-003 already describes the feature correctly. Draft at `issues/odd-platform/PLT-001.md`.
 - **PLT-002** (enhancement, medium severity) — `POST /ingestion/alert/alertmanager` missing from OpenAPI spec. Discovered during DOC-019 implementation (2026-04-24). Controller carries an explicit `// TODO: define OpenAPI spec based on alert provider contract` — the endpoint works but is absent from Swagger UI and the generated Java/TS clients, forcing operators and downstream tooling to hand-roll HTTP calls. Doc-side payload shape shipped in prose in DOC-019 as a short-term bridge; upstream spec addition will supersede the prose with a cross-link. **Known defect in this draft**: line 56 repeats the same incorrect `"inherits the ingestion auth filter"` claim that DOC-019's review caught. PLT-002 is still `status: draft`, so the correction is safe — fold it into the DOC-065 commit or a paired state commit before filing. Draft at `issues/odd-platform/PLT-002.md`.

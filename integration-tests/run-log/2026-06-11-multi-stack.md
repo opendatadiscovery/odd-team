@@ -28,3 +28,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: CTRIB-005 correction run (the 5 multi-stack compose files also lost the exposure override): 9/9 GREEN (3.6m) — the removal is behaviour-neutral for these specs (only actuator exposure widened to the shipped default).
 
+## 2026-06-11 — suite/protocol: multi-stack
+- runner: AI-assisted Claude (Fable 5) — CTRIB-005 /review session (reviewer's own full-regression gate)
+- odd-platform working-tree HEAD: 5cbf60a3 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 5cbf60a3  (image odd-platform:odd-team-sut, digest sha256:314346c91ec079a96ac6da0939091e4aeeb5b05147f9614e6b9b4a0eb771e65e)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: reviewer's run on the PR #1771 tip (5cbf60a3): 9 passed (4.2m) — MinIO roundtrip, LOGIN_FORM x2, LDAP RBAC x2, notifications WAL x2, session cookie posture. No regressions on any alternate stack.
+

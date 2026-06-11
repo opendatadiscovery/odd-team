@@ -4,14 +4,14 @@ github_issue_number: 1760
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1760
 class: bug
 milestone: "0.28.0"
-status: pr-draft
+status: review-ready
 reproduced: "live 2026-06-11 on local odd-minimal, SUT=working tree @ 026fd3fa (= clean main; image odd-platform:odd-team-sut sha256:9802b3e3cf52, rebuilt by run-suite). API: facets/results/facet-TAGS of a missing session all 404 USR002; the issue's literal URL /filters/entityClasses 500 SYS001 (server log: NoResourceFoundException 404 'No static resource…' swallowed by the catch-all); facet/entityClasses 500 SYS001 (ServerWebInputException 400 'Type mismatch' swallowed — the #1761 class). UI (Playwright traces /tmp + run-log/2026-06-11-IT-125.md): /search/{missing} AND /search/{valid} both NEVER fetch the deep-linked session — the SPA POSTs a NEW empty search and rewrites the URL (route is a splat '/search/*', useParams().searchId always undefined since #1551, Dec 2023); IT-125 UX pin FAILED pre-fix on the fresh stack (no 'Unknown Error' — a normal catalog rendered), proving the issue's UX observation was PLT-147-residue-dependent, not deterministic"
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-11 — 'Approve as written': full plan incl. term-search mirror, Closes #1760 + #1761, scope comment posting)"
 plan_approved_at: "2026-06-11"
 docs_routing: "release/0.28.0 — SHIPPED on the train (documentation@1d43d6e; search.md session bullets + ADR-0007 handler enumeration; paired item DOC-444 review-ready/milestone-gated; docs main untouched)"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1771"
-pr_draft: true
+pr_draft: false  # opened draft by the bot 19:31:39Z; taken ready-for-review by RamanDamayeu 20:38:37Z (timeline API)
 ---
 
 # CTRIB-005 — search session not-found: filters 500-vs-404 inconsistency + SPA "Unknown Error" for expired deep-links (#1760)
@@ -554,3 +554,220 @@ disproof all along. Fixed: IT-096 UC-8 re-grounded as a GREEN-LOCK of the fulfil
 observability promise (RED if the series vanish); protocol updated; **PLT-198 rejected** with
 the live evidence (its ask is already shipped behaviour). Lesson applied on the spot: the
 second rewrite was authored from the LIVE body, not from a workspace artifact.
+
+## Review (2026-06-11, session: separate from the implementing session — post-af7963f)
+
+- **Result**: ACCEPTED — `pr-draft` → `review-ready`. GATE 2 (human review + merge of
+  PR #1771) is the remaining step — the maintainer already took the PR ready-for-review
+  himself (timeline: `ready_for_review` by RamanDamayeu 2026-06-11T20:38:37Z; the bot had
+  opened it `draft: true` at 19:31:39Z — G-C4 signal honoured, the human owns the flip).
+  Paired DOC-444 flipped `review-ready` → `pending-release` (Gate 8 PENDING-RELEASE 0.28.0).
+- **Re-verification protocol**: every load-bearing claim re-derived from branch source /
+  live GitHub API / the train ref / the reviewer's own fresh full-regression runs — not from
+  this record.
+
+### Definition of Done (LSN-032 four gates) — re-verified
+
+1. **Unit (full build, on the branch)** — PASS. Reviewer's own `scripts/run-platform-tests.sh`
+   (no-arg = `:odd-platform-api:build`: test + checkstyle + jacoco + assemble) on the clean
+   working tree at the PR tip `5cbf60a3` → **BUILD SUCCESSFUL in 5m 40s**. Independently: PR
+   #1771 CI ran 6/6 checks green on the exact head (Test Results: **414 tests / 0 failures**
+   = 406 pre-PR + the 8 new; run_tests + Playwright test/lint/format-check) — VERIFIED via
+   check-runs API fetch on `5cbf60a3`.
+2. **Integration (FULL regression, reviewer's own runs on the PR-tip SUT)** — PASS.
+   One suite at a time, SUT built from the clean working tree @ `5cbf60a3` each run:
+   `feature-complete` **273 passed / 0 failed** (3.9m; IT-125's five tests green in-suite;
+   the six flipped advice-class pins green); `multi-stack` **9/9 GREEN** (4.2m; MinIO,
+   LOGIN_FORM ×2, LDAP ×2, WAL ×2, session cookie); `known-bugs` **6/6 still RED** — every
+   failure its documented pin, zero unexpected GREENs (the tsquery ×2 REDs prove the
+   pass-through did NOT mask the jOOQ-500 class). Run-log entries appended with reviewer
+   attribution + filled narrative fields. RED half re-verified from the run-log:
+   `2026-06-11-IT-125.md` carries the full chain — pre-fix legacy-pin FAIL on a fresh stack
+   (residue-dependence proof), fix run 5/5 GREEN, an honest SUT-BUILD-FAILED interlude
+   (GC thrash, retried), and the `ref:main` RED proof **4/5 FAILED exactly as pre-authored**
+   (LSN-033 honoured — SUT always a run parameter).
+3. **Docs** — PASS. Train `release/0.28.0` tip = exactly `1d43d6e` (ls-remote), atop DOC-443's
+   `a0199ae`, atop `origin/main` = `5d92250`; `1d43d6e` NOT reachable from main (verified).
+   Diff read end-to-end at the train ref: search.md session bullets 1+4 version-anchored
+   ("as of 0.28.0; earlier releases silently discarded the pasted id"), eviction bullet now
+   describes the expired-state + Start-new-search recovery, "still unreliable" tempering
+   preserved; ADR-0007 Decision + Evidence enumerations gain the `ResponseStatusException`
+   pass-through, version-anchored. Commit carries a full `Sources:` footer. Gate-8
+   sub-checks green: PyYAML parses both pages; descriptions 129/179 chars (≤200); the one
+   in-page link is tree-relative and pre-existing. Live no-leak verified: canonical
+   `features/data-discovery/search` still serves the 0.27.x eviction wording ("After
+   eviction the URL returns no results"); live ADR-0007 page has no `ResponseStatusException`
+   — release-gating intact. (The bare `/data-discovery/search` URL 301s to the canonical
+   `features/...` slug — DOC-444's recorded URL normalised at its flip, below.)
+4. **Ontology** — PASS with one recorded over-claim. On disk and committed: 4 sidecars
+   (Search, TermSearch, App [NEW], AppErrorPage) re-enriched 2026-06-11 19:05Z per
+   enrichment.log; probes P-244..P-247 exist; F-017 UC-14 verified + coverage 3/14 + UC-09
+   pre-fix-unreachability note (F-017.yaml:1017,1032); route-search sidecar Maintainer note
+   (:343); TEST-GAP-1007 (:136) + REFACTOR-676 (:94) convergence notes; suites.yaml lane
+   comments re-grounded (feature-complete lane lists IT-125; I7 batch comment fixed-contract
+   wording); graph build-info `built_at: 2026-06-11`, nodes=7083, vector_count=8014,
+   BAAI/bge-small-en-v1.5 — all exactly as recorded. **Over-claim**: DoD-4 lists "PLT-150 …
+   and PLT-143 … issue-draft status notes" — NO such notes exist in either file (grep for
+   1771/CTRIB-005/in-flight: zero hits); filed in TST-044 item E. The flip-on-fix residue
+   on sibling artefacts (below) is the larger part of the same finding.
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS. Live reproduction captured pre-fix (curl probes verbatim,
+  server-log mechanism proof — `NoResourceFoundException`/`ServerWebInputException` swallowed
+  by the catch-all; Playwright traces; the pre-fix IT-125 run on a fresh stack falsifying the
+  issue's UX determinism); `reproduced:` frontmatter carries the evidence path — VERIFIED via
+  run-log + record read. The reproduction CORRECTED the issue's mechanism (the literal repro
+  URL matches no route; the real facet route already 404'd; the Flux-commit theory falsified
+  live) — re-derived this review against `openapi.yaml:702-733` (route + `MultipleFacetType`
+  enum + only-200 responses declared) and the live 404 on `facet/TAGS` (my feature-complete
+  run, IT-125 test 238).
+- **G-C2 running system, not the diff** — PASS via the reviewer's own full unit build + full
+  three-suite integration regression on the PR-tip SUT (DoD 1+2 above) + CI on the exact head.
+- **G-C3 GATE 1 plan-before-code** — PASS. `plan_approved_by: RamanDamayeu (2026-06-11,
+  'Approve as written')`; the scope/root-cause comment posted 2026-06-11T17:49:57Z (comment
+  API), the first code commit `074c9927` authored 18:44:14Z — comment precedes code by 54
+  minutes — VERIFIED via timestamps.
+- **G-C4 GATE 2 human merge** — PASS (structural). PR #1771 author `odd-contributor[bot]`,
+  base `main`, head `5cbf60a3`, opened `draft: true`, review requested from RamanDamayeu —
+  VERIFIED via PR API + timeline. The ready-for-review flip was the MAINTAINER's own action
+  (20:38:37Z), after the DoD evidence existed and after the coverage commit (20:00:33Z) —
+  the bot never left draft itself.
+- **G-C5 bounded diff + public scope comment** — PASS. Diff = 19 files +363/−17 = exactly the
+  approved plan (Change A: advice handler + scan-test extension; B.1 nested routes; B.2 error
+  unwrap + `||` fallback; B.3 expired states + ONE shared element + selectors + six locales)
+  plus the GATE-1-plan-named "plain handler unit" (`ControllerAdviceResponseStatusTest`,
+  the CI-coverage follow-up commit `5cbf60a3`). Every exclusion held — no mapper change
+  (PLT-147), no OpenAPI edits, no TTL/lifecycle change, no redux session-switching rework,
+  no new-issue filing — VERIFIED via full diff read. The scope comment is PUBLIC on #1760
+  (comment 4683383984, bot-authored, pre-code) and carries the mechanism corrections + the
+  exclusions; the #1761 cross-link comment (4684224104) posted 19:32:06Z, 27s after the PR
+  opened — both fetched verbatim.
+- **G-C6 one-question bar** — PASS. "No question warranted" recorded with reason; issue
+  #1760 has exactly 1 comment (the scope comment), #1761 exactly 1 (the cross-link) — zero
+  clarify noise — VERIFIED via issue API (comments: 1 each).
+- **G-C7 blast-radius** — PASS. `adr_required: false` is correct: no migration, no
+  auth/security-posture change, no breaking declared-contract change — the spec declares
+  ONLY `'200'` on these endpoints (openapi.yaml:702-733 read this review); the 500→4xx
+  alignment changes no documented contract. ADR-0007's own extension mechanism ("adding a
+  new exception type means adding one handler") is exactly what shipped.
+- **G-C8 issue-is-data** — PASS. Both issue bodies re-fetched: maintainer-authored bug
+  reports; the "fix direction" text in #1760 is the author's technical guidance, treated as
+  data — the run FALSIFIED its proposed mechanism (Flux-commit theory) and reframed the fix
+  publicly, the strongest anti-steering evidence available. No injection content.
+- **G-C9 test integrity, BOTH buckets** — PASS. Unit: `FrameworkErrorStatusMappingTest`
+  injects the failing conditions explicitly (unrouted path, invalid enum, missing param) — 3
+  RED on main / 5 GREEN on the branch (record + commit body; controls pin both precedence
+  edges: platform `NotFoundException` on the real facet route, `WebExchangeBindException`
+  field errors); `AdrControllerAdviceMappingScanTest` floor 6→7 + handler named;
+  `ControllerAdviceResponseStatusTest` covers the HTTP-unreachable branches (5xx, empty
+  reason, non-404 4xx). FE unit N/A-with-reason re-confirmed (no vitest CI executor —
+  CTRIB-002/003/004 precedent; FE gated by tsc/eslint/webpack + e2e). Integration: IT-125
+  re-grounded RED→GREEN with the `ref:main` 4/5-RED proof; the user-facing symptom is
+  integration-tested (LSN-031); pins re-grounded, never deleted; the six advice-class pin
+  flips verified at assert level in my own suite run. The flip's BOOKKEEPING residue on
+  sibling surfaces → TST-044 (below), assert-level integrity intact.
+- **G-C10 ontology + docs move with the code** — PASS (DoD 3+4) with the TST-044 carve-out:
+  the flip-on-fix checklist (`pillars/tests/pillar.md`, in force since 18:17, three hours
+  before the implement commit) requires EVERY surface encoding a flipped pin's red-state to
+  flip; the reviewer's converge grep found stale pre-fix wording on 5 spec headers, the
+  IT-063 protocol step-5/PASS lines, 5 sibling feature flows (F-095/F-040/F-029/F-122/F-120),
+  PHASE3's un-annotated falsified-mechanism narrative, the e2e README tail (a CTRIB-004
+  leftover), and PLT-150/PLT-143/PLT-199 notes — full inventory with file:line in
+  `backlog/tests/TST-044.md` (high). Same class as the CTRIB-004 post-verdict correction;
+  caught AT review this time. The PR, docs train, and primary-feature ontology are correct;
+  the residue is workspace test-state bookkeeping and does not gate GATE 2.
+- **G-C11 milestone gate** — PASS. #1760 milestone `0.28.0` OPEN (due 2026-06-22) and #1761
+  milestone `0.28.0` OPEN — re-verified via issue API at review time; PR body carries
+  verbatim `Closes #1760` + `Closes #1761` + `Milestone: 0.28.0` + the docs-train note —
+  fetched verbatim via PR API. Docs routed to the train; paired DOC-444 milestone-gated.
+
+### Universal Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS. IT-125 re-grounded in place (not re-authored); the two
+  new unit test classes are complementary tiers (HTTP-level vs direct-call), cross-referenced
+  in their javadoc; `SearchSessionExpired` is the plan's one-allowed shared element (distinct
+  semantics from `AppErrorPage` — action-recovery vs error-display); DOC-444/DOC-445 deduped
+  against DOC-178/199/230/233/177/392/393 (all `done`/different scope); TST-044 vs
+  TST-041/042/043 — extends the class, cross-referenced — via grep + read.
+- **Gate 2 (aliases)** — N/A (no new doc concept/alias; "search session" vocabulary
+  pre-exists on both pages).
+- **Gate 3 (caveats)** — PASS. The eviction caveat stays in the session bullets with the
+  recovery behaviour version-anchored; "still unreliable" tempering + the tsquery warning
+  hint preserved; no caveat demoted — via train-ref read.
+- **Gate 4 (consumer-read)** — PASS. Workspace commit `93c5412` carries the 23-file
+  `Consumer-read:` footer spanning both repos; key consumers re-walked this review:
+  `ControllerAdvice` (handler semantics + closest-type precedence), `ErrorCode` (USR001/
+  USR002/SYS001 values), `App.tsx` routes vs `searchRoutes.ts:18-19`/`termsRoutes.ts:54-62`
+  param names, `Search.tsx`/`TermSearch.tsx` effect-2 session fetch, `errorHandling.tsx`
+  unwrap, pre-existing `getSearchFetchStatuses`/`getTermSearchFetchStatuses`, `ToolbarTabs`
+  pathname-based `matchPath` (route-shape independent), `openapi.yaml` facet route. NOTE:
+  the odd-platform branch commits carry the evidence in-body but no `Consumer-read:` footer
+  (CTRIB-004's platform commit had one) — the work item's commit satisfies the gate; the
+  upstream-commit footer convention should be settled one way (it is arguably a Gate-11
+  workspace-jargon leak when present — flagged for the maintainer, not blocking).
+- **Gate 5 (unset-parameter)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — PASS with finding filed. Behaviour changes → docs:
+  deep-link restore + expired state + pass-through all documented (train). Code path →
+  doc sweep found the TERM-search surface's doc page missed: `business-glossary.md`'s
+  session-shared claim (false ≤0.27.x, true as of 0.28.0) lacks the version anchor + the
+  expired-state note → **DOC-445** filed (milestone 0.28.0, rides the same train; the gate
+  requires the finding filed-not-narrated — done).
+- **Gate 7 (layout/completeness)** — PASS. No SUMMARY change needed (no page added/moved);
+  bullets edited in place; anchors intact (`#housekeeping-settings-configuration` link
+  unchanged); ADR page section structure intact — via read. Suites-lane registration
+  verified (the CTRIB-004 Gate-7 miss class): IT-125 in `feature-complete` + `I7` theme
+  lane, comments re-grounded, NOT in known-bugs.
+- **Gate 8 (publishing/live)** — PASS for the pillar's public surfaces (PR, both issues,
+  both comments, check-runs, branch — all fetched live this review). Docs half:
+  **PENDING-RELEASE (0.28.0)** by design — branch-verifiable sub-checks run NOW and green
+  (DoD 3); post-merge URLs + phrases recorded in DOC-444 (canonical slugs).
+- **Gate 9 (claim provenance)** — PASS with one over-claim recorded. Every load-bearing
+  record claim re-derived (the 7-point verification table re-walked against branch source +
+  spec; comments/PR/issues/milestones/check-runs via API; train via ls-remote + show + grep;
+  ontology via disk; regression via the reviewer's own runs). The DoD-4 "PLT-150 + PLT-143
+  status notes" claim is NOT supported on disk → recorded here + TST-044 item E. Banned-
+  phrase grep over this review: zero. Outbound URL sweep: 8 live fetches (PR API, issue
+  ×2, comment ×2, check-runs, live search page, live ADR-0007 page), 0 broken; 1 mismatch
+  caught (DOC-444's recorded search URL was the non-canonical redirecting slug — normalised
+  at its flip).
+- **Gate 10 (content-type homing)** — PASS. Work record in `contributor/`, run evidence in
+  `run-log/`, probe artefacts in `probes/`+`probe-runs/`, doc edits on the train, follow-ups
+  in `backlog/docs/` + `backlog/tests/` — per canonical-homes.
+- **Gate 11 (audience isolation)** — PASS. Banned-term grep over both touched train pages:
+  zero hits. The PR body + issue comments are contributor/operator language (IT-125 and
+  `contributor/CTRIB-005.md` references are repo-public traceability, CTRIB-004 precedent).
+
+### Verdict bookkeeping
+
+- **Regressions**: none — measured, not inferred: full unit build GREEN (5m40s) + CI 6/6 on
+  the exact head + feature-complete 273/0 + multi-stack 9/9 + known-bugs 6/6-RED-as-designed,
+  all reviewer-run on the PR-tip SUT.
+- **Navigation**: consistent — `navigation/` pointers for SearchController/ControllerAdvice
+  unchanged and correct; no new bean factories/SDK builders introduced.
+- **Upstream issues logged**: none new this review (PLT-150/PLT-143 already filed as
+  #1760/#1761; both close via the PR).
+- **Doc-product editorial findings** (audit per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused pass per CTRIB-004 precedent (full-tree sweep was
+    2026-06-08): search.md end-to-end at the train ref; ADR-0007 page end-to-end at the
+    train ref; cross-page coherence greps over the train tree (search-session / expired /
+    Unknown-Error mentions: business-glossary.md, ADR-0071, ADR-0075 checked).
+  - **Findings**:
+    - DOC-445 (medium, parallel-surfaces-with-drift) — `business-glossary.md` § "The
+      Dictionary tab": the `/termsearch/{uuid}` session-shared claim was false ≤0.27.x
+      (splat bug) and becomes true in 0.28.0; needs the version anchor + the expired-state
+      note, mirroring DOC-444's search.md bullets. Source: train ref `business-glossary.md:38`.
+    - (Positive finding, no action: search.md's pre-existing tsquery-hint claim "the
+      recipient sees the 500 too" — false ≤0.27.x because the splat bug shielded recipients —
+      becomes TRUE in 0.28.0 via this fix; the train needs no edit there.)
+- **Follow-ups filed this review**: `backlog/tests/TST-044.md` (high — the complete
+  flip-on-fix residue inventory: 5 spec headers, IT-063 protocol step-5/PASS lines, 5
+  sibling flows, PHASE3 bracket-annotation, README tail CTRIB-004 leftover, PLT-150/143/199
+  notes, one unattributed unfilled run-log entry; graph re-embed after);
+  `backlog/docs/DOC-445.md` (medium, milestone 0.28.0).
+- **Banned-phrase check**: none used in record or review.
+- **Reviewer-committed artefacts**: my three suite-run entries appended to the 2026-06-11
+  run-logs (narrative fields filled, reviewer-attributed); P-001 probe-run + feature-flows
+  probe-verification + two controller sidecars re-stamped by the harness to the committed
+  tip `5cbf60a3` — stronger provenance than the implementer's working-tree runs (CTRIB-004
+  precedent), committed with this review.

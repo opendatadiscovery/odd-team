@@ -28,3 +28,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: CTRIB-005 correction run: 6 failed = all six known-bug pins still RED as designed (attachment durability, error boundary, dashboard enum, tsquery x2, top-tags); zero unexpected GREENs on the corrected harness.
 
+## 2026-06-11 — suite/protocol: known-bugs
+- runner: AI-assisted Claude (Fable 5) — CTRIB-005 /review session (reviewer's own full-regression gate)
+- odd-platform working-tree HEAD: 5cbf60a3 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 5cbf60a3  (image odd-platform:odd-team-sut, digest sha256:7cfe636fb5330cfcaeb568a12576b6f0fa33c6edf4610f154d942bae87309b02)
+- protocols: IT-003 IT-004 IT-005 IT-006 IT-007
+- api probes: none; ui e2e: specs/search-tsquery-poisoning.spec.ts specs/quality-dashboard-unknown-status.spec.ts specs/top-tags-ordering.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: reviewer's run on the PR #1771 tip (5cbf60a3): 6 failed = all six documented pins still RED as designed (attachment LOCAL durability, error-boundary white-screen, dashboard unknown-status, tsquery poisoning x2 — proving the advice pass-through did NOT mask the jOOQ-500 class, top-tags ordering). Zero unexpected GREENs -> no un-flipped fixes.
+

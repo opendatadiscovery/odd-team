@@ -98,6 +98,7 @@ EXISTING_DOC_NNN_CANDIDATES: <existing DOC-NNN-class findings the maintainer has
 
 For each sidecar:
 - Read its `docs_link_semantic` block (declared_docs, inferred_docs, doc_drift_findings).
+- Entries carrying `pending_release:` (the file-analyser's release-train marker) are NOT WebFetched — the page exists only on `release/{version}` and GitBook publishes `main` only. Record them under the train's informational classification (see the release-train awareness rule below), never as broken-URL findings.
 - For each URL: re-WebFetch in this session. Compare:
   - Returned status (200 / 404 / etc).
   - Anchor present in the fetched markdown / HTML (search for the literal heading or `id="..."`).
@@ -270,6 +271,17 @@ For every fresh DOC-GAP candidate you're about to commit:
 Never auto-merge across HIGH-confidence candidates (e.g., two DOC-GAP entries on adjacent doc pages that LOOK like the same drift but might be distinct page-level issues). Merges are maintainer-triggered.
 
 **Per-finding context budget**: ≤ 30 KB (the `graph-search` result + 1-2 `graph-node` reads). Per-batch total: ≤ 200 KB regardless of registry size.
+
+## Rule — Release-train awareness *(2026-06-11; `adrs/drafts/release-train-doc-gating.md`)*
+
+The live manual describes the latest **published** odd-platform release; docs for merged-but-unreleased behaviour sit on documentation branches `release/{version}` until the release gate merges them. Live-page-vs-main-code drift whose correction sits on a train is the EXPECTED state between code-merge and release — flagging it as a gap would re-surface every train as a wave of false candidates.
+
+Before emitting a missing-page or drift finding, check whether an open train already covers it:
+
+- `grep -rl 'milestone:' {WORKSPACE}/backlog/` → items whose affected pages match the candidate and whose status is `pending-release` / `review-ready` / `in-progress`;
+- `git -C ../documentation branch -r --list 'origin/release/*'`; if a train exists, `git -C ../documentation log origin/main..origin/{train} --name-only` for the candidate's page.
+
+Covered → emit the candidate with classification **`pending-release ({version})`** — informational, excluded from DOC-NNN candidate ranking (it is scheduled work, not a gap). Not covered → a normal finding.
 
 ## Exit
 

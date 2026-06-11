@@ -139,8 +139,19 @@ flag->true wave 5: 23 of 27. Stayed false: PLT-181,185,191,195,205,009,211,212,0
 
 193 drafts swept across 5 waves. ~38% had >=1 load-bearing user-facing claim or severity rationale FALSIFIED by reading the FE/spec/library the original draft never traced — the exact PLT-176/PLT-167 failure mode, now measured at corpus scale. 15 reject-candidates/duplicates (incl. PLT-006 already fixed on main). ~125 flipped user_facing_verified:true (code-settled absence-of-control facts or workspace-runtime-backed by IT-/probe- artefacts); the rest stay false with the precise remaining live-drive named. The dominant correction was fabricated/stale SQL + line citations with the underlying defect surviving re-scoped — i.e. the bugs are mostly real, but the user-facing FRAMING was systematically wrong. NONE of the reject-candidates had their status flipped (left for an authorised session per sweep rules). Severity downgrades concentrated in the security-framed drafts (RBAC observable masked under default DISABLED; values masked by show-values=NEVER; fails-closed not open).
 
-### Maintainer follow-ups (recorded, not auto-actioned)
-1. Reconcile confirmed duplicates before filing: PLT-103->PLT-078, PLT-054->PLT-099, PLT-144->PLT-021, PLT-173->PLT-120, PLT-032->PLT-010(Defect 1).
-2. Close PLT-006 (fixed on main, CTRIB-002/#1747) and the reject-candidates (PLT-005,011,022,034,036?,071,126,131,136,157,203,207) after review — status flips need an authorised session.
+### Status flips — DONE 2026-06-11 (maintainer-authorised)
+15 drafts flipped `draft -> rejected` with a `## Rejection` evidence section (file retained as audit trail per issues/README.md):
+- False-positive / not-a-defect / obsolete: PLT-005, PLT-006 (fixed on main), PLT-011, PLT-022, PLT-034, PLT-071, PLT-126, PLT-131, PLT-136, PLT-157, PLT-203, PLT-207.
+- Superseded duplicates: PLT-103 (->PLT-078), PLT-144 (->PLT-021), PLT-173 (->PLT-120).
+Rejected count 3 -> 18; draft 204 -> 189. NOT flipped (carry a distinct surviving defect, stay draft rescoped): PLT-032 (Defect 2 silent-nav survives; Defect 1 dup of PLT-010), PLT-054 (D3/D4 survive; D1 HMAC == PLT-099).
+
+Cross-reference re-points DONE (dup pointers -> canonical):
+- DOC-362: PLT-173 -> PLT-120 (paired-upstream-fix runbook).
+- DOC-292 / DOC-298 / DOC-308 / DOC-302: PLT-103 -> PLT-078 (actuator/env two-way links; PLT-108 refs preserved; DOC-302 review-record prose annotated, not blind-swapped).
+- TST-008 -> PLT-144: LEFT as-is (informational dedup note that already names the canonical PLT-021; rejection does not change its meaning).
+
+### Maintainer follow-ups (still open, recorded)
+1. Filing-time reconciliation for the NON-rejected near-duplicates: PLT-054<->PLT-099 (consolidate the /api/slack/events HMAC fix on one PR), PLT-032<->PLT-010 (Defect 1).
+2. Reverse back-links (non-blocking bookkeeping): add DOC-292/298/302/308 to PLT-078's body, and DOC-362 to PLT-120's body.
 3. Consider class-level items for two cross-cutting roots the sweep surfaced: (a) dead UI error-toasts platform-wide (handleResponseThunk/errorHandling ResponseError wrapper never unwrapped — affects every thunk + react-query mutation error path); (b) SecurityConstants singular-vs-plural path mismatches that make several gates inert (PLT-098/101 class).
 4. The soft-delete-aware partial unique index convention (falsified PLT-207) is a candidate implicit-ADR datum.

@@ -577,3 +577,17 @@ session_id: session-2026-05-12-F-DataEntityDetails
   feature_id: F-001
   ran_at: 2026-06-11T16:38:39+00:00
   verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260611T182547Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-11T18:25:47+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260611T184017Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-11T18:40:17+00:00
+  verdict: "all assertions passed"

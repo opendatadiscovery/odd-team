@@ -74,37 +74,46 @@ test.describe('F-122 Operator Management-Endpoint Exposure Surface (actuator)', 
     ).toBe(true);
   });
 
-  test('it20651_UC-001 [SECURITY pin]: /actuator/env is reachable UNAUTHENTICATED (whitelisted) and is NOT masked behind an auth gate', async ({
+  test('it20651_UC-001 [SECURITY pin]: /actuator/env is NOT auth-gated (whitelisted) — and serves NO route on this build', async ({
     request,
   }) => {
     // Characterization of the SECURITY posture (LSN-029). /actuator/env sits under the /actuator/** whitelist
-    // (SecurityConstants.java:26), so the security layer never gates it: a GET reaches application code and
-    // returns 500 SYS001, NOT a 401/403 auth rejection. We assert ONLY that non-auth-rejected posture — we do
-    // NOT fetch the env body or assert any property value (the EnvEndpoint is enabled at application.yml:236 and
-    // there is no show-values key, so masking rests on the framework default — an operator-removable guarantee).
-    // Today the catch-all ControllerAdvice masks the env body to a 500, so no credential is returned over HTTP;
-    // the SECURITY fact this pins is the reachability (auth does not protect /actuator/env), which is invariant
-    // across DISABLED/LOGIN_FORM/OAUTH2/LDAP because the whitelist — not the auth mode — is what opens it.
-    // GREEN while /actuator/env is whitelisted; goes RED when env is removed from WHITELIST_PATHS, moved to a
-    // separate management port, or otherwise placed behind authentication — i.e. when the surface narrows.
+    // (SecurityConstants.java:26), so the security layer never gates it: the request always reaches the
+    // routing layer, never a 401/403/302. RE-GROUNDED 2026-06-11 (CTRIB-005): the old "500 via the catch-all"
+    // assert was a misreading — that 500 was the advice swallowing NoResourceFoundException(404). The live
+    // truth the pass-through exposed: env is enabled+exposed in application.yml (:228-238) yet NO route is
+    // mapped on source-built images — the endpoint is dead config, so no env body (masked or otherwise) is
+    // served at all (evidence appended to PLT-078). The pin now asserts both facts: not auth-gated AND 404.
+    // Goes RED when env is placed behind auth (401/403/302 — surface narrowed) OR starts serving (200 —
+    // PLT-078's exposure becomes live and needs re-assessment).
     const status = await reachableUnauthenticated(request, '/actuator/env');
-    // Confirm it reached app code (the documented current behaviour) rather than being absent/gated.
+    expect(
+      [401, 403, 302].includes(status),
+      'SECURITY posture: /actuator/env is never auth-rejected (whitelisted in every auth mode)',
+    ).toBe(false);
     expect(
       status,
-      'SECURITY: /actuator/env is reachable unauthenticated; it reaches app code (500 via the catch-all handler), not an auth gate',
-    ).toBe(500);
+      '/actuator/env serves no route on this build (enabled+exposed config, no mapping) — a truthful 404 via the advice pass-through',
+    ).toBe(404);
   });
 
-  test('it20652_UC-005 [SECURITY pin]: /actuator/prometheus (operator metrics) is reachable UNAUTHENTICATED', async ({
+  test('it20652_UC-005 [SECURITY pin]: /actuator/prometheus is NOT auth-gated — and serves NO route on this build', async ({
     request,
   }) => {
-    // Second whitelisted surface: the Prometheus scrape endpoint is configured-exposed
-    // (application.yml:230 include list + management.endpoint.prometheus.enabled=true) and is reachable without
-    // authentication. Reachability-only assertion (no metric body asserted).
+    // Second whitelisted surface. RE-GROUNDED 2026-06-11 (CTRIB-005, same as env above): the old 500 was the
+    // swallowed NoResourceFoundException — the Prometheus scrape endpoint is configured-exposed
+    // (application.yml:230 + management.endpoint.prometheus.enabled=true, micrometer-registry-prometheus on
+    // the classpath at build.gradle:29) yet NO route is mapped on source-built images: the metrics surface is
+    // dead, which also undercuts PLT-198's premise (R2DBC gauge for a scrape endpoint that does not serve).
+    // Evidence on PLT-078. RED on 401/403/302 (auth narrowed) or 200 (the scrape surface comes alive).
     const status = await reachableUnauthenticated(request, '/actuator/prometheus');
     expect(
+      [401, 403, 302].includes(status),
+      'SECURITY posture: /actuator/prometheus is never auth-rejected (whitelisted in every auth mode)',
+    ).toBe(false);
+    expect(
       status,
-      'SECURITY: /actuator/prometheus is reachable unauthenticated (whitelisted) — operator metrics surface is open',
-    ).toBe(500);
+      '/actuator/prometheus serves no route on this build — the operator metrics surface is dead config (PLT-078 evidence)',
+    ).toBe(404);
   });
 });

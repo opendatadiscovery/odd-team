@@ -66,8 +66,11 @@ is what this IT pins: the **reachability** posture (env/prometheus whitelisted, 
 
 1. `GET /actuator/health` → 200, body `status==UP`.
 2. `GET /actuator/info` → 200, body has non-empty `build.version`.
-3. `GET /actuator/env` → status is NOT 401/403 and NOT 302 (not auth-gated); current behaviour 500 (reached app code).
-4. `GET /actuator/prometheus` → status is NOT 401/403 and NOT 302; current behaviour 500.
+3. `GET /actuator/env` → status is NOT 401/403 and NOT 302 (not auth-gated); current behaviour **404**
+   (no route is mapped despite enabled+exposed config — the pre-2026-06-11 "500" was the advice
+   catch-all swallowing this `NoResourceFoundException`; re-grounded by CTRIB-005/#1760, evidence on PLT-078).
+4. `GET /actuator/prometheus` → status is NOT 401/403 and NOT 302; current behaviour **404** (same — the
+   scrape surface is dead config; PLT-078/PLT-198).
 
 Reachability assertions read NO response body and assert NO property value (responsible disclosure).
 
@@ -76,11 +79,11 @@ Reachability assertions read NO response body and assert NO property value (resp
 ## 5. Assertions
 
 - **PASS** when: health+info serve 200 bodies anon (info discloses version); env+prometheus are not auth-rejected
-  (no 401/403/302) and reach app code (500).
+  (no 401/403/302) and serve no route (404 — dead config, PLT-078).
 - **FLIPS** when: `/actuator/env` or `/actuator/prometheus` returns 401/403/302 (placed behind auth / removed from
-  the whitelist / moved to a separate management port — the surface narrowed, GOOD; re-scope the pin); OR
-  `/actuator/env` starts returning a 200 body (the catch-all stopped masking it — escalate: the credential schema
-  is now directly reachable; verify masking, file/raise the PLT).
+  the whitelist / moved to a separate management port — the surface narrowed, GOOD; re-scope the pin); OR either
+  starts returning a 200 body (the endpoint came alive — for env, escalate: the config-key schema is now directly
+  reachable; verify masking against PLT-078 and re-assess; for prometheus, PLT-198's gauge work unblocks).
 
 ## 6. Result log
 

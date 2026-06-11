@@ -37,12 +37,14 @@ F-040 (DQ Test Run History). Grounded against the running platform via
   in flight. KNOWN BUG (PLT needed). The pin asserts the CURRENT 500 (GREEN now) and
   RED-flips the instant the mapper is made tolerant or `RUNNING` is added to the wire enum.
 
-- **CORNER 2 (F-040-UC-4, contradicted promise — characterization):** filtering by a
-  status value the wire enum cannot represent (`status=RUNNING`, and indeed any invalid
-  literal e.g. `status=BANANA`) returns **HTTP 500** at the controller param-binding
-  layer, not a `400 Bad Request`. A valid filter (`status=FAILED`) returns 200 filtered.
-  Pins the current 500-on-unmappable-filter so a future `400` (the correct REST shape)
-  RED-flips it.
+- **CORNER 2 (F-040-UC-4 — FIXED 2026-06-11, re-grounded):** filtering by a status value
+  the wire enum cannot represent (`status=RUNNING`, and indeed any invalid literal e.g.
+  `status=BANANA`) returns a clean **400** at the controller param-binding layer — the
+  ControllerAdvice `ResponseStatusException` pass-through (#1760/#1761, CTRIB-005) keeps
+  the framework's status instead of re-branding it 500 SYS001. A valid filter
+  (`status=FAILED`) returns 200 filtered. (CORNER 1 — the mapper 500 on a RUNNING **DB
+  row** — is a different mechanism, `IllegalArgumentException` in the row mapper, and
+  stays pinned at 500.)
 
 ## 2. Preparation — build the test stand
 - **Stack**: shared odd-minimal (`ODD_STACK_EXTERNAL=1`). API `:18080`, PG `:15432`, AUTH=DISABLED.

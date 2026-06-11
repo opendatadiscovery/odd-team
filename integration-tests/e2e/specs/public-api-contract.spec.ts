@@ -74,16 +74,17 @@ test.describe('F-029 Platform Public API Contract — spec <-> platform conforma
     ).toBe(true);
   });
 
-  test('it20631_UC-12 [conformance pin]: paginated list operations honour the {items,page_info} shape WITH required page+size, and 500 (not the spec 200) WITHOUT them', async ({
+  test('it20631_UC-12 [conformance pin]: paginated list operations honour the {items,page_info} shape WITH required page+size, and 400 (not the spec 200) WITHOUT them', async ({
     request,
   }) => {
-    // Two halves of a real spec<->platform conformance characterization (LSN-029), both GREEN today:
+    // Two halves of a real spec<->platform conformance characterization (LSN-029):
     //  (a) The happy path: /api/tags WITH the spec-required PageParam+SizeParam (components.yaml: both required:true)
     //      returns the spec-declared paginated envelope { items, page_info }.
-    //  (b) The conformance GAP: /api/tags WITHOUT page/size returns 500 SYS001 — NOT the spec-declared 200, and
-    //      NOT a 400 Bad Request. A consumer that omits a required query param gets an opaque server error rather
-    //      than a typed 4xx. This is the UC-12 class (no conformance gate) made concrete; it flips RED if the
-    //      platform later validates required params (returning 400) or the spec marks them optional.
+    //  (b) The conformance GAP, narrowed 2026-06-11 (flipped per this pin's own protocol): /api/tags WITHOUT
+    //      page/size now returns a typed 400 USR001 — the advice ResponseStatusException pass-through
+    //      (#1760/#1761, CTRIB-005) keeps the framework's MissingRequestValueException status instead of the
+    //      old opaque 500 SYS001. Still NOT the spec-declared 200 (the spec declares no error responses at
+    //      all) — that residual spec<->platform gap is the UC-12 class and stays pinned here.
     const withParams = await getJson(request, `/api/tags${PAGED}`);
     expect(withParams.status, 'GET /api/tags?page&size returns the spec-declared 200').toBe(200);
     for (const field of ['items', 'page_info']) {
@@ -98,12 +99,12 @@ test.describe('F-029 Platform Public API Contract — spec <-> platform conforma
     const noParams = await request.get('/api/tags');
     expect(
       noParams.status(),
-      'CONFORMANCE GAP (UC-12): omitting the spec-required page/size yields 500, not the spec-declared 200 nor a 400',
-    ).toBe(500);
+      'omitting the spec-required page/size yields a typed 400 (advice pass-through, #1761) — the spec itself still declares only 200',
+    ).toBe(400);
     expect(
       ((await noParams.json()) as { code?: string }).code,
-      'the 500 is the generic SYS001 server error (no typed 4xx for a missing required param)',
-    ).toBe('SYS001');
+      'the 400 carries the user-error code USR001 (a typed 4xx for a missing required param)',
+    ).toBe('USR001');
   });
 
   test('it20632_UC-12 PINS PLT-141: the live OpenAPI spec document still FAILS to load (no machine-readable contract to conform against)', async ({

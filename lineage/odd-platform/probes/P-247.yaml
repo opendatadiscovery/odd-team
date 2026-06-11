@@ -1,0 +1,69 @@
+---
+probe_id: P-247
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__TermSearch.md
+emitted_at: 2026-06-11T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-002
+test_class: integration
+verified_against_commit: 074c9927
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (sidecar bugs[4]): for a TERM_CREATE-bearing user, mounting the
+  Dictionary tab fires TWO competing results fetches into the SAME redux slice —
+  TermSearchResults page-1 size-30 (TermSearchResults.tsx:52-61) and TermsForm
+  page-1 size-1000 (TermsForm.tsx:71-75); both replace items at page 1 (slice
+  fetchTermsSearchResults.fulfilled, termSearch.slice.ts:197-206), last response
+  wins. Hypotheses to pin: (a) both GETs fire per mount (cardinality 2); (b) with
+  1005 seeded terms the size-1000 response usually resolves last, so the visible
+  list holds 1000 rows; (c) after the 1000-row state, one infinite-scroll step
+  dispatches page-2 size-30 (rows 31-60) and APPENDS them onto the 1000 — duplicate
+  term ids in the rendered list (duplicate React keys). Outcome (a) is near-certain
+  statically; (b)/(c) are race- and data-dependent — runtime only.
+---
+arrange:
+  - kind: docker-compose-up
+    note: auth DISABLED (DISABLED grants all permissions incl. TERM_CREATE to the default user context)
+  - kind: sql
+    query: |
+      INSERT INTO namespace (id, name, created_at, updated_at)
+      VALUES (9100, 'p247-ns', NOW(), NOW());
+      INSERT INTO term (id, name, definition, namespace_id, created_at, updated_at)
+      SELECT 10000 + i, 'p247-term-' || lpad(i::text, 4, '0'), 'probe term', 9100, NOW(), NOW()
+      FROM generate_series(1, 1005) AS i;
+act:
+  - kind: dom-probe
+    note: |
+      Playwright: register a collector for GET requests matching
+      pathname == /api/terms/search/{uuid}/results, recording each request's
+      `size` query param and response resolution order. page.goto('/termsearch')
+      (cold — index route creates the session). Wait for network idle.
+      Capture: results_requests = [{size, finishedAt}...]. Then read the rendered
+      row count and the list of term names from the results list
+      (#term-search-results-list). Then scroll the list container to its bottom
+      ONCE and wait 2 s; re-capture rendered term names.
+    capture_as: dom_observations
+observe:
+  - kind: dom-probe
+    note: "duplicate detection: names appearing more than once in the post-scroll rendered list"
+    capture_as: post_scroll_duplicates
+assert:
+  - "dom_observations.results_requests.map(r => r.size).sort() contains both '30' and '1000'  # hypothesis (a): the double-fetch fires per mount for a permitted user"
+  - "dom_observations.rendered_row_count_before_scroll >= 900  # hypothesis (b): the size-1000 response wins the slice; FAIL (==30) means the 30-fetch resolved last on this run — record the winner, the claim is about the race existing, not a fixed winner"
+  - "post_scroll_duplicates.length > 0  # hypothesis (c): page-2 size-30 appends rows already present from the 1000-window; PASS pins the duplicate-key corruption; only evaluable when (b) held"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__ts__react-component__component__TermSearch]
+  retrospectives: [LSN-017]
+realism_caveats: |
+  Hypotheses (b) and (c) are race-dependent: on a fast localhost the 1000-row response
+  usually lands last, but the probe must RECORD the resolution order rather than assume
+  it; a run where the 30-fetch wins still confirms hypothesis (a) and should be re-run
+  rather than treated as refuting (b)/(c). The duplicate-key console warning is a
+  secondary signal worth capturing but not asserting (React may not warn for keyed
+  fragments across InfiniteScroll children). The probe pins the TermSearch mount-tree
+  consequence; the owning fix target is TermsForm (its own sidecar should carry the
+  duplicate-name-check correctness questions — filtered-subset and 1000-cap misses).

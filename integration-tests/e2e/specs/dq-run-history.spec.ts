@@ -180,17 +180,18 @@ test.describe('IT-059 F-040 — DQ test run history (paginated)', () => {
     }
   });
 
-  test('CORNER 2 (UC-4): an unmappable status filter 500s (not 400); a valid filter returns 200 filtered [characterization]', async () => {
+  test('CORNER 2 (UC-4): an unmappable status filter is a clean 400; a valid filter returns 200 filtered', async () => {
     const dqId = await seedRuns();
 
-    // RUNNING is documented at the DB tier but absent from the wire enum → the controller's
-    // generated enum param binding 500s instead of returning 400 Bad Request. Same for any
-    // invalid literal. Pin the current 500-on-unmappable-filter (LSN-029) — flips if a 400 lands.
+    // RUNNING is documented at the DB tier but absent from the wire enum → the generated enum
+    // param binding raises ServerWebInputException(400). FLIPPED 2026-06-11 (was a 500 pin):
+    // the ControllerAdvice ResponseStatusException pass-through (#1760/#1761, CTRIB-005) keeps
+    // the framework's 400 instead of re-branding it 500 SYS001. Same for any invalid literal.
     const running = await getRuns(dqId, 1, 10, 'RUNNING');
-    expect(running.status, 'status=RUNNING (not a wire enum value) currently 500s, not 400').toBe(500);
+    expect(running.status, 'status=RUNNING (not a wire enum value) is the client\'s 400, not a 500').toBe(400);
 
     const garbage = await getRuns(dqId, 1, 10, 'BANANA');
-    expect(garbage.status, 'an invalid status literal currently 500s, not 400').toBe(500);
+    expect(garbage.status, 'an invalid status literal is the client\'s 400, not a 500').toBe(400);
 
     const failed = await getRuns(dqId, 1, 10, 'FAILED');
     expect(failed.status, 'a valid status filter returns 200').toBe(200);

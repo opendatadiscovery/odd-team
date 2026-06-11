@@ -41,8 +41,9 @@ zero existing CI signal).
 
 **Wire note:** the activity endpoint params are snake_case (`begin_date`, `end_date`). The camelCase
 form makes Spring see `begin_date` missing → `MissingRequestValueException` (semantically 400), which
-`ControllerAdvice` mistranslates to **500** — pinned as a KNOWN BUG corner (candidate PLT, same defect
-class as PLT-076: `ControllerAdvice` lacks the handler so it falls through to `Exception.class` → 500).
+now reaches the wire as a clean **400 USR001** — fixed 2026-06-11 by the `ControllerAdvice`
+`ResponseStatusException` pass-through (#1761/CTRIB-005; the corner test flipped per its own
+pre-authored condition).
 
 ## 2. Preparation
 
@@ -61,7 +62,8 @@ class as PLT-076: `ControllerAdvice` lacks the handler so it falls through to `E
 2. `GET /api/activity?type=ALL` → 200 + ≥1 row; `GET .../activity/counts` → `total_count>0`.
 3. `GET /api/activity?type=MY_OBJECTS` → 200 + `[]`; `counts.my_objects_count == 0`.
 4. `GET /api/alerts/my` → 200 + empty body / zero items; `GET /api/alerts/totals` → `my_total==0`.
-5. `GET /api/activity?type=ALL&size=5` (NO dates) → **500 / SYS001** (the KNOWN-BUG mistranslation).
+5. `GET /api/activity?type=ALL&size=5` (NO dates) → **400 / USR001** (FIXED 2026-06-11 — the advice
+   `ResponseStatusException` pass-through, #1761/CTRIB-005; was the 500/SYS001 mistranslation).
 
 **Automated rail:** `ODD_STACK_EXTERNAL=1 npx playwright test specs/my-objects-silent-empty.spec.ts`.
 
@@ -69,10 +71,11 @@ class as PLT-076: `ControllerAdvice` lacks the handler so it falls through to `E
 
 - **PASS (DISABLED, pins current behaviour)** when: ALL feed non-empty + `total_count>0`, while
   My Objects list is `[]` and `my_objects_count==0`; Alerts My surfaces zero alerts; the no-dates
-  activity call returns 500/SYS001.
+  activity call returns 400/USR001 (flipped 2026-06-11 per this protocol's own pre-authored
+  condition — the #1761 advice fix; unit twin: `FrameworkErrorStatusMappingTest`).
 - **FLIPS** when: My Objects / Alerts My gain a diagnostic (hint payload / sentinel / association
-  banner), OR the empty-owner branch errors or falls back to ALL, OR the missing-param case starts
-  returning 400 (the KNOWN-BUG fix — change that assertion to `.toBe(400)`).
+  banner), OR the empty-owner branch errors or falls back to ALL, OR the missing-param case
+  regresses off 400.
 
 ## 6. Result log
 
@@ -81,7 +84,7 @@ Appends to `integration-tests/run-log/{YYYY-MM-DD}-IT-056.md`.
 ## Cross-references
 - Source: `ActivityServiceImpl.java:86-117,138-166,194-198,232-243`, `AlertServiceImpl.java:82-87`,
   `AlertController.java:43-49`, `AuthIdentityProviderImpl.java:50-53`,
-  `ControllerAdvice.java:48-66` (the 400→500 mistranslation).
+  `ControllerAdvice.java` (the 400→500 mistranslation, FIXED by the #1761-class pass-through).
 - Feature: `lineage/odd-platform/feature-flows/detail/F-064.yaml` (UC-2/UC-4/UC-5) +
   `feature-reflections/detail/F-064.yaml` (H-002/H-004/H-005 confirmed-but-untested).
 - Related: IT-054 (F-011 chokepoint), IT-055 (F-015 my-objects data side); REFACTOR-224; PLT-076

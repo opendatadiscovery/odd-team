@@ -1,534 +1,506 @@
 ---
-node_id: "odd-platform ts react-component component:Search"
+node_id: "odd-platform ts components/Search react-component:Search"
 node_kind: react-component
 axis: ui_components
-extracted_at_commit: 4ec2b20
-enriched_at_commit: 4ec2b20
+extracted_at_commit: 074c9927
+enriched_at_commit: 074c9927
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.4.0
+prompt_version: file-analyser/0.5.0
 schema_version: v0.3.0
 enrichment_status: complete
 confidence_overall: HIGH
-session_id: session-2026-05-26-ZL-Search-final
-feature_hint: "P-01:F-002 (Search and Filtering — Data Discovery pillar Catalog page). UI entry point for the F-001-anchored Discovery search surface: the Catalog page reached at `/search/*` (App.tsx:61 + searchRoutes.ts:3 `BASE_PATH = '/search'`). Sister to TermSearch.tsx (Dictionary tab — P-06:F-001, batch U) — both use the identical session-create + URL-restore + facet-debouncer + WithPermissionsProvider pattern. This Search.tsx is the canonical/older instance; TermSearch.tsx is the term-catalog clone. The backend partner is the batch-ZE SearchController (`POST /api/search` → SearchController.search + facet aggregators) and the FTS injection finding (REFACTOR-229 + the TRUE-SQL-injection at `highlightDataEntity`) lives in the same `JooqFTSHelper.tsQuery` code path the user's typed query text reaches. The Catalog-page UI shell delegates to three children: Filters (left sidebar — 7 facets), MainSearch (text input — wraps MainSearchInput), and Results (main pane — infinite-scroll + tabs + DEG-create button)."
+session_id: session-2026-06-11-Search-1760-refresh
+feature_hint: "P-01:F-005 (Search Filter Facets — Data Discovery pillar Catalog page, feature-flows/detail/F-017.yaml). UI entry point at `/search` (index) + `/search/:searchId` (App.tsx:61-64 + searchRoutes.ts:3 BASE_PATH='/search'). REFRESHED at commit 074c9927 (branch contrib/CTRIB-005-search-session-not-found) which carries the #1760 fix: App.tsx replaced the legacy `'/search/*'` splat (introduced #1551, Dec 2023 — which left useSearchRouteParams().searchId ALWAYS undefined so every cold /search/{uuid} silently minted a fresh empty session) with nested `index` + `:searchId` param routes, making the URL-restore path REAL; and Search.tsx now renders a graceful dead-link state (404 deep-link → SearchSessionExpired 'This search has expired' + 'Start new search'; non-404 → AppErrorPage with the real status). Sister to TermSearch.tsx (Dictionary tab) which mirrors the identical fix. Backend partner is the batch-ZE SearchController (POST/GET/PUT /api/search). Three children: Filters (left sidebar, 7 facets), MainSearch (text input wrapping MainSearchInput), Results (passed via Component={Results} into WithPermissionsProvider)."
 related_features:
-  - F-001       # the bug-anchored Detail-page view tracking (pillar-anchored P-01:F-002 Popular Entities Ranking via rev3 reclassification — Search is the discovery counterpart to Popular)
-  - F-008       # cross-references via REFACTOR-425 page-vs-count divergence family
+  - F-017       # PRIMARY — Search Filter Facets (P-01:F-005); IT-125 + CTRIB-005 anchor here
+  - F-001       # LSN-017 dep-array class cross-link (view_count doubling counterpart)
+  - F-008       # REFACTOR-425 page-vs-count divergence family
 related_pillar_features:
-  - "P-01:F-002"   # Search and Filtering (Data Discovery pillar) — this UI IS the operator-facing surface
+  - "P-01:F-005"   # Search Filter Facets (Data Discovery pillar) — this UI IS the operator-facing surface
 related_retrospectives:
-  - LSN-017   # useEffect dep-array doubling — three smells located here (see bugs_limitations_corner_cases — none is the exact view_count case but TWO are active class-matches)
-  - LSN-018   # coherence: cross-checks F-001 + batch-ZE SearchController + batch-U TermSearch sidecar + REFACTOR-229 + REFACTOR-425
-  - LSN-020   # Category F mandate — every named request input (here: `query`, `:searchId`, `filters`, `myObjects`, `pageSize`) traced for name-vs-implementation drift
-  - LSN-023   # do not interpret a backend-named field semantically without checking what the UI form populating it means by the same name
+  - LSN-017   # useEffect dep-array smell — three instances here; effect-1 now manifests as a create-FAILURE retry loop (P-244)
+  - LSN-018   # coherence cross-check across F-017 + batch-ZE SearchController + batch-U TermSearch
+  - LSN-020   # Category F — every named request input (searchId, query, filters, myObjects, pageSize) traced
+  - LSN-023   # interpret request fields by the UI control that feeds them, not the backend name alone
 related_batches:
-  - ZA   # SearchResults UI sidecar (anchored within Results.tsx — child of this orchestrator)
-  - ZE   # SearchController class + .search method (backend partner of this UI; TRUE-SQL-injection at highlightDataEntity + the no-auth/no-PreAuthorize surface)
-  - ZH   # ToolbarTabs (top-nav "Catalog" → `/search` link; documents the tab-click drops session race)
-  - ZI   # searchRoutes.ts (route-construction module; documents `:searchId` route param Category F drift)
-  - ZL   # this sidecar — FINAL refresh consolidating the Search page root with stress_findings + probes
+  - ZA   # SearchResults UI (Results.tsx — now mounted via Component={Results})
+  - ZE   # SearchController class + .search method (backend partner; FTS-injection + no-auth surface)
+  - ZH   # ToolbarTabs (top-nav 'Catalog' tab → searchPath() bare → drops session)
+  - ZI   # searchRoutes.ts (route-construction module; :searchId Category F drift)
+  - ZL   # prior FINAL Search sidecar (this is its #1760 refresh)
+related_issues:
+  - "1760"   # filters 500-vs-404 + SPA 'Unknown Error' for expired/shared deep-links (the fix this refresh enriches)
+  - "1761"   # invalid-facet-enum 400 class (regressed by IT-125)
+related_contributions:
+  - "CTRIB-005"   # the /contribute work item that produced this commit (contributor/CTRIB-005.md)
+related_integration_tests:
+  - "IT-125"   # integration-tests/e2e/specs/search-session-not-found.spec.ts — expired state, restore, no-replacement-POST guard
 ---
 
 # Search (Catalog page — Discovery search/filter root) — semantic understanding
 
 ## understanding
 
-`Search.tsx` (lines 1-92) is the Data Discovery pillar's **Catalog page** root SPA component — the user-facing entry point at `/search/*` (App.tsx:61 + searchRoutes.ts:3 `BASE_PATH = '/search'`) that drives the catalog-wide data-entity browsing experience. It is a 92-line orchestrator that (a) **creates a server-side search session** via `POST /api/search` → `SearchController.search` (batch-ZE sidecar) on first mount when no `:searchId` URL parameter is present and no Redux-cached `searchId` exists — delegating to `useCreateSearch()` (useCreateSearch.ts:14-19) which dispatches `createDataEntitiesSearch` and then `navigate(searchPath(searchId))` to capture the new UUID in the URL (lines 37-42); (b) **restores an existing session** from the URL parameter via `GET /api/search/{searchId}` → `SearchController.getSearchFacetList` when reload/deep-link arrives with a session UUID (lines 44-48); (c) **debounces facet-state mutations** at 1500 ms leading-edge and dispatches `updateDataEntitiesSearch` → `PUT /api/search/{searchId}` whenever the filter sidebar selection diverges from the server-synced state (lines 50-71); (d) **lays out the three-child shell**: `<Filters/>` (left sidebar — 7 facets per docs WebFetched 2026-05-20 status 200), `<MainSearch placeholder={t('Search')} disableSuggestions/>` (top — text-query input wrapping MainSearchInput, lines 79-80), and `<Results/>` wrapped in `WithPermissionsProvider allowedPermissions=[DATA_ENTITY_GROUP_CREATE]` so the "Add group" CTA inside Results.tsx (Results.tsx:125-138) is permission-gated (lines 81-85). The component is a thin orchestrator over `redux/slices/dataEntitySearch.slice.ts` — every render reads the Redux session state (`searchId`, `searchQuery`, `searchMyObjects`, `searchFacetParams`, `searchFacetsSynced`, `isSearchCreating`) and dispatches mutations through three thunks (`createDataEntitiesSearch`, `getDataEntitiesSearch`, `updateDataEntitiesSearch`). The user-typed search **text** is NOT entered here directly — `<MainSearch>` mounts `<MainSearchInput>` which carries its own internal Enter/click handlers that route through `useCreateSearch` (for the global / mainSearch=true path) or `updateDataEntitiesSearch` (for the in-session updateSearch path); the typed text is forwarded into the `SearchFormData.query` field that the backend's `JooqFTSHelper.tsQuery` ultimately splits-and-prefixes (`q + ":*"` per REFACTOR-229) before passing to `to_tsquery(?)` — meaning **the UI performs NO client-side sanitisation of search query text**.
+`Search.tsx` (lines 1-122, commit 074c9927) is the Data Discovery pillar's **Catalog page** root SPA component, mounted at `/search` (index) and `/search/:searchId` (App.tsx:61-64). It is a thin orchestrator over the `dataEntitySearch` Redux slice that (a) **creates a server-side search session** on first mount when no `:searchId` URL param and no Redux-cached `searchId` exist — `createSearch({query:'', pageSize:30, filters:{}})` → `useCreateSearch()` dispatches `createDataEntitiesSearch` (`POST /api/search`) then `navigate(searchPath(searchId))` to capture the new UUID in the URL (Search.tsx:58-63 + useCreateSearch.ts:14-19); (b) **restores an existing session** from the URL parameter via `getDataEntitiesSearch({searchId: routerSearchId})` (`GET /api/search/{searchId}`) when a `:searchId` is present and Redux holds no session yet (Search.tsx:65-69) — **this path is REAL only as of this commit**: the prior `'/search/*'` splat route (since #1551, Dec 2023) left `useSearchRouteParams().searchId` always `undefined`, so effect (a) silently minted a fresh empty session for every cold deep-link; the route fix (App.tsx nested `index` + `:searchId`) wires the param so the restore fires and the session is loaded, not replaced (regression-locked by IT-125). (c) **Handles dead deep-links gracefully** — a deep-link that fails to load (`!searchId && routerSearchId && isSearchNotLoaded`, Search.tsx:48-51) renders `SearchSessionExpired` ("This search has expired" + a "Start new search" button that calls `resetLoaderByAction` then `createSearch`) when the error status is exactly `404`, and `AppErrorPage` carrying the real `searchError.status`/`statusText` otherwise (Search.tsx:94-100); the real status is now reliable because `lib/errorHandling.tsx:12-18` unwraps the generated client's `ResponseError` wrapper. (d) **Debounces facet-state mutations** at 1500 ms leading-edge into `updateDataEntitiesSearch` (`PUT /api/search/{searchId}`) whenever facet selection diverges from server-synced state (Search.tsx:71-92). (e) **Lays out the three-child shell**: `<Filters/>` (left sidebar, 7 facets, xs=3), `<MainSearch placeholder={t('Search')} disableSuggestions/>` (text input), and `<Results/>` injected via `WithPermissionsProvider Component={Results} allowedPermissions=[DATA_ENTITY_GROUP_CREATE]` (Search.tsx:102-118). The user-typed search **text** is not entered in this orchestrator — `<MainSearch>` mounts `<MainSearchInput>` which dispatches `updateDataEntitiesSearch` synchronously on Enter (the in-session path, since this surface omits `mainSearch`), forwarding the raw `query` into `SearchFormData` with **no client-side sanitisation**.
 
 ## concepts
 
 - entities:
-  - "SearchFormData (OpenAPI-generated request DTO — `generated-sources`; `{query: string, pageSize: number, filters: {...facetMap...}, myObjects?: boolean}`; carries the `query` field that ultimately reaches `to_tsquery(?)` per the JooqFTSHelper code path — REFACTOR-229)"
-  - "SearchFacetsData (OpenAPI-generated response DTO; carries `{searchId, query, myObjects, facetState, total, myObjectsTotal}`; the server-side session row in `search_facets` table)"
-  - "DataEntitySearchState (Redux slice — `state.dataEntitySearch` shape `{searchId, query, myObjects, totals, results: {items, pageInfo}, suggestions, facets, facetState, isFacetsStateSynced, dataEntitySearchHighlightById}` per dataEntitySearch.slice.ts:22-36)"
-  - "Permission.DATA_ENTITY_GROUP_CREATE (enum value — passed to `WithPermissionsProvider allowedPermissions=[DATA_ENTITY_GROUP_CREATE]` at Search.tsx:82 + consumed downstream via `WithPermissions permissionTo={Permission.DATA_ENTITY_GROUP_CREATE}` in Results.tsx:125 wrapping the 'Add group' button)"
-  - "useSearchRouteParams (route hook from searchRoutes.ts:18-19 — extracts `{searchId}` from `useParams()`; here destructured as `routerSearchId` at Search.tsx:27 — see batch ZI for the route-module-level Category F traces)"
-  - "Server-side search session UUID (the `:searchId` URL parameter — captured at searchRoutes.ts:4 `SEARCH_ID_PARAM = ':searchId'`; persisted server-side as a `search_facets` row keyed by server-generated UUID per batch-ZE SearchController.search invariants; the UUID has NO user binding per REFACTOR-344)"
-  - "PageWithLeftSidebar (layout primitive — `MainContainer`, `ContentContainer`, `LeftSidebarContainer`, `ListContainer` at lines 74-87; identical sibling pattern used by TermSearch.tsx — verified by Grep `PageWithLeftSidebar.MainContainer` returning both files)"
-  - "Filters / Results / MainSearch (three child components — Filters.tsx renders 7 facets per the WebFetched docs; Results.tsx renders the InfiniteScroll + tabs + EmptyContentPlaceholder; MainSearch wraps MainSearchInput.tsx — re-export verified at components/shared/elements/index.ts:3)"
+  - "SearchFormData (OpenAPI request DTO — spec components.yaml:2244-2287: `{query?: string, my_objects?: boolean, filters: {types,entity_classes,tags,namespaces,owners,datasources,groups,statuses}}`, `required: [filters]`). NOTE: `pageSize` is NOT a SearchFormData property in the spec — the `pageSize: 30` literal at Search.tsx:60 + MainSearchInput.tsx:38 is an extraneous field absent from the wire contract."
+  - "SearchFacetsData (OpenAPI response DTO — the server-side `search_facets` session row; carries `search_id`, query, totals, facetState)"
+  - "DataEntitySearchState (Redux slice `state.dataEntitySearch`; `initialState` at dataEntitySearch.slice.ts:22 with `isFacetsStateSynced: true` at :34; `updateSearchState` merge helper at :40; create/update set `isFacetsStateSynced:false` at :134 and :178, reset to true at :97)"
+  - "AppError / ErrorState (lib/errorHandling.tsx:5-10 `{status, statusText, url, message}`) — produced by `getErrorResponse` which unwraps the generated client's `ResponseError.response` (errorHandling.tsx:12-18); surfaced into Redux by the loader slice's global `/rejected` matcher (loader.slice.ts:42-49) and read here via `getSearchError` (selectors :60)"
+  - "SearchSessionExpired (shared element, SearchSessionExpired.tsx:1-46 — renders 'This search has expired' + 'Start new search'; re-exported at shared/elements/index.ts:58)"
+  - "AppErrorPage (shared element, AppErrorPage.tsx:1-41 — renders `error.status` + `error.statusText || 'Unknown Error'` + a Home Page link; re-exported at index.ts:57)"
+  - "Permission.DATA_ENTITY_GROUP_CREATE (generated enum; passed to WithPermissionsProvider at Search.tsx:111; consumed downstream by WithPermissions in Results.tsx:125 wrapping the 'Add group' button)"
+  - "useSearchRouteParams / searchPath (route module searchRoutes.ts:7-19; imported from the `routes` barrel at Search.tsx:27; `BASE_PATH='/search'`, `SEARCH_ID_PARAM=':searchId'`)"
+  - "Server-side search session UUID (the `:searchId` URL param — server-generated `search_facets` PK; ephemeral, 30-day TTL eviction per F-010; NO user-binding column per REFACTOR-344 / batch-ZE)"
+  - "PageWithLeftSidebar (layout primitive — MainContainer/ContentContainer/LeftSidebarContainer/ListContainer at Search.tsx:103-116; identical sibling pattern in TermSearch.tsx)"
 - operations:
-  - "On mount: if URL has NO `:searchId` AND no in-flight create AND no cached `searchId` → call `createSearch({query:'', pageSize:30, filters:{}})` (Search.tsx:37-42); the `useCreateSearch` hook dispatches `createDataEntitiesSearch` thunk which wraps `searchApi.search(...)` per dataentitiesSearch.thunks.ts:25-32; on fulfilment `navigate(searchPath(searchId))` writes the new UUID into the URL via useCreateSearch.ts:16-18"
-  - "On URL change with `:searchId` present and NO cached `searchId`: dispatch `getDataEntitiesSearch({searchId: routerSearchId})` (Search.tsx:44-48); thunk wraps `searchApi.getSearchFacetList(...)` per dataentitiesSearch.thunks.ts:43-50 — restores the session from server-side state"
-  - "On facet-state change (`searchFacetParams` diff): if NOT synced → call debounced `updateSearchFacets` (Search.tsx:67-71); the debouncer (1500 ms leading-edge, lines 51-63) dispatches `updateDataEntitiesSearch({searchId, searchFormData: {query, myObjects, filters: mapValues(searchFacetParams, values)}})` — thunk wraps `searchApi.updateSearchFacets(...)` per dataentitiesSearch.thunks.ts:34-41"
-  - "Layout dispatch: render `<PageWithLeftSidebar.MainContainer>` containing (a) left sidebar with `<Filters/>` (xs=3) at lines 76-78; (b) main area with `<MainSearch placeholder={t('Search')} disableSuggestions/>` (line 80) above `<WithPermissionsProvider allowedPermissions=[DATA_ENTITY_GROUP_CREATE]>` wrapping `<Results/>` (xs=9) at lines 79-86 — the 'Add group' button inside Results is the only mutation CTA on this surface"
-  - "Subcomponent dispatch chain: `<MainSearch>` mounts `<MainSearchInput>` (per components/shared/elements/index.ts re-export). MainSearchInput.tsx:50-61 — Enter-key handler dispatches `handleCreateSearch(query)` if `mainSearch=true` (which the Catalog Search.tsx surface does NOT set — `disableSuggestions` only) OR `handleUpdateSearch(query)` (the in-session path). Since Search.tsx mounts `<MainSearch>` WITHOUT `mainSearch=true` (line 80), Enter on the Catalog page's text input dispatches `updateDataEntitiesSearch({searchId: storedSearchId, searchFormData: {query, pageSize:30, filters:{}}})` SYNCHRONOUSLY (MainSearchInput.tsx:42-48). **Critically: typed text is dispatched as-is — no sanitisation, no escape of FTS metacharacters (`!`, `|`, `&`, `(`, `)`, `:`, `*`, `<->`).** Results.tsx then triggers pagination via `fetchDataEntitySearchResults({searchId, page+1, size:30})` for infinite scroll (Results.tsx:71-74)."
-  - "Cleanup: NONE in this orchestrator — the component has no explicit unmount cleanup (no `return () => ...` in any useEffect at Search.tsx:37-71). The subcomponent `MainSearchInput` carries a conditional cleanup `if (mainSearch) dispatch(updateSearchQuery(''))` at MainSearchInput.tsx:29-35, but for the Catalog page (mainSearch=false / undefined per Search.tsx:80) that cleanup is gated false."
+  - "On mount with no `:searchId` + no in-flight create + no cached `searchId` → `createSearch({query:'', pageSize:30, filters:{}})` (Search.tsx:58-63) → `createDataEntitiesSearch` thunk (`POST /api/search`) → on fulfilment `navigate(searchPath(searchId))` writes the new UUID into the URL (useCreateSearch.ts:14-19)"
+  - "On URL with `:searchId` present + no cached `searchId` → `getDataEntitiesSearch({searchId: routerSearchId})` (Search.tsx:65-69) → `searchApi.getSearchFacetList` (`GET /api/search/{searchId}`) → restores the persisted session"
+  - "On deep-link load failure → `isDeepLinkNotLoaded = !searchId && !!routerSearchId && isSearchNotLoaded` (Search.tsx:50). If `searchError.status === 404` → render `<SearchSessionExpired onStartNewSearch={handleStartNewSearch}/>` (Search.tsx:94-96); else render `<AppErrorPage showError error={searchError}/>` (Search.tsx:98-100)"
+  - "Recovery from expired state → `handleStartNewSearch` (Search.tsx:53-56) dispatches `resetLoaderByAction(getDataEntitySearchActionType)` (clears the stale rejected loader status + error so the gate stops matching) then `createSearch({query:'', filters:{}})` (a fresh session; note no `pageSize` field on this call)"
+  - "On facet-state change with `!searchFacetsSynced` → `updateSearchFacets()` (Search.tsx:88-92) → debounced (1500 ms leading-edge, :71-86) `updateDataEntitiesSearch({searchId, searchFormData:{query, myObjects, filters: mapValues(searchFacetParams, values)}})` (`PUT /api/search/{searchId}`)"
+  - "Text-query dispatch (NOT in this orchestrator): `<MainSearch>` mounts `<MainSearchInput>`; since Search.tsx:109 omits `mainSearch`, Enter/search-click runs `handleUpdateSearch` → `updateDataEntitiesSearch({searchId: storedSearchId, searchFormData:{query, pageSize:30, filters:{}}})` SYNCHRONOUSLY (MainSearchInput.tsx:42-48, 50-61). Raw text is dispatched with no metacharacter escaping."
+  - "Layout: PageWithLeftSidebar.MainContainer → ContentContainer → LeftSidebarContainer(xs=3)/<Filters/> + ListContainer(xs=9)/<MainSearch .. disableSuggestions/> + WithPermissionsProvider(Component={Results}) (Search.tsx:102-118)"
 - invariants:
-  - "**Server-side search session model — URL-backed UUID; identical pattern to TermSearch.tsx batch U.** Lines 37-48 + searchRoutes.ts:3-19 + dataEntitySearch.slice.ts:22-36. The decision: persist the search session (query + myObjects + facetState + result pageInfo) on the SERVER as a `search_facets` row keyed by UUID, surfaced as the URL path segment `/search/{searchId}`. Deep-link sharing of a filtered Catalog view works — the recipient lands on the same session UUID and the facet state restores. Sister TermSearch.tsx (Dictionary tab, `/termsearch/*`) uses the IDENTICAL pattern."
-  - "**Permission-gating at the DEG-Create CTA only; the LIST + search input + filter sidebar are NOT gated.** Lines 81-85 + Results.tsx:125-138. `WithPermissionsProvider allowedPermissions={[Permission.DATA_ENTITY_GROUP_CREATE]}` wraps `<Results/>` (line 84); inside Results `WithPermissions permissionTo={Permission.DATA_ENTITY_GROUP_CREATE}` (Results.tsx:125) wraps ONLY the conditional 'Add group' button (Results.tsx:126-137) which itself is only rendered when `showDEGBtn` is true (i.e. the current search-class tab is `ENTITY_GROUP`). The `<MainSearch>` (line 80), `<Filters/>` (line 77), and the `<Results/>` result-list mapping (Results.tsx:151-159) are RENDERED UNCONDITIONALLY. Every authenticated user reaching `/search/*` sees the full data-entity catalog and can search/filter it. Pattern parity with batch-U TermSearch: 'UI hide for one mutation CTA, no gate for read.'"
-  - "**Read-collaborative posture — no per-owner + no per-namespace scoping at this layer.** Search.tsx delegates entirely to `searchService.search` on the backend; per batch-ZE SearchController invariants the service runs `JooqFTSHelper.facetStateConditions` over the catalog with NO per-owner filter (`authIdentityProvider.fetchAssociatedOwner` is called only to compute `myObjectsTotal`, not to scope the main result list — SearchServiceImpl.java:128-130). The UI has a 'My Objects' affordance (rendered by `<SearchResultsTabs/>` per Results.tsx — surfacing the `myObjectsTotal` count as a tab; toggling it sends `myObjects: true` on the next session-create), but BY DEFAULT every authenticated user sees every data entity across every owner / namespace. The Filters sidebar has Owner + Namespace facets (per docs WebFetched 2026-05-20) — these are CLIENT-SELECTED filters, not implicit identity-based scoping."
-  - "**No URL-backing for the free-text `query` field beyond the session UUID.** The text-query lives in `state.dataEntitySearch.query` per slice.ts:22-36 — restored from server on session create/restore, but typing a new query in `<MainSearchInput>` only dispatches `updateDataEntitiesSearch` (which mutates the server-side session) — the URL stays at `/search/{searchId}`. Deep-linked URL restores the SESSION's last-saved query and facets, but typed-but-not-submitted intermediate text is lost on page refresh."
-  - "**Pagination contract — `pageSize=30` hardcoded in TWO places, identical to TermSearch batch U.** Search.tsx:39 sets the initial `pageSize: 30` at session create; Results.tsx:45 sets `const size = 30` for infinite-scroll page increments. Both are build-time constants — no operator-tunable config. The session-server respects whatever the client sends, so the two literals must stay aligned manually."
-  - "**Empty-state surface lives in the Results child.** Results.tsx:161-165 renders `<EmptyContentPlaceholder ... text={t('No matches found')}/>` when `!searchResults.length` — NOT in this orchestrator. The empty-state copy is 'No matches found' (NOT 'No data entities exist yet' — so a fresh deployment with zero data entities shows the same string as a filter that returns nothing — pattern parity with batch-U TermSearch finding bugs[8])."
-  - "**Search results come from a SEPARATE endpoint, not this controller call.** Search.tsx fires `POST /api/search` → returns ONLY `SearchFacetsData` (counts + searchId). The actual rows arrive via `Results.tsx` infinite-scroll: `fetchDataEntitySearchResults({searchId, page, size:30})` → `GET /api/search/{searchId}/results` → returns `{items: DataEntity[], pageInfo}` per dataentitiesSearch.thunks.ts:52-67. This is the asymmetry batch-ZE SearchController.search documented: 'The search does not return result rows — it returns counts + a searchId UUID; the UI then calls the sibling GET /api/search/{search_id}/results.'"
+  - "**Server-side URL-backed session model; deep-link restore is REAL as of this commit.** App.tsx:61-64 nested `index`+`:searchId` routes (was a `'/search/*'` splat) → `useSearchRouteParams().searchId` resolves → effect 2 (Search.tsx:65-69) restores the session instead of effect 1 minting a replacement. IT-125 locks: GET /api/search/{searchId} returns 200, the query is restored in the search box, and ZERO replacement POSTs fire for a valid deep-link."
+  - "**Graceful dead-link state: 404 → 'This search has expired' screen; non-404 → real-status AppErrorPage.** Search.tsx:48-51 + 94-100. The 404 branch offers a working recovery (Start new search → resetLoaderByAction + createSearch). Reliant on errorHandling.tsx:12-18 unwrapping `ResponseError.response` so `searchError.status` is the real HTTP status, not undefined."
+  - "**Permission-gating at the DEG-Create CTA only; LIST + search input + filter sidebar are NOT gated.** Search.tsx:110-114 (`WithPermissionsProvider Component={Results}`) INJECTS permission context but ALWAYS renders `<Results/>` (WithPermissionsProvider.tsx:30-39 — the `Component` branch renders unconditionally inside a PermissionProvider). Only the conditional 'Add group' button is gated, at Results.tsx:125 (`WithPermissions permissionTo={DATA_ENTITY_GROUP_CREATE}`) AND class-tab-gated (`showDEGBtn`, Results.tsx:126). Every authenticated user sees the full catalog list (Results.tsx:151 unconditional `.map`)."
+  - "**Read-collaborative posture — no per-owner / per-namespace scoping at the UI layer; 'My Objects' is opt-in.** The result list renders every server-returned entity; the only owner-scoping affordance is the My Objects tab (Results child), which sets `myObjects:true` on the next update. Default tab is 'All' → full catalog. Backend non-scoping is owned by batch-ZE SearchController + SearchServiceImpl (referenced, not re-verified at this commit)."
+  - "**Text-query `query` field is dispatched verbatim — no client-side sanitisation.** MainSearchInput.tsx:38, 44 build `{query, pageSize:30, filters:{}}` and dispatch as-is; Search.tsx:109 mounts MainSearch with no validation prop. tsquery metacharacters reach the backend FTS path (REFACTOR-229, batch-ZE — referenced)."
+  - "**`pageSize` is dead AND off-contract.** Search.tsx:60 + MainSearchInput.tsx:38 pass `pageSize:30`, but (a) `pageSize` is not a SearchFormData property in the spec (components.yaml:2244-2287) so it is not part of the wire payload, and (b) result pagination is driven by Results.tsx:45 `const size = 30`, not by the session. `handleStartNewSearch` (Search.tsx:55) omits `pageSize` entirely — confirming it is inert."
+  - "**Empty-state copy lives in the Results child, not this orchestrator.** Results.tsx:161-165 renders `EmptyContentPlaceholder text={t('No matches found')}` — same string for a fresh zero-entity deployment and a zero-result filter."
 - audiences:
-  - "odd-platform-ui-end-user — Catalog page is the principal entry point for ANY user discovering data; reaching this route requires (a) an authenticated session under LOGIN_FORM/OAUTH2/LDAP, or (b) `auth.type=DISABLED` dev-only mode per pillar P-09"
-  - "data-engineer-analyst — the primary user persona for the Catalog page per system-mission.md P-01 audience set"
-  - "data-quality-engineer — uses search to find quality-test entities by tag/datasource"
-  - "data-scientist-ml-engineer — uses search to find ML experiment + ML model DEG entities"
-  - "viz-bi-engineer — searches for dataset entities to source BI dashboards"
-  - "platform-operator — uses Catalog page during onboarding to validate the catalog state; uses 'Add group' to bootstrap initial DEG structure"
+  - "odd-platform-ui-end-user — the Catalog page is the principal data-discovery entry point; reaching `/search` requires an authenticated session under LOGIN_FORM/OAUTH2/LDAP, or `auth.type=DISABLED` dev-only mode"
+  - "data-engineer-analyst / data-quality-engineer / data-scientist-ml-engineer / viz-bi-engineer — the personas who discover entities via free-text + faceted search (system-mission.md P-01)"
+  - "platform-operator — validates catalog state during onboarding; uses 'Add group' to bootstrap DEG structure; receives shared `/search/{uuid}` links from teammates"
 
 ## dependencies_semantic
 
 - requires-feature:
-  - "F-001 / P-01:F-002 Search and Filtering (Data Discovery pillar Catalog page) — this UI is the OPERATOR ENTRY POINT for the catalog search half of P-01. Batch-ZE sidecars (SearchController class + search method) cover the backend half; this UI sidecar adds the FRONT-END HALF — the operator clicks here to enter a query, click facets, and browse results."
-  - "P-01:F-001 Popular Entities Ranking (cross-link via F-001) — Search and Popular are the two main Catalog-page entry surfaces. Search is the free-text + faceted entrypoint; Popular is the `view_count DESC` ranked strip on the Overview page. Both surface the same underlying data-entity catalog."
-  - "P-09 Authorization framework — `Permission.DATA_ENTITY_GROUP_CREATE` (line 18 + line 82) is one of the `DATA_ENTITY_GROUP_*` RBAC permissions. Permission resolution happens at the controller perimeter via `SecurityConstants.SECURITY_RULES` matchers — verified absent for `/api/search*` paths per batch-ZE invariants."
-  - "Layout pillar (PageWithLeftSidebar) — the shared left-sidebar layout primitive consumed at lines 74-87; sibling consumer is TermSearch.tsx (Data Glossary pillar)."
+  - "F-017 / P-01:F-005 Search Filter Facets (Data Discovery pillar Catalog page) — this UI is the OPERATOR ENTRY POINT; batch-ZE covers the backend half."
+  - "P-08 housekeeping — F-010 SearchFacetsHousekeepingJob (search_facets 30-day TTL eviction) is what makes a deep-linked session eventually 404, triggering the SearchSessionExpired path (referenced, not re-verified at this commit)."
+  - "P-09 Authorization framework — `Permission.DATA_ENTITY_GROUP_CREATE` (Search.tsx:111) gates the DEG-create CTA only."
+  - "Layout pillar (PageWithLeftSidebar) — shared left-sidebar primitive; sibling consumer is TermSearch.tsx."
 - requires-config:
-  - "(none operator-controllable at this component) — `pageSize: 30` (line 39 + Results.tsx:45) hardcoded; `1500 ms` debounce (line 61) hardcoded; the layout's xs split (3/9) hardcoded (lines 76, 79). No `application.yml` / env-var or feature-flag controls UI behaviour of this component. Per the substrate's UI sidecar conventions, this is N/A for `requires-config` rather than a finding."
+  - "(none operator-controllable in this component) — `1500` ms debounce (Search.tsx:82), the xs split 3/9 (Search.tsx:105, 108), and the dead `pageSize:30` (Search.tsx:60) are build-time literals. Result page size is Results.tsx:45. No env/feature-flag controls this component."
 - requires-runtime:
-  - "React 18+ — `React.useEffect` (lines 37, 44, 67), `React.useCallback` (line 50). The standard hook set."
-  - "Redux Toolkit — `useAppDispatch` + `useAppSelector` (`redux/lib/hooks`); the `dataEntitiesSearchSlice` (slice.ts:105-260) owns the session-merge + facet-state reconciliation logic"
-  - "`react-router-dom` — `useNavigate` (via useCreateSearch.ts:2); `useSearchRouteParams` (line 20 + searchRoutes.ts:18-19); the route mount lives at App.tsx:61 (`<Route path={\\`${searchPath()}/*\\`} element={<Search/>}/>`)"
-  - "`use-debounce` — `useDebouncedCallback` (line 2; used at lines 51-63) — 1500 ms leading-edge"
-  - "`lodash/mapValues` + `lodash/values` — used to transform `searchFacetParams` from a `{facetName: {optionId: SearchFilterStateSynced}}` map into `{facetName: SearchFilterStateSynced[]}` arrays for the wire payload (lines 3-4, 56)"
-  - "`generated-sources` — `Permission` enum (line 18)"
-  - "`components/shared/contexts` — `WithPermissionsProvider` (line 19)"
-  - "`components/shared/elements` — `MainSearch`, `PageWithLeftSidebar` (line 6); `MainSearch` re-exports `MainSearchInput` per components/shared/elements/index.ts:3"
-  - "Redux selectors (`redux/selectors`) — `getSearchCreatingStatuses`, `getSearchFacetsData`, `getSearchFacetsSynced`, `getSearchId`, `getSearchMyObjects`, `getSearchQuery` (lines 9-16; selectors verified in dataentitySearch.selectors.ts:32-133)"
-  - "Redux thunks (`redux/thunks`) — `getDataEntitiesSearch`, `updateDataEntitiesSearch` (line 8)"
-  - "Local hook — `useCreateSearch` from lib/hooks (line 7) — wraps `createDataEntitiesSearch` dispatch + `navigate(searchPath(searchId))` chain per useCreateSearch.ts:8-23"
+  - "React 18+ — `React.useEffect` (Search.tsx:58, 65, 88), `React.useCallback` (53, 71)"
+  - "Redux Toolkit — `useAppDispatch`/`useAppSelector` (Search.tsx:35, 39-46); `dataEntitySearch` slice owns session-merge; `loader` slice owns async status + error state (loader.slice.ts)"
+  - "`react-router-dom` — `useNavigate` (via useCreateSearch.ts:2); `useSearchRouteParams` (Search.tsx:36, from the `routes` barrel re-exporting searchRoutes.ts:18-19)"
+  - "`use-debounce` — `useDebouncedCallback` (Search.tsx:72; 1500 ms leading-edge)"
+  - "`lodash/mapValues` + `lodash/values` — transform `searchFacetParams` into the wire `filters` shape (Search.tsx:3-4, 77)"
+  - "`generated-sources` — `Permission` enum (Search.tsx:25); the SearchFormData/SearchFacetsData types (typescript-fetch generator v7.2.0 from odd-platform-specification per generate.sh + openapi-config.yaml; output dir is gitignored)"
+  - "`components/shared/contexts` — `WithPermissionsProvider` (Search.tsx:26)"
+  - "`components/shared/elements` — `AppErrorPage`, `MainSearch`, `PageWithLeftSidebar`, `SearchSessionExpired` (Search.tsx:6-11)"
+  - "`redux/slices/loader.slice` — `resetLoaderByAction` (Search.tsx:28; loader.slice.ts:18-24, 53)"
+  - "`redux/actions` — `getDataEntitySearchActionType` (Search.tsx:29; dataentitySearch.actions.ts:5-8)"
 - couples-to:
-  - "`Filters` (Filters.tsx:1-77) — child component; receives no props; reads/writes `state.dataEntitySearch.facetState` directly via Redux; mounts 7 facets (Datasource / Type / Namespace / Owner / Tag / Groups / Statuses — per Filters.tsx:46-65 verified)"
-  - "`MainSearch` → `MainSearchInput` (MainSearchInput.tsx:1-83) — grandchild via MainSearch; owns local `searchText` state in `SearchSuggestionsAutocomplete` + dispatches `updateDataEntitiesSearch` synchronously on Enter / search-click — text-query does NOT route through this orchestrator's 1500ms debouncer; the orchestrator only debounces FACET changes."
-  - "`Results` (Results.tsx:1-178) — child component; receives no props; owns the InfiniteScroll wrapper + per-row ResultItem rendering + SearchResultsTabs + EmptyContentPlaceholder + the DEG-Create button; dispatches `fetchDataEntitySearchResults({searchId, page+1, size:30})` for pagination (Results.tsx:73)"
-  - "`useCreateSearch` hook (useCreateSearch.ts:1-23) — wraps `createDataEntitiesSearch` thunk + `navigate(searchPath(searchId))` chain. Hook is shared with `MainSearchInput.tsx` (handleCreateSearch path) — the SAME wrapper used in two distinct UI contexts."
-  - "`createDataEntitiesSearch` / `getDataEntitiesSearch` / `updateDataEntitiesSearch` thunks (dataentitiesSearch.thunks.ts:25-50) — three of the seven thunks in this module"
-  - "Server-side: POST `/api/search` → `SearchController.search` (batch-ZE sidecar) → `SearchServiceImpl.search`; GET `/api/search/{searchId}` → `SearchController.getSearchFacetList` → `SearchServiceImpl.getFacetsData`; PUT `/api/search/{searchId}` → `SearchController.updateSearchFacets` → `SearchServiceImpl.updateFacets`; GET `/api/search/{searchId}/results?page=&size=` → `SearchController.getSearchResults` (called by Results child)"
+  - "`Filters` (Filters.tsx:1-76) — child; no props; mounts 7 facets (Datasource/Type/Namespace/Owner/Tag/Groups/Statuses at Filters.tsx:47-65; Type only when an entity-class tab is selected, :53)"
+  - "`MainSearch` → `MainSearchInput` (MainSearchInput.tsx:1-82) — dispatches `updateDataEntitiesSearch` synchronously on Enter (in-session path; mainSearch omitted here); text-query bypasses this orchestrator's debouncer"
+  - "`Results` (Results.tsx:1-177) — injected via `Component={Results}`; owns InfiniteScroll + SearchResultsTabs + EmptyContentPlaceholder + the DEG-create button + the result-fetch (`fetchDataEntitySearchResults({searchId, page+1, size:30})`, Results.tsx:71-74)"
+  - "`useCreateSearch` (useCreateSearch.ts:1-23) — `createDataEntitiesSearch` dispatch + `navigate(searchPath(searchId))`; NO `.catch` on the `.then` chain (lines 14-19). Shared with MainSearchInput.tsx (handleCreateSearch path)"
+  - "`handleResponseAsyncThunk` (handleResponseThunk.ts:19-43) — wraps each search thunk in try/catch; on error calls `getErrorResponse(err)` + `showServerErrorToast(err)` (unless `switchOffErrorMessage`) + `rejectWithValue(errResp)`. This is why a failed create/restore surfaces a toast AND populates the loader error map."
+  - "Server-side (referenced — batch-ZE): `POST /api/search` (SearchController.search), `GET /api/search/{searchId}` (getSearchFacetList), `PUT /api/search/{searchId}` (updateSearchFacets), `GET /api/search/{searchId}/results` (getSearchResults, via Results)"
 
 ## upstream_callers
 
-- entry_point: "ui_route:/search/*"
-  caller_node: "ts app-route:App.tsx-line-61"
+- entry_point: "ui_route:/search (index)"
+  caller_node: "ts app-route:App.tsx-line-62"
   multiplicity_per_trigger: 1
-  evidence: "App.tsx:34 (lazy import) + App.tsx:61 (`<Route path={\\`${searchPath()}/*\\`} element={<Search/>}/>`). Lazy-loaded React.FC. Single rendering entry — no props (default-export `React.FC`). All state comes from Redux + route params via useSearchRouteParams() (Search.tsx:27)."
+  evidence: "App.tsx:34 (lazy import) + App.tsx:61-64 (`<Route path={searchPath()}><Route index element={<Search/>}/><Route path=':searchId' element={<Search/>}/></Route>`). The index route mounts Search with NO `:searchId` → effect 1 (Search.tsx:58-63) fires createSearch."
+  observation_class: ui-call
+
+- entry_point: "ui_route:/search/:searchId (deep-link / reload)"
+  caller_node: "ts app-route:App.tsx-line-63"
+  multiplicity_per_trigger: 1
+  evidence: "App.tsx:63 nested `:searchId` route. `useSearchRouteParams().searchId` now resolves → effect 2 (Search.tsx:65-69) fires getDataEntitiesSearch to RESTORE the session. Pre-#1760 this route was a splat and the param was always undefined (the bug fixed by this commit; IT-125 regression-locks the restore)."
   observation_class: ui-call
 
 - entry_point: "ui_button:top-nav-Catalog-tab"
   caller_node: "ts react-component:ToolbarTabs.tsx-line-38"
   multiplicity_per_trigger: 1
-  evidence: "ToolbarTabs.tsx:38 + 93 (per batch-ZH sidecar) — top-nav 'Catalog' tab Link points to `searchPath()` (no UUID), so clicking it from any page lands on `/search` with NO `:searchId` param; Search.tsx:37-42 then fires createSearch (because `routerSearchId` is undefined). Net behaviour: clicking the 'Catalog' top-nav tab DROPS the user's prior session and creates a fresh one — the prior session UUID is orphaned server-side until housekeeping reaps it."
+  evidence: "ToolbarTabs.tsx:38 (`link: searchPath()` — bare, no UUID) + :93 (`matchPath(\\`${searchPath()}/*\\`, ...)` selects the tab). Clicking 'Catalog' from any page lands on `/search` index → effect 1 mints a fresh session; the prior session UUID is orphaned server-side until housekeeping reaps it."
   observation_class: ui-call
 
 - entry_point: "ui_button:global-MainSearch-top-nav (mainSearch=true)"
   caller_node: "ts react-component:MainSearchInput.tsx-line-37 (handleCreateSearch path)"
   multiplicity_per_trigger: 1
-  evidence: "Global `<MainSearchInput mainSearch={true}/>` (rendered elsewhere on the platform — top-nav search bar) calls `useCreateSearch().createSearch({query, pageSize:30, filters:{}})` then navigates to `/search/{newSearchId}` via useCreateSearch.ts:14-19. The global mainSearch=true path creates a new session from anywhere on the platform; the Catalog page (Search.tsx) mounts the resulting `/search/{uuid}` route — bringing the user TO the Catalog as the result page."
+  evidence: "A global `<MainSearchInput mainSearch={true}/>` calls `useCreateSearch().createSearch(...)` then navigates to `/search/{newId}` (useCreateSearch.ts:14-19), bringing the user TO this Catalog page as the result surface."
   observation_class: ui-call
-
-- entry_point: "ui_route:/search/{uuid}-deep-link"
-  caller_node: "external (Slack share, bookmark, email link)"
-  multiplicity_per_trigger: 1
-  evidence: "User pastes/clicks a `/search/{uuid}` link from Slack / bookmark / email. Search.tsx:44-48 fires getDataEntitiesSearch to restore the session. After 30-day housekeeping eviction (F-010 + LSN-018), the GET returns 404 and the page is permanently broken with no recovery (see bugs section [7])."
-  observation_class: ui-call
-  unresolved: false
 
 ## downstream_side_effects
 
 - side_effect_class: db-write
-  description: "Creates a new `search_facets` row on first mount with empty query + empty filters (POST /api/search). Server-side `SearchControllerCreate` allocates a UUID via `gen_random_uuid()` and persists `{id, query_string:'', filters:'{}', last_accessed_at:now()}` — no `owner_id` / `created_by` column (REFACTOR-344)."
-  evidence: "Search.tsx:37-42 + useCreateSearch.ts:14-19 + dataentitiesSearch.thunks.ts:25-32 + batch-ZE SearchController.search invariants[3]"
-  cardinality_per_call: "1 per Catalog-page mount where no `:searchId` URL param is present"
+  description: "Creates a new `search_facets` row on first mount with empty query + empty filters (POST /api/search). Server allocates the session UUID; no owner/created_by column (REFACTOR-344, referenced)."
+  evidence: "Search.tsx:58-63 + useCreateSearch.ts:14-19 + dataentitiesSearch.thunks.ts:25-32"
+  cardinality_per_call: "1 per Catalog index-route mount with no cached searchId; UNBOUNDED retry loop if POST /api/search keeps failing (effect-1 re-fires on each pending→rejected transition — see bugs[1], probe P-244)"
   reachable_from_entry_points:
-    - "ui_route:/search/*"
+    - "ui_route:/search (index)"
     - "ui_button:top-nav-Catalog-tab"
-
-- side_effect_class: db-write
-  description: "Updates the `search_facets` row's `query_string` / `filters` JSONB on every facet click or text-query submit (PUT /api/search/{searchId}). Server-side merges via `SearchServiceImpl.updateFacets` + recomputes the aggregate counts."
-  evidence: "Search.tsx:50-71 (debounced facet path) + MainSearchInput.tsx:42-48 (synchronous text-query path) + dataentitiesSearch.thunks.ts:34-41"
-  cardinality_per_call: "N per N facet clicks within debounce window (BROKEN — see bugs section [3]; intended: 1 per 1500ms; actual: 1 per click due to debouncer-recreation bug)"
-  reachable_from_entry_points:
-    - "ui_route:/search/*"
-    - "ui_route:/search/{uuid}-deep-link"
+    - "ui_button:global-MainSearch-top-nav (mainSearch=true)"
 
 - side_effect_class: db-read
-  description: "Re-reads the persisted `search_facets` row + recomputes aggregate counts on deep-link / reload (GET /api/search/{searchId}). Per batch-ZE the server returns the same `SearchFacetsData` shape used by create."
-  evidence: "Search.tsx:44-48 + dataentitiesSearch.thunks.ts:43-50"
+  description: "Restores the persisted `search_facets` row on deep-link / reload (GET /api/search/{searchId}). NOW REAL (route param resolves post-#1760)."
+  evidence: "Search.tsx:65-69 + dataentitiesSearch.thunks.ts:43-50 + IT-125 spec (asserts 200 + query restored)"
   cardinality_per_call: "1 per deep-link / reload arrival when no cached searchId exists"
   reachable_from_entry_points:
-    - "ui_route:/search/{uuid}-deep-link"
+    - "ui_route:/search/:searchId (deep-link / reload)"
+
+- side_effect_class: db-write
+  description: "Updates the session's query/filters on facet click or text-query submit (PUT /api/search/{searchId})."
+  evidence: "Search.tsx:71-92 (debounced facet path) + MainSearchInput.tsx:42-48 (synchronous text path) + dataentitiesSearch.thunks.ts:34-41"
+  cardinality_per_call: "1 per facet click (the 1500 ms debounce is defeated by useCallback recreation — bugs[3]); 1 per text-query Enter"
+  reachable_from_entry_points:
+    - "ui_route:/search (index)"
+    - "ui_route:/search/:searchId (deep-link / reload)"
 
 - side_effect_class: redirect-issue
-  description: "After successful POST /api/search session-create, the chain calls `navigate(searchPath(searchId))` which performs a client-side React-Router push to `/search/{newUuid}`. The URL bar updates without a full page reload."
+  description: "After a successful POST /api/search, `navigate(searchPath(searchId))` performs a client-side route push to `/search/{newUuid}` (URL updates without full reload)."
   evidence: "useCreateSearch.ts:16-18"
-  cardinality_per_call: "1 per session-create (i.e. per Catalog mount with no `:searchId` and no cached searchId)"
+  cardinality_per_call: "1 per session-create"
   reachable_from_entry_points:
-    - "ui_route:/search/*"
+    - "ui_route:/search (index)"
     - "ui_button:global-MainSearch-top-nav (mainSearch=true)"
 
 - side_effect_class: page-render
-  description: "Renders the three-child Catalog shell: <Filters/> (left sidebar, 7 facets) + <MainSearch/> (text input) + <Results/> (infinite-scroll list + tabs + conditional DEG-create CTA). The DOM exposes the user's `DATA_ENTITY_GROUP_CREATE` permission (via the conditional 'Add group' button visibility — see security.data_exposure)."
-  evidence: "Search.tsx:73-89 (the JSX layout)"
-  cardinality_per_call: "1 per React render (typically once per mount + N re-renders per state change)"
+  description: "Renders one of THREE terminal views: (i) SearchSessionExpired ('This search has expired' + Start-new-search) for a 404 deep-link failure; (ii) AppErrorPage (real status + Home link) for a non-404 deep-link failure; (iii) the three-child Catalog shell (Filters + MainSearch + Results). The DEG-create button visibility leaks the user's DATA_ENTITY_GROUP_CREATE permission to the DOM."
+  evidence: "Search.tsx:94-96 (expired) + 98-100 (error page) + 102-118 (catalog shell)"
+  cardinality_per_call: "1 per render"
   reachable_from_entry_points:
-    - "ui_route:/search/*"
-    - "ui_route:/search/{uuid}-deep-link"
+    - "ui_route:/search (index)"
+    - "ui_route:/search/:searchId (deep-link / reload)"
     - "ui_button:top-nav-Catalog-tab"
-    - "ui_button:global-MainSearch-top-nav (mainSearch=true)"
+
+- side_effect_class: log-emit
+  description: "On any search-thunk rejection, a server-error toast is shown (handleResponseAsyncThunk → showServerErrorToast), deduped by id=response.url. This is the operator-visible signal that the old sidecar incorrectly claimed was absent."
+  evidence: "handleResponseThunk.ts:34-39 + errorHandling.tsx:58-80"
+  cardinality_per_call: "1 toast per distinct failing URL (deduped)"
+  reachable_from_entry_points:
+    - "ui_route:/search (index)"
+    - "ui_route:/search/:searchId (deep-link / reload)"
 
 - side_effect_class: external-call
-  description: "REFERENCE — pagination dispatches GET /api/search/{searchId}/results?page=&size=30 (Results.tsx:71-74 — out of this orchestrator's direct scope, but observable via the same session UUID). See batch-ZA SearchResults sidecar for the per-row side effects."
+  description: "REFERENCE — pagination dispatches GET /api/search/{searchId}/results?page=&size=30 from the Results child (Results.tsx:71-74). See batch-ZA SearchResults sidecar."
   evidence: "Results.tsx:71-74 + dataentitiesSearch.thunks.ts:52-67"
-  cardinality_per_call: "1 per infinite-scroll page (initial page + N per scroll-extend)"
+  cardinality_per_call: "1 per infinite-scroll page"
   reachable_from_entry_points:
-    - "ui_route:/search/*"
-    - "ui_route:/search/{uuid}-deep-link"
-  unresolved: true   # downstream sidecar (ZA SearchResults) holds the full chain; this reference acknowledges the side effect originates here via the Results child
+    - "ui_route:/search (index)"
+    - "ui_route:/search/:searchId (deep-link / reload)"
+  unresolved: true
 
 ## implicit_adrs
 
-- "**Server-side search session model with URL-backed UUID — the canonical/older pattern (TermSearch.tsx batch U clones it).** Lines 37-48 + searchRoutes.ts:3-19 + slice.ts:22-36. The decision is: persist the search session (query + myObjects + facetState + result page info) on the SERVER, identified by UUID, surfaced as the URL path segment. This is a deliberate architectural choice — the alternative (purely client-side Redux state) was rejected in favour of (a) deep-link share-ability, (b) reload-survives behaviour, (c) explicit server-side session lifecycle for cleanup (per F-010 SearchFacetsHousekeepingJob — search_facets TTL eviction 30 days default; batch-K LSN-018 case-law). Search.tsx is the CANONICAL instance; TermSearch.tsx batch-U is the term-catalog clone (verified by Grep `PageWithLeftSidebar.MainContainer` returning both files; useEffect dep-array shape identical; debouncer wiring identical). The decision is load-bearing: removing the URL backing would break deep-link sharing of filtered Catalog views; removing the server-side session would lose the search_facets TTL eviction infrastructure." — evidence: Search.tsx:37-48 (create + navigate via useCreateSearch) + 44-48 (restore from URL) + searchRoutes.ts:3, 4 (SEARCH_ID_PARAM) + useCreateSearch.ts:16-18 (the navigate is the load-bearing side-effect) + App.tsx:61 (route mount with wildcard child) + slice.ts:22-36 (initialState shape) — intent_anchor: useCreateSearch.ts:16-18 explicitly chains `.then(({searchId}) => navigate(searchPath(searchId)))` — the navigation IS the load-bearing side-effect of session create — confidence: HIGH
+- "**Graceful dead-link state: a 404 search deep-link is treated as a normal expired-link UX, NOT a platform fault (#1760).** Search.tsx:48-51 + 94-100 + SearchSessionExpired.tsx:12-13. The decision distinguishes a 404 (the ephemeral session is gone — TTL eviction or a foreign/typo'd link → SearchSessionExpired with a recovery affordance) from any other status (a real error → AppErrorPage with the actual status). The intent is explicit in two comments. This is a deliberate product stance: shareable search links are a discovery-surface trust promise (CTRIB-005 scope analysis), so a dead link must self-explain and offer a one-click fresh start rather than dumping a generic error boundary." — evidence: Search.tsx:48-51 + 94-100 + SearchSessionExpired.tsx:12-13 — intent_anchor: "// A deep-linked session that failed to load: 404 = the ephemeral session is gone (expired TTL / foreign link) — a graceful dead-link state, not an error (#1760)." (Search.tsx:48-49) + "// Graceful state for a search deep-link whose ephemeral session no longer exists (#1760): the link is dead data, not a platform fault" (SearchSessionExpired.tsx:12-13) — confidence: HIGH
 
-- "**Permission-gated DEG-Create CTA via WithPermissions (UI hide, NOT auth enforcement) — pattern parity with TermSearch batch-U + PolicyList batch-Q.** Lines 81-85 + Results.tsx:125-138. The decision is: render-nothing rather than render-disabled when permission absent. WithPermissions returns `null` when `hasAccessTo(permissionTo)` is false. Authorization is fundamentally enforced at the backend `SecurityConstants.SECURITY_RULES` layer; the UI gate is presentation-only. The `WithPermissionsProvider` wrapper at Search.tsx:81-85 INJECTS the permission context but does NOT gate route rendering — `<Results/>` mounts unconditionally; only the conditionally-rendered 'Add group' button (Results.tsx:125-138) is permission-gated AND class-tab-gated (`showDEGBtn`). **Note: this Catalog page surfaces ONE mutation CTA — Add group — whereas batch-ZE SearchController itself runs UNDER NO @PreAuthorize at all** (controller-class sidecar invariants[1]: 'no controller-side validation beyond @Valid'). The read surface is wide open to authenticated users." — evidence: Search.tsx:81-85 + Results.tsx:125-138 + batch-ZE SearchController class sidecar — intent_anchor: the `WithPermissionsProvider` API surface allows `Component | render | children` and ALWAYS renders the wrapped element — the gate is at the inner `WithPermissions` call site — confidence: HIGH
+- "**Error status is unwrapped from the generated client's ResponseError at a single chokepoint, so FE error states carry real HTTP statuses.** errorHandling.tsx:12-18 `toResponse` unwraps `err.response` (the typescript-fetch `ResponseError` wraps the `Response`); `getErrorResponse` then reads the real `status`/`statusText`/body. This is the load-bearing dependency for the 404-vs-other branch in Search.tsx:51 — without it, `searchError.status` would be undefined and the expired-state discrimination could not work." — evidence: errorHandling.tsx:12-36 — intent_anchor: "// The generated API client throws ResponseError wrapping the Response (runtime.ts), so the real status/statusText/body live one level deeper than a bare fetch Response." (errorHandling.tsx:12-13) — confidence: HIGH
 
-- "**1500ms leading-edge debouncer for facet-state mutations (text-query EXCLUDED — IDENTICAL pattern to TermSearch batch-U).** Lines 50-63 + MainSearchInput.tsx:42-48. The decision encodes 'facet clicks coalesce; text queries fire immediately'. Leading-edge means the FIRST click in a 1500ms window fires immediately — important for perceived UI snappiness. Text queries bypass this entirely (MainSearchInput dispatches synchronously on Enter / search-click) — the explicit-intent action does not wait for a debounce window. The pattern is structurally identical to TermSearch batch-U implicit_adrs[2]." — evidence: Search.tsx:50-63 (debouncer) + 62 (`{leading: true}`) + MainSearchInput.tsx:50-61 (synchronous dispatch on Enter / `searchAdornmentHandler`) — intent_anchor: the `{leading: true}` option in `useDebouncedCallback(..., 1500, { leading: true })` is explicit about the timing model — confidence: HIGH
+- "**Server-side URL-backed session model with a server-generated UUID; restore wired through nested routes.** App.tsx:61-64 (nested `index`+`:searchId`) + searchRoutes.ts:3-19 + useCreateSearch.ts:16-18. The session (query+myObjects+facetState) lives on the server keyed by UUID, surfaced as the URL path segment, enabling deep-link sharing + reload survival + server-side TTL cleanup. The #1760 commit corrects the route shape so the restore path actually executes (the prior `'/search/*'` splat had silently disabled it for ~18 months)." — evidence: App.tsx:61-64 + searchRoutes.ts:3-19 + useCreateSearch.ts:16-18 + Search.tsx:65-69 — intent_anchor: useCreateSearch.ts:16-18 chains `.then(({searchId}) => navigate(searchPath(searchId)))` — the navigation IS the load-bearing side-effect of session create — confidence: HIGH
 
-- "**Read-collaborative posture — every authenticated user searches the entire catalog; the 'My Objects' affordance is OPT-IN not OPT-OUT.** Search.tsx delegates to `searchService.search` per batch-ZE sidecar invariants. The SearchServiceImpl runs `JooqFTSHelper.facetStateConditions` over the full catalog with NO per-owner filter on the main result list (the `authIdentityProvider.fetchAssociatedOwner` call inside `getFacetsData` only computes `myObjectsTotalCount`). The Catalog page's tab strip surfaces a 'My Objects' count — when the user toggles to that tab the next session-create sends `myObjects: true` which DOES scope the result list to the authenticated user's owners. **But the default tab is 'All', meaning by default every search returns the unscoped catalog.** This is the visible UI counterpart of the system-mission.md line 267 'read-collaborative posture' that informs Pillar P-09." — evidence: Search.tsx:74-87 (no permission/owner wrap on Results) + Results.tsx:151-159 (the .map renders every server-returned entity) + batch-ZE SearchController invariants + SearchServiceImpl.java:128-130 (the only authIdentityProvider call is for myObjectsTotal, not result-list scoping) + system-mission.md line 267 — intent_anchor: the lack of any per-owner filter on the main result query path; the explicit affordance for 'My Objects' as a toggle rather than a default — confidence: HIGH
+- "**Permission-gated DEG-Create CTA via the WithPermissions/Provider pattern (UI hide, not auth enforcement).** Search.tsx:110-114 + Results.tsx:125-138. `WithPermissionsProvider Component={Results}` injects the permission context and ALWAYS renders Results (WithPermissionsProvider.tsx:30-39); the only gate is the inner `WithPermissions` around the conditionally-rendered 'Add group' button. Backend authorization is the operative defence (batch-ZE)." — evidence: Search.tsx:110-114 + WithPermissionsProvider.tsx:30-39 + Results.tsx:125-138 — intent_anchor: the `Component` branch of WithPermissionsProvider renders `<PermissionProvider><Component/></PermissionProvider>` unconditionally (WithPermissionsProvider.tsx:30-39) — confidence: HIGH
 
-- "**`pageSize: 30` hardcoded in TWO places — orchestrator + results child — by deliberate parity, not a constant.** Line 39 (session-create initial pageSize) + Results.tsx:45 (infinite-scroll page increment). Both are literal `30`, not an imported constant. Same maintenance burden as TermSearch batch-U implicit_adrs[4]: future refactor changing one without the other ships pagination-misalignment regressions." — evidence: Search.tsx:39 + Results.tsx:45 — intent_anchor: both literals are `30`; no central constants module is imported — confidence: MEDIUM (the value is hardcoded; no comment explains the choice; risk that future refactor changes one without the other)
+- "**1500 ms leading-edge debouncer for facet mutations; text queries bypass it.** Search.tsx:71-86 (`{leading: true}`) + MainSearchInput.tsx:50-61 (synchronous dispatch on Enter). The model: facet clicks coalesce, explicit text submits fire immediately." — evidence: Search.tsx:82-83 + MainSearchInput.tsx:50-61 — intent_anchor: the `{leading: true}` option passed to `useDebouncedCallback(..., 1500, { leading: true })` (Search.tsx:83) — confidence: HIGH (intent is explicit; the implementation defeats it — see bugs[3])
 
-- "**MainSearch wrapper is used in TWO modes: `mainSearch=true` (global top-nav — creates new session) and `mainSearch=false/undefined` (in-session — updates existing). Search.tsx uses the latter.** Line 80 (`<MainSearch placeholder={t('Search')} disableSuggestions/>`) — note the absence of `mainSearch` prop. MainSearchInput.tsx:50-61 reads `mainSearch` to switch behaviour: `mainSearch=true` triggers a new session via `useCreateSearch` (handleCreateSearch); `mainSearch=false/undefined` updates the current session via `updateDataEntitiesSearch` (handleUpdateSearch). The decision: the Catalog page is **always in-session** — the surrounding Search.tsx orchestrator has already created the session on mount, so the text input only updates it. The global top-nav search bar (elsewhere in the SPA) opens a new session and then navigates to `/search/{newId}` where this Catalog page picks up." — evidence: Search.tsx:80 + MainSearchInput.tsx:17-21 (prop declaration) + 50-61 (the conditional dispatch) — intent_anchor: the conditional `if (mainSearch) { handleCreateSearch(query); return; } handleUpdateSearch(query)` in MainSearchInput.tsx:53-58 IS the decision — confidence: HIGH
+- "**Read-collaborative posture — every authenticated user searches the entire catalog by default; 'My Objects' is opt-in.** Search.tsx:102-118 (no owner wrap on the Results mount) + Results.tsx:151 (unconditional .map). The backend non-scoping is owned by SearchServiceImpl (batch-ZE, referenced). This is the UI counterpart of system-mission.md's read-collaborative stance." — evidence: Search.tsx:102-118 + Results.tsx:151-159 + batch-ZE SearchController owner_scoping (referenced) — intent_anchor: the absence of any per-owner wrap on the result-list mount + the My-Objects affordance being a tab toggle rather than a default — confidence: MEDIUM (UI-side absence is HIGH-confidence; the backend non-scoping is a cross-batch reference not re-verified at this commit)
 
 ## bugs_limitations_corner_cases
 
-- "**LSN-017-adjacent dep-array smell #1 — incomplete deps on createSearch effect.** Lines 37-42: `useEffect(() => { if (!routerSearchId && !isSearchCreating && !searchId) createSearch({query:'',pageSize:30,filters:{}}); }, [routerSearchId, isSearchCreating]);`. The guard reads THREE state values (`routerSearchId`, `isSearchCreating`, `searchId`) but the deps array contains only TWO of them — `searchId` is MISSING. The effect re-fires when `routerSearchId` or `isSearchCreating` changes — but not when Redux's `searchId` becomes set. **The composition is correct *by accident*:** on session-create-success, the thunk fulfilment writes `searchId` to Redux AND `useCreateSearch.ts:18` calls `navigate(searchPath(searchId))` which updates `routerSearchId` — both transitions happen in the same render-batch, so the re-fire's guard correctly evaluates as `(false && ... && false) === false` and skips. **But the dep-array does not document this invariant** — a refactor changing the navigate-vs-redux ordering would surface a real double-create. **This is the IDENTICAL shape to TermSearch batch-U bugs[0] LSN-017-adjacent smell** — the defect is latent in both files, masked by React batch ordering. Same class as LSN-017 view_count case (deps and conditions out of sync); different code instance." — evidence: Search.tsx:37-42 + useCreateSearch.ts:13-19 (the createDataEntitiesSearch dispatch + navigate chain) + slice.ts:215 (updateSearchState writes searchId in the fulfilled reducer, in the same React-batch as navigate's dispatch) — severity: MEDIUM (latent regression vector; class-match to LSN-017 view_count doubling)
+- "**LSN-017-class dep-array smell on the create effect (Search.tsx:58-63) — now manifests as a create-FAILURE retry loop.** The guard reads three values (`routerSearchId`, `isSearchCreating`, `searchId`) but the deps array is only `[routerSearchId, isSearchCreating]`. On SUCCESS the smell is masked (navigate + Redux searchId update batch together, as before). On FAILURE the smell becomes active: `createDataEntitiesSearch` rejects → `isSearchCreating` flips pending→false → the effect re-fires → guard still passes (`!searchId` true, no UUID was stored) → re-dispatch. With no backoff this is a tight retry loop bounded only by round-trip latency. A server-error toast is shown each cycle but deduped by URL, so the operator sees one persistent toast over a storm of POSTs. Probe P-244 emitted to measure the loop's request cardinality." — evidence: Search.tsx:58-63 + useCreateSearch.ts:14-19 (no .catch) + handleResponseThunk.ts:34-41 (rejectWithValue + toast) + P-244 — severity: MEDIUM
 
-- "**LSN-017-adjacent dep-array smell #2 — same pattern as TermSearch batch-U bugs[0] on the restore-from-URL effect.** Lines 44-48: `useEffect(() => { if (!searchId && routerSearchId) dispatch(getDataEntitiesSearch({searchId: routerSearchId})); }, [searchId, routerSearchId]);`. Here the deps array DOES include both values the guard reads — this effect is CORRECT (unlike #1). The contrast with #1 is instructive: when a hand-written effect's deps array matches its read-set, the LSN-017 class disappears. The deps-list-vs-guard divergence in effect #1 IS the structural cause of the class." — evidence: Search.tsx:44-48 (correct effect — contrast against 37-42 which is wrong) — severity: N/A (this entry documents the CORRECT counter-example; including it for cross-batch concept clarity) — confidence: HIGH
+- "**LSN-017-class dep-array smell on the facet-sync effect (Search.tsx:88-92).** The guard reads `searchFacetsSynced` but the deps array is only `[searchFacetParams]`. The effect does not re-fire when `searchFacetsSynced` transitions back to true (set on every fulfilment at slice.ts:97). Combined with `mapValues(...)` producing a fresh `filters` reference each dispatch (Search.tsx:77), this is a candidate re-fire vector during the in-flight PUT window. Class-match to LSN-017; pinned by existing probe P-189." — evidence: Search.tsx:88-92 + dataEntitySearch.slice.ts:97 + P-189 — severity: MEDIUM
 
-- "**LSN-017-adjacent dep-array smell #3 — `searchFacetsSynced` read in condition but MISSING from deps (ACTIVE re-fire vector — IDENTICAL to TermSearch batch-U bugs[1]).** Lines 67-71: `useEffect(() => { if (!searchFacetsSynced) updateSearchFacets(); }, [searchFacetParams]);`. The guard reads `searchFacetsSynced` but the deps array contains ONLY `searchFacetParams`. The effect re-fires when `searchFacetParams` changes — typically on a facet click that flips `syncedState: false` on the affected facet option. The slice's `updateSearchState` reducer (slice.ts:97) sets `isFacetsStateSynced: true` on EVERY successful create/update/get fulfilment — but THIS effect does NOT re-fire when `searchFacetsSynced` transitions back to `true`. The selector `getSearchFacetsData` (per redux/selectors/dataentitySearch.selectors.ts:129-133) may also produce fresh object references on every selector run (via `mapValues(searchFacetParams, values)` in the dispatch payload at line 56), driving the effect to re-fire on every render during the in-flight PUT window. **Possible doubling shape per LSN-017 — class-match.** Probe P-189 emitted to pin dispatch cardinality per facet-click batch." — evidence: Search.tsx:67-71 + slice.ts:97 (`isFacetsStateSynced: true` set on every fulfilment) + 56 (mapValues produces a new object reference each dispatch) — severity: HIGH (active dep-array bug class; LSN-017 forcing-question applies; probe P-189 will confirm)
+- "**Correct counter-example: the restore effect (Search.tsx:65-69) has a deps array matching its read-set** (`[searchId, routerSearchId]` vs guard reading both). Documented to show the LSN-017 class disappears when deps match reads — the contrast with effects 1 and 3 is the structural lesson." — evidence: Search.tsx:65-69 — severity: N/A (counter-example)
 
-- "**Debouncer is RECREATED on every facet-state change — losing the rate-limit semantics. IDENTICAL bug to TermSearch batch-U bugs[2].** Lines 50-65: `useCallback(useDebouncedCallback(..., 1500, {leading: true}), [searchId, searchFacetParams])`. The `useCallback` deps include `searchFacetParams` — which changes on every facet click. Each click constructs a NEW `useDebouncedCallback(...)` instance — the prior debouncer's pending timer is unreachable. With `{leading: true}`, the new debouncer fires on its FIRST call (immediately) AND would defer a trailing call until 1500ms — but the trailing call NEVER fires because the next click constructs yet another debouncer. **Effective behaviour: every facet click dispatches `updateDataEntitiesSearch` immediately; the 1500ms 'debounce' is not actually rate-limiting anything.** A user rapidly clicking 5 facets in 2 seconds dispatches 5 PUT calls instead of the intended 1. **The pattern is structurally identical to TermSearch batch-U finding** — both files were written by the same author/period and the bug propagated through clone. Probe P-189 emitted to measure the dispatch count under rapid clicking." — evidence: Search.tsx:50-65 + the `useCallback` deps at line 64 — severity: MEDIUM (functional bug — debounce intent unfulfilled; performance cost; not a correctness bug because the slice's `assignFacetStateWithNewFacets` at slice.ts:73-86 handles racing PUTs)
+- "**Debouncer is recreated on every facet-state change — the 1500 ms rate-limit is not realised.** Search.tsx:71-86: `useCallback(useDebouncedCallback(..., 1500, {leading:true}), [searchId, searchFacetParams])`. `searchFacetParams` changes on every facet click → a new debouncer instance per click → the prior pending timer is unreachable → every click dispatches immediately. A user clicking 5 facets in 2 s issues ~5 PUTs, not 1. Identical to TermSearch batch-U. Pinned by existing probe P-189." — evidence: Search.tsx:71-86 (useCallback deps at :85) + P-189 — severity: MEDIUM
 
-- "**No `.catch` on the create-session promise chain — unhandled rejection on session-create failure. IDENTICAL pattern to TermSearch batch-U bugs[3].** useCreateSearch.ts:14-19: `dispatch(createDataEntitiesSearch({searchFormData})).unwrap().then(({searchId}) => { ... navigate(searchLink); })`. No `.catch(...)` follows the `.then`. `.unwrap()` re-throws on rejection. If `createDataEntitiesSearch` rejects (server-side 500, network failure, auth expiry mid-flight), the rejection lands in the React error boundary (if any wraps the Route — verified by reading App.tsx around line 61: no `<ErrorBoundary>` wraps the Route element) or the browser console. **Net: the user sees a frozen empty page with no error message; the URL stays at `/search`; refreshing repeats the same path.** The slice's missing `.rejected` reducer (slice.ts:214-260 verified — only `.fulfilled` cases) compounds this — neither the slice nor the UI surfaces the failure. Pattern parity with TermSearch batch-U." — evidence: useCreateSearch.ts:14-19 (missing catch) + slice.ts:214-260 (no `.rejected` cases) + App.tsx:60-65 (no error-boundary wrap on Route) — severity: MEDIUM (operator-misleading silent failure mode; auth-token-expired mid-session reproduces this)
+- "**Create-path failure is not surfaced as a component-level error state (only a toast).** useCreateSearch.ts:14-19 has no `.catch`; the dataEntitySearch slice has no `.rejected` case (extraReducers at slice.ts:214). The loader slice DOES capture create rejections in its error map (loader.slice.ts:42-49) and a toast IS shown (handleResponseThunk.ts:37-39), BUT Search.tsx's expired/error gates (lines 94-100) key off `getDataEntitySearchActionType` (the GET/restore action) ONLY — they do NOT read the create action's loader status. So a failing POST /api/search renders no dedicated UI; the page shows the create skeleton/empty shell while effect 1 retries (bugs[1]) and toasts accumulate-then-dedupe. NOTE: this corrects the prior sidecar's claim that create-failure shows 'a frozen empty page with no error message' — a toast appears; the residual gap is the absence of a create-specific error/expired screen + the retry loop." — evidence: useCreateSearch.ts:14-19 + dataEntitySearch.slice.ts:214 + loader.slice.ts:42-49 + handleResponseThunk.ts:37-39 + Search.tsx:94-100 (gates read only the GET action) — severity: MEDIUM
 
-- "**Race: in-flight `updateDataEntitiesSearch` for facets vs synchronous `updateDataEntitiesSearch` for text-query.** IDENTICAL race shape to TermSearch batch-U bugs[4]. When the user (a) clicks a facet (debounced — fires immediately due to leading-edge AND the per-click-recreate bug above), then (b) types a query and hits Enter within the PUT round-trip window. Both calls hit `PUT /api/search/{searchId}` with DIFFERENT `SearchFormData` payloads — facet payload includes `filters: mapValues(searchFacetParams, values)` + the prior query + myObjects flag; text-query payload includes `filters: {}` + the new query (MainSearchInput.tsx:44 sends empty filters). Whichever resolves SECOND wins via `updateSearchState`. **The facet click's filter selections may be DISCARDED if the text-query resolves second** — the user clicked a facet, hit Enter on the search, and the search overwrote the facet selection." — evidence: Search.tsx:53-58 (facet dispatch with prior filters) + MainSearchInput.tsx:42-48 (text dispatch with `filters: {}`) + slice.ts:40-103 (updateSearchState replaces or merges based on searchId equality) — severity: LOW (rare in practice; user-perceptible as "I selected a facet, my filter disappeared")
+- "**Deep-link session expiry is now RECOVERABLE (was 'no recovery path' pre-#1760).** A reload/deep-link to `/search/{evicted-uuid}` (after the 30-day SearchFacetsHousekeepingJob TTL, F-010) → GET /api/search/{searchId} 404 → `SearchSessionExpired` renders 'This search has expired' + a 'Start new search' button (handleStartNewSearch → resetLoaderByAction + createSearch). The prior sidecar's bug 'permanently broken page, no recovery' is RESOLVED for the deep-link case. Residual: the URL still carries the dead UUID until the user clicks Start-new-search (which navigates to a fresh UUID); IT-125 asserts the recovery navigates to a new /search/{uuid} and the expired text clears." — evidence: Search.tsx:53-56 + 94-96 + SearchSessionExpired.tsx:35-40 + IT-125 spec lines 62-78 — severity: LOW (resolved; residual is cosmetic)
 
-- "**Session-expiry: stale URL UUID with no recovery path. IDENTICAL to TermSearch batch-U bugs[5].** Lines 44-48: if a user reloads / deep-links to `/search/{stale-uuid}` after the server-side `SearchFacetsHousekeepingJob` evicted the session (default `housekeeping.ttl.search_facets_days: 30` per F-010 batch-K + LSN-018 case-law), the GET returns 404 / empty. The slice's missing `.rejected` reducer means the state stays empty; the URL still carries the stale UUID; refreshing repeats. **No automatic fall-back to create a fresh session.** An operator hitting a stale Slack-shared link from 30+ days ago sees a permanently broken page until they manually navigate back to `/search` (without the UUID)." — evidence: Search.tsx:44-48 + F-010.yaml (SearchFacetsHousekeepingJob 30-day TTL on `search_facets`) + slice.ts:214-260 (no rejection handling) — severity: MEDIUM (a 30-day-old bookmark from a Slack message is functionally broken with no UX recovery)
+- "**Race: in-flight facet PUT vs synchronous text-query PUT.** A facet click (dispatches immediately due to the broken debouncer) then an Enter-submit within the round-trip window both hit PUT /api/search/{searchId} with different payloads — the facet payload carries `filters: mapValues(searchFacetParams, values)` (Search.tsx:77) while the text payload carries `filters: {}` (MainSearchInput.tsx:44). Whichever resolves second wins; a facet selection can be discarded by a text submit." — evidence: Search.tsx:74-80 + MainSearchInput.tsx:42-48 — severity: LOW
 
-- "**FTS-injection: typed search-query text passes UNESCAPED through to `to_tsquery(?)` — REFACTOR-229 user-controlled query text — NO client-side sanitisation here.** MainSearchInput.tsx:43-44 builds `searchFormData = {query, pageSize:30, filters:{}}` and dispatches verbatim. Server-side `JooqFTSHelper.tsQuery` at `JooqFTSHelper.java:164-168` performs `plainQuery.split(' ').map(q -> q + ':*').join('&')` — NO escaping of tsquery metacharacters (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\\`). A typed query of `foo ) | (bar` reaches `to_tsquery(?)` and Postgres raises `42601 syntax error in tsquery`. The session UUID is then **permanently poisoned**: every subsequent facet read (`GET /api/search/{poisoned_uuid}/facet/{any}`) 500s per batch-ZE strengthening. **The UI offers ZERO mitigation** — no max-length, no metacharacter filter, no client-side `to_tsquery` validation. Search.tsx accepts arbitrary text from MainSearchInput and submits it as-is. **For the `highlightDataEntity` path the same untrusted text is INTERPOLATED into a raw SQL string via `.formatted(text, tsQuery)` — TRUE SQL injection per batch-ZE TRUE-SQL-injection finding at ReactiveDataEntityRepositoryImpl.java:798-806.** Probe P-188 emitted to confirm the session-poisoning end-to-end." — evidence: Search.tsx:80 (MainSearch mount, no validation prop) + MainSearchInput.tsx:42-48 (synchronous dispatch with raw query) + REFACTOR-229.md (the canonical FTS-injection finding) + batch-ZE SearchController.search bugs[7] (TRUE SQL injection at highlightDataEntity) + JooqFTSHelper.java:164-168 — severity: HIGH (security/availability hazard — DoS-by-poisoned-session is operator-reachable; TRUE SQL injection at highlightDataEntity path is exploitable; combined with REFACTOR-344 search_facets has no user binding meaning poisoned UUIDs can be shared as bearer-token-shaped denial-of-service vectors)
+- "**FTS-injection: typed search text reaches the backend tsquery path unescaped (REFACTOR-229, batch-ZE).** MainSearchInput.tsx:38, 44 dispatch the raw `query`; Search.tsx:109 mounts MainSearch with no validation prop. tsquery metacharacters (`( ) & | ! * :`) can poison the session. The live doc now WARNS about these characters (see docs_link_semantic), but the UI provides ZERO programmatic mitigation. The backend FTS/highlight sink line numbers are owned by batch-ZE / REFACTOR-229 (referenced, not re-verified at this commit); pinned end-to-end by existing probe P-188." — evidence: Search.tsx:109 + MainSearchInput.tsx:38, 44 + REFACTOR-229 (referenced) + P-188 — severity: HIGH (security/availability; the UI-side absence of mitigation is HEAD-verified, the backend sink is a reference)
 
-- "**Cross-owner result set: read-collaborative posture inherited from backend, no UI affordance to scope to 'my data'.** Lines 74-87 + Results.tsx:151-159. The result list renders every data entity returned by the server. The only owner-scoping affordance is the 'My Objects' tab in `<SearchResultsTabs/>` (out of scope for this orchestrator; rendered by Results.tsx via `searchTotals.myObjectsTotal`). **By default the tab is 'All' which sends `myObjects: false` on session-create, returning the full catalog.** A user reading a description on team-A's `customers_pii` table can find it via search regardless of whether they have any owner relationship to team-A. This is the visible UI surface of the platform-wide read-collaborative posture (REFACTOR-024 family — system-mission.md line 267); not a bug per se, but operator-misleading if the operator expects per-team isolation." — evidence: Search.tsx:74-87 (no permission wrap on Results' result-list mapping) + Results.tsx:151-159 (unconditional .map) + batch-ZE SearchController invariants + system-mission.md line 267 — severity: MEDIUM (cross_owner_data_exposure family; not a per-component bug but a per-component manifestation of a pillar-wide architectural stance)
+- "**Cross-owner result set: read-collaborative posture, no UI affordance to scope to 'my data' by default.** Results.tsx:151 renders every server-returned entity; the My Objects tab is opt-in. A user can find any team's entity (incl. names like `finance/customers_pii`) regardless of ownership. Not a per-component bug; a per-component manifestation of the platform stance." — evidence: Search.tsx:102-118 + Results.tsx:151-159 + system-mission.md read-collaborative posture (referenced) — severity: MEDIUM
 
-- "**Pagination total-vs-list divergence inherited from REFACTOR-425 family.** `Results.tsx:71-74` paginates via `fetchDataEntitySearchResults({searchId, page+1, size:30})`; thunks.ts:62-63 computes `hasNext: page * size < pageInfo.total`. The `total` field comes from `SearchFacetsData.total` (the COUNT aggregator on backend). **The backend hard-codes `hasNext: true` in the Page<> wrapper (Page.java:11-15 per batch-ZE controller-class invariants[7]); the UI compensates by computing hasNext client-side.** This means third-party API consumers reading the OpenAPI contract directly will loop forever; only the UI client gets correct termination behaviour. **If the count predicate diverges from the list predicate (REFACTOR-425 page-vs-count pattern), pagination can either terminate early (count < actual rows — user never reaches the missing pages) or run past the actual count (count > actual rows — `hasNext` stays true but server returns empty results, causing infinite-scroll loop).** The exclude_from_search flag IS a known divergence vector for data-entity counts (per concepts/detail/invariants/data-entity-page-vs-count-predicate-divergence-exclude-from-search.yaml). The UI does NOT defensive-check; it trusts server `total`." — evidence: Search.tsx:79-86 + Results.tsx:71-74 + thunks.ts:52-67 + REFACTOR-425.md (the canonical page-vs-count family) + batch-ZE SearchController class invariants[7] + Page.java:11-15 — severity: MEDIUM (UI is shielded by its client-side hasNext compute, but the OpenAPI-contract consumer is exposed; the count-vs-list divergence is real)
+- "**Pagination total-vs-list divergence inherited from REFACTOR-425 (batch-ZE).** Results.tsx:71-74 paginates via `fetchDataEntitySearchResults({searchId, page+1, size:30})`; `hasNext` is computed client-side (Results.tsx:54, 72). The backend's `hasNext` contract bug (batch-ZE) is masked for the UI but exposed for third-party OpenAPI consumers. UI does no defensive count check." — evidence: Results.tsx:54, 71-74 + REFACTOR-425 (referenced) — severity: MEDIUM
 
-- "**Empty-state copy is 'No matches found' — does not distinguish 'fresh deployment, zero data entities' from 'filter returned nothing'. IDENTICAL pattern to TermSearch batch-U bugs[8].** Results.tsx:161-165 renders `<EmptyContentPlaceholder ... text={t('No matches found')}/>` whenever `!searchResults.length`. A fresh deployment with no data entities yet sees 'No matches found' — an operator new to ODD would reasonably expect 'No data entities exist yet — start by ingesting your first data source' or similar onboarding-shaped copy. Pairs with the WebFetched docs which describe Search as a way to find existing entities but do not say what an empty catalog looks like." — evidence: Results.tsx:161-165 + WebFetch of https://docs.opendatadiscovery.org/features/data-discovery/search 2026-05-20 status 200 — severity: LOW (onboarding UX gap)
+- "**Empty-state copy 'No matches found' does not distinguish a zero-entity deployment from a zero-result filter.** Results.tsx:161-165. A fresh ODD with no ingested entities shows the same string as an over-filtered search — an onboarding gap." — evidence: Results.tsx:161-165 — severity: LOW
 
-- "**'Suggestions' affordance EXPLICITLY DISABLED on this surface — `disableSuggestions` prop set.** Line 80: `<MainSearch placeholder={t('Search')} disableSuggestions/>`. The Catalog page DOES NOT show search suggestions in the text input dropdown. This is operator-intentional (the Catalog page already shows results below; suggestions would be redundant), but the live doc page (WebFetched 2026-05-20 status 200) makes no mention of either suggestions enabled OR disabled — operators reading the docs cannot know whether suggestions are a feature. The suggestions backend endpoint exists (`GET /api/search/suggestions` per batch-ZE SearchController invariants); it just isn't surfaced on the Catalog page." — evidence: Search.tsx:80 + MainSearchInput.tsx:13 (`disableSuggestions` prop forwarded to SearchSuggestionsAutocomplete) + WebFetch result (no mention of suggestions on the docs page) — severity: LOW (doc-side blind spot)
-
-- "**`<MainSearch placeholder={t('Search')}>` — the placeholder string is the i18n key 'Search' (Search.tsx:80), but t('Search') falls back to literal 'Search' if no translation is registered. The MainSearchInput's internal fallback `mainSearchPlaceholder = t('main search placeholder')` (MainSearchInput.tsx:63) is OVERRIDDEN by the explicit placeholder prop, so the operator sees 'Search' (or its translation) — fine. But the i18n key choice is brittle: any future rename of the i18n key requires updating Search.tsx:80 + every translation file. No central constant.** — evidence: Search.tsx:80 + MainSearchInput.tsx:63, 71 — severity: LOW (maintainability — i18n key brittleness)
+- "**Suggestions explicitly disabled on this surface (`disableSuggestions`, Search.tsx:109).** The suggestions backend exists but is suppressed here; the live doc does not mention suggestions either way." — evidence: Search.tsx:109 + MainSearchInput.tsx:75 — severity: LOW
 
 ## stress_findings
 
 ```yaml
 stress_findings:
   tunables:
-    - location: "Search.tsx:39"
+    - location: "Search.tsx:60 + MainSearchInput.tsx:38"
       name: "pageSize"
       value: "30"
       questions:
-        - q: "What at pageSize=0?"
-          a: "The session is created with pageSize=0; on the backend SearchFormData.pageSize has no validation per batch-ZE SearchController.search invariants[5]. The downstream effect is borne by Results.tsx infinite-scroll which uses its own hardcoded size=30 (Results.tsx:45) — so pageSize=0 in the session create does NOT affect result pagination (the Results child uses its own constant). The 0 just feeds the initial sessions-create payload which is otherwise ignored for result loading. Effectively a dead tunable for this code path."
+        - q: "What at pageSize=0 / 31 / any value?"
+          a: "No effect on result loading. `pageSize` is NOT a SearchFormData property in the spec (components.yaml:2244-2287 lists only query/my_objects/filters, required:[filters]) — the typescript-fetch client serialises only contract fields, so pageSize never reaches the server. Result pagination is driven solely by Results.tsx:45 `const size = 30`. The literal is dead twice over (off-contract AND superseded by the Results constant)."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45 + batch-ZE SearchController.search invariants[5]"
-        - q: "What at pageSize=30 (current)?"
-          a: "Aligned with Results.tsx:45 size=30. Initial session-create payload + result-pagination size match — the 'intended' configuration. No drift between session-create and result-fetch."
-          confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45"
-        - q: "What at pageSize=31 or higher?"
-          a: "The session-create payload carries the larger value; Results.tsx ignores it and uses its own 30. Session-state pageSize is functionally dead for result loading. A backend that respected SearchFormData.pageSize for sizing would create a drift between session-create and result-fetch — currently masked because Results.tsx is the authority."
-          confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45 + dataentitiesSearch.thunks.ts:59-63 (size pulled from request params, not session)"
+          evidence: "Search.tsx:60 + MainSearchInput.tsx:38 + components.yaml:2244-2287 + Results.tsx:45"
         - q: "What does the operator see at each boundary?"
-          a: "Operator sees no difference across tunable values — Results.tsx's hardcoded size=30 dominates. The Search.tsx:39 pageSize value is effectively dead — neither configurable nor consequential. A maintainer who attempts to bump this from 30 to 50 will see no change unless they ALSO update Results.tsx:45."
+          a: "No difference for any value. A maintainer bumping Search.tsx:60 to 50 sees no change — they must edit Results.tsx:45 and (if they want it on the wire) add pageSize to the spec + regenerate the client. handleStartNewSearch (Search.tsx:55) already omits pageSize, confirming it is inert."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45"
+          evidence: "Search.tsx:55, 60 + Results.tsx:45 + components.yaml:2244-2287"
 
-    - location: "Search.tsx:61"
+    - location: "Search.tsx:82"
       name: "debounce window"
       value: "1500 (ms)"
       questions:
-        - q: "What at debounce=0?"
-          a: "Every facet click dispatches immediately; the leading-edge mode collapses to no-debounce. Operator sees N PUTs per N clicks — same as the CURRENT BROKEN BEHAVIOUR (bugs section [3]). The architectural intent (rate-limit facet clicks) is unrealised."
-          confidence: STATIC-INFERRED
-          evidence: "Search.tsx:50-65 + bugs section [3]"
         - q: "What at debounce=1500 (current)?"
-          a: "With the debouncer-recreation bug (Search.tsx:64 useCallback deps include searchFacetParams), the 1500ms window is in effect only for the FIRST click of a session — every subsequent click recreates the debouncer and bypasses it. Net: 1500ms is the intended-but-not-realised configuration."
+          a: "Non-functional. The useCallback deps `[searchId, searchFacetParams]` (Search.tsx:85) recreate the debouncer on every facet click, so only the FIRST click of a session ever sees the window; subsequent clicks each construct a fresh leading-edge debouncer that fires immediately. Net: N PUTs per N clicks."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:50-65 (the useCallback deps line 64) + bugs section [3]"
-        - q: "What at debounce=10000?"
-          a: "If the bug were fixed, a 10s window would coalesce 10s of rapid facet clicks into a single PUT — feels sluggish to operators. With the bug intact, 10s vs 1500ms makes no difference because the debouncer is recreated on every click."
-          confidence: STATIC-INFERRED
-          evidence: "Search.tsx:50-65"
-        - q: "What does the operator see at each boundary?"
-          a: "Today (bug present): N PUTs per N clicks; the 1500ms is non-functional. After bug fix: N clicks → 1 PUT (leading-edge); operator sees an immediate update on first click, then the rest of the rapid clicks coalesce into a single trailing PUT after the window. Probe P-189 will confirm the broken-debouncer behaviour."
+          evidence: "Search.tsx:71-86 (deps at :85) + bugs[3]"
+        - q: "What does the operator see at each boundary (0 / 1500 / 10000)?"
+          a: "Today, all values behave identically (N PUTs per N clicks) because the debouncer is recreated each click. If the recreation bug were fixed, 1500 ms would coalesce rapid clicks into one trailing PUT after an immediate leading one; 10000 ms would feel sluggish. Probe P-189 measures the broken cardinality."
           confidence: PROBE-NEEDED
           evidence: "P-189"
 
-    - location: "Search.tsx:39 + 56 + Results.tsx:45"
-      name: "filters/query/myObjects payload shape"
-      value: "empty {}, '', undefined respectively"
-      questions:
-        - q: "What at empty query + empty filters (current default)?"
-          a: "Session creates with empty payload; server returns the full catalog (all entities, no FTS predicate, no facet predicates). The 'All' tab shows the full catalog count. Operator sees the entire data-entity catalog on first Catalog-page mount — the read-collaborative posture made literal."
-          confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + batch-ZE SearchController.search behaviour"
-        - q: "What at query with tsquery metacharacters?"
-          a: "Per bugs section [8] + Category F findings below: the session is POISONED. POST /api/search may itself 500 (if SearchFormData validation fails at the controller — it doesn't; @Valid lets the query through), or the POST succeeds and subsequent reads on the session UUID 500. The UI offers no mitigation; the URL still carries the poisoned UUID; refresh repeats the failure. Probe P-188 will confirm end-to-end."
-          confidence: PROBE-NEEDED
-          evidence: "P-188 + JooqFTSHelper.java:164-168 + bugs section [8]"
-
   name_behavior_pairs:
     - name: "createSearch (useCreateSearch hook)"
-      promise: "Create a new search session; navigate to the URL form that carries the session UUID."
-      implementation: "Dispatches createDataEntitiesSearch thunk → searchApi.search → POST /api/search returning SearchFacetsData → chains .then(({searchId}) => navigate(searchPath(searchId))). No .catch; rejection is unhandled."
+      promise: "Create a new search session and navigate to the URL carrying its UUID."
+      implementation: "dispatch(createDataEntitiesSearch).unwrap().then(({searchId}) => navigate(searchPath(searchId))). No .catch — rejection re-thrown by .unwrap() is an unhandled promise rejection in the fire-and-forget effect (a toast still shows via the thunk wrapper)."
       drift: NONE
-      operator_visible_consequence: "Name and implementation align — but no error handling. See bugs[5] for the unhandled-rejection downstream."
+      operator_visible_consequence: "Name/impl align on the happy path; the failure path has no .catch and (via the effect-1 deps smell) loops — see bugs[1]/[5]."
       confidence: STATIC-INFERRED
-      evidence: "useCreateSearch.ts:1-23 + dataentitiesSearch.thunks.ts:25-32 + searchRoutes.ts:7-12"
+      evidence: "useCreateSearch.ts:14-19 + handleResponseThunk.ts:34-41"
 
     - name: "updateSearchFacets (Search.tsx debouncer)"
-      promise: "Debounce facet-state mutations and push them to the server in batches every 1500ms."
-      implementation: "useCallback wraps useDebouncedCallback with deps [searchId, searchFacetParams]. Because searchFacetParams changes on every facet click, the useCallback recreates the debouncer on every click, defeating the debounce. Effective behaviour: every click dispatches immediately."
+      promise: "Debounce facet mutations and push them every 1500 ms."
+      implementation: "useCallback recreates useDebouncedCallback on every searchFacetParams change, defeating the debounce; every click dispatches immediately."
       drift: DRIFT_NAME_VS_BEHAVIOR
-      operator_visible_consequence: "User clicking 5 facets in 2 seconds triggers 5 PUT calls instead of the intended 1. Server-side load amplifies 5x for rapid filter sessions. Pattern parity with TermSearch batch-U bugs[2]."
+      operator_visible_consequence: "5 rapid facet clicks → ~5 PUTs instead of 1; backend load amplifies. Pinned by P-189."
       confidence: PROBE-NEEDED
-      evidence: "Search.tsx:50-65 + P-189"
+      evidence: "Search.tsx:71-86 + P-189"
 
     - name: "MainSearch (placeholder='Search')"
-      promise: "Friendly free-text search input — the label 'Search' implies natural-language text matching."
-      implementation: "Typed text dispatched as-is into SearchFormData.query → JooqFTSHelper.tsQuery splits-on-space + appends ':*' + joins on '&' → to_tsquery(?) (an expression language with metacharacters !|&():*<->)."
+      promise: "Friendly free-text natural-language search."
+      implementation: "Typed text dispatched verbatim into SearchFormData.query → backend tsquery path (REFACTOR-229, referenced). Whitespace-separated words work; tsquery metacharacters poison the session."
       drift: DRIFT_NAME_VS_BEHAVIOR
-      operator_visible_consequence: "Operator typing natural-language text mostly works (because whitespace-separated words get :*-suffixed and AND-joined — equivalent to prefix-and-AND). But operator typing punctuation triggering tsquery metacharacters (e.g. an entity name containing colons or parens) gets 500 + permanently broken session per REFACTOR-229. The 'Search' label does not warn the user; the docs do not describe tsquery syntax."
+      operator_visible_consequence: "Typing an entity name with `:` or parens (e.g. a Snowflake-style fully-qualified name) can break the search. The live doc now warns 'Avoid the characters ( ) & | ! * :' but the input itself gives no inline feedback."
       confidence: STATIC-INFERRED
-      evidence: "Search.tsx:80 + MainSearchInput.tsx:42-48 + JooqFTSHelper.java:164-168 + batch-ZE SearchController bugs[7]"
+      evidence: "Search.tsx:109 + MainSearchInput.tsx:38, 44 + REFACTOR-229 (referenced) + WebFetch /features/data-discovery/search 2026-06-11"
 
-    - name: "Catalog tab / top-nav 'Catalog' link"
-      promise: "Tab labelled 'Catalog' takes the user to the catalog of all data entities."
-      implementation: "Per batch-ZH ToolbarTabs sidecar, the top-nav 'Catalog' tab links to searchPath() (no UUID) → /search. Clicking it from any context (including from within an in-progress session at /search/{uuid}) DROPS the current session and creates a new one (Search.tsx:37-42 fires because routerSearchId is undefined). The prior session UUID is orphaned server-side until housekeeping reaps it."
-      drift: MINOR
-      operator_visible_consequence: "Operator inside a filtered Catalog view who clicks the 'Catalog' tab loses their filter selections — the new session has empty filters. Pattern: the navigation back to the top is non-idempotent (the tab click does not preserve session state). Operators expecting 'tab clicks are no-ops if I'm already there' are surprised."
+    - name: "SearchSessionExpired / 'This search has expired'"
+      promise: "Tell the user their search link is dead and offer a clean restart."
+      implementation: "Rendered only when isDeepLinkNotLoaded AND searchError.status === 404 (Search.tsx:51, 94-96). 'Start new search' resets the loader for the GET action then createSearch()."
+      drift: NONE
+      operator_visible_consequence: "Honours its promise; recovery navigates to a fresh /search/{uuid} (IT-125)."
       confidence: STATIC-INFERRED
-      evidence: "Search.tsx:37-42 + ToolbarTabs.tsx:38 (batch ZH) + searchRoutes.ts:11"
+      evidence: "Search.tsx:48-56, 94-96 + SearchSessionExpired.tsx:29-40 + IT-125 spec lines 62-78"
+
+    - name: "Catalog top-nav tab"
+      promise: "Take me to the catalog of all data entities."
+      implementation: "ToolbarTabs.tsx:38 links to searchPath() (no UUID) → /search index → effect 1 mints a new session, dropping any current /search/{uuid} session."
+      drift: MINOR
+      operator_visible_consequence: "An operator inside a filtered session who clicks 'Catalog' loses their filters (new empty session). The live doc now documents this ('Clicking the Catalog top-nav tab drops the UUID and starts a fresh session')."
+      confidence: STATIC-INFERRED
+      evidence: "ToolbarTabs.tsx:38, 93 + Search.tsx:58-63 + searchRoutes.ts:11 + WebFetch 2026-06-11"
 
   orderings:
-    - location: "Results.tsx:71-74 (out-of-scope but downstream)"
+    - location: "Results.tsx:71-74 (downstream, out of this orchestrator's scope)"
       questions:
         - q: "What is the actual ORDER BY at the lowest layer for the result list?"
-          a: "REFERENCE — owned by batch-ZE SearchController.search + downstream ReactiveDataEntityRepository.findByState SQL chain (per the batch-ZE invariants). Per batch-ZE, the SQL applies FTS rank ordering when a query is present, falls back to natural row order otherwise. The Search.tsx orchestrator does not impose any client-side ordering."
+          a: "REFERENCE — owned by batch-ZE SearchController + the downstream FTS/JOOQ chain. This orchestrator imposes no client-side ordering."
           confidence: REFERENCE
-          evidence: "odd-platform__java__SearchController__controller-class__SearchController (couples_to + invariants) + ReactiveDataEntityRepositoryImpl.findByState"
-        - q: "What is the tie-breaker when sort-key values are equal?"
-          a: "REFERENCE — per batch-ZE the underlying SQL has no explicit secondary ORDER BY; tie-break is database-implementation-defined."
-          confidence: REFERENCE
-          evidence: "odd-platform__java__SearchController invariants"
-        - q: "Which subset is returned when result-set > page size?"
-          a: "Determined by Results.tsx infinite-scroll using size=30; the orchestrator's pageSize=30 is dead for result loading (the Results child controls size). Subset is the first 30 of whatever ordering the SQL imposes."
-          confidence: STATIC-INFERRED
-          evidence: "Results.tsx:45, 71-74 + dataentitiesSearch.thunks.ts:52-67"
+          evidence: "odd-platform__java__SearchController (batch-ZE)"
         - q: "Does any upstream layer re-sort or filter the result?"
-          a: "The slice (dataEntitySearch.slice.ts:219-228) appends new pages without re-sorting; .map at Results.tsx:151 renders in array order. NO client-side re-sort. Trust-the-server posture."
+          a: "No client-side re-sort: the slice appends pages and Results.tsx:151 renders in array order. Trust-the-server posture."
           confidence: STATIC-INFERRED
-          evidence: "dataEntitySearch.slice.ts:219-228 + Results.tsx:151-159"
+          evidence: "Results.tsx:151-159"
 
   auth_gates:
-    - location: "Search.tsx:1-92 + App.tsx:61 (route mount)"
-      endpoint: "ui_route:/search/* + downstream POST /api/search + GET /api/search/{searchId} + PUT /api/search/{searchId}"
+    - location: "Search.tsx:1-122 + App.tsx:61-64 (route mount)"
+      endpoint: "ui_route:/search + /search/:searchId + downstream POST/GET/PUT /api/search"
       questions:
-        - q: "What does this endpoint return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?"
-          a: "DISABLED: anonymous traffic reaches the route AND the downstream APIs (per batch-ZE SecurityConstants.SECURITY_RULES has no entry for /api/search* — falls through to pathMatchers('/**').authenticated() which under DISABLED is bypassed). LOGIN_FORM/OAUTH2/LDAP: any authenticated user with any role/permission reaches the route AND the downstream APIs (no @PreAuthorize at controller, no permission wrap at route, no programmatic check). Operator-visible: the Catalog page is wide open under ALL auth modes. Probe P-187 will pin DISABLED-mode anonymous reach as HIGH-severity confirmation."
+        - q: "What does this route return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?"
+          a: "DISABLED: anonymous traffic reaches the route + downstream APIs (no SECURITY_RULES entry for /api/search*, per batch-ZE). LOGIN_FORM/OAUTH2/LDAP: any authenticated user (any role) reaches the full Catalog. The route mount (App.tsx:61-64) is BARE — no WithPermissionsProvider wraps it. Pinned by existing probe P-187."
           confidence: PROBE-NEEDED
-          evidence: "P-187 + App.tsx:61 (no permission wrap) + batch-ZE SearchController invariants[1] + SecurityConstants.SECURITY_RULES (no /api/search* entries) + AuthorizationCustomizer.java:29-30"
+          evidence: "P-187 + App.tsx:61-64 + batch-ZE SearchController invariants (referenced)"
         - q: "What does an unauthenticated caller see?"
-          a: "Under DISABLED: full Catalog page (route mount renders, downstream APIs return data). Under LOGIN_FORM/OAUTH2/LDAP: the upstream Spring Security filter redirects to login BEFORE this component renders — the route mount is not reached. The redirect-to-login enforcement is at the platform's HTTP layer, not at Search.tsx itself."
+          a: "Under DISABLED: the full Catalog. Under LOGIN_FORM/OAUTH2/LDAP: the platform HTTP layer redirects to login before Search mounts; enforcement is at the network layer, not in this component."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:1-92 (no auth check in component) + batch-ZE security model"
+          evidence: "Search.tsx:1-122 (no auth check) + batch-ZE security model (referenced)"
         - q: "What does a wrong-role caller see?"
-          a: "Any authenticated user (regardless of role/permission) sees the full Catalog page + the full data-entity result list. The DEG-Create CTA is hidden when DATA_ENTITY_GROUP_CREATE is absent (Results.tsx:125 WithPermissions wrap) — but this is a UI hide, not auth enforcement; the backend POST /api/dataentitygroups is gated separately via SecurityConstants. Other CTAs (none on this surface) are also unconstrained at the UI layer."
+          a: "Any authenticated user sees the full result list. The DEG-create button is hidden without DATA_ENTITY_GROUP_CREATE (Results.tsx:125) — a UI hide, not auth; backend POST /api/dataentitygroups is gated separately."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:81-85 (WithPermissionsProvider injects context, not a gate) + Results.tsx:125-138 (UI hide)"
+          evidence: "Search.tsx:110-114 + Results.tsx:125-138"
         - q: "Where does the gate live — controller, service, repository, or nowhere?"
-          a: "NOWHERE for the read surface. Per batch-ZE SearchController invariants: no @PreAuthorize, no programmatic check at controller; service does NO row-level filter (the catalog-wide `findByState` returns every entity); repository does NO owner-scoping unless `state.isMyObjects()` is true (which requires the user to opt-in via the My Objects tab toggle). The route mount has no WithPermissionsProvider gate. The only auth-mode gate is the platform's HTTP-layer redirect-to-login (effective only under non-DISABLED modes)."
+          a: "NOWHERE for the read surface (batch-ZE: no @PreAuthorize, no owner-scoping on the main result list). The route mount has no permission wrap. The only gate is the platform redirect-to-login under non-DISABLED modes."
           confidence: STATIC-INFERRED
-          evidence: "batch-ZE SearchController invariants[1] + SecurityConstants.SECURITY_RULES + AuthorizationCustomizer.java:29-30 + Search.tsx:1-92 + App.tsx:61"
+          evidence: "App.tsx:61-64 + batch-ZE SearchController invariants (referenced) + P-187"
 
   resource_boundaries:
-    - location: "Search.tsx:50-65 + 67-71"
+    - location: "Search.tsx:58-63 (create effect) + 71-92 (debouncer + facet-sync effect)"
       kind: concurrency
       questions:
         - q: "Can two simultaneous calls produce corrupted state?"
-          a: "Yes — see bugs section [5] (facet-vs-text-query race). Two concurrent PUTs to /api/search/{searchId} with different SearchFormData payloads result in whichever resolves second winning via updateSearchState. The slice's assignFacetStateWithNewFacets handles racing PUTs by preserving local `selected !== syncedFilterState.selected` divergences — but the text-query PUT carries empty filters {}, so the merge logic incorrectly accepts the empty filters as authoritative if text-query resolves second. Operator-visible: the user clicks a facet then submits a text-query within ~500ms, and the facet selection disappears."
+          a: "Facet PUT vs text-query PUT race (bugs[7]) — whichever resolves second wins; a text submit carrying filters:{} can discard a facet selection. The create effect's failure-retry loop (bugs[1]) can also race multiple in-flight POSTs before the first resolves."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:53-58 + MainSearchInput.tsx:42-48 + slice.ts:40-103 + bugs section [5]"
+          evidence: "Search.tsx:58-63, 74-80 + MainSearchInput.tsx:42-48"
         - q: "Is the call replay-safe?"
-          a: "POST /api/search: NOT idempotent — each call creates a NEW session row in search_facets. Two calls with identical payload create two distinct UUIDs; the second one orphans the first (the user's URL is updated to the second's UUID). PUT /api/search/{searchId}: idempotent for identical payload + same UUID (it's a session-state replacement, not increment). GET /api/search/{searchId}: idempotent."
+          a: "POST /api/search: NOT idempotent (each call mints a new UUID; failure-retry loop mints many orphans on the server). PUT /api/search/{searchId}: idempotent for identical payload + UUID. GET /api/search/{searchId}: idempotent."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:37-42 (createSearch on mount) + batch-ZE SearchController.search behaviour + slice.ts:215"
-        - q: "If a cache fronts this, what is the TTL / eviction key / staleness window?"
-          a: "No cache at the UI layer (Redux state is in-memory, no localStorage / sessionStorage persistence verified in Search.tsx). Server-side, the search_facets row has TTL eviction via SearchFacetsHousekeepingJob (housekeeping.ttl.search_facets_days, default 30 days; F-010 + LSN-018). Stale-cache window from the operator's perspective: a Slack-shared URL older than 30 days hits a permanently broken page. See bugs[7]."
+          evidence: "Search.tsx:58-63 + useCreateSearch.ts:14-19 + batch-ZE (referenced)"
+        - q: "If a cache fronts this, what is the TTL / staleness window?"
+          a: "No UI cache (Redux in-memory; no localStorage). Server-side search_facets has a 30-day TTL (SearchFacetsHousekeepingJob, F-010, referenced) — a deep-link older than that 404s and now renders SearchSessionExpired (bugs[6])."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:1-92 (no cache code) + slice.ts:22-36 (initialState, no persistence) + F-010.yaml + LSN-018"
+          evidence: "Search.tsx:1-122 (no cache) + F-010 (referenced) + Search.tsx:94-96"
 
   request_inputs:
-    # NOTE: Search.tsx is a UI orchestrator, not a controller — its 'request inputs' are
-    # (a) route param `:searchId` extracted via useSearchRouteParams, (b) the SearchFormData
-    # payload it dispatches to the backend. Category F traces the name-vs-implementation
-    # alignment for each.
+    # Search.tsx is a UI orchestrator: its 'request inputs' are (a) the route param :searchId,
+    # and (b) the SearchFormData payload it dispatches (query, filters, myObjects, the dead pageSize).
 
-    - location: "Search.tsx:27 (useSearchRouteParams destructured as routerSearchId) + searchRoutes.ts:4-5 (the param name 'searchId')"
+    - location: "Search.tsx:36 (useSearchRouteParams → routerSearchId) + searchRoutes.ts:4-5"
       input_kind: path-param
       input_name: "searchId"
       questions:
-        - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "Name 'searchId' promises 'an identifier for a search' — to a user reading the URL bar /search/{uuid}, this looks like a stable, possibly-shareable handle for THIS particular search. To a developer reading the React-Router signature, it looks like a route parameter that identifies a search resource."
+        - q: "What does the input NAME promise the caller?"
+          a: "'searchId' in the URL bar /search/{uuid} reads like a stable, shareable handle for THIS search — implies a saved/persistent search resource."
           confidence: STATIC-INFERRED
-          evidence: "searchRoutes.ts:4-5 + Search.tsx:27"
-        - q: "When supplied, what does the implementation USE the input for?"
-          a: "Chain: Search.tsx:27 extracts routerSearchId → Search.tsx:46 dispatches getDataEntitiesSearch({searchId: routerSearchId}) → dataentitiesSearch.thunks.ts:43-50 calls searchApi.getSearchFacetList({searchId}) → batch-ZE SearchController.getSearchFacetList → SearchServiceImpl.getFacetsData → reads `search_facets` table row WHERE id = ${searchId}. The :searchId in the URL is the PRIMARY KEY of the `search_facets` table — a server-side session UUID, NOT a user-meaningful 'saved search' identifier. There is no 'name' or 'title' associated; the UUID is opaque."
+          evidence: "searchRoutes.ts:4-5 + Search.tsx:36"
+        - q: "When supplied, what does the implementation USE it for?"
+          a: "Search.tsx:36 → :67 dispatch getDataEntitiesSearch({searchId: routerSearchId}) → searchApi.getSearchFacetList (dataentitiesSearch.thunks.ts:43-50) → batch-ZE GET /api/search/{searchId} → reads the search_facets row by PK. It is a server-side EPHEMERAL session UUID, not a user-meaningful saved-search id."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:44-48 + dataentitiesSearch.thunks.ts:43-50 + batch-ZE SearchController invariants[3] + V0_0_1__init.sql:204-211 (search_facets schema)"
-        - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "TRANSLATES_SILENTLY — name promises 'a search identifier' (implies a user-meaningful handle); implementation is a server-side ephemeral session UUID with 30-day TTL eviction (F-010) and NO user-binding column (REFACTOR-344). The translation is undocumented in the live doc page (WebFetched 2026-05-20). Operators expecting 'a saved search I can refer back to in 6 months' encounter the housekeeping eviction at day 30+1 and a broken page; operators expecting 'my private search session' encounter the bearer-token-shape (any user holding the UUID can read/update the session). The name does NOT communicate either the TTL or the lack of user-binding."
+          evidence: "Search.tsx:65-69 + dataentitiesSearch.thunks.ts:43-50 + batch-ZE (referenced)"
+        - q: "Does the actual scope MATCH the name's promise?"
+          a: "TRANSLATES_SILENTLY — the name implies a durable handle; the implementation is an ephemeral 30-day-TTL session UUID with no user binding (REFACTOR-344, referenced). HOWEVER the gap is narrower than at the prior enrichment: the live doc NOW states the URL is 'a server-side session, not a frozen query' and documents the 30-day eviction, and the code now renders a self-explaining expired state on 404. The remaining drift is that the parameter name itself still communicates neither the TTL nor the bearer-token shape."
           drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION
           confidence: STATIC-INFERRED
-          evidence: "searchRoutes.ts:4-5 (the name) + batch-ZE SearchController invariants[3] (no user binding) + F-010 (TTL eviction) + WebFetch of https://docs.opendatadiscovery.org/features/data-discovery/search (no mention of either property)"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "(a) Operator bookmarks /search/{uuid} expecting it to persist indefinitely; after 30 days the GET 404s + the slice has no .rejected reducer + the URL retains the stale UUID + refresh repeats the failure → 'broken bookmark, no recovery path' (bugs[7]). (b) Operator shares /search/{uuid} via Slack expecting it to be 'their' search; the recipient can not only read the filter state but UPDATE it via PUT /api/search/{uuid} — there is no per-user binding (REFACTOR-344). (c) Adversary harvests valid UUIDs (e.g. from server logs, browser-history exports, Slack archives) and uses them to DoS the platform via FTS-injection-poisoning (REFACTOR-229 cross-link). (d) Top-nav 'Catalog' tab click DROPS the current /search/{uuid} session (the link is searchPath() bare) and orphans the prior UUID server-side. The name 'searchId' communicates none of these."
+          evidence: "searchRoutes.ts:4-5 + REFACTOR-344 (referenced) + F-010 (referenced) + WebFetch 2026-06-11 + Search.tsx:94-96"
+        - q: "For TRANSLATES_SILENTLY: what does a caller see when wrong?"
+          a: "(a) Bookmark/share a link, return after 30 days → 404 → 'This search has expired' + Start-new-search (recoverable now, was a dead page before #1760). (b) The recipient of a shared link can READ and UPDATE the session (no user binding). (c) An adversary harvesting valid UUIDs can poison sessions via FTS-injection (REFACTOR-229). (d) Clicking the Catalog tab drops the current UUID. The name 'searchId' signals none of these; the live doc now does (b)-style sharing semantics and (d)."
           confidence: STATIC-INFERRED
-          evidence: "bugs section [7] + REFACTOR-344 + REFACTOR-229 + batch-ZH ToolbarTabs.tsx:38"
-        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "NONE — the search_facets table has only `id` (the UUID) + `query_string` + `filters` + `last_accessed_at` per V0_0_1__init.sql:204-211. There is no separate `search_name`, `saved_search_id`, or user-facing alias. The conceptual gap is the FEATURE — ODD has no 'saved search' entity at all. To honor the name 'searchId' as 'a user-meaningful search identifier' would require introducing the saved-search feature (a separate table with owner_id, name, created_at, etc.). This is the structural cause of the drift: ODD does not have the FEATURE the parameter name implies."
+          evidence: "Search.tsx:94-96 + REFACTOR-344/REFACTOR-229 (referenced) + ToolbarTabs.tsx:38 + WebFetch 2026-06-11"
+        - q: "Is there a column/field that DOES match the name and is unused (available-but-unused)?"
+          a: "NONE — there is no saved-search entity in odd-platform. Verified at this commit: `grep -irn 'saved.?search|savedSearch|saved_search' <odd-platform-repo>` (search root: entire repo) returns ZERO files. To honour 'searchId' as a durable handle would require a new saved-search feature (a table with owner_id/name/created_at). The drift is structural: the feature the name implies does not exist."
           confidence: STATIC-INFERRED
-          evidence: "V0_0_1__init.sql:204-211 + grep -i 'saved.search|savedSearch|saved_search' over odd-platform (returned no files — verified during this enrichment 2026-05-26)"
-      routes_to_finding: "bugs_limitations_corner_cases[7] (session-expiry no recovery) + security.known_security_gaps[2] (bearer-token-shape) + docs_link_semantic.doc_drift_findings.UI-DOC-GAP-Search-A (URL deep-link share-ability undocumented)"
+          evidence: "`grep -irn 'saved.?search|savedSearch|saved_search' <odd-platform-repo>` 2026-06-11 (search root: entire repo; zero matches) + components.yaml:2244-2287 (SearchFormData has no name field)"
+      routes_to_finding: "bugs[6] (expiry now recoverable) + security.known_security_gaps (bearer-token-shape) + docs_link_semantic (mostly resolved on the live doc)"
 
-    - location: "Search.tsx:39 + 53-58 + MainSearchInput.tsx:38-44 (SearchFormData.query field dispatched on every session-create + facet-update + text-query path)"
+    - location: "Search.tsx:60, 75 + MainSearchInput.tsx:38, 44 (SearchFormData.query)"
       input_kind: body-field
       input_name: "query"
       questions:
-        - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "Name 'query' + the UI placeholder 'Search' (Search.tsx:80) jointly promise a free-text natural-language search. The user understands they type words and the system matches data entities containing those words."
+        - q: "What does the input NAME promise the caller?"
+          a: "'query' + the placeholder 'Search' (Search.tsx:109) promise free-text natural-language search."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:80 + MainSearchInput.tsx:38 + SearchFormData type"
-        - q: "When supplied, what does the implementation USE the input for?"
-          a: "Chain: MainSearchInput.tsx:38-44 builds SearchFormData {query, pageSize:30, filters:{}} → dispatched via createDataEntitiesSearch or updateDataEntitiesSearch → POST /api/search or PUT /api/search/{searchId} → batch-ZE SearchController.search → SearchServiceImpl.search → state.setQuery(query) → JooqFTSHelper.tsQuery(query) at JooqFTSHelper.java:164-168: `plainQuery.split(' ').map(q -> q + ':*').join('&')` → wrapped into `ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR, query)` calling `to_tsquery(?)`. Special case (highlight path): the same query is INTERPOLATED into a raw SQL string via `.formatted(text, tsQuery)` at ReactiveDataEntityRepositoryImpl.java:798-806 — TRUE SQL injection."
+          evidence: "Search.tsx:109 + MainSearchInput.tsx:38 + components.yaml:2247-2248"
+        - q: "When supplied, what does the implementation USE it for?"
+          a: "MainSearchInput.tsx:38/44 build {query,pageSize:30,filters:{}} → createDataEntitiesSearch/updateDataEntitiesSearch → POST/PUT /api/search → batch-ZE FTS path (to_tsquery + a highlight SQL-interpolation sink per REFACTOR-229; backend line numbers referenced, not re-verified at this commit)."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + 53-58 + MainSearchInput.tsx:38-44 + dataentitiesSearch.thunks.ts:25-50 + JooqFTSHelper.java:164-168 + batch-ZE SearchController class invariants[7]"
-        - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "TRANSLATES_SILENTLY — name + placeholder promise free-text natural-language search. Implementation is Postgres tsquery (an expression language with metacharacters ! | & ( ) : * <->). Whitespace-separated alphanumeric words happen to work (each token gets ':*' suffix + AND-joined → prefix-and-AND semantics). But ANY metacharacter in the user's input poisons the parse → 42601 syntax error → the session UUID becomes permanently broken (every subsequent GET /api/search/{uuid} 500s). Operator-visible: typing an entity name containing a colon (e.g. a Snowflake fully-qualified name `db:schema:table`) breaks the search; copying an oddrn from another tab into the search bar breaks the search. The drift is not even documented (live doc page WebFetched 2026-05-20 says only 'type your search query')."
+          evidence: "MainSearchInput.tsx:38-48 + dataentitiesSearch.thunks.ts:25-50 + REFACTOR-229 (referenced)"
+        - q: "Does the actual scope MATCH the name's promise?"
+          a: "TRANSLATES_SILENTLY — natural-language promise vs Postgres tsquery expression language. Whitespace words work; metacharacters (`( ) & | ! * :`) can poison the session. The live doc NOW warns about exactly these characters (resolving the prior doc gap), but the UI still performs no inline validation."
           drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:80 (the placeholder label) + MainSearchInput.tsx:38-44 (no client-side validation) + JooqFTSHelper.java:164-168 + WebFetch of /features/data-discovery/search 2026-05-20"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "(a) Operator types `db:schema:table` (a common Snowflake oddrn shape) → POST/PUT 500 OR session UUID minted but every subsequent read 500s; refresh repeats; only `/search` bare recovers. (b) Operator types `\"exact phrase\"` (quoted-phrase intent — natural search engine syntax) → the double-quote is preserved through tsQuery.split(' ') as part of two tokens → `\"exact:*&phrase\":*` reaches to_tsquery → may succeed but matches nothing useful. (c) Operator types `foo OR bar` (boolean intent, common in Google/Elastic) → 'foo:*&OR:*&bar:*' reaches to_tsquery → matches only entities containing all three of 'foo', 'OR', 'bar' as prefixes, NOT the boolean OR. (d) Operator types `foo & bar` (intent: AND) → the literal '&' is a tsquery metacharacter, may parse but unexpectedly. (e) Adversary types `foo ) | (` deliberately → session UUID poisoned → DoS-by-poisoning, shareable via the URL (REFACTOR-344 + REFACTOR-229 combined). Probe P-188 will confirm (a) end-to-end."
+          evidence: "Search.tsx:109 + MainSearchInput.tsx:38-48 + REFACTOR-229 (referenced) + WebFetch 2026-06-11"
+        - q: "For TRANSLATES_SILENTLY: what does a caller see when wrong?"
+          a: "Typing `db:schema:table`, a quoted phrase, or boolean operators yields broken or surprising results; deliberate metacharacters poison the session UUID (DoS vector, shareable). Pinned by existing probe P-188."
           confidence: PROBE-NEEDED
-          evidence: "P-188 + JooqFTSHelper.java:164-168 + bugs section [8]"
-        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "There is no closer-aligned column / field. The persisted `search_facets.query_string varchar(255)` (V0_0_1__init.sql:204-211) is just the raw text — there is no parsed-AST representation, no syntax-validated form. The conceptual gap is the FEATURE — a 'search query' that respects natural-language intent would require either (a) a client-side parser (e.g. converting `\"exact phrase\"` → tsquery `(exact <-> phrase)` and `foo OR bar` → tsquery `foo | bar`), or (b) a backend tsquery escape step at JooqFTSHelper.tsQuery before calling to_tsquery (REFACTOR-229's architectural fix). Neither exists today."
+          evidence: "P-188 + REFACTOR-229 (referenced)"
+        - q: "Is there a closer-aligned field unused?"
+          a: "NONE — search_facets.query_string stores the raw text; there is no parsed/validated form. The fix is a client-side parser OR a backend tsquery escape at the FTS chokepoint (REFACTOR-229's architectural fix)."
           confidence: STATIC-INFERRED
-          evidence: "V0_0_1__init.sql:204-211 + JooqFTSHelper.java:164-168"
-      routes_to_finding: "bugs_limitations_corner_cases[8] (FTS-injection at UI surface) + security.known_security_gaps[1] (REFACTOR-229 strengthening) + docs_link_semantic.doc_drift_findings.UI-DOC-GAP-Search-C (query syntax undocumented)"
+          evidence: "components.yaml:2247-2248 + REFACTOR-229 (referenced)"
+      routes_to_finding: "bugs[8] (FTS-injection) + security.known_security_gaps + docs_link_semantic (query-char caveat now documented)"
 
-    - location: "Search.tsx:53-58 (filters payload constructed via mapValues(searchFacetParams, values))"
+    - location: "Search.tsx:71-80 (filters via mapValues(searchFacetParams, values))"
       input_kind: body-field
       input_name: "filters"
       questions:
-        - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "Name 'filters' promises a structured set of filter selections — the user picks Datasource=Snowflake, Tag=PII, Owner=alice and 'filters' should carry those selections to the server."
+        - q: "What does the input NAME promise the caller?"
+          a: "A structured set of facet selections (Datasource/Type/Namespace/Owner/Tag/Groups/Statuses)."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:53-58 + SearchFormData.filters type"
-        - q: "When supplied, what does the implementation USE the input for?"
-          a: "Chain: Search.tsx:56 builds filters via mapValues(searchFacetParams, values) (flattens `{facetName: {optionId: SearchFilterStateSynced}}` into `{facetName: SearchFilterStateSynced[]}`) → dispatched to PUT /api/search/{searchId} → batch-ZE SearchController.updateSearchFacets → SearchServiceImpl.updateFacets → FacetStateMapper.mapForm converts to internal FacetStateDto → persisted as JSONB in search_facets.filters → on result fetch, JooqFTSHelper.facetStateConditions translates each facet to a JOOQ WHERE clause against the corresponding column. MATCHES the promise at the conceptual level."
+          evidence: "Search.tsx:77 + components.yaml:2251-2285"
+        - q: "When supplied, what does the implementation USE it for?"
+          a: "Search.tsx:77 flattens {facetName:{optionId:state}} → {facetName:[state]} → PUT /api/search/{searchId} → batch-ZE updateSearchFacets → persisted JSONB → translated to WHERE clauses on fetch. MATCHES at the structural level; filters is the only `required` SearchFormData field (components.yaml:2286-2287)."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:53-58 + dataentitiesSearch.thunks.ts:34-41 + batch-ZE SearchController.updateSearchFacets + V0_0_1__init.sql:204-211 (jsonb filters column)"
-        - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "MATCHES at the structural level — filters in the payload correspond to filter columns at the WHERE clause. The semantic mapping (e.g. 'OwnerFacet' option-id → owner.id) is unambiguous; the wire format is straightforward."
+          evidence: "Search.tsx:71-80 + dataentitiesSearch.thunks.ts:34-41 + components.yaml:2251-2287"
+        - q: "Does the actual scope MATCH the name's promise?"
+          a: "MATCHES — facet payload corresponds to facet WHERE clauses; the 8 spec facet keys map to the 7 rendered Filters (entity_classes is set by the tab, not the sidebar)."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:53-58 + batch-ZE SearchController.updateSearchFacets + FacetStateMapper"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "N/A — drift is NONE."
-          confidence: STATIC-INFERRED
-          evidence: "N/A"
-        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "NONE — filters is used straightforwardly."
+          evidence: "Search.tsx:71-80 + Filters.tsx:47-65 + components.yaml:2253-2285"
+        - q: "Available-but-unused?"
+          a: "NONE."
           confidence: STATIC-INFERRED
           evidence: "N/A"
       routes_to_finding: "N/A"
 
-    - location: "Search.tsx:55 (myObjects forwarded into dispatch payload from selector getSearchMyObjects)"
+    - location: "Search.tsx:76 (myObjects forwarded from getSearchMyObjects)"
       input_kind: body-field
-      input_name: "myObjects"
+      input_name: "myObjects (spec: my_objects)"
       questions:
-        - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "Name 'myObjects' promises a scope-to-my-data toggle — when true, the search should return only entities the current user owns."
+        - q: "What does the input NAME promise the caller?"
+          a: "A scope-to-my-data toggle — when true, return only entities the current user owns."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:55 + SearchFormData.myObjects field"
-        - q: "When supplied, what does the implementation USE the input for?"
-          a: "Chain: Search.tsx:55 forwards myObjects → PUT /api/search/{searchId} → SearchServiceImpl.updateFacets → state.isMyObjects() is consulted at SearchServiceImpl.java:106 to scope the result query via authIdentityProvider.fetchAssociatedOwner. When true, the result query gains a WHERE clause `owner_id IN (current_user_owner_ids)`. When false, NO scoping is applied — full catalog."
+          evidence: "Search.tsx:76 + components.yaml:2249-2250"
+        - q: "When supplied, what does the implementation USE it for?"
+          a: "Search.tsx:76 forwards myObjects → PUT /api/search/{searchId} → batch-ZE: when true the result query is scoped to the user's owner mapping; when false, full catalog. Backend line numbers referenced (not re-verified at this commit)."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:55 + batch-ZE SearchController.search + SearchServiceImpl.java:106"
-        - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "MATCHES at the conceptual level — 'myObjects' means 'objects owned by me' via the user-owner-mapping table. The implementation honors the name. **HOWEVER**, there is a Category F edge case that LSN-020 explicitly flags: 'my' here resolves to the user-OWNER-mapping, NOT to the user's `created_by` audit column. A user who PERFORMS ingestion or audit actions (which write `created_by`) but is NOT in the user-owner-mapping returns empty for myObjects=true. This is the SAME pattern as the LSN-020 Activity Feed userIds → OWNER_ID translation. For Search.tsx the impact is subtle: the user-owner-mapping IS the correct semantic for 'my objects' (data entities I OWN, not data entities whose creation I logged), so the LSN-020 class-match here is NOT a drift — but it warrants the explicit note because the naming alone does not guarantee semantic alignment."
+          evidence: "Search.tsx:76 + batch-ZE SearchController (referenced)"
+        - q: "Does the actual scope MATCH the name's promise?"
+          a: "MATCHES (objects I OWN, via user-owner mapping). LSN-020 class-awareness note: 'my' resolves to the user-OWNER mapping, not the created_by audit column — but for 'my objects' the owner mapping IS the correct semantic, so this is NOT a drift, just a documented edge."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:55 + SearchServiceImpl.java:106 + LSN-020 cross-link + USER_OWNER_MAPPING schema"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "Edge case: a user with NO entry in USER_OWNER_MAPPING who toggles myObjects=true sees an empty result list — even if they have other relationships to data entities (e.g. listed as `created_by`, or holding RBAC roles over the entity). The fix here is not to change the name; it's to add a user-mapping entry for the user. Same shape as LSN-020 but with a non-misleading name."
+          evidence: "Search.tsx:76 + LSN-020 + batch-ZE (referenced)"
+        - q: "For wrong assumption / available-but-unused?"
+          a: "Edge: a user with no USER_OWNER_MAPPING entry who toggles myObjects=true sees an empty list. Fix is to add a mapping, not rename. No closer-aligned field."
           confidence: STATIC-INFERRED
-          evidence: "USER_OWNER_MAPPING table + LSN-020"
-        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "NONE — the implementation is correct for the 'objects I OWN' interpretation."
-          confidence: STATIC-INFERRED
-          evidence: "N/A"
-      routes_to_finding: "N/A (drift NONE; LSN-020 cross-link is for class-awareness, not a bug)"
+          evidence: "LSN-020 + batch-ZE (referenced)"
+      routes_to_finding: "N/A (drift NONE; LSN-020 cross-link for class-awareness)"
 
-    - location: "Search.tsx:39 (pageSize forwarded into initial session-create payload)"
+    - location: "Search.tsx:60 (pageSize in the create payload)"
       input_kind: body-field
       input_name: "pageSize"
       questions:
-        - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "Name 'pageSize' promises the number of results per page returned by the search."
+        - q: "What does the input NAME promise the caller?"
+          a: "Results per page."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + SearchFormData.pageSize field"
-        - q: "When supplied, what does the implementation USE the input for?"
-          a: "Backend: per batch-ZE SearchController.search, the pageSize field at session-create is NOT propagated to subsequent result-fetch — the Results.tsx infinite-scroll child uses its own hardcoded size=30 (Results.tsx:45) in every GET /api/search/{searchId}/results call. The session-state pageSize is effectively DEAD — neither the backend's result-pagination nor the UI's infinite-scroll consult it."
+          evidence: "Search.tsx:60"
+        - q: "When supplied, what does the implementation USE it for?"
+          a: "Nothing on the wire — pageSize is NOT a SearchFormData property in the spec (components.yaml:2244-2287), so the generated client does not serialise it. Result pagination uses Results.tsx:45 size=30."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45 + dataentitiesSearch.thunks.ts:52-67"
-        - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "TRANSLATES_SILENTLY — the name promises a controllable page size; the implementation accepts it at session-create but uses a different hardcoded constant for actual result pagination. Operator-invisible (because both happen to be 30), but a maintainer altering Search.tsx:39 from 30 to 50 will see no change unless they ALSO update Results.tsx:45. The drift is silent."
+          evidence: "Search.tsx:60 + components.yaml:2244-2287 + Results.tsx:45"
+        - q: "Does the actual scope MATCH the name's promise?"
+          a: "TRANSLATES_SILENTLY (stronger than the prior enrichment said): not merely superseded by a Results constant, it is OFF-CONTRACT. A maintainer editing it sees no effect AND it is not even sent to the server."
           drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45"
-        - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "Maintainer bumps Search.tsx:39 pageSize to 50 expecting larger result pages — sees no effect. (Operator: not directly affected today; potential for future drift if the two literals diverge.)"
+          evidence: "Search.tsx:60 + components.yaml:2244-2287 + Results.tsx:45"
+        - q: "Available-but-unused?"
+          a: "Results.tsx:45 `const size = 30` is the authoritative size. Recommend removing pageSize from the create payload (handleStartNewSearch already omits it) or wiring a single shared constant."
           confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45"
-        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "Yes — Results.tsx:45 `const size = 30` is the authoritative pagination size; Search.tsx:39 pageSize:30 is the dead-but-named-correctly twin. Either remove the Search.tsx:39 value (use a single shared constant) or wire it through."
-          confidence: STATIC-INFERRED
-          evidence: "Search.tsx:39 + Results.tsx:45"
-      routes_to_finding: "implicit_adrs[4] (pageSize=30 hardcoded twice)"
+          evidence: "Search.tsx:55, 60 + Results.tsx:45"
+      routes_to_finding: "invariants (pageSize dead + off-contract)"
 
   probes_emitted:
+    - probe_id: P-244
+      question: "Create-FAILURE retry loop on Search.tsx:58-63 (effect-1 deps smell × isSearchCreating pending->rejected re-fire) — measures POST cardinality in a 10s window under a forced 500"
+      probe_path: "lineage/odd-platform/probes/P-244.yaml"
     - probe_id: P-187
-      question: "Auth gate at the Catalog page route (Category D — confirms anonymous reach under auth.type=DISABLED + the no-permission-wrap route mount)"
+      question: "(pre-existing) Auth gate at the Catalog route under DISABLED + the bare route mount"
       probe_path: "lineage/odd-platform/probes/P-187.yaml"
     - probe_id: P-188
-      question: "FTS-injection / session-poisoning end-to-end (Category F + B — confirms the typed query metacharacter → 42601 → poisoned UUID chain)"
+      question: "(pre-existing) FTS-injection / session-poisoning end-to-end from the typed query"
       probe_path: "lineage/odd-platform/probes/P-188.yaml"
     - probe_id: P-189
-      question: "Debouncer recreation under rapid facet clicking (Category E — measures dispatch cardinality and confirms the broken-debouncer hypothesis)"
+      question: "(pre-existing) Debouncer recreation under rapid facet clicking — PUT cardinality"
       probe_path: "lineage/odd-platform/probes/P-189.yaml"
 
   stress_summary:
     triggers_total: 13
-    questions_total: 52
-    answers_static_inferred: 45
+    questions_total: 41
+    answers_static_inferred: 34
     answers_probe_needed: 5
     answers_reference: 2
-    drift_flags: 4   # name_behavior_pairs.updateSearchFacets (DRIFT) + .MainSearch (DRIFT) + .Catalog tab (MINOR) + request_inputs.searchId (DRIFT) + .query (DRIFT) + .pageSize (DRIFT) = 6, but 2 of these (searchId, query) cross-list in name_behavior_pairs and request_inputs — distinct count of UNIQUE drift findings is 4 (updateSearchFacets debouncer, MainSearch+query placeholder, searchId path-param, pageSize session-vs-results)
+    drift_flags: 5   # updateSearchFacets, MainSearch/query, Catalog-tab(MINOR), searchId, pageSize
 ```
 
 ## docs_link_semantic
@@ -537,268 +509,211 @@ stress_findings:
 - inferred_docs:
   - url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
     anchor: ""
-    rationale: "Canonical live doc page for the Search and Filtering feature (P-01:F-002). Live page WebFetched in this session 2026-05-20 — status 200. Page explicitly enumerates the seven facets that THIS UI's `<Filters/>` child renders (Datasource / Type / Namespace / Owner / Tag / Groups / Statuses — matching Filters.tsx:46-65 verbatim) and frames the Catalog-page search workflow. Confidence promoted to HIGH because the live page's facet list matches the UI's facet list 7-for-7."
-    last_verified_at: "2026-05-20T00:00:00Z"
+    rationale: "Canonical live doc for Search Filter Facets (P-01:F-005 / F-017). WebFetched in this session 2026-06-11 — status 200. The page enumerates the same 7 facets THIS UI's <Filters/> renders (Filters.tsx:47-65) and NOW documents the session model, deep-link sharing, the 30-day eviction, the Catalog-tab-drop, and the query-character caveat — content that was absent at the prior (2026-05-20) enrichment."
+    last_verified_at: "2026-06-11T00:00:00Z"
     last_verified_status: 200
-    last_verified_via: "WebFetch in this session against the live URL; response listed the 7 facets in order matching Filters.tsx + the result-display narrative"
+    last_verified_via: "WebFetch in this session against the live URL (two prompts: facet/query/session-coverage + my-objects/pagination/expiry-coverage)"
     confidence: HIGH
-  - url: "https://docs.opendatadiscovery.org/features/data-discovery"
-    anchor: ""
-    rationale: "P-01 pillar landing — Data Discovery section. The Catalog page Search.tsx is the principal entrypoint to the discovery pillar."
-    last_verified_at: "2026-05-20T00:00:00Z"
-    last_verified_status: 200
-    last_verified_via: "previously verified via system-mission.md generation pass + WebFetch — sister inference to TermSearch batch-U"
-    confidence: MEDIUM
 - fetched_excerpts: |
-    From live WebFetch of `https://docs.opendatadiscovery.org/features/data-discovery/search` (status 200, 2026-05-20):
-
-    **Facets enumerated on the live page** (matches Filters.tsx:46-65 verbatim):
-    1. Datasource — "restrict results to entities ingested from a specific datasource (single-select)"
-    2. Type — Multi-select for entity types like TABLE, JOB, DASHBOARD; "Only shown after an entity-class tab is selected"
-    3. Namespace — "restrict to entities in a given namespace (single-select)"
-    4. Owner — Multi-select
-    5. Tag — Multi-select
-    6. Groups — Multi-select for Data Entity Group membership
-    7. Statuses — Multi-select for statuses like STABLE, DEPRECATED
-
-    **Search input narrative**: "type your search query into the search bar"; "ODD dynamically responds, delivering results in seconds." NO explicit mention of Enter-key semantics, suggestions toggle (disabled on this surface), or URL-backed session UUID.
-
-    **Result display**: "Each entity in the search results is accompanied by an information and a question icon, offering additional clarity and insight."
+    From live WebFetch of `https://docs.opendatadiscovery.org/features/data-discovery/search` (status 200, 2026-06-11):
+    - Facets (matches Filters.tsx:47-65): Datasource, Type, Namespace, Owner, Tag, Groups, Statuses.
+    - Query: "Type your search query into the search bar and ODD does the rest." Caveat: "Avoid the characters ( ) & | ! * : in the search box." — the platform treats these as FTS operators; entering them causes subsequent reads to fail with HTTP 500 until corrected.
+    - Session model: the /search/{id} URL is "a server-side session, not a frozen query"; "Sharing a /search/{uuid} URL with a teammate hands them an interactive cursor, not a snapshot"; "Clicking the Catalog top-nav tab drops the UUID and starts a fresh session."
+    - Expiry: "A session row lives until 30 days after its last access (configurable via housekeeping.ttl.search_facets_days). After eviction the URL returns no results (the Catalog reverts to an empty state)." Bookmarking is described as "unreliable" for long-term reference.
+    - My Objects tab: "The subset of the above owned by the authenticated user. The personal-namespace tab."
+    - NOT covered: search suggestions/autocomplete; pagination / infinite-scroll / page size; the 'Add group' (DEG-create) CTA; the new "This search has expired" screen.
 - doc_drift_findings:
-  - "**UI-DOC-GAP-Search-A: The live doc does NOT document the URL-backed deep-link share-ability of filtered Catalog views.** A high-utility feature — share `/search/{uuid}` with a teammate to restore the same filter state — is undocumented. The user has to discover it by experimentation. Pairs with the session-expiry caveat (bugs section [7] — stale UUID broken page) which SHOULD be cross-linked to the doc page if the share-ability is ever documented. Severity: MEDIUM (high-utility undocumented feature; same finding shape as TermSearch batch-U UI-DOC-GAP-H). Routed from stress_findings.request_inputs.searchId."
-  - "**UI-DOC-GAP-Search-B: The live doc does NOT document the 'My Objects' tab vs default 'All' read-collaborative posture.** The page describes search facets but says nothing about the implicit cross-owner visibility model. Operators expecting per-team isolation discover only by experimentation that the 'My Objects' tab is OPT-IN — every Catalog search by default returns the entire data-entity catalog. The platform's read-collaborative posture (system-mission.md line 267) is a load-bearing architectural stance that operators MUST understand; it lives undocumented on the user-facing Search page. Severity: HIGH (security expectation drift — operators may assume isolation they don't get). Routed from stress_findings.auth_gates."
-  - "**UI-DOC-GAP-Search-C: The live doc does NOT document the FTS query-text syntax / metacharacter handling.** A typed query of `foo ) | (bar` poisons the session UUID per REFACTOR-229. The docs say 'type your search query' without mentioning that the query is interpreted as a tsquery prefix-match expression. Operators trying advanced syntax (e.g. `\"exact phrase\"`, boolean operators) encounter unpredictable behaviour with no documentation. Severity: MEDIUM (silent-syntax-failure risk; combined with REFACTOR-229 the syntax errors are also availability-affecting). Routed from stress_findings.request_inputs.query + name_behavior_pairs.MainSearch."
-  - "**UI-DOC-GAP-Search-D: The live doc does NOT document pagination semantics or page size.** The docs imply continuous browsing ('delivering results in seconds') but do not state that the UI loads 30 entities per scroll-page, nor that the total count may drift from the actual list count (REFACTOR-425 family + the backend's hard-coded hasNext=true). For deployments with 10K+ data entities, this is a perceptible UX trait. Severity: LOW."
-  - "**UI-DOC-GAP-Search-E: The live doc does NOT document the DEG-create CTA visibility model.** The 'Add group' button appears on the Catalog page only when (a) the user has `DATA_ENTITY_GROUP_CREATE` permission AND (b) the user has selected the 'ENTITY_GROUP' class tab. Operators looking for a way to create a DEG may not realise the conditional visibility — the docs don't explain why the button appears for some users and not others. Severity: LOW."
-  - "**UI-DOC-GAP-Search-F: The live doc does NOT document the suggestion-disabled behaviour on the Catalog page.** Search.tsx explicitly disables suggestions (`<MainSearch ... disableSuggestions/>`); the suggestions backend endpoint exists but is suppressed here. The docs don't mention suggestions either way — operators don't know whether suggestions are a feature or what disables them. Severity: LOW."
-  - "**UI-DOC-GAP-Search-G: The live doc does NOT mention the top-nav 'Catalog' tab drops the current session.** Operators inside a filtered session who click the tab lose their filters with no warning. Routed from stress_findings.name_behavior_pairs.Catalog-tab. Severity: LOW (UX gap)."
+  - "**RESOLVED since the prior enrichment (docs caught up):** deep-link share-ability, the read-collaborative / My-Objects posture, the query-character caveat, and the Catalog-tab-drops-session behaviour are now all documented on the live page (WebFetched 2026-06-11). The four prior UI-DOC-GAPs (A/B/C/G) are substantially closed on the doc side. The corresponding CODE-side facts (no client-side FTS mitigation; default cross-owner visibility) remain real and live in bugs/security — code facts, not doc facts."
+  - "**NEW forward-drift — UI-DOC-GAP-Search-H: the live doc says an expired session 'returns no results (the Catalog reverts to an empty state)'; the CODE at this commit renders a dedicated 'This search has expired' screen with a 'Start new search' button (Search.tsx:94-96 + SearchSessionExpired.tsx:29-40).** The doc describes the PRE-#1760 behaviour. This is release-train territory: the #1760 fix rides milestone 0.28.0 (CTRIB-005), and a pending-release doc update (DOC-443, per workspace state) should re-describe the expired-link UX. Severity: MEDIUM (the doc actively mis-describes the new behaviour). Routed from name_behavior_pairs.SearchSessionExpired + bugs[6]."
+  - "**UI-DOC-GAP-Search-D (still open): pagination / infinite-scroll / 30-per-page is undocumented.** Severity: LOW."
+  - "**UI-DOC-GAP-Search-E (still open): the DEG-create ('Add group') CTA visibility model (DATA_ENTITY_GROUP_CREATE + ENTITY_GROUP tab) is undocumented.** Severity: LOW."
+  - "**UI-DOC-GAP-Search-F (still open): suggestions are explicitly disabled on this surface (Search.tsx:109) and undocumented either way.** Severity: LOW."
+
+**Release-train marker** *(adrs/drafts/release-train-doc-gating.md)*: the "This search has expired" UX is merged on this branch but rides milestone **0.28.0**; the matching doc update is pending-release (DOC-443). UI-DOC-GAP-Search-H confidence stays LOW until the release gate publishes and a later enrichment verifies the live page describes the expired-screen behaviour.
 
 ## security
 
-- **auth_mode_relevance**: `LOGIN_FORM | OAUTH2 | LDAP` — the Catalog page is a UI/API surface protected by the three non-DISABLED auth modes per the SECURITY_RULES wiring; reaching `/search/*` requires an authenticated session in those modes. Under `auth.type=DISABLED` the route is reachable by anyone able to hit the platform's HTTP port (per pillar P-09 dev-only mode + REFACTOR-068 + Probe P-187 to confirm). The component itself does not gate by auth mode — the upstream route shell + `WithPermissionsProvider` chain decide whether `Search` mounts; the route mount at App.tsx:61 is unconditional but the platform-level redirect-to-login behaviour on session miss enforces auth at the network layer.
-- **ingestion_filter_relevance**: `NO — UI/API surface, not ingestion`. The `auth.ingestion.filter.enabled` filter applies only to `/ingestion/entities` — this component drives `/api/search/*` traffic on the UI/API surface, governed by SECURITY_RULES not the ingestion filter.
+- **auth_mode_relevance**: `LOGIN_FORM | OAUTH2 | LDAP` — the Catalog page is a UI/API surface protected by the three non-DISABLED modes; under `auth.type=DISABLED` the route + downstream APIs are anonymously reachable (dev-only mode; pinned by existing probe P-187). The component itself does no auth-mode gating — App.tsx:61-64 mounts it bare; the platform HTTP layer enforces redirect-to-login under non-DISABLED modes.
+- **ingestion_filter_relevance**: `NO — UI/API surface, not ingestion`. Drives `/api/search/*`, governed by SECURITY_RULES, not the ingestion filter.
 - **authorization_assertions**:
-  - "`<WithPermissionsProvider allowedPermissions={[Permission.DATA_ENTITY_GROUP_CREATE]} resourcePermissions={[]}>` (Search.tsx:81-85) wrapping `<Results/>` — UI-only INJECTION of the permission context; does NOT gate route rendering (the `<Results/>` element renders regardless of the user's DATA_ENTITY_GROUP_CREATE permission)."
-  - "`<WithPermissions permissionTo={Permission.DATA_ENTITY_GROUP_CREATE}>` (Results.tsx:125) wrapping the conditional `<DataEntityGroupForm/>` (Results.tsx:126-137) — UI-only HIDE of the Create CTA. The button is INVISIBLE (not greyed) to users without DATA_ENTITY_GROUP_CREATE — same pattern as TermSearch batch-U + PolicyList batch-Q."
-  - "**NO row-level authorization on Results result-list rendering.** Results.tsx:151-159 maps every `searchResult` through `<ResultItem/>` unconditionally — there is no `WithPermissions`, no per-entity owner check, no per-entity permission check. Every authenticated user sees every data-entity row returned by the server. The `<ResultItem/>` itself renders a Link to the entity's detail page — also unconditional."
-  - "**NO @PreAuthorize on the upstream `SearchController.search` controller method itself (per batch-ZE SearchController.search invariants[1]: 'no controller-side validation beyond @Valid').** The read surface is wide open to authenticated users — and to ANYONE under DISABLED-mode."
-- **owner_scoping**: `BYPASSES — read-collaborative posture inherited from batch-ZE SearchController + SearchServiceImpl`. The repository tier has no per-owner / per-namespace filter on the main result list (`authIdentityProvider.fetchAssociatedOwner` is called only to compute `myObjectsTotal` count; not used to scope the main result query — SearchServiceImpl.java:128-130). This UI surfaces the unscoped catalog. The 'My Objects' tab IS an opt-in scoping affordance, but the default is 'All'. Cross-batch link: system-mission.md line 267 (the architectural stance) + batch-ZE SearchController owner_scoping field.
+  - "`<WithPermissionsProvider allowedPermissions={[DATA_ENTITY_GROUP_CREATE]} resourcePermissions={[]} Component={Results}/>` (Search.tsx:110-114) — INJECTS permission context; ALWAYS renders Results (WithPermissionsProvider.tsx:30-39). NOT a route gate."
+  - "`<WithPermissions permissionTo={DATA_ENTITY_GROUP_CREATE}>` (Results.tsx:125) — UI HIDE of the 'Add group' button (invisible, not disabled)."
+  - "NO row-level authorization on the result list (Results.tsx:151 unconditional .map)."
+  - "NO @PreAuthorize on SearchController.search (batch-ZE, referenced) — read surface open to authenticated users (and to anyone under DISABLED)."
+- **owner_scoping**: `BYPASSES — read-collaborative posture` (backend non-scoping owned by batch-ZE SearchServiceImpl, referenced; UI-side confirmed by the absence of any owner wrap on the Results mount, Search.tsx:110-114, and Results.tsx:151). My Objects is opt-in.
 - **data_exposure**:
-  - "List view exposes every data-entity row across every owner / namespace to every authenticated user. The fields exposed per ResultItem include (verified by Grep ResultItem rendering): entity name, namespace, ownership, type, datasource, tags, statuses — i.e. the COMPLETE metadata surface for every entity in the catalog. Names like `finance/customers_pii`, `marketing/user_clickstream`, `compliance/audit_logs` may reveal organisational structure, sensitive-data categorisation, or compliance taxonomy. The full catalog is informational disclosure."
-  - "Click-through to entity detail (`<S.ResultsItemLink>` inside ResultItem.tsx) exposes the FULL DataEntity DTO (definition, lineage neighbours, owners, tags, statuses, descriptions, attachments, terms) — but the Link itself is rendered unconditionally on every row. Per batch-J F-001 sidecars, opening a detail page registers as +2 view_count (LSN-017 case) — so casual Catalog browsing inflates the Popular ranking by 2x the user's click count."
-  - "DEG-create CTA visibility leaks the user's DATA_ENTITY_GROUP_CREATE permission to the DOM (visible only when the user has the permission AND the entity-class tab is `ENTITY_GROUP`). An adversary inspecting the DOM after navigating to the ENTITY_GROUP tab can infer the current user's permission set. Pattern identical to PolicyList batch-Q + TermSearch batch-U."
-  - "URL-visible session UUID (`/search/{uuid}`) — the UUID is opaque to outside observers but constitutes an unguessable bearer of session state on the server. Sharing the URL shares the filter state. Per REFACTOR-344 the `search_facets` row has no user binding, so the UUID is bearer-token-shaped — anyone who knows it can read/update the session. Combined with REFACTOR-229 (FTS injection on the `query` field) a malicious caller can poison a session UUID, then share/distribute it to break the recipient's facet reads."
-  - "Typed search-query text reaches the server as-is (no client-side validation per bugs[8]); the server then reflects the query back in `SearchFacetsData.query` field and stores it in `search_facets.query_string`. Anyone with the session UUID can read what the user typed. Per REFACTOR-344 + REFACTOR-229 this is a session-poisoning vector. Per batch-ZE TRUE-SQL-injection finding at highlightDataEntity, the same query reaches a `.formatted()` SQL-interpolation site — a real SQL injection sink."
+  - "The result list exposes every data-entity row across every owner/namespace to every authenticated user (Results.tsx:151) — names like `finance/customers_pii` are discoverable regardless of ownership."
+  - "Click-through to entity detail is unconditional per row (Results child); per F-001 the detail open inflates view_count (LSN-017)."
+  - "The DEG-create button visibility leaks the user's DATA_ENTITY_GROUP_CREATE permission to the DOM (when on the ENTITY_GROUP tab)."
+  - "The session UUID is visible in the URL (`/search/{uuid}`) and is bearer-token-shaped — no user binding (REFACTOR-344, referenced); sharing the URL shares read+update access to the session. The live doc now describes this as 'an interactive cursor, not a snapshot'."
+  - "Typed query text is stored server-side and reflected in SearchFacetsData.query; combined with REFACTOR-229 it is a session-poisoning / SQL-injection vector at the backend (referenced)."
 - **known_security_gaps**:
-  - "**Read-collaborative posture — every authenticated user searches the entire catalog by default.** The 'My Objects' tab is OPT-IN, not the default. The 7 facets are CLIENT-SELECTED filters, not implicit identity-based scoping. Organisations expecting team-isolation (team-A's `pii_subjects` table not visible to team-B's analyst) discover from this UI that no such isolation exists. Cross-batch link: system-mission.md line 267 (read-collaborative posture as an architectural stance) + REFACTOR-024 family." — evidence: Search.tsx:74-87 (no permission wrap on Results) + Results.tsx:151-159 (unconditional .map) + batch-ZE SearchController invariants + system-mission.md line 267 — severity: MEDIUM (the architectural stance is documented in system-mission.md but the UI surface is the consequence; operators MAY not realise the default behaviour)
-
-  - "**FTS-injection / session-poisoning at the typed search-query field (REFACTOR-229 batch-ZE strengthening) + TRUE SQL injection at the highlight path.** Typed text passes UNESCAPED through to `to_tsquery(?)` — a query containing tsquery metacharacters (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\\`) poisons the session UUID. Combined with REFACTOR-344 (no user binding on search_facets) the poisoned UUID can be shared as a DoS vector. **The UI provides ZERO mitigation** — no max-length, no metacharacter filter, no client-side `to_tsquery` validation. Search.tsx is the UI HALF of the REFACTOR-229 security finding; the architectural fix point is `JooqFTSHelper.tsQuery` (single source of truth on the server). **CRITICAL: per batch-ZE SearchController class invariants[7], the same `query` field reaches ReactiveDataEntityRepositoryImpl.getHighlightedResult at line 798-806 via `String.formatted(text, tsQuery)` — a true raw-SQL-interpolation site. This is exploitable SQL injection, not just DoS-by-syntax.** Probe P-188 emitted to pin the chain end-to-end." — evidence: Search.tsx:80 (MainSearch mount, no validation prop) + MainSearchInput.tsx:42-48 (raw query dispatch) + REFACTOR-229.md + batch-ZE SearchController invariants[7] + JooqFTSHelper.java:164-168 + ReactiveDataEntityRepositoryImpl.java:798-806 + P-188 — severity: HIGH (security/availability hazard; operator-reachable; DoS-by-poisoned-session is the documented impact pattern; TRUE SQL injection at highlight path)
-
-  - "**Session UUID is bearer-token-shaped — REFACTOR-344 family.** The `search_facets` row has no user-binding column. Anyone with the UUID can read/update the session. Sharing the URL `/search/{uuid}` shares the SESSION as well as the filter state. Combined with REFACTOR-229 (above), a poisoned UUID becomes a denial-of-service vector that propagates by sharing. The UI does not surface this — the URL appears as just a state-restore mechanism. **Category F finding: the param name `searchId` does not communicate the bearer-token-shape; operators reading the URL bar cannot tell that the UUID is a shareable handle to a server-side ephemeral session.**" — evidence: Search.tsx:44-48 + REFACTOR-344 (search_facets no user binding) + REFACTOR-229.md + stress_findings.request_inputs.searchId — severity: MEDIUM
-
-  - "**Session-expiry is silent — broken-page UX after 30 days.** A user reloading after `housekeeping.ttl.search_facets_days: 30` (default per F-010) sees a permanently broken page at `/search/{stale-uuid}` (per bugs section [7]). Not a privacy leak but a session-lifecycle quirk operators should know. Cross-batch link: F-010 / P-08:F-002 SearchFacetsHousekeepingJob (LSN-018 case-law for the search_facets TTL eviction)." — evidence: Search.tsx:44-48 + F-010.yaml — severity: LOW
-
-  - "**Unhandled-rejection silent-failure on session-create / restore.** useCreateSearch.ts:14-19 (createDataEntitiesSearch promise chain — no .catch); slice missing .rejected reducers. Auth-token-expired mid-session reproduces: the GET `/api/search/{searchId}` returns 401 → thunk rejects → slice silent → URL retains `:searchId` → user sees frozen empty page → refresh repeats. Pattern parity with batch-U TermSearch known_security_gaps[4]." — evidence: useCreateSearch.ts:14-19 + slice.ts:214-260 (no rejected handlers) — severity: MEDIUM (defence-in-depth + observability — silent failures inhibit operator diagnostics)
-
-  - "**Create-DEG backend-bypass via direct API.** The UI hides the 'Add group' button when DATA_ENTITY_GROUP_CREATE absent (Results.tsx:125), but the backend route `POST /api/dataentitygroups` is gated via SECURITY_RULES at SecurityConstants (not re-verified this session — out of scope for the UI sidecar's confirmed surface). UI guard is defensive; backend enforcement is the operative defence." — evidence: Results.tsx:125-138 — severity: LOW (defence-in-depth is fine; the UI is presentation-only by design)
-
-  - "**Cross-owner data exposure family (REFACTOR-024).** Every authenticated user sees every data-entity row. The default tab is 'All'; the 'My Objects' tab is OPT-IN. The 7 facets are CLIENT-SELECTED filters, not identity-based scoping. This is the canonical Discovery-pillar surface where the read-collaborative posture (system-mission.md line 267) manifests. Pattern parity with the TermSearch batch-U read-collaborative finding on Terms." — evidence: Search.tsx:74-87 + Results.tsx:151-159 + REFACTOR-024 family + system-mission.md line 267 — severity: MEDIUM
-
-  - "**Anonymous reach under auth.type=DISABLED.** Probe P-187 emitted to pin (a) the route mount has no permission wrap (App.tsx:61); (b) the downstream APIs have no @PreAuthorize (batch-ZE) and no SECURITY_RULES entry; (c) under DISABLED, an unauthenticated caller can POST /api/search + GET the result list. The Catalog page is functionally PUBLIC under DISABLED. Operators using DISABLED mode for 'just trying ODD locally' may not realise their network port is exposing the catalog to anyone able to reach it." — evidence: P-187 + App.tsx:61 + batch-ZE SearchController invariants[1] + SecurityConstants.SECURITY_RULES — severity: MEDIUM (DISABLED is dev-only per docs, but the absence is structural; once DISABLED is in use the Catalog page is anonymously reachable)
+  - "**Read-collaborative posture — every authenticated user searches the entire catalog by default; My Objects is opt-in.** Now documented on the live doc, but the code stance is unchanged." — evidence: Search.tsx:110-114 + Results.tsx:151-159 + batch-ZE (referenced) — severity: MEDIUM
+  - "**FTS-injection / session-poisoning at the typed query (REFACTOR-229) — UI provides ZERO programmatic mitigation.** The live doc warns about the characters, but there is no client-side validation/escape. Backend FTS + highlight-SQL-interpolation sinks owned by batch-ZE (referenced, not re-verified at this commit); pinned by existing probe P-188." — evidence: Search.tsx:109 + MainSearchInput.tsx:38, 44 + REFACTOR-229 (referenced) + P-188 — severity: HIGH (UI-side absence HEAD-verified; backend sink a reference)
+  - "**Session UUID is bearer-token-shaped (REFACTOR-344).** No user binding; the param name 'searchId' does not communicate it. Category F finding." — evidence: Search.tsx:65-69 + REFACTOR-344 (referenced) — severity: MEDIUM
+  - "**Create-path failure has no component-level error surface and retries unboundedly.** The expired/error gates (Search.tsx:94-100) key only off the GET action, so a failing POST /api/search renders no dedicated UI; effect 1 retries (bugs[1], P-244). A toast IS shown (corrects the prior 'no error message' claim), but it is deduped to one. Observability + DoS-amplification concern under a partial search outage." — evidence: Search.tsx:58-63, 94-100 + useCreateSearch.ts:14-19 + loader.slice.ts:42-49 + P-244 — severity: MEDIUM
+  - "**Deep-link restore failure is now surfaced gracefully (404 → expired screen; other → AppErrorPage).** This is a security/observability IMPROVEMENT over the prior silent-failure posture — recorded for the audit trail." — evidence: Search.tsx:48-51, 94-100 + errorHandling.tsx:12-18 — severity: N/A (improvement)
+  - "**Anonymous reach under auth.type=DISABLED.** Pinned by existing probe P-187; the route mount is bare and the downstream APIs have no SECURITY_RULES entry (batch-ZE, referenced)." — evidence: P-187 + App.tsx:61-64 + batch-ZE (referenced) — severity: MEDIUM
 
 ## performance
 
 - **hot_paths**:
-  - "Initial mount fires `createDataEntitiesSearch` → POST `/api/search` → server-side `search_facets` row INSERT + `SearchServiceImpl.search` → `getFacetsData` runs **the catalog-wide COUNT(*) query via `ReactiveDataEntityRepository.countByState`** (batch-ZE SearchController.search couples_to). For a 10K-entity catalog this is a non-trivial cost on every Catalog-page mount. The follow-up `navigate(searchPath(searchId))` triggers a client-side route transition. Result rows then load via Results.tsx infinite-scroll (GET `/api/search/{searchId}/results?page=1&size=30`)." — evidence: Search.tsx:37-42 + useCreateSearch.ts:14-19 + Results.tsx:71-74 + batch-ZE SearchController.search performance section
-  - "Filter sidebar interactions fire `updateDataEntitiesSearch` via the BROKEN debouncer (see bugs section [3]) — every click currently dispatches one PUT immediately (instead of coalescing). For a user rapidly toggling 5 facets in 2 seconds, server takes 5 PUTs in 2 seconds — each a session-state write + facet recompute. Server-side cost per PUT scales O(# facet options × # facets × catalog size) in `SearchServiceImpl.updateFacets` + `getFacetsData`. Probe P-189 emitted to measure dispatch cardinality." — evidence: Search.tsx:50-71 (broken debouncer) + dataentitiesSearch.thunks.ts:34-41 + P-189
-  - "Restore-from-URL fires `getDataEntitiesSearch` → GET `/api/search/{searchId}` once per deep-link / reload. Cost: one HTTP round-trip + one server-side session read + one full facet-state recompute. Cold-cache deep-link to a 30-day-old session: probably 404 (session evicted) → 0 cost but broken UI." — evidence: Search.tsx:44-48 + dataentitiesSearch.thunks.ts:43-50 + F-010.yaml (30-day TTL)
-  - "Infinite-scroll page loads (Results child): one HTTP round-trip per page. `pageSize=30` hardcoded; for a 10K-entity catalog, ~334 paginated GETs to fully load — only happens if the user actually scrolls. Per-page cost scales with the search-result `JooqFTSHelper.facetStateConditions` query." — evidence: Results.tsx:71-74 + dataentitiesSearch.thunks.ts:52-67
+  - "Initial mount fires POST /api/search → server-side session INSERT + a catalog-wide facet/count aggregation (batch-ZE, referenced) on every Catalog index-route mount. For a large catalog this is non-trivial per mount." — evidence: Search.tsx:58-63 + useCreateSearch.ts:14-19 + batch-ZE (referenced)
+  - "**NEW: create-failure retry loop (bugs[1]) turns a single failed mount into a storm of POST /api/search calls** (no backoff) — a self-inflicted load amplifier under a partial search outage. Probe P-244 measures the cardinality." — evidence: Search.tsx:58-63 + P-244
+  - "Facet interactions fire one PUT per click (broken debouncer, bugs[3]) — 5 clicks → ~5 PUTs. Pinned by P-189." — evidence: Search.tsx:71-92 + P-189
+  - "Restore (deep-link/reload) fires one GET /api/search/{searchId} (now real post-#1760). 404 on an evicted session → SearchSessionExpired (cheap)." — evidence: Search.tsx:65-69 + F-010 (referenced)
 - **throughput_characteristics**:
-  - "Single-item mutation per facet change — no bulk-facet API. Each click is one PUT. With the broken debouncer (above) the server takes N PUTs per N clicks instead of 1 coalesced PUT."
-  - "Infinite-scroll page loads: one HTTP round-trip per page. `pageSize=30` hardcoded; for a 1000-entity catalog, ~34 paginated GETs to fully load — only happens if the user actually scrolls. Server-side per-page cost is bounded by the underlying paginated query (the batch-ZE SearchController cost model)."
-  - "Text-query search fires one synchronous PUT on Enter/click (MainSearchInput.tsx:42-48) — no batching, no debounce. A user spamming Enter 3 times in 500ms fires 3 PUTs. Server-side `updateDataEntitiesSearch` is idempotent for the same payload but the cost is wasted."
+  - "Single-item mutation per facet change (no bulk-facet API); the broken debouncer means N PUTs per N clicks."
+  - "Text-query fires one synchronous PUT per Enter (no debounce)." — evidence: MainSearchInput.tsx:42-48
+  - "Infinite-scroll: one GET per page (size=30, Results.tsx:45)."
 - **resource_allocation**:
-  - "Each dispatch allocates `mapValues(searchFacetParams, values)` (line 56) — a fresh object per dispatch. The selectors at redux/selectors/dataentitySearch.selectors.ts (`getSearchFacetsData` etc.) may also allocate fresh references on every selector run (via mapValues + pickBy at line 129-133)."
-  - "The 1500ms debouncer (when correctly working) holds a closure over `[searchId, searchQuery, searchMyObjects, searchFacetParams]` — but because it's recreated on every facet change (bugs section [3]), no significant memory accumulation. The garbage-collected prior debouncer's `setTimeout` callback fires (the runtime can't pre-cancel an unreachable timer that is already scheduled) — but its closure references are dead, so the dispatch fires with stale state and is then a no-op-ish noise."
-  - "Redux store size: `dataEntitySearch` slice per slice.ts:22-36 holds the full facetState map (potentially N=hundreds of facet options across 7+ facet types) + result items (capped at the loaded page count × 30) + suggestions + facets cache + highlightById map. For a 10K-entity catalog with 200 facet options per facet, the in-memory Redux state is bounded by ~100KB."
+  - "Each facet dispatch allocates a fresh `mapValues(searchFacetParams, values)` object (Search.tsx:77); the debouncer is reconstructed per facet click (bugs[3])."
+  - "Redux store holds the facet-state map + loaded result pages + suggestions/facets caches (dataEntitySearch.slice.ts:22) — bounded by loaded page count × 30."
 - **scaling_characteristics**:
-  - "Stateless component (no module-level mutable state — verified by reading Search.tsx:1-92 end-to-end; no `let` outside the component body). React 18+ Strict Mode double-mount in dev fires the create-session twice — the second create returns a NEW session UUID and overwrites the first; the prior session is orphaned server-side until `SearchFacetsHousekeepingJob` evicts it. Dev-only; production builds do not Strict-Mode-double-mount."
-  - "URL-driven re-mounts: changing `/search/X` → `/search/Y` (manual URL edit) triggers the route-param change → the first useEffect (lines 37-42) sees `routerSearchId` change but the guard `!routerSearchId` short-circuits; the second useEffect (lines 44-48) sees `routerSearchId` change AND `searchId !== routerSearchId` initially → fires `getDataEntitiesSearch` to restore the new session."
+  - "Stateless component (no module-level mutable state — Search.tsx:1-122). Dev StrictMode double-mount fires the create twice (orphans one session); production builds do not." — evidence: Search.tsx:1-122
+  - "Manual URL edit /search/X → /search/Y triggers the restore effect (Search.tsx:65-69) for the new UUID." — evidence: Search.tsx:65-69
 - **known_performance_gaps**:
-  - "**Broken debouncer — 1500ms intent not realised; every facet click dispatches.** Per bugs section [3], the `useCallback` recreates the debouncer on every `searchFacetParams` change, defeating its purpose. Net effect: a user clicking 5 facets in rapid succession sees 5 in-flight PUT requests instead of 1 coalesced PUT. Server-side P99 latency degrades. Recommended fix: useMemo the debouncer outside `useCallback` OR remove `searchFacetParams` from the deps. **Architectural fix point: this is the SAME bug shape as TermSearch batch-U — fix BOTH files in one refactor.** Probe P-189 will pin dispatch cardinality under rapid clicking." — evidence: Search.tsx:50-65 + useCallback deps line 64 + TermSearch batch-U bugs[2] + P-189 — severity: MEDIUM
-  - "**Re-fire storm on facet-state effect (LSN-017 class-match).** Per bugs section [2], the effect at lines 67-71 reads `searchFacetsSynced` in the guard but only `searchFacetParams` in the deps. Combined with potential selector-instability on `getSearchFacetsData`, the effect could re-fire on every render during the in-flight PUT window. LSN-017's measurement-truth principle applies; probe P-189 would confirm." — evidence: Search.tsx:67-71 + slice.ts:97 + LSN-017 + P-189 — severity: MEDIUM (observability gap; class-match to LSN-017)
-  - "**catalog-wide COUNT(*) on every Catalog-page mount.** The session-create flow forces a full facet-aggregation pass against the catalog. For a 100K-entity deployment this is the most expensive operation on the Catalog page; combined with the no-rate-limit posture (REFACTOR-220 family), a malicious or buggy client can DoS the platform by repeatedly creating sessions. The UI offers NO mitigation — there's no client-side throttle, no in-flight-de-dup, no 'recent session' fallback." — evidence: Search.tsx:37-42 + batch-ZE SearchController performance + SearchServiceImpl.java:74-82 — severity: MEDIUM
-  - "**Empty-state copy + zero-catalog onboarding affordance — UX latency.** Per bugs section [10], the empty-state copy 'No matches found' on a fresh deployment slows operator onboarding. A new ODD operator landing on `/search` sees the message + no obvious next step." — evidence: Results.tsx:161-165 — severity: LOW (UX, not perf — included here for cross-link to UX-onboarding consideration)
+  - "**Create-failure retry loop (P-244)** — the highest-leverage new perf concern: a flaky/failing POST /api/search is amplified by the dep-array smell into a tight retry. Recommended fix: add `searchId` to effect-1 deps AND a backoff/short-circuit on the rejected status." — evidence: Search.tsx:58-63 + P-244 — severity: MEDIUM
+  - "**Broken debouncer (P-189)** — 1500 ms intent unrealised; N PUTs per N facet clicks. Fix: useMemo the debouncer or drop searchFacetParams from the useCallback deps. Fix BOTH Search.tsx and TermSearch.tsx together." — evidence: Search.tsx:71-86 + P-189 — severity: MEDIUM
+  - "**Catalog-wide aggregation on every mount** — combined with the no-rate-limit posture, repeated session creation is a DoS lever; the UI offers no client throttle." — evidence: Search.tsx:58-63 + batch-ZE (referenced) — severity: MEDIUM
 
 ## tests_coverage_semantic
 
 - covered_behaviours:
-  - behaviour: "Playwright UI end-to-end search scenarios — `tests/features/search/search.spec.ts` exercises happy-path search via the UI (per batch-ZE SearchController findings — `searchBy('books aqa')`, `'group aqa'`, etc.). These hit the Catalog page's `<MainSearchInput>` and indirectly exercise THIS Search.tsx orchestrator's session-create + URL-restore + facet-sidebar mount path."
+  - behaviour: "Deep-link to a VALID /search/{searchId} loads the shared session (GET 200, query restored in the search box) and fires ZERO replacement POSTs — the #1551 splat regression is locked closed."
     test_class: integration
-    test_files: ["tests/features/search/search.spec.ts"]
-  - behaviour: "`tests/features/search/search_in_data_entity.spec.ts` — second Playwright spec for entity-detail search context (out of scope for this UI sidecar but covers neighbouring flows)"
+    test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts:80-106"]
+  - behaviour: "Deep-link to a MISSING /search/{uuid} renders 'This search has expired' and 'Start new search' navigates to a fresh /search/{uuid} (recovery), with the expired text cleared."
     test_class: integration
-    test_files: ["tests/features/search/search_in_data_entity.spec.ts"]
+    test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts:62-78"]
+  - behaviour: "Missing-session reads (facets / results / facet/{type}) are uniformly 404 USR002; unrouted /api path is a framework 404; invalid facet enum is 400 USR001 (the #1761 class)."
+    test_class: integration
+    test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts:36-60"]
+  - behaviour: "Term-search mirror: /termsearch/{valid} restores and /termsearch/{missing} shows the same expired state."
+    test_class: integration
+    test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts:108-122"]
 - uncovered_behaviours:
-  - behaviour: "Mount with no URL param + no cached session → `createDataEntitiesSearch` dispatch + `navigate(searchId)` follow-through (Search.tsx:37-42)"
-    test_class: unit
+  - behaviour: "Create-FAILURE retry loop (POST /api/search 500 on mount → effect-1 re-fires unboundedly)"
+    test_class: integration
     criticality: HIGH
-    note: "Search.test.tsx — would catch the missing-dep LSN-017-adjacent smell at lines 37-42"
-  - behaviour: "Mount with URL param but no cached session → `getDataEntitiesSearch` dispatch (Search.tsx:44-48)"
-    test_class: unit
-    criticality: MEDIUM
-  - behaviour: "Mount with URL param AND cached session → neither dispatch fires (idempotent restore)"
-    test_class: unit
-    criticality: MEDIUM
-  - behaviour: "Facet change with synced=true → no update dispatch (Search.tsx:67-71 guard)"
-    test_class: unit
-    criticality: MEDIUM
-  - behaviour: "Facet change with synced=false → debouncer fires once per 1500ms window (currently FAILS per bugs section [3] — debouncer recreated on every render) — covered by P-189"
+    note: "P-244 emitted; no current spec forces a failing create"
+  - behaviour: "Facet change with synced=false → one PUT per 1500ms window (currently FAILS — debouncer recreated per click)"
     test_class: integration
     criticality: HIGH
     note: "P-189 emitted"
-  - behaviour: "Race: facet change + text-query submission within debounce window → assert eventually-consistent state"
+  - behaviour: "Facet PUT vs text-query PUT race → eventual-consistency / no silent facet loss"
     test_class: integration
     criticality: MEDIUM
-  - behaviour: "Session-expiry: stale URL UUID → 404 response → assert UI degraded state + suggest fallback"
-    test_class: integration
-    criticality: MEDIUM
-  - behaviour: "Unhandled-rejection: createDataEntitiesSearch fails → assert error boundary catches OR slice surfaces error"
-    test_class: unit
-    criticality: MEDIUM
-  - behaviour: "FTS-injection regression: typed query containing tsquery metacharacters poisons the session UUID — covered by P-188"
+  - behaviour: "FTS metacharacter query poisons the session (UI-side: no mitigation)"
     test_class: security
     criticality: HIGH
     note: "P-188 emitted"
-  - behaviour: "Cross-owner result visibility: assert default-tab 'All' returns entities the authenticated user does not own — confirms read-collaborative posture (REFACTOR-024 family)"
+  - behaviour: "Cross-owner default-tab visibility (read-collaborative posture)"
     test_class: security
     criticality: HIGH
-  - behaviour: "Pagination total-vs-list divergence (REFACTOR-425 family): assert pagination terminates correctly when count predicate diverges from list predicate"
-    test_class: integration
-    criticality: MEDIUM
-  - behaviour: "React-Router-Dom Strict-Mode double-mount → assert only one session is held; the second is orphaned"
-    test_class: unit
-    criticality: LOW
-  - behaviour: "Anonymous reach under auth.type=DISABLED — covered by P-187"
+  - behaviour: "Anonymous reach under auth.type=DISABLED"
     test_class: security
     criticality: HIGH
     note: "P-187 emitted"
-- test_files: ["tests/features/search/search.spec.ts", "tests/features/search/search_in_data_entity.spec.ts"]
+  - behaviour: "Non-404 deep-link failure renders AppErrorPage with the real status (e.g. a 500/401 restore) — only the 404 branch is asserted by IT-125"
+    test_class: integration
+    criticality: MEDIUM
+    note: "IT-125 covers the 404 branch; the AppErrorPage (non-404) branch at Search.tsx:98-100 is unasserted"
+  - behaviour: "Pure-component unit tests (jest + @testing-library/react) for the three useEffect dep-array smells"
+    test_class: unit
+    criticality: HIGH
+    note: "no Search.test.tsx exists; the LSN-017-class smells are caught only at integration today"
+- test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts"]
 - gaps: |
-    Zero existing UI-side unit/integration tests for this Search.tsx orchestrator. The Playwright specs cover the UI happy-path but cannot catch (a) FTS query-syntax failures at the UI surface (REFACTOR-229 manifestation — partially addressed by P-188), (b) the empty-query session-create asymmetry vs `getSearchSuggestions`, (c) cross-session UUID guessing / bearer-token sharing (REFACTOR-344), (d) authorization regressions (partially addressed by P-187), (e) the LSN-017-class dep-array bugs (incomplete deps on createSearch effect + facet-sync effect — bugs section [1] + [3]), (f) the broken debouncer (bugs section [3] — addressed by P-189), (g) the page-vs-count pagination divergence (REFACTOR-425 family). The worst class is **security** — no UI-anchored test asserts the auth-mode matrix, owner-scoping, or FTS-injection. P-187, P-188, P-189 emitted to start closing this gap; further work needed to drive Search.tsx into a unit-test harness (jest + @testing-library/react) so the LSN-017 dep-array smells are caught at PR time.
+    The #1760 fix is now well-covered at the INTEGRATION layer by IT-125 (restore, expired state,
+    recovery, no-replacement-POST guard, term-search mirror, and the BE status-alignment). The worst
+    remaining gaps are: (a) the non-404 AppErrorPage branch (Search.tsx:98-100) is unasserted; (b)
+    the create-failure retry loop (P-244) has no forcing test; (c) the broken debouncer (P-189) and
+    the FTS UI-mitigation absence (P-188) are PROBE-NEEDED; (d) there is no component-level unit test
+    harness, so the three dep-array smells (effects at 58-63, 65-69, 88-92) are not caught at PR time.
+    The highest-leverage addition is a unit test asserting effect-1 does NOT re-dispatch createSearch
+    after a rejection (would red-flag the retry loop deterministically).
 
 ## coherence_check (LSN-018 Rule 6)
 
-Performed pre-emit coherence check across `feature-flows/` + sibling sidecars (batch ZA SearchResults, batch ZE SearchController class + search method, batch ZH ToolbarTabs, batch ZI searchRoutes, batch U TermSearch). Findings:
+Coherence check across F-017.yaml, IT-125 spec, CTRIB-005, and sibling sidecars (batch ZA/ZE/ZH/ZI, batch-U TermSearch):
 
-- **Strengthens** F-001 / P-01:F-002 Popular Entities Ranking (and the broader Data Discovery pillar P-01 search-and-filter surface) — this sidecar provides the UI-half evidence for the read-collaborative posture, the FTS-injection (REFACTOR-229) UI-side blind spot, the URL-backed session pattern, the broken debouncer, and the page-vs-count divergence inheritance. F-001 currently anchors on the view_count doubling case at hop-1 DataEntityDetails.tsx; this Search sidecar adds the **sister UI entry point** for the Discovery pillar (the Catalog page) and confirms the SAME LSN-017 class of dep-array smell applies here (3 instances at lines 37-42, 44-48 [correct counter-example], and 67-71). New back-links emitted: `related_features: [F-001]` + `related_pillar_features: [P-01:F-002]`.
-
-- **Strengthens** batch-ZE SearchController.search + SearchController class sidecars (the BACKEND HALF of this pillar surface). The batch-ZE sidecars correctly identified: no controller-side validation, no owner-scoping on the main result list, the FTS-injection at JooqFTSHelper.tsQuery (REFACTOR-229 strengthening), the TRUE-SQL-injection at highlightDataEntity, the no-user-binding (REFACTOR-344), the 30-day TTL eviction (F-010), the `hasNext: true` contract bug. This UI sidecar adds the **UI-side consequences**: NO client-side mitigation for the FTS injection; the SESSION UUID is visible in the URL and shareable; the default tab is 'All' (the My-Objects affordance is opt-in not opt-out); the BROKEN DEBOUNCER amplifies the throughput risk on the backend; the UI hides the `hasNext: true` bug from itself by computing hasNext client-side, but third-party OpenAPI consumers are exposed. The two ends compose: the backend is wide open AND the frontend doesn't defensive-pad.
-
-- **Strengthens** batch-ZI searchRoutes — confirms the route-module-level Category F drift on the `:searchId` parameter. The route module sidecar correctly noted that the URL form `/search/{uuid}` accepts ANY string and only validates implicitly via the downstream GET 404; this UI sidecar adds the operator-visible consequence (broken-page UX with no recovery).
-
-- **Strengthens** batch-ZH ToolbarTabs — confirms the tab-click drops the current session race. ToolbarTabs.tsx:38 links to searchPath() bare (no UUID), so clicking the 'Catalog' tab from inside a /search/{uuid} session creates a fresh session and orphans the prior UUID. The race is captured here under name_behavior_pairs.Catalog-tab.
-
-- **Strengthens** batch-ZA SearchResults — this orchestrator is the PARENT of <Results/>. The batch-ZA sidecar documents the per-row side effects (view_count doubling case, infinite-scroll behaviour, DEG-create CTA gating). This Search.tsx sidecar adds the SESSION-LEVEL context: the searchId, the facet-sidebar, the text-query input, the auth/owner-scoping posture, and the route-mount story.
-
-- **Strengthens** TermSearch batch-U sidecar — this is the CANONICAL/older twin (Search.tsx predates TermSearch.tsx per Git history; TermSearch is the clone). All 5 implicit ADRs, all 7 bug-shapes, all 6 perf gaps in batch-U Term have direct analogues here. The bugs propagated via clone. Architectural recommendation: fix BOTH files in one refactor — the broken debouncer is a single-PR cleanup if approached together.
-
-- **Strengthens** REFACTOR-229 (FTS injection at JooqFTSHelper.tsQuery) — the UI-side complement to the backend canonical finding. The UI offers NO mitigation; this is now confirmed as a THIRD invocation site for the same architectural gap (batch H getHighlightedResult + batch ZE facet aggregators + batch ZL Search.tsx UI-side dispatch). The architectural fix point is unchanged (`JooqFTSHelper.tsQuery`), but the patch must consider whether client-side defense-in-depth is also warranted.
-
-- **Strengthens** REFACTOR-425 (page-vs-count divergence family) — this UI is a downstream CONSUMER of the divergence. Results.tsx pagination trusts server-reported `total` (after computing hasNext client-side) but the underlying backend `hasNext: true` hard-code is a real contract bug for third-party API consumers. This is the UI-side surface where the REFACTOR-425 family manifests on the Discovery pillar.
-
-- **Refutes (partially)** the prompt's LSN-017 hypothesis. The shape is NOT identical to the F-001 view_count case (no dep computed from the fetch RESPONSE that closes the loop). HOWEVER, three LSN-017-class dep-array conditions are present: (1) `searchId` read in condition but missing from useEffect deps at lines 37-42 (LATENT — masked by React batch ordering); (2) the deps-array IS correct at lines 44-48 (the COUNTER-EXAMPLE — included for cross-batch concept clarity); (3) `searchFacetsSynced` read in condition but missing from useEffect deps at lines 67-71 (POTENTIALLY ACTIVE — probe P-189 emitted). These are CLASS-MATCHES to LSN-017, not exact-pattern matches.
-
-- **Refutes** the prompt's view_count exact-pattern hypothesis. The LSN-017 case is DataEntityDetails.tsx-specific (the response-derived dep `details.status?.status` closes the loop). Search.tsx has no response-derived dep in any useEffect; the failure mode is different (missing deps, not response-derived deps). The CLASS matches; the exact pattern does not.
-
-- **No conflicts surfaced** with existing artefacts. No supersede notes needed. The pattern parity with TermSearch batch-U is EXPECTED (clone relationship) and explicitly reinforces both sidecars' findings.
-
-Back-link emit summary: `related_features: [F-001, F-008]`, `related_pillar_features: [P-01:F-002]`, `related_retrospectives: [LSN-017, LSN-018, LSN-020, LSN-023]`. **Note: F-008 cross-ref is via REFACTOR-425 page-vs-count family — the Catalog page is one consumer of that REFACTOR-425 pattern.**
+- **Corrects the prior Search sidecar (batch ZL)** on three load-bearing points the #1760 commit changed: (1) effect 2 (restore) is now REAL (route fixed from splat to nested param) — the prior "restores … when reload/deep-link arrives" was the BROKEN intent; (2) deep-link expiry is now RECOVERABLE (SearchSessionExpired), not a dead page; (3) create/restore failure surfaces a toast + (for restore) a dedicated error state — the prior "frozen empty page, no error message" / "slice missing .rejected" claims are corrected (the loader slice owns error state, loader.slice.ts:42-49).
+- **Strengthens F-017** (Search Filter Facets, P-01:F-005) — provides the UI-half evidence for the route-restore fix, the graceful dead-link UX, and the residual create-failure retry loop. Confirms the existing F-017 facets (cross_owner_facet_enumeration, bearer_token_shaped_session_uuids, tsquery_operator_injection_dos, disabled_mode_bypass, side_effect_update_on_every_get) at HEAD.
+- **Strengthens batch-ZE SearchController** — the backend half (no @PreAuthorize, no owner-scoping, FTS-injection, no user binding, 30-day TTL) composes with this UI: backend open + UI no-defensive-padding. The #1760 BE status-alignment (filters 500→404) is locked by IT-125.
+- **Strengthens batch-ZH ToolbarTabs** — confirms the Catalog-tab-drops-session behaviour at the new index route (App.tsx:62).
+- **Strengthens batch-ZI searchRoutes** — confirms searchPath()/useSearchRouteParams() and the now-correct nested route shape (the route-module sidecar predates the fix).
+- **Strengthens batch-U TermSearch** — TermSearch.tsx mirrors this fix verbatim (SearchSessionExpired + isDeepLinkNotLoaded + the same expired/error gates, TermSearch.tsx:46-103). The debouncer/dep-array smells remain shared; fix both files together.
+- **Refines the LSN-017 link**: the shape is NOT the view_count response-derived-dep case. The new, sharper manifestation is effect-1's create-FAILURE retry loop — a dep-array-vs-read-set divergence that becomes a tight loop on rejection (P-244). Class-match to LSN-017; distinct mechanism.
 
 ## sources
 
-- understanding ← Search.tsx:1-92 + searchRoutes.ts:1-19 + App.tsx:34, 61 + Filters.tsx:1-77 + Results.tsx:1-178 + MainSearchInput.tsx:1-83 + useCreateSearch.ts:1-23 + dataentitiesSearch.thunks.ts:25-67 + dataEntitySearch.slice.ts:22-260 + dataentitySearch.selectors.ts:32-133 + batch-ZE SearchController class sidecar + WebFetch of https://docs.opendatadiscovery.org/features/data-discovery/search status 200 2026-05-20
-- concepts.entities ← Search.tsx:18, 82 + dataEntitySearch.slice.ts:22-36 + searchRoutes.ts:1-19 + Filters.tsx:46-65 + Results.tsx:1-178 + MainSearchInput.tsx:1-83 + PageWithLeftSidebar (line 6, layout primitive)
-- concepts.operations ← Search.tsx:37-71 + useCreateSearch.ts:13-19 + MainSearchInput.tsx:42-61 + Results.tsx:71-74 + dataentitiesSearch.thunks.ts:25-67
-- concepts.invariants[0] (server-side URL-backed session) ← Search.tsx:37-48 + searchRoutes.ts:3-19 + App.tsx:61 + dataEntitySearch.slice.ts:22-36 + TermSearch batch-U sidecar invariants[0]
-- concepts.invariants[1] (DEG-Create CTA gated; LIST + search + filters ungated) ← Search.tsx:81-85 + Results.tsx:125-138 + Results.tsx:151-159 (no permission wrap)
-- concepts.invariants[2] (read-collaborative + no UI-level scoping) ← Search.tsx:74-87 + Results.tsx:151-159 + batch-ZE SearchController invariants + system-mission.md line 267
-- concepts.invariants[3] (no URL backing for text-query) ← Search.tsx:37-48 + MainSearchInput.tsx:42-48 + dataEntitySearch.slice.ts:205-211 (`updateSearchQuery` reducer)
-- concepts.invariants[4] (pageSize=30 hardcoded) ← Search.tsx:39 + Results.tsx:45
-- concepts.invariants[5] (empty state lives in Results child) ← Results.tsx:161-165
-- concepts.invariants[6] (search results from separate endpoint) ← dataentitiesSearch.thunks.ts:52-67 + Results.tsx:71-74 + batch-ZE SearchController invariants
-- dependencies_semantic.requires-feature ← F-001.yaml + system-mission.md P-01 + WebFetch of https://docs.opendatadiscovery.org/features/data-discovery/search 2026-05-20 status 200 + batch-ZE sidecars
-- dependencies_semantic.requires-config ← Search.tsx:39, 61 + Results.tsx:45 (hardcoded literals)
-- dependencies_semantic.requires-runtime ← Search.tsx:1-22 (import block)
-- dependencies_semantic.couples-to ← Filters.tsx:1-77 + Results.tsx:1-178 + MainSearchInput.tsx:1-83 + useCreateSearch.ts:1-23 + dataentitiesSearch.thunks.ts:25-67 + dataEntitySearch.slice.ts:1-260 + batch-ZE SearchController sidecar
-- upstream_callers ← App.tsx:34, 61 + searchRoutes.ts:3-19 + ToolbarTabs.tsx:38 (batch ZH) + global top-nav `<MainSearchInput mainSearch={true}/>` indirect caller
-- downstream_side_effects ← Search.tsx:37-71 + useCreateSearch.ts:13-19 + dataentitiesSearch.thunks.ts:25-67 + dataEntitySearch.slice.ts:40-260 + MainSearchInput.tsx:42-48 + Results.tsx:71-74
-- implicit_adrs[0] (URL-backed session) ← Search.tsx:37-48 + searchRoutes.ts:3-19 + useCreateSearch.ts:16-18 + slice.ts:22-36 + F-010.yaml (housekeeping) + TermSearch batch-U sidecar
-- implicit_adrs[1] (UI hide pattern) ← Search.tsx:81-85 + Results.tsx:125-138 + TermSearch batch-U sidecar implicit_adrs[1]
-- implicit_adrs[2] (1500ms leading-edge debouncer; text-query excluded) ← Search.tsx:50-63 + MainSearchInput.tsx:50-61 + TermSearch batch-U sidecar implicit_adrs[2]
-- implicit_adrs[3] (read-collaborative posture inherited) ← Search.tsx:74-87 + Results.tsx:151-159 + batch-ZE SearchController + system-mission.md line 267
-- implicit_adrs[4] (pageSize=30 hardcoded twice) ← Search.tsx:39 + Results.tsx:45 + TermSearch batch-U sidecar implicit_adrs[4]
-- implicit_adrs[5] (MainSearch two-mode design) ← Search.tsx:80 + MainSearchInput.tsx:17-21, 50-61
-- bugs_limitations_corner_cases[0] (latent LSN-017 dep-array smell in createSearch effect) ← Search.tsx:37-42 + useCreateSearch.ts:13-19 + slice.ts:215
-- bugs_limitations_corner_cases[1] (counter-example correct deps array at restore effect) ← Search.tsx:44-48
-- bugs_limitations_corner_cases[2] (active LSN-017 dep-array smell in facet-sync effect) ← Search.tsx:67-71 + slice.ts:97 + P-189
-- bugs_limitations_corner_cases[3] (broken debouncer — recreated on every render) ← Search.tsx:50-65 + TermSearch batch-U bugs[2] + P-189
-- bugs_limitations_corner_cases[4] (no .catch on create-session) ← useCreateSearch.ts:14-19 + slice.ts:214-260 + TermSearch batch-U bugs[3]
-- bugs_limitations_corner_cases[5] (facet/text-query race) ← Search.tsx:53-58 + MainSearchInput.tsx:42-48 + slice.ts:40-103 + TermSearch batch-U bugs[4]
-- bugs_limitations_corner_cases[6] (session-expiry no recovery) ← Search.tsx:44-48 + F-010.yaml + TermSearch batch-U bugs[5]
-- bugs_limitations_corner_cases[7] (FTS-injection UI-side blind spot + TRUE SQL injection at highlight path) ← Search.tsx:80 + MainSearchInput.tsx:42-48 + REFACTOR-229.md + batch-ZE SearchController invariants[7] + JooqFTSHelper.java:164-168 + ReactiveDataEntityRepositoryImpl.java:798-806 + P-188
-- bugs_limitations_corner_cases[8] (cross-owner result set) ← Search.tsx:74-87 + Results.tsx:151-159 + REFACTOR-024 family + system-mission.md line 267
-- bugs_limitations_corner_cases[9] (pagination total-vs-list divergence + backend hasNext=true contract bug) ← Search.tsx:79-86 + Results.tsx:71-74 + dataentitiesSearch.thunks.ts:62-63 + REFACTOR-425.md + batch-ZE SearchController invariants[7]
-- bugs_limitations_corner_cases[10] (empty-state copy) ← Results.tsx:161-165 + WebFetch result + TermSearch batch-U bugs[8]
-- bugs_limitations_corner_cases[11] (suggestions disabled blind spot) ← Search.tsx:80 + MainSearchInput.tsx:13, 75 + WebFetch result
-- bugs_limitations_corner_cases[12] (i18n key brittleness) ← Search.tsx:80 + MainSearchInput.tsx:63, 71
-- stress_findings.tunables ← Search.tsx:39, 61 + Results.tsx:45 + batch-ZE SearchController + P-189
-- stress_findings.name_behavior_pairs ← useCreateSearch.ts:1-23 + Search.tsx:50-65, 80 + MainSearchInput.tsx:42-48 + ToolbarTabs.tsx:38 (batch ZH) + searchRoutes.ts:11
-- stress_findings.orderings ← Results.tsx:71-74 + dataentitiesSearch.thunks.ts:52-67 + dataEntitySearch.slice.ts:219-228 + batch-ZE SearchController invariants
-- stress_findings.auth_gates ← Search.tsx:1-92 + App.tsx:61 + batch-ZE SearchController invariants[1] + SecurityConstants.SECURITY_RULES + AuthorizationCustomizer.java:29-30 + P-187
-- stress_findings.resource_boundaries ← Search.tsx:50-65, 67-71 + MainSearchInput.tsx:42-48 + slice.ts:40-103 + F-010.yaml
-- stress_findings.request_inputs.searchId ← Search.tsx:27 + searchRoutes.ts:4-5 + V0_0_1__init.sql:204-211 + batch-ZE SearchController invariants[3] + F-010 + REFACTOR-344 + grep verification 2026-05-26 (no saved-search feature)
-- stress_findings.request_inputs.query ← Search.tsx:39, 53-58 + MainSearchInput.tsx:38-44 + JooqFTSHelper.java:164-168 + ReactiveDataEntityRepositoryImpl.java:798-806 + batch-ZE invariants[7] + P-188
-- stress_findings.request_inputs.filters ← Search.tsx:53-58 + dataentitiesSearch.thunks.ts:34-41 + batch-ZE SearchController.updateSearchFacets + FacetStateMapper
-- stress_findings.request_inputs.myObjects ← Search.tsx:55 + SearchServiceImpl.java:106 + LSN-020 cross-link + USER_OWNER_MAPPING schema
-- stress_findings.request_inputs.pageSize ← Search.tsx:39 + Results.tsx:45 + dataentitiesSearch.thunks.ts:52-67
-- stress_findings.probes_emitted ← P-187 + P-188 + P-189 (this enrichment)
-- docs_link_semantic ← Search.tsx (no @docs) + WebFetch of https://docs.opendatadiscovery.org/features/data-discovery/search 2026-05-20 status 200
-- security.auth_mode_relevance ← Search.tsx:1-92 + App.tsx:61 (route mount under post-auth shell) + system-mission.md P-09 + P-187
-- security.ingestion_filter_relevance ← Search.tsx (fetches /api/search/*, not /ingestion/*)
-- security.authorization_assertions ← Search.tsx:81-85 + Results.tsx:125-138 + Results.tsx:151-159 (no permission wrap on result-list mapping) + batch-ZE SearchController invariants[1]
-- security.owner_scoping ← Search.tsx:74-87 + Results.tsx:151-159 + batch-ZE SearchController owner_scoping + SearchServiceImpl.java:128-130 + system-mission.md line 267
-- security.data_exposure ← Search.tsx:74-87 + Results.tsx:151-159 + URL `/search/{uuid}` shape + REFACTOR-344 + REFACTOR-229 + F-001 view_count cross-reference + batch-ZE TRUE-SQL-injection finding
-- security.known_security_gaps[0] (read-collaborative posture) ← Search.tsx:74-87 + batch-ZE SearchController + REFACTOR-024
-- security.known_security_gaps[1] (FTS injection at UI surface + TRUE SQL injection at highlight) ← Search.tsx:80 + MainSearchInput.tsx:42-48 + REFACTOR-229.md + batch-ZE SearchController invariants[7] + JooqFTSHelper.java:164-168 + ReactiveDataEntityRepositoryImpl.java:798-806 + P-188
-- security.known_security_gaps[2] (session UUID bearer-token-shape) ← Search.tsx:44-48 + REFACTOR-344 + stress_findings.request_inputs.searchId
-- security.known_security_gaps[3] (session-expiry silent) ← Search.tsx:44-48 + F-010.yaml
-- security.known_security_gaps[4] (unhandled-rejection silent failure) ← useCreateSearch.ts:14-19 + slice.ts:214-260
-- security.known_security_gaps[5] (DEG-create backend bypass) ← Results.tsx:125-138
-- security.known_security_gaps[6] (cross-owner data exposure family) ← Search.tsx:74-87 + REFACTOR-024 + system-mission.md line 267
-- security.known_security_gaps[7] (anonymous reach under DISABLED) ← P-187 + App.tsx:61 + batch-ZE SearchController invariants[1] + SecurityConstants.SECURITY_RULES
-- performance.hot_paths ← Search.tsx:37-71 + useCreateSearch.ts:13-19 + Results.tsx:71-74 + dataentitiesSearch.thunks.ts:25-67 + batch-ZE SearchController performance section + P-189
-- performance.throughput_characteristics ← Search.tsx:50-71 + MainSearchInput.tsx:42-48 + Results.tsx:71-74
-- performance.resource_allocation ← Search.tsx:56 (mapValues per dispatch) + slice.ts:22-36 (state shape) + dataentitySearch.selectors.ts:129-133
-- performance.scaling_characteristics ← Search.tsx:1-92 + slice.ts:40-103 + App.tsx:60-65 (route mount)
-- performance.known_performance_gaps[0] (broken debouncer) ← Search.tsx:50-65 + TermSearch batch-U + P-189
-- performance.known_performance_gaps[1] (re-fire storm on selector instability) ← Search.tsx:67-71 + slice.ts:97 + LSN-017 + P-189
-- performance.known_performance_gaps[2] (catalog-wide COUNT every mount) ← Search.tsx:37-42 + batch-ZE SearchController performance
-- performance.known_performance_gaps[3] (empty-state UX) ← Results.tsx:161-165
+- understanding ← Search.tsx:1-122 + searchRoutes.ts:1-19 + App.tsx:34, 61-64 + SearchSessionExpired.tsx:1-46 + AppErrorPage.tsx:1-41 + errorHandling.tsx:12-18 + useCreateSearch.ts:1-23 + MainSearchInput.tsx:1-82 + IT-125 spec + WebFetch /features/data-discovery/search 2026-06-11 status 200
+- concepts.entities ← Search.tsx:6-29, 39-51, 110-114 + components.yaml:2244-2287 + SearchSessionExpired.tsx:1-46 + AppErrorPage.tsx:1-41 + errorHandling.tsx:5-18 + loader.slice.ts:42-49 + dataentitySearch.selectors.ts:60 + searchRoutes.ts:3-19 + Filters.tsx:47-65
+- concepts.operations ← Search.tsx:53-92 + useCreateSearch.ts:14-19 + MainSearchInput.tsx:42-61 + Results.tsx:71-74 + dataentitiesSearch.thunks.ts:25-50
+- concepts.invariants[0] (restore real) ← App.tsx:61-64 + Search.tsx:65-69 + IT-125 spec:80-106
+- concepts.invariants[1] (graceful dead-link) ← Search.tsx:48-51, 94-100 + SearchSessionExpired.tsx:12-13 + errorHandling.tsx:12-18
+- concepts.invariants[2] (DEG-create gate only) ← Search.tsx:110-114 + WithPermissionsProvider.tsx:30-39 + Results.tsx:125-138, 151-159
+- concepts.invariants[3] (read-collaborative) ← Search.tsx:102-118 + Results.tsx:151-159 + batch-ZE (referenced)
+- concepts.invariants[4] (query verbatim) ← Search.tsx:109 + MainSearchInput.tsx:38, 44
+- concepts.invariants[5] (pageSize dead + off-contract) ← Search.tsx:55, 60 + components.yaml:2244-2287 + Results.tsx:45
+- concepts.invariants[6] (empty-state in Results) ← Results.tsx:161-165
+- dependencies_semantic ← Search.tsx:1-31 (imports) + loader.slice.ts:18-53 + dataentitySearch.actions.ts:5-8 + handleResponseThunk.ts:19-43 + generate.sh + openapi-config.yaml
+- upstream_callers ← App.tsx:34, 61-64 + searchRoutes.ts:3-19 + ToolbarTabs.tsx:38, 93 + MainSearchInput.tsx:37 (global mainSearch path)
+- downstream_side_effects ← Search.tsx:53-118 + useCreateSearch.ts:14-19 + dataentitiesSearch.thunks.ts:25-50 + handleResponseThunk.ts:34-39 + Results.tsx:71-74
+- implicit_adrs[0] (graceful dead-link) ← Search.tsx:48-51, 94-100 + SearchSessionExpired.tsx:12-13
+- implicit_adrs[1] (ResponseError unwrap chokepoint) ← errorHandling.tsx:12-36
+- implicit_adrs[2] (URL-backed session; restore wired) ← App.tsx:61-64 + searchRoutes.ts:3-19 + useCreateSearch.ts:16-18 + Search.tsx:65-69
+- implicit_adrs[3] (DEG-create UI hide) ← Search.tsx:110-114 + WithPermissionsProvider.tsx:30-39 + Results.tsx:125-138
+- implicit_adrs[4] (1500ms leading-edge debouncer) ← Search.tsx:82-83 + MainSearchInput.tsx:50-61
+- implicit_adrs[5] (read-collaborative posture) ← Search.tsx:102-118 + Results.tsx:151-159 + batch-ZE (referenced)
+- bugs[1] (create-failure retry loop) ← Search.tsx:58-63 + useCreateSearch.ts:14-19 + handleResponseThunk.ts:34-41 + P-244
+- bugs[2] (facet-sync effect smell) ← Search.tsx:88-92 + dataEntitySearch.slice.ts:97 + P-189
+- bugs[3] (restore effect counter-example) ← Search.tsx:65-69
+- bugs[4] (broken debouncer) ← Search.tsx:71-86 + P-189
+- bugs[5] (create-path no component error surface; toast shown; gates key off GET only) ← useCreateSearch.ts:14-19 + dataEntitySearch.slice.ts:214 + loader.slice.ts:42-49 + handleResponseThunk.ts:37-39 + Search.tsx:94-100
+- bugs[6] (expiry now recoverable) ← Search.tsx:53-56, 94-96 + SearchSessionExpired.tsx:35-40 + IT-125 spec:62-78 + F-010 (referenced)
+- bugs[7] (facet/text race) ← Search.tsx:74-80 + MainSearchInput.tsx:42-48
+- bugs[8] (FTS-injection UI no-mitigation) ← Search.tsx:109 + MainSearchInput.tsx:38, 44 + REFACTOR-229 (referenced) + P-188
+- bugs[9] (cross-owner result set) ← Search.tsx:102-118 + Results.tsx:151-159 + system-mission.md read-collaborative (referenced)
+- bugs[10] (page-vs-count divergence) ← Results.tsx:54, 71-74 + REFACTOR-425 (referenced)
+- bugs[11] (empty-state copy) ← Results.tsx:161-165
+- bugs[12] (suggestions disabled) ← Search.tsx:109 + MainSearchInput.tsx:75
+- stress_findings.tunables ← Search.tsx:55, 60, 82, 85 + components.yaml:2244-2287 + Results.tsx:45 + P-189
+- stress_findings.name_behavior_pairs ← useCreateSearch.ts:14-19 + Search.tsx:71-86, 94-96, 109 + MainSearchInput.tsx:38-61 + SearchSessionExpired.tsx:29-40 + ToolbarTabs.tsx:38, 93 + IT-125 spec
+- stress_findings.orderings ← Results.tsx:71-74, 151-159 + batch-ZE (referenced)
+- stress_findings.auth_gates ← Search.tsx:1-122 + App.tsx:61-64 + batch-ZE (referenced) + P-187
+- stress_findings.resource_boundaries ← Search.tsx:58-63, 71-92 + MainSearchInput.tsx:42-48 + F-010 (referenced)
+- stress_findings.request_inputs.searchId ← Search.tsx:36, 65-69 + searchRoutes.ts:4-5 + REFACTOR-344/F-010 (referenced) + `grep -irn 'saved.?search|savedSearch|saved_search' <odd-platform-repo>` 2026-06-11 (zero saved-search matches; search root: entire repo) + components.yaml:2244-2287
+- stress_findings.request_inputs.query ← Search.tsx:60, 75, 109 + MainSearchInput.tsx:38, 44 + components.yaml:2247-2248 + REFACTOR-229 (referenced) + P-188
+- stress_findings.request_inputs.filters ← Search.tsx:71-80 + dataentitiesSearch.thunks.ts:34-41 + components.yaml:2251-2287 + Filters.tsx:47-65
+- stress_findings.request_inputs.myObjects ← Search.tsx:76 + components.yaml:2249-2250 + LSN-020 + batch-ZE (referenced)
+- stress_findings.request_inputs.pageSize ← Search.tsx:55, 60 + components.yaml:2244-2287 + Results.tsx:45
+- stress_findings.probes_emitted ← P-244 (this refresh) + P-187/P-188/P-189 (pre-existing)
+- docs_link_semantic ← Search.tsx (no @docs) + WebFetch /features/data-discovery/search 2026-06-11 status 200 (two prompts)
+- security.auth_mode_relevance ← Search.tsx:1-122 + App.tsx:61-64 + P-187
+- security.authorization_assertions ← Search.tsx:110-114 + WithPermissionsProvider.tsx:30-39 + Results.tsx:125-138, 151-159 + batch-ZE (referenced)
+- security.owner_scoping ← Search.tsx:110-114 + Results.tsx:151-159 + batch-ZE (referenced)
+- security.data_exposure ← Search.tsx:65-69, 110-114 + Results.tsx:151-159 + REFACTOR-344/REFACTOR-229 (referenced) + WebFetch 2026-06-11
+- security.known_security_gaps ← Search.tsx:58-63, 94-100, 109-114 + useCreateSearch.ts:14-19 + loader.slice.ts:42-49 + errorHandling.tsx:12-18 + REFACTOR-229/REFACTOR-344 (referenced) + P-187 + P-188 + P-244
+- performance.hot_paths ← Search.tsx:58-92 + useCreateSearch.ts:14-19 + Results.tsx:71-74 + batch-ZE (referenced) + P-244 + P-189
+- performance.known_performance_gaps ← Search.tsx:58-86 + P-244 + P-189 + batch-ZE (referenced)
+- tests_coverage_semantic ← integration-tests/e2e/specs/search-session-not-found.spec.ts:36-122 + Search.tsx:58-100 + P-187/P-188/P-189/P-244
 
 ## confidence_per_field
 
-- understanding: HIGH
+- understanding: HIGH (whole-file read at 074c9927 + the #1760 supporting files read in full)
 - concepts: HIGH
 - dependencies_semantic: HIGH
-- tests_coverage_semantic: HIGH (zero existing UI-side unit tests for Search.tsx verified via Glob; Playwright spec presence verified via batch-ZE SearchController test_files block)
-- docs_link_semantic: HIGH (live WebFetch of https://docs.opendatadiscovery.org/features/data-discovery/search in this session, status 200; live page directly confirms 7-facet enumeration matching Filters.tsx)
-- implicit_adrs: HIGH
-- bugs_limitations_corner_cases: HIGH
-- security: HIGH (P-187 emitted to confirm the anonymous-reach hypothesis; the other security gaps are STATIC-INFERRED with strong code evidence)
-- performance: MEDIUM (the broken-debouncer + re-fire-storm claims are reasoned from static reading + slice source + cross-batch parity with TermSearch batch-U findings; P-189 emitted to confirm dispatch cardinality per facet click — currently PROBE-NEEDED)
-- upstream_callers: HIGH (App.tsx:61 + ToolbarTabs.tsx:38 + global MainSearchInput verified statically; deep-link arrival is the inferred external trigger)
-- downstream_side_effects: HIGH (every effect anchored at file:line; the Results-child reference is honestly flagged unresolved=true)
-- stress_findings: MEDIUM (52 questions across 13 triggers; 45 STATIC-INFERRED + 5 PROBE-NEEDED + 2 REFERENCE; the load-bearing claims at name_behavior_pairs.updateSearchFacets, auth_gates, request_inputs.query are MEDIUM until probes P-187/P-188/P-189 resolve; the request_inputs.searchId drift is HIGH STATIC-INFERRED — code-evidence and grep-verification done in this enrichment)
+- tests_coverage_semantic: HIGH (IT-125 spec read in full this session)
+- docs_link_semantic: HIGH (live WebFetch 2026-06-11 status 200; facet list matches Filters.tsx; new forward-drift H is the honest finding)
+- implicit_adrs: HIGH (every decision has a HEAD-verified intent_anchor comment in the read files)
+- bugs_limitations_corner_cases: HIGH (UI-side facts HEAD-verified; backend sinks honestly marked as references)
+- security: MEDIUM (UI-side posture HEAD-verified; the backend non-scoping / FTS-sink claims are cross-batch references not re-verified at this commit; P-187/P-188 still PROBE-NEEDED)
+- performance: MEDIUM (the retry-loop and debouncer claims are STATIC-INFERRED from the read source; P-244/P-189 PROBE-NEEDED for cardinality)
+- upstream_callers: HIGH (App.tsx:61-64 + ToolbarTabs.tsx:38, 93 read this session)
+- downstream_side_effects: HIGH (every effect anchored at file:line; the Results-child reference honestly flagged unresolved)
+- stress_findings: MEDIUM (41 questions / 13 triggers; 34 STATIC-INFERRED + 5 PROBE-NEEDED + 2 REFERENCE; load-bearing drift claims for searchId/query/pageSize are HIGH STATIC-INFERRED; the loop/debouncer cardinality and auth-reach are PROBE-NEEDED)
 
 ## Maintainer notes
+

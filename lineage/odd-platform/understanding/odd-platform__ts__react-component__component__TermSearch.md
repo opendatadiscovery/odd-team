@@ -1,336 +1,577 @@
 ---
-node_id: "odd-platform ts react-component component:TermSearch"
+node_id: "odd-platform ts components/Terms/TermSearch react-component:TermSearch"
 node_kind: react-component
 axis: ui_components
-extracted_at_commit: 80637ed
-enriched_at_commit: 80637ed
+extracted_at_commit: 074c9927
+enriched_at_commit: 074c9927   # branch contrib/CTRIB-005-search-session-not-found — the #1760 fix is NOT yet on odd-platform main
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.3.0
-schema_version: v0.3.0
+prompt_version: file-analyser/0.5.0
+schema_version: v0.5.0
 enrichment_status: complete
 confidence_overall: HIGH
-session_id: session-2026-05-20-U-TermSearch
-feature_hint: "P-06:F-001 (Term-to-Entity Linkage — Data Glossary pillar Dictionary tab). UI entry point for the F-002-anchored term-management surface: the Dictionary tab a user reaches at `/termsearch/*` (per App.tsx:63 + termsRoutes.ts:5). Sister components live under odd-platform-ui/src/components/Terms/TermSearch/ (TermSearchHeader, TermSearchInput, TermSearchResults, TermSearchFilters); each one a separate substrate node enrichable on a future pass. This shell is the orchestrator — it creates the server-side search session, restores from URL, paginates filters, and gates the Create CTA via WithPermissionsProvider on TERM_CREATE."
+session_id: session-2026-06-11-TermSearch-refresh
+feature_hint: "P-06:F-001 (Data Glossary pillar Dictionary tab) — UI orchestrator for the term-search session at /termsearch. REFRESHED for the #1760 fix (CTRIB-005): nested routes (deep-link restore is now real) + graceful expired-session state (SearchSessionExpired on 404, AppErrorPage otherwise). Mirrors Search.tsx (catalog search) — the mirror comment is in-source at TermSearch.tsx:46-47."
 related_features:
   - F-002
+  - F-017   # search-session class (IT-125 grounds both /search and /termsearch on the #1760 contract)
 related_pillar_features:
   - "P-06:F-001"
 related_retrospectives:
-  - LSN-017   # useEffect dep-array doubling shape — explicitly tested and refined here (NOT the view_count exact case, but an adjacent dep-array smell — see bugs section)
-  - LSN-018   # coherence: cross-checks F-002 + ReactiveTermRepositoryImpl batch-N + PolicyList/RolesList sibling UI sidecars
+  - LSN-017   # dep-array class — two latent smells re-verified at the new line numbers; cardinality probe emitted (P-246)
+  - LSN-018   # coherence sweep against F-002 / F-010 / sibling sidecars
+related_issues:
+  - "#1760 (PLT-150) — dead search deep-links; fixed by CTRIB-005 (this commit)"
 ---
 
 # TermSearch (Dictionary tab — Terms browse/search surface) — semantic understanding
 
 ## understanding
 
-`TermSearch.tsx` (lines 1-90) is the Data Glossary pillar's **Dictionary tab** root SPA component — the user-facing entry point at `/termsearch/*` (App.tsx:63 + termsRoutes.ts:5 `TERMS_SEARCH_PATH = '/termsearch'`) that drives the catalog-wide terms list. The component is a 90-line shell that (a) **creates a server-side search session** via `POST /api/termsearch` → `TermController.termSearch` (TermController.java:201-206) on first mount when no `:termSearchId` URL parameter is present and no Redux-cached `termSearchId` exists, then navigates to `/termsearch/{newSearchId}` to capture the session in the URL (lines 34-43); (b) **restores an existing session** from the URL param via `GET /api/termsearch/{searchId}` → `TermController.getTermSearchFacetList` (TermController.java:178-182) when reload / deep-link arrives with a session UUID (lines 45-48); (c) **debounces facet-state mutations** at 1500 ms leading-edge and dispatches `updateTermSearch` → `PUT /api/termsearch/{searchId}` → `TermController.updateTermSearchFacets` (TermController.java:209-216) whenever the filter sidebar selection diverges from the synced server state (lines 50-68); and (d) **lays out the three-child shell**: `TermSearchFilters` (left sidebar), `TermSearchHeader` (top — wrapped in `WithPermissionsProvider allowedPermissions=[TERM_CREATE]` so the "Add term" CTA inside `TermSearchHeader → TermsForm` is gated by `WithPermissions permissionTo={Permission.TERM_CREATE}` per TermSearchHeader.tsx:17), and `TermSearchResults` (main — owns the infinite-scroll + per-row rendering). The component is a thin orchestrator over `redux/slices/termSearch.slice.ts` — every render reads the Redux session state (`termSearchId`, `termSearchQuery`, `termSearchFacetParams`, `termSearchFacetsSynced`, `isTermSearchCreating`) and dispatches mutations through three thunks (`createTermSearch`, `getTermsSearch`, `updateTermSearch`). **Critically: this Dictionary tab does NOT render permission codes vs grants** (unlike batch-Q PolicyList / RolesList which surface the catalogue-vs-grant asymmetry) — Terms are user-facing first-class entities, the rows show `{name, namespace, owners, usingCount, createdAt, updatedAt}` (TermSearchResultItem.tsx:25-69), there is no JSON-Schema permission catalog to author against here. The UI's cross-batch link to F-002 is the **read-collaborative posture inherited from the repository tier**: the underlying `ReactiveTermRepositoryImpl` (batch-N sidecar) applies NO per-namespace and NO per-owner scoping — every authenticated user reaching `/termsearch/*` sees every Term across every namespace, with no UI affordance to filter by "my owners" or "my namespace" (verified by reading TermSearchResults.tsx:1-114 + TermSearchResultItem.tsx:1-75 end-to-end: no owner-self filter, no namespace-self filter, no permission-gated row hide).
+`TermSearch.tsx` (127 lines at 074c9927) is the Data Glossary **Dictionary tab** root component, mounted by nested routes `/termsearch` (index) + `/termsearch/:termSearchId` (App.tsx:66-69 — changed by the #1760 fix from the old `'/termsearch/*'` splat, which had silently dropped the `:termSearchId` param since #1551 so every deep-link used to create a replacement session). It orchestrates a **server-side search session** (wire API `POST/GET/PUT /api/terms/search[/{search_id}]` → `TermController` → `TermSearchService`; note the UI route says `/termsearch` but the API path is `/api/terms/search` — the previous sidecar revision mis-recorded the wire path as `/api/termsearch`): create-on-cold-mount + navigate-to-UUID (lines 62-71), restore-from-URL (lines 73-76), debounced facet-delta PUTs (lines 78-96), and the three-child layout (filters sidebar / header gated-create / results list, lines 106-123). NEW in this commit: a deep-linked session whose restore GET fails renders `SearchSessionExpired` with a working "Start new search" recovery when the failure is 404, and `AppErrorPage` with the real status otherwise (lines 46-60, 98-104) — the failure state is read from the global loader slice (`getTermSearchFetchStatuses` + `getTermSearchError`, the latter added in this commit), not from the termSearch slice, which still has no `.rejected` reducers.
 
 ## concepts
 
 - entities:
-  - "TermSearchFacetsData (OpenAPI-generated DTO — `generated-sources` returned by `POST/PUT/GET /api/termsearch[/{searchId}]`; carries `{searchId, query, facetState, total}` per TermController.java:201-216, 178-182 + slice extraReducer at termSearch.slice.ts:36-90)"
-  - "TermSearchState (Redux slice — `state.termSearch` shape `{termSearchId, query, results: {items, pageInfo}, suggestions, facets, facetState, isFacetsStateSynced}` per termSearch.slice.ts:23-34)"
-  - "Term (OpenAPI-generated DTO — `generated-sources` Term type; each row in TermSearchResults — fields `{id, name, namespace, ownership, entitiesUsingCount, columnsUsingCount, linkedTermsUsingCount, createdAt, updatedAt}` per TermSearchResultItem.tsx:12-69)"
-  - "Permission.TERM_CREATE (enum value — passed to `WithPermissionsProvider allowedPermissions=[TERM_CREATE]` at TermSearch.tsx:78 + propagated through PermissionProvider context + consumed by `WithPermissions permissionTo={Permission.TERM_CREATE}` at TermSearchHeader.tsx:17)"
-  - "useTermsRouteParams (route hook from `routes/termsRoutes.ts:54-63` — extracts `{termId, termSearchId}` from `useParams()`; here destructured as `routerTermSearchId` at TermSearch.tsx:26)"
-  - "Server-side search session UUID (the `:termSearchId` URL parameter — captured in `termsRoutes.ts:8 TERMS_SEARCH_ID_PARAM = ':termSearchId'`; persisted server-side per the TermSearchService session model; opaque UUID surfaced in URL and Redux)"
-  - "PageWithLeftSidebar (layout component — `MainContainer`, `ContentContainer`, `LeftSidebarContainer`, `ListContainer` at TermSearch.tsx:71-86; sibling pattern used by /search and /termsearch — verified by Grep `PageWithLeftSidebar.MainContainer` returning Search.tsx + TermSearch.tsx)"
-  - "TermSearchFilters / TermSearchHeader / TermSearchResults (sister components under TermSearch/ subtree — see Files listed at /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/Terms/TermSearch/)"
+  - "TermSearchFacetsData (OpenAPI DTO `{search_id, query, facet_state, total}` — returned by all three session endpoints; built server-side at TermSearchServiceImpl.java:113-119)"
+  - "TermSearchFormData (OpenAPI DTO — schema declares ONLY `query` + `filters` (required), odd-platform-specification/components.yaml:2659-2680; the UI's `pageSize` field is NOT in the schema — see bugs[5])"
+  - "Server-side search-session row (`search_facets` table — INSERT per create at ReactiveSearchFacetRepositoryImpl.java:76-82; plain last-write-wins UPDATE per facet PUT at :85-96, which also bumps LAST_ACCESSED_AT — the housekeeping TTL clock)"
+  - "ErrorState `{status, statusText, url, message}` (lib/errorHandling.tsx:30-35 — built by `getErrorResponse` after unwrapping the generated client's ResponseError via `toResponse`, errorHandling.tsx:14-18) — stored per act-type in `state.loader.errors` (loader.slice.ts:42-49), read here via `getTermSearchError` (termSearch.selectors.ts:34)"
+  - "SearchSessionExpired (shared element, components/shared/elements/SearchSessionExpired/SearchSessionExpired.tsx — copy: 'This search has expired' + 'The search link you followed has expired or does not exist…' + 'Start new search' CTA; in-source intent comment at lines 12-13: 'the link is dead data, not a platform fault')"
+  - "AppErrorPage (shared element — renders `error.status` + `statusText || 'Unknown Error'` + Home link, AppErrorPage.tsx:20-38)"
+  - "Permission.TERM_CREATE (injected via WithPermissionsProvider at TermSearch.tsx:113-118; consumed by WithPermissions at TermSearchHeader.tsx:17-23 — hide-not-disable)"
+  - "useTermsRouteParams / termsSearchPath (routes/termsRoutes.ts:54-63, 12-19)"
 - operations:
-  - "On mount: if URL has NO `:termSearchId` AND no in-flight create AND no cached `termSearchId` → dispatch `createTermSearch({termSearchFormData: {query:'', pageSize:30, filters:{}}})` (TermSearch.tsx:34-42); thunk wraps `termApi.termSearch(...)` per termSearch.thunks.ts:21-24; on fulfilment `.then(termSearch => navigate(termSearch.searchId))` writes the new UUID into the URL"
-  - "On URL change with `:termSearchId` present and NO cached `termSearchId`: dispatch `getTermsSearch({searchId: routerTermSearchId})` (TermSearch.tsx:45-48); thunk wraps `termApi.getTermSearchFacetList(...)` per termSearch.thunks.ts:35-42 — restores the session from server-side state"
-  - "On facet-state change (`termSearchFacetParams` diff): if NOT synced → call debounced `updateSearchFacets` (TermSearch.tsx:66-68); the debouncer (1500 ms leading-edge, lines 50-64) dispatches `updateTermSearch({searchId, termSearchFormData: {query, filters: mapValues(termSearchFacetParams, values)}})` — thunk wraps `termApi.updateTermSearchFacets(...)` per termSearch.thunks.ts:26-33"
-  - "Layout dispatch: render `<PageWithLeftSidebar.MainContainer>` containing (a) left sidebar with `<TermSearchFilters/>` (xs=3); (b) main area with `<WithPermissionsProvider allowedPermissions=[TERM_CREATE]>` wrapping `<TermSearchHeader/>` + `<TermSearchResults/>` (xs=9) — TermSearch.tsx:70-86"
-  - "Subcomponent dispatch chain (out-of-scope but invariant-load-bearing): TermSearchInput → setSearchText → on Enter / search-click → dispatch `updateTermSearch({searchId, termSearchFormData: {query: searchText, pageSize:30, filters:{}}})` per TermSearchInput.tsx:33-46 — note: text-query update DOES NOT go through the 1500 ms debouncer; it dispatches synchronously on Enter / click. TermSearchResults uses `fetchTermsSearchResults({searchId, page, size:30})` for infinite-scroll pagination per TermSearchResults.tsx:40-61"
-  - "Cleanup: NONE — the component has no explicit unmount cleanup (no `return () => ...` in any useEffect at TermSearch.tsx:34-68); subcomponent `TermSearchInput` cleans `updateTermSearchQuery('')` on unmount per TermSearchInput.tsx:16-21 (sibling clean-up reset)"
+  - "Cold mount, no URL param, no redux session → `createTermSearch({query:'', pageSize:30, filters:{}})` → `.unwrap().then(navigate(searchId))` (relative navigate — only ever executed from the index route) (TermSearch.tsx:62-71)"
+  - "URL param present, redux empty → `getTermsSearch({searchId: routerTermSearchId})` → GET /api/terms/search/{search_id} (TermSearch.tsx:73-76); 404 path → expired state (below)"
+  - "Deep-link restore failure branch: `isDeepLinkNotLoaded = !termSearchId && !!routerTermSearchId && isTermSearchNotLoaded` (lines 48-49); `status === 404` → `<SearchSessionExpired onStartNewSearch={handleStartNewTermSearch}/>` (98-100); any other captured status → `<AppErrorPage showError error={termSearchError}/>` (102-104)"
+  - "Recovery: `handleStartNewTermSearch` (53-60) = `resetLoaderByAction(getTermsSearchActType)` (clears the rejected status + error so the branches drop, loader.slice.ts:18-24) + `createTermSearch({query:'', filters:{}})` + ABSOLUTE `navigate(termsSearchPath(newId))` (line 58 — absolute because the handler executes from the `:termSearchId` route, unlike effect 1's relative navigate which executes only from the index route)"
+  - "Facet change → `!termSearchFacetsSynced` guard → `updateSearchFacets()` debounced 1500 ms leading-edge (78-96) → PUT with `filters` = ONLY the unsynced facet options (the selector pickBy at termSearch.selectors.ts:98-102) — a DELTA, merged server-side (see invariants)"
+  - "Layout: filters xs=3 (110) / WithPermissionsProvider[TERM_CREATE] → TermSearchHeader (113-118) / TermSearchResults xs=9 (119)"
 - invariants:
-  - "**Server-side search session model — URL-backed.** Unlike batch-Q PolicyList / RolesList (which use Redux-only `useState` for the query), TermSearch persists the search session as a server-side resource identified by UUID, captured in the URL at `/termsearch/{searchId}`. Lines 34-42 create the session; line 40's `navigate(termSearch.searchId)` writes the URL; lines 45-48 restore from URL on reload. Deep-link sharing of a filtered-terms view works — the recipient lands on the same session UUID and the facet state restores. Sister Search.tsx (Discovery pillar, `/search/*`) uses the SAME pattern."
-  - "**Permission-gating at the Create CTA only; the LIST + search input + filter sidebar are NOT gated.** `WithPermissionsProvider allowedPermissions=[TERM_CREATE]` (lines 77-80) wraps `<TermSearchHeader/>` (line 81); inside header `WithPermissions permissionTo={Permission.TERM_CREATE}` (TermSearchHeader.tsx:17-23) wraps ONLY `TermsForm`'s 'Add term' button. The `<TermSearchInput/>` sibling inside the header (TermSearchHeader.tsx:16) and the entire `<TermSearchResults/>` (TermSearch.tsx:83) are RENDERED UNCONDITIONALLY — every authenticated user reaching `/termsearch/*` sees the full term catalog and can search/filter it. The pattern is identical to PolicyList / RolesList batch-Q: 'UI hide for mutation, no gate for read'."
-  - "**Read-collaborative posture — no per-namespace + no per-owner scoping at this layer.** TermSearchResults renders the unscoped server payload — each row exposes `{name, namespace.name, ownership[].owner.name, entitiesUsingCount + columnsUsingCount + linkedTermsUsingCount, createdAt, updatedAt}` (TermSearchResultItem.tsx:25-69). Per F-002 batch-N ReactiveTermRepositoryImpl sidecar invariants, the repository applies NO tenant filter, NO per-namespace filter, NO per-owner filter on any `term` read. Every authenticated user sees every Term across every namespace. Cross-batch link: F-002 drift_class `cross_namespace_term_pollution`."
-  - "**No URL-backing for the free-text `query` field beyond the session UUID.** The text-query lives in `state.termSearch.query` per slice.ts:23-34 — restored from server on session-create/restore, but typing a NEW query in `TermSearchInput` only dispatches `updateTermSearch` (which mutates the server-side session) — the URL stays at `/termsearch/{searchId}`. Sharing a URL with a colleague restores the SESSION's last-saved query and facets, but typed-but-not-submitted intermediate text is lost. The text-query is also EXCLUDED from the 1500ms facet-debouncer — pressing Enter in TermSearchInput dispatches synchronously (TermSearchInput.tsx:33-35)."
-  - "**Pagination contract — `pageSize=30` hardcoded across the session lifecycle.** TermSearch.tsx:36 sets the initial `pageSize: 30` at session create; TermSearchResults.tsx:38 sets `const size = 30` for infinite-scroll page increments. Both are build-time constants — no operator-tunable config. The session-server respects whatever the client sends, so the two literals must stay aligned manually."
-  - "**Empty-state surface lives in the child.** TermSearchResults.tsx:105-107 renders `<EmptyContentPlaceholder text={t('No matches found')}>` when `!isTermSearchFetching && !total` — NOT in this orchestrator file. The empty-state copy is 'No matches found' (NOT 'No terms exist yet' — so a fresh deployment with zero terms shows the same string as a filter that returns nothing)."
+  - "**Deep-link restore is real as of this commit.** Nested `<Route path='/termsearch'>` + index + `:termSearchId` children both rendering `<TermSearch/>` (App.tsx:66-69). Pre-fix, the `'/termsearch/*'` splat meant `useParams().termSearchId` was ALWAYS undefined → effect 1 silently created a replacement session for every deep-link. e2e-pinned by IT-125 (integration-tests/e2e/specs/search-session-not-found.spec.ts:108-122 — asserts GET /api/terms/search/{id} fires and returns 200 on cold navigation, and the missing-UUID path shows the expired state)."
+  - "**PUT `filters` is a MERGE-PATCH, not a replacement.** The UI sends only unsynced options (selectors.ts:98-102); the backend maps them to a `FacetStateDto delta` and runs `FacetStateDto.merge(currentState, delta)` (TermSearchServiceImpl.java:82-90): selected=true adds/keeps, selected=false removes (FacetStateDto.java:51-66). Consequence the previous sidecar revision got WRONG: `TermSearchInput`'s synchronous PUT with `filters:{}` (TermSearchInput.tsx:26-27) does NOT clear facet selections — an empty delta is a facet no-op. The QUERY, by contrast, is replaced wholesale on every PUT (`delta.getQuery()`, FacetStateDto.java:48)."
+  - "**The expired-state gate keys on status 404 only.** `NotFoundException(\"Search not found\")` (TermSearchServiceImpl.java:108-111) → 404 USR002 → SearchSessionExpired. 401/403/5xx → AppErrorPage with the real status; a network error with no Response → `status` undefined → AppErrorPage renders empty code + 'Unknown Error' fallback (AppErrorPage.tsx:25-30)."
+  - "**Create CTA permission-gated UI-only; list/search/filters ungated.** WithPermissions returns null without TERM_CREATE (WithPermissions.tsx:27-31); the results list renders unconditionally for every authenticated user (TermSearchResults.tsx:98-103). Read-collaborative posture inherited from the repository tier (F-002 batch-N: no per-namespace / per-owner read filter) — now ALSO documented on the live doc page (fetched this session): 'namespace is not a read-time isolation boundary'."
+  - "**The effective page size is the child's literal, not the form field.** `size = 30` at TermSearchResults.tsx:38 drives the results GET. The `pageSize: 30` in the create payloads (TermSearch.tsx:64, TermSearchInput.tsx:26, ToolbarTabs.tsx:109) is a dead field — see bugs[5]."
+  - "**Default Dictionary view lists the whole catalog paginated, not an empty table.** Empty query → no FTS condition → `findByState` returns all non-deleted terms ordered `TERM.ID ASC` (ReactiveTermRepositoryImpl.java:277-292); the child auto-fetches page 1 on session sync (TermSearchResults.tsx:52-61). The live doc page claims the opposite — see doc_drift_findings[0]."
 - audiences:
-  - "platform-operator — the Dictionary tab is operator-facing for term curation; reaching this route requires (a) an authenticated session under LOGIN_FORM/OAUTH2/LDAP, or (b) `auth.type=DISABLED` dev mode per pillar P-09"
-  - "data-engineer-analyst — the maintainer-curated business-glossary authors and read-only consumers — surfacing per F-002's pillar audience set"
-  - "data-scientist-ml-engineer — Terms describe domain concepts (`Active User`, `Customer`) consumed by ML model documentation"
-  - "odd-platform-ui-end-user — any signed-in user reaching the top-nav Dictionary tab via the SPA navigation"
-  - "data-steward-owner — owners attached to terms see their terms alongside the rest of the catalog; the UI does not visually distinguish 'my terms' from others (no owner-self filter)"
+  - "platform-operator / data-steward — term curation surface; any authenticated user under LOGIN_FORM/OAUTH2/LDAP (or anyone under DISABLED)"
+  - "data-engineer-analyst — business-glossary authors and read-only consumers"
+  - "odd-platform-ui-end-user — top-nav Dictionary tab (ToolbarTabs.tsx:65-69)"
 
 ## dependencies_semantic
 
 - requires-feature:
-  - "F-002 / P-06:F-001 Term-to-Entity Linkage (Data Glossary pillar Dictionary tab) — this UI is the OPERATOR ENTRY POINT for the term-catalog half of F-002. F-002 already enumerates ReactiveTermRepositoryImpl (batch N — primary-source repository tier; 15 public methods; 7 read sites that skip term_to_term.deleted_at filter) and TermServiceImpl (batch K — service tier with the auto-link side-channel + cross-namespace pollution + asymmetric duplicate-INSERT handling). This UI sidecar adds the FRONT-END half — the operator clicks here to author, navigate, and search Terms; the auth + scoping decisions ultimately live in the controller / service / repository layers F-002 tracks."
-  - "P-09 Authorization framework — `Permission.TERM_CREATE` (line 16 + line 78) is one of the 7 `TERM_*` RBAC permissions per business-glossary.md:49-60 (WebFetched 2026-05-20, live status 200). Permission resolution happens at the controller perimeter via `SecurityConstants.SECURITY_RULES` matchers in `AuthorizationCustomizer` (per F-002 batch-K + batch-L primary-source findings — the SecurityRule singular/plural path-mismatch bug REFACTOR-217 lives in this same authorization framework but does NOT apply to the `POST /api/terms` create endpoint — only to `/api/dataentities/{id}/term[s]` per F-002 contributing_nodes)."
-  - "F-019 / P-08:F-003 Owner Lifecycle Management (pattern reference) — the rows render `ownership[].owner.name` (TermSearchResultItem.tsx:42-48); Owner is a sibling first-class catalog entity tracked at P-08."
-  - "Layout pillar (PageWithLeftSidebar) — the shared left-sidebar layout primitive consumed at lines 71-86; sibling consumer is Search.tsx (Discovery pillar)."
+  - "F-002 / P-06:F-001 Term-to-Entity Linkage — this UI is the operator entry point for the term-catalog half; auth/scoping decisions live in the controller/service/repository tiers F-002 tracks"
+  - "F-017 search-session contract (#1760) — the expired-session UX + nested-route fix are the SAME class as catalog search; the in-source comment declares the mirror (TermSearch.tsx:46-47); Search.tsx:48-100 carries the identical structure"
+  - "F-010 / P-08:F-002 Housekeeping — `SearchFacetsHousekeepingJob` evicts stale `search_facets` rows; eviction is keyed on LAST_ACCESSED_AT (bumped by every facet PUT, ReactiveSearchFacetRepositoryImpl.java:89); an evicted UUID is the main producer of the 404 → expired state"
+  - "P-09 Authorization framework — Permission.TERM_CREATE is one of 7 TERM_* permissions (live doc table re-verified this session)"
 - requires-config:
-  - "(none operator-controllable at this component) — `pageSize: 30` (line 36 + TermSearchResults.tsx:38) hardcoded; `1500 ms` debounce (line 60) hardcoded; the entire layout's xs split (3/9) hardcoded (lines 73, 76). No `application.yml` / env-var or feature-flag controls UI behaviour of this component. Per the substrate's UI sidecar conventions, this is N/A for `requires-config` rather than a finding."
+  - "(none operator-controllable) — 1500 ms debounce (TermSearch.tsx:88), xs 3/9 split (109/112), child size=30 (TermSearchResults.tsx:38) are build-time literals; the form-data `pageSize` literal is inert (bugs[5])"
 - requires-runtime:
-  - "React 18+ — `React.useEffect` (lines 34, 45, 66), `React.useCallback` (line 50). The standard hook set."
-  - "Redux Toolkit — `useAppDispatch` + `useAppSelector` (`redux/lib/hooks`); the `termsSearchSlice` (termSearch.slice.ts:92-229) owns the session-merge + facet-state reconciliation logic"
-  - "`react-router-dom` — `useNavigate` (line 5); `useTermsRouteParams` (line 18 + termsRoutes.ts:54-63); the route mount lives at App.tsx:63 (`<Route path={`${termsSearchPath()}/*`} element={<TermSearch/>}>`)"
-  - "`use-debounce` — `useDebouncedCallback` (line 2; used at lines 51-62) — 1500 ms leading-edge"
-  - "`lodash/mapValues` + `lodash/values` — used to transform `termSearchFacetParams` from a `{facetName: {optionId: SearchFilterStateSynced}}` map into `{facetName: SearchFilterStateSynced[]}` arrays for the wire payload (lines 3-4, 55)"
-  - "`generated-sources` — `Permission` enum (line 16)"
-  - "`components/shared/contexts` — `WithPermissionsProvider` (line 17; impl WithPermissionsProvider.tsx:1-52 — render-passthrough that injects `PermissionProvider` context; does NOT gate route rendering)"
-  - "`components/shared/elements` — `PageWithLeftSidebar` (line 6) — layout primitives"
-  - "Redux selectors (`redux/selectors`) — `getTermSearchCreateStatuses`, `getTermSearchFacetsParams`, `getTermSearchFacetsSynced`, `getTermSearchId`, `getTermSearchQuery` (lines 8-13 + selectors at termSearch.selectors.ts:19-97)"
-  - "Redux thunks (`redux/thunks`) — `createTermSearch`, `getTermsSearch`, `updateTermSearch` (line 14 + thunks at termSearch.thunks.ts:21-42)"
+  - "React 18 (useEffect/useCallback), Redux Toolkit (termsSearchSlice + global loader slice), react-router-dom v6 nested routes (App.tsx:66-69), use-debounce (1500 ms leading), lodash mapValues/values, generated-sources API client (TermSearchFormDataToJSON serializer — load-bearing for bugs[5]), @tanstack react-query is NOT used by this component (TermsForm uses it for invalidation)"
 - couples-to:
-  - "`TermSearchHeader` (TermSearchHeader.tsx:1-28) — child component; receives no props; internally uses `useTranslation` + `WithPermissions permissionTo={Permission.TERM_CREATE}` to gate the `TermsForm` 'Add term' button"
-  - "`TermSearchInput` (TermSearchInput.tsx:1-50) — grandchild via TermSearchHeader; owns local `searchText` state + dispatches `updateTermSearch` synchronously on Enter / search-click — text-query does NOT route through this orchestrator's 1500ms debouncer"
-  - "`TermSearchFilters` (TermSearchFilters/TermSearchFilters.tsx) — child component; receives no props; reads/writes `state.termSearch.facetState` directly via Redux"
-  - "`TermSearchResults` (TermSearchResults/TermSearchResults.tsx:1-114) — child component; owns the InfiniteScroll wrapper + per-row TermSearchResultItem rendering + EmptyContentPlaceholder; dispatches `fetchTermsSearchResults({searchId, page:page+1, size:30})` for pagination (line 42)"
-  - "`createTermSearch` / `getTermsSearch` / `updateTermSearch` thunks (termSearch.thunks.ts:21-42) — three of the six thunks in this module"
-  - "Server-side: POST `/api/termsearch` → `TermController.termSearch` (TermController.java:201-206) → `TermSearchService.search` (out-of-scope; not yet sidecar-enriched); GET `/api/termsearch/{searchId}` → `TermController.getTermSearchFacetList` (TermController.java:178-182) → `TermSearchService.getFacets`; PUT `/api/termsearch/{searchId}` → `TermController.updateTermSearchFacets` (TermController.java:209-216) → `TermSearchService.updateFacets`; GET `/api/termsearch/{searchId}/results?page=&size=` → `TermController.getTermSearchResults` (TermController.java:184-191) (called by TermSearchResults child, not this orchestrator)"
+  - "TermSearchFilters (child — reads/writes facetState via Redux; no props)"
+  - "TermSearchHeader → TermSearchInput (synchronous query PUT on Enter/click, TermSearchInput.tsx:25-28, 33-35) + TermsForm (create dialog; ALSO fires a `size: 1000` results fetch into the SHARED results slice — bugs[4])"
+  - "TermSearchResults (infinite scroll, page-1 auto-fetch on sync, empty-state copy 'No matches found' at :105-107)"
+  - "ToolbarTabs (top-nav Dictionary click creates a FRESH session every click — ToolbarTabs.tsx:107-119; this component's create effect is NOT the only session creator)"
+  - "Server: POST /api/terms/search → TermController.termSearch (TermController.java:200-206); GET /api/terms/search/{search_id} → getTermSearchFacetList (:178-182); PUT → updateTermSearchFacets (:208-216); GET .../results → getTermSearchResults (:184-191) (paths verified against odd-platform-specification/openapi.yaml:2982-3107)"
 
-## upstream_callers
+## tests_coverage_semantic
 
-| Caller (file:line) | Method invoked | Call context | Owner-scoping at caller? | Notes |
-|---|---|---|---|---|
-| SPA route mount at App.tsx:63 (`<Route path={`${termsSearchPath()}/*`} element={<TermSearch/>}/>`) | Renders the default-export functional component (line 90) | User navigates to `/termsearch` from top-nav (the Dictionary entry) or via deep-link to `/termsearch/{uuid}` | N/A — UI; per-namespace/per-owner scoping happens at NO layer (read-collaborative posture per F-002 batch-N) | The lazy-loaded `const TermSearch = lazy(() => import('./Terms/TermSearch/TermSearch'))` is at App.tsx:35. Single rendering entry — no props (default-export `React.FC`). All state comes from Redux + route params. |
-| Sister Dictionary surfaces (TermDetails routes — `/terms/:termId/*` per termsRoutes.ts:21-23, 35-42) | Navigate to a single term — entirely separate component tree (`<TermDetails/>` at App.tsx:32, route mount at termsRoutes.ts:21) | User clicks a row in TermSearchResults → `<S.TermSearchResultsItemLink to={termDetailsOverviewLink}>` (TermSearchResultItem.tsx:26) → `/terms/{id}/overview` | N/A — UI; the row's Link element is RENDERED UNCONDITIONALLY for every Term in the catalog | The Dictionary→Detail transition leaves `/termsearch/{sessionId}` (the search session URL); back-navigation restores. Note: the row's Link is NOT permission-gated — every authenticated user can navigate to any Term's detail page, regardless of owner. |
-
-## downstream_side_effects
-
-| Trigger | Effect | RW shape | Failure modes |
-|---|---|---|---|
-| Initial mount, no `:termSearchId` URL param, no cached session | `dispatch(createTermSearch({termSearchFormData: {query:'', pageSize:30, filters:{}}})).unwrap().then(navigate)` (lines 34-42) | POST `/api/termsearch` → server-side session row INSERT + `TermSearchFacetsData` returned + Redux state write via slice extraReducer (updateTermsSearchState) + URL navigation to `/termsearch/{newSessionId}` | The thunk wraps in `handleResponseAsyncThunk` (termSearch.thunks.ts:21-24); on rejection there is no `.rejected` reducer for `createTermSearch.rejected` in `termsSearchSlice.extraReducers` (slice.ts:193-228 — verified by reading end-to-end), so the slice does NOT update and the user sees the previous empty state. The `.unwrap()` re-throws on rejection, but the `.then(navigate)` chain has NO `.catch()` — an unhandled promise rejection lands in the React error boundary (if any) or the browser console. **Unhandled-rejection path is not surfaced to the user.** |
-| URL `:termSearchId` present, no cached session (deep-link / reload) | `dispatch(getTermsSearch({searchId: routerTermSearchId}))` (lines 45-48) | GET `/api/termsearch/{searchId}` → Redux state write via slice extraReducer (updateTermsSearchState restores `{termSearchId, query, facetState, total}` from server) | The thunk wraps in `handleResponseAsyncThunk`; no `.rejected` reducer — failure leaves the slice empty AND no URL navigation back to `/termsearch` happens. The user sees an empty page with the broken `:termSearchId` still in the URL — a refresh repeats the failure. **No recovery path** if the session UUID is expired / deleted server-side. |
-| Filter sidebar changes (any `termSearchFacetParams` mutation) | If `!termSearchFacetsSynced` → call debounced `updateSearchFacets` (lines 66-68); inside debouncer (1500ms leading-edge): `dispatch(updateTermSearch({searchId, termSearchFormData: {query: termSearchQuery, filters: mapValues(termSearchFacetParams, values)}}))` (lines 53-58) | PUT `/api/termsearch/{searchId}` → server-side session update + Redux state write via slice extraReducer (updateTermsSearchState merges the server-truth state with local pending changes per the `assignFacetStateWithNewFacets` logic at slice.ts:60-75) | (a) **Debouncer is RECREATED on every facet-state change** because `useCallback`'s deps array is `[termSearchId, termSearchFacetParams]` (line 63). Each facet click constructs a NEW `useDebouncedCallback(...)` — the prior debouncer's internal timer is GARBAGE COLLECTED, losing its pending dispatch. The leading-edge fires immediately on the FIRST click (correct), but a quick second click within 1500ms ALSO fires the leading-edge of the new debouncer (because it's a new instance). **Net behaviour: 1500ms debounce is not actually rate-limiting facet changes; it's leading-edge-on-every-render.** See bugs section. (b) Concurrent facet changes during in-flight PUT: the slice's `updateTermsSearchState` merger (slice.ts:60-75) preserves local `selected !== syncedState` divergences as `syncedState: false`, so the in-flight server response does NOT overwrite the user's newest selection. Eventually consistent. |
-| Subcomponent `TermSearchInput` Enter/click | `dispatch(updateTermSearch({searchId, termSearchFormData: {query: searchText, pageSize:30, filters:{}}}))` SYNCHRONOUSLY (TermSearchInput.tsx:25-28) | PUT `/api/termsearch/{searchId}` → same as above, but **filters are reset to empty `{}`**. The server returns a fresh search result for the typed query; subsequent facet selections rebuild from scratch. | The submit-bypass-of-1500ms-debounce is intentional (Enter = explicit intent), but it **discards any in-flight pending facet update** because both dispatches mutate the same server session. Race: if a facet click fired 800ms ago (debounced is pending), then the user presses Enter on the search input, the Enter-dispatch + the pending-facet-dispatch race; whichever resolves SECOND wins via slice `updateTermsSearchState`. |
-| Subcomponent `TermSearchResults` infinite-scroll trigger | `dispatch(fetchTermsSearchResults({searchId, page: page+1, size:30}))` (TermSearchResults.tsx:42) | GET `/api/termsearch/{searchId}/results?page=&size=30` → slice extraReducer at slice.ts:198-206 (page > 1 path appends; page === 1 path replaces) | Failure leaves the prior pages visible; no `.rejected` reducer; pagination silently halts. |
-| Click Create-term CTA (visible only with `Permission.TERM_CREATE` per WithPermissions wrap at TermSearchHeader.tsx:17) | TermsForm opens a DialogWrapper modal (TermsForm.tsx:201-215); on submit dispatches `createTerm(termFormData)` → POST `/api/terms` | No state write at the CTA itself — write happens on form submit | The `Permission.TERM_CREATE` check is UI-only (WithPermissions.tsx). A user without TERM_CREATE who reaches the dialog via DOM manipulation or direct API call hits the backend authorization framework — per F-002 contributing_nodes the SecurityConstants registration for `POST /api/terms` lives at SecurityConstants.java (not re-verified this session — out of scope for this UI sidecar's confirmed surface). |
-| Component unmount | No explicit cleanup (no `return () => ...` in any useEffect — verified by reading TermSearch.tsx:34-68) | Redux state persists across unmount; subcomponent `TermSearchInput` cleans `updateTermSearchQuery('')` per TermSearchInput.tsx:16-21 | The persisted `termSearchId` in Redux means navigating away and back without a fresh deep-link reuses the prior session — generally desirable; but a stale session UUID after server-side eviction would survive in Redux until manual reset. |
-
-## implicit_adrs
-
-- "**Server-side search session model with URL-backed UUID.** Lines 34-42 + termsRoutes.ts:12-19 + slice.ts:23-34. The decision is: persist the search session (query + facetState + result page info) on the SERVER, identified by UUID, surfaced as the URL path segment. This is a deliberate architectural choice — the alternative (purely client-side Redux state) was rejected in favour of (a) deep-link share-ability, (b) reload-survives behaviour, (c) explicit server-side session lifecycle for cleanup (`SearchFacetsHousekeepingJob` per F-010 batch-K + LSN-018 — search_facets TTL eviction 30 days default). The pattern is mirrored by Discovery's `/search/*` route (Search.tsx). The decision is load-bearing: removing the URL backing would break deep-link sharing of filtered Term views; removing the server-side session would lose the search-facets TTL eviction infrastructure." — evidence: TermSearch.tsx:34-42 (create + navigate) + 45-48 (restore from URL) + termsRoutes.ts:5, 8 (TERMS_SEARCH_ID_PARAM) + slice.ts:23-34 (initialState shape) + App.tsx:63 (route mount with wildcard child) — intent_anchor: line 40 explicitly writes `navigate(termSearch.searchId)` — the navigation is the LOAD-BEARING side-effect of session create — confidence: HIGH
-
-- "**Permission-gated Create CTA via WithPermissions (UI hide, NOT auth enforcement) — pattern parity with batch-Q PolicyList / RolesList.** Lines 77-82 + TermSearchHeader.tsx:17-23. The decision is: render-nothing rather than render-disabled when permission absent. WithPermissions returns `null` when `hasAccessTo(permissionTo)` is false (WithPermissions.tsx — same pattern as PolicyList batch-Q implicit_adrs[2]). Authorization is fundamentally enforced at the backend `SecurityConstants.SECURITY_RULES` layer; the UI gate is presentation-only. The `WithPermissionsProvider` wrapper at TermSearch.tsx:77-80 INJECTS the permission context but does NOT gate route rendering — the `<TermSearchHeader/>` mounts unconditionally, only the `<TermsForm/>` (the Create button + dialog) is permission-gated." — evidence: TermSearch.tsx:77-82 + TermSearchHeader.tsx:17-23 + WithPermissionsProvider.tsx:1-52 (verified passthrough — never returns null) — intent_anchor: the `WithPermissionsProvider` API surface allows `Component | render | children` and ALWAYS renders — the gate is at the inner `WithPermissions` call site — confidence: HIGH
-
-- "**1500ms leading-edge debouncer for facet-state mutations (text-query EXCLUDED).** Lines 50-64 + TermSearchInput.tsx:25-28. The decision encodes "facet clicks coalesce; text queries fire immediately". Leading-edge means the FIRST click in a 1500ms window fires immediately — important for perceived UI snappiness. Text queries bypass this entirely (TermSearchInput dispatches synchronously on Enter / search-click) — the explicit-intent action does not wait for a debounce window." — evidence: TermSearch.tsx:50-64 (debouncer) + 51 (`useDebouncedCallback` with `{leading: true}`) + TermSearchInput.tsx:25-28 (synchronous dispatch) — intent_anchor: the `{leading: true}` option in `useDebouncedCallback(..., 1500, { leading: true })` is explicit about the timing model — confidence: HIGH
-
-- "**Read-collaborative posture inherited from the repository tier — no UI-level scoping affordance.** TermSearchResults renders the unscoped server payload — every authenticated user sees every Term across every namespace, with no UI filter for "my owners" or "my namespace". The decision is the UI-visible half of F-002's repository-tier read-collaborative posture (batch-N ReactiveTermRepositoryImpl: zero `odd.tenant-id` references, zero per-namespace filter at the SQL layer, zero per-owner filter on any read). The UI does not add a scoping veneer on top; it surfaces the catalog as it exists." — evidence: TermSearch.tsx:74 (filter sidebar mounts unconditionally) + TermSearchResults.tsx:64-110 (no permission/owner filter on the .map) + TermSearchResultItem.tsx:25-69 (renders every owner of every term) + F-002 batch-N ReactiveTermRepositoryImpl sidecar — intent_anchor: the lack of any `usePermissions().hasAccessTo` wrap on the row map + the lack of any "Show only my terms" filter affordance — confidence: HIGH
-
-- "**`pageSize: 30` hardcoded in TWO places — orchestrator + results child — by deliberate parity, not a constant.** Line 36 (session-create initial pageSize) + TermSearchResults.tsx:38 (infinite-scroll page increment). Both are literal `30`, not an imported constant. The decision is a per-feature-component scope (consistent with batch-Q PolicyList's `size = 100` literal); maintenance burden is the manual alignment of the two literals when tuning page size." — evidence: TermSearch.tsx:36 + TermSearchResults.tsx:38 + TermSearchResults.tsx:47 (`fetchPageAfterDeleting` also passes `size`) — intent_anchor: both literals are `30`; no central constants module is imported — confidence: MEDIUM (the value is hardcoded; no comment explains the choice; risk that future refactor changes one without the other)
-
-## bugs_limitations_corner_cases
-
-- "**LSN-017-adjacent dep-array smell — `isTermSearchCreating` AND `createTermSearch` in deps, `termSearchId` read in condition but MISSING from deps.** Lines 34-43: the first useEffect's deps array is `[routerTermSearchId, createTermSearch, isTermSearchCreating]`. (a) `createTermSearch` is a STABLE module-level thunk reference imported from `redux/thunks` (line 14) — including it in deps adds no real refetch trigger but flags an ESLint exhaustive-deps inaccuracy. (b) `isTermSearchCreating` is a fetch-derived loading boolean that transitions `false → true → false` during the dispatch — INCLUDING it in deps means the effect re-fires DURING the in-flight create; the guard `!isTermSearchCreating` is false during loading so the inner dispatch is correctly skipped on the re-fire — NOT an LSN-017 doubling shape per se. (c) **`termSearchId` is read at line 35 (in the guard `!termSearchId`) but MISSING from the deps array** — the effect does NOT re-fire when Redux's `termSearchId` becomes set; the only thing that re-fires it is `routerTermSearchId` changing (from `navigate(termSearch.searchId)`). The composition is correct *by accident*: when `navigate` fires, `routerTermSearchId` updates AND `termSearchId` is by that point set in Redux — both transitions happen in the same render, so the re-fire's guard correctly evaluates as `(false && ... && false) === false` and skips. **But the dep-array does not document this invariant** — a refactor changing the navigate-vs-redux ordering would surface a real double-fetch. The shape is the SAME CLASS as LSN-017 (deps and conditions are out of sync) but the DEFECT IS LATENT — currently masked by render-batch order, not a structural fix." — evidence: TermSearch.tsx:34-43 + slice.ts:36-90 (`updateTermsSearchState` writes termSearchId synchronously in the fulfilled reducer, in the same React-batch as navigate's dispatch) — severity: MEDIUM (latent regression vector; the same class as LSN-017 view_count doubling, but not actively double-firing today)
-
-- "**LSN-017-adjacent dep-array smell #2 — `termSearchFacetsSynced` read in condition but MISSING from deps.** Lines 66-68: `useEffect(() => { if (!termSearchFacetsSynced) updateSearchFacets(); }, [termSearchFacetParams]);`. The guard reads `termSearchFacetsSynced` but the deps array contains ONLY `termSearchFacetParams`. The effect re-fires when `termSearchFacetParams` changes — typically on a facet click that flips `syncedState: false` somewhere in `state.termSearch.facetState`. The slice's `updateTermsSearchState` reducer (slice.ts:84) sets `isFacetsStateSynced: true` on EVERY successful create/update/get fulfilment — but THIS effect does NOT re-fire when `termSearchFacetsSynced` transitions back to `true`. Net: the guard's purpose is 'avoid double-dispatching when already synced', which works for the per-facet-click flow (facet change → facetParams diff → effect fires → guard sees not-synced → dispatches → server returns → slice sets synced=true → next facet change repeats). But if a facet's `syncedState` flips back to true via a server response WITHOUT `termSearchFacetParams` changing in a way React detects (the underlying lodash `mapValues(..., pickBy(..., facetOption => !facetOption.syncedState))` selector at termSearch.selectors.ts:93-97 returns a NEW object reference on every selector run because `mapValues` always returns a new object) — the effect WILL fire on every render — creating a re-fire storm. The selector at lines 93-97 is NOT memoised against deep equality of `state.termSearch.facetState` (the lodash transforms produce new references on every call). **Possible doubling shape per LSN-017 — the same class.** Not actively reproducing in this session (no live probe run for the Dictionary tab yet), but warrants a P-N probe per LSN-017's measurement-truth principle." — evidence: TermSearch.tsx:66-68 + termSearch.selectors.ts:92-97 (`createSelector` over `termSearchState` with a `mapValues+pickBy` body that always returns new references) + slice.ts:84 (`isFacetsStateSynced: true` set on every fulfilment) — severity: HIGH (active dep-array bug class; LSN-017 forcing-question applies: would a live probe confirm extra fetches per facet click?)
-
-- "**Debouncer is RECREATED on every facet-state change — losing the rate-limit semantics.** Lines 50-64: `useCallback(useDebouncedCallback(..., 1500, {leading: true}), [termSearchId, termSearchFacetParams])`. The `useCallback` deps include `termSearchFacetParams` — which changes on every facet click. Each click constructs a NEW `useDebouncedCallback(...)` instance — the prior debouncer's pending timer is unreachable (the new function reference is what the next render uses). With `{leading: true}`, the new debouncer fires on its FIRST call (immediately) AND would defer a trailing call until 1500ms — but the trailing call NEVER fires because the next click constructs yet another debouncer. **Effective behaviour: every facet click dispatches `updateTermSearch` immediately; the 1500ms 'debounce' is not actually rate-limiting anything.** A user rapidly clicking 5 facets in 2 seconds dispatches 5 PUT calls instead of the intended 1. The server-side `TermSearchService.updateFacets` must handle this load — the 1500ms intent is to coalesce, but the implementation cancels itself." — evidence: TermSearch.tsx:50-64 + the `useCallback` deps at line 63 — severity: MEDIUM (functional bug — debounce intent unfulfilled; performance cost; not a correctness bug because the slice's merge logic at slice.ts:60-75 handles racing PUTs)
-
-- "**No `.catch` on the create-session promise chain — unhandled rejection on session-create failure.** Lines 37-41: `.unwrap().then(termSearch => navigate(termSearch.searchId))`. No `.catch(...)` follows the `.then`. `.unwrap()` re-throws on rejection. If `createTermSearch` rejects (server-side 500, network failure, auth expiry mid-flight), the rejection lands in the React error boundary (if any wraps `<TermSearch/>` — verified by reading App.tsx:60-65: no `<ErrorBoundary>` wraps the Route element) or the browser console. **Net: the user sees a frozen empty page with no error message; the URL stays at `/termsearch`; refreshing repeats the same path.** The slice's missing `.rejected` reducer (see downstream_side_effects table) compounds this — neither the slice nor the UI surfaces the failure." — evidence: TermSearch.tsx:37-41 + slice.ts:193-228 (no `.rejected` cases in extraReducers) + App.tsx:60-65 (no error-boundary wrap on Route) — severity: MEDIUM (operator-misleading silent failure mode; auth-token-expired mid-session reproduces this)
-
-- "**Race: in-flight `updateTermSearch` for facets vs synchronous `updateTermSearch` for text-query.** When the user (a) clicks a facet (debounced — fires immediately due to leading-edge AND the per-click-recreate bug above), then (b) types a query and hits Enter within the PUT round-trip window. Both calls hit `PUT /api/termsearch/{searchId}` with DIFFERENT `termSearchFormData` payloads — facet payload includes `filters: mapValues(termSearchFacetParams, values)` + the prior query; text-query payload includes `filters: {}` + the new query. Whichever resolves SECOND wins via `updateTermsSearchState`. **The facet click's filter selections may be DISCARDED if the text-query resolves second** — the user clicked a facet, hit Enter on the search, and the search overwrote the facet selection." — evidence: TermSearch.tsx:50-58 (facet dispatch with prior filters) + TermSearchInput.tsx:25-28 (text dispatch with `filters: {}`) + slice.ts:36-90 (updateTermsSearchState replaces facetState wholesale on `termSearchId !== state.termSearchId` OR merges with `assignFacetStateWithNewFacets` on same-session) — severity: LOW (rare in practice; user-perceptible as "I selected a facet, my filter disappeared")
-
-- "**Session-expiry: stale URL UUID with no recovery path.** Lines 45-48: if a user reloads / deep-links to `/termsearch/{stale-uuid}` after the server-side `SearchFacetsHousekeepingJob` evicted the session (default `housekeeping.ttl.search_facets_days: 30` per F-010 batch-K + LSN-018), the GET returns 404 / empty. The slice's missing `.rejected` reducer means the state stays empty; the URL still carries the stale UUID; refreshing repeats. **No automatic fall-back to create a fresh session.** An operator hitting a stale bookmark sees a permanently broken page until they manually navigate back to `/termsearch` (without the UUID)." — evidence: TermSearch.tsx:45-48 + F-010.yaml (SearchFacetsHousekeepingJob 30-day TTL on `search_facets` table) + slice.ts:193-228 (no rejection handling) — severity: MEDIUM (a 30-day-old bookmark / deep-link from a Slack message is functionally broken with no UX recovery)
-
-- "**Cross-namespace term pollution at the row level (inherited from F-002).** TermSearchResultItem.tsx:36-37 renders `{termSearchResult.namespace.name}` for every Term — including terms from OTHER teams' namespaces. There is no UI filter "show only terms in MY namespace" — verified by reading TermSearchFilters/TermSearchFilters.tsx (sister component, outside this file). The drift class `cross_namespace_term_pollution` from F-002 batch K applies at the UI surface: a description in team-A's namespace that auto-links via `[[team-B-ns:term]]` syntax surfaces team-B's terms in team-A's TermSearchResults without any visual distinction." — evidence: TermSearchResultItem.tsx:36-37 + F-002 drift_class `cross_namespace_term_pollution` + ReactiveTermRepositoryImpl.java:162-179 (cross-namespace lookup with no tenant filter) — severity: MEDIUM (inherits F-002 severity; this UI is the surface where the leak manifests)
-
-- "**`usingCount` is a SUM of 3 server fields with no per-source breakdown.** TermSearchResultItem.tsx:20-23: `usingCount = (entitiesUsingCount ?? 0) + (columnsUsingCount ?? 0) + (linkedTermsUsingCount ?? 0)`. A row shows `12` — but the operator cannot tell from this UI whether that's 12 data-entities, or 8 entities + 4 columns, or any other decomposition. Hovering / clicking does not disambiguate (no tooltip, no breakdown — verified by reading TermSearchResultItem.tsx:51-55). Per F-002 batch-N invariants, the underlying `getTermDetailsDto` 12-JOIN HOT PATH does carry the breakdown; this UI just flattens it." — evidence: TermSearchResultItem.tsx:20-23, 51-55 — severity: LOW (UX informational; not misleading per se but lossy)
-
-- "**Empty-state copy is "No matches found" — does not distinguish "fresh deployment, zero terms" from "filter returned nothing".** TermSearchResults.tsx:105-107 renders `<EmptyContentPlaceholder text={t('No matches found')}/>` whenever `!isTermSearchFetching && !total`. A fresh deployment with no terms yet sees "No matches found" — an operator new to ODD would reasonably expect "No terms exist yet — click 'Add term' to create your first one" or similar onboarding-shaped copy. Pairs with the F-002 doc-side observation that business-glossary.md:24 directs operators to "All created terms are gathered in the Dictionary tab" — but the empty state on day 1 reads like a search miss." — evidence: TermSearchResults.tsx:105-107 + business-glossary.md (WebFetched 2026-05-20 status 200) — severity: LOW (onboarding UX gap)
+- covered_behaviours:
+  - behaviour: "Deep-link to a VALID /termsearch/{uuid} actually loads the session (GET /api/terms/search/{id} fires and returns 200 — the #1551 splat-regression pin)"
+    test_class: integration
+    test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts:108-115 (odd-team workspace; IT-125)"]
+  - behaviour: "Deep-link to a MISSING /termsearch/{uuid} renders the graceful 'This search has expired' state"
+    test_class: integration
+    test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts:117-121 (IT-125)"]
+  - behaviour: "Missing-session backend reads are uniformly 404 USR002; 'Start new search' recovery navigates to a fresh session URL — asserted for the /search surface; the /termsearch recovery button is NOT separately asserted (same handler shape, different component)"
+    test_class: integration
+    test_files: ["integration-tests/e2e/specs/search-session-not-found.spec.ts:36-47, 62-78"]
+- uncovered_behaviours:
+  - behaviour: "Facet-click PUT cardinality: 5 rapid facet clicks within 1500 ms produce N PUTs (intended ≤2 with leading+trailing; static analysis says ~5 because the debouncer is recreated per facet change)"
+    test_class: integration
+    criticality: HIGH
+    note: "Probe P-246 emitted this session (LSN-017 measurement-truth class)"
+  - behaviour: "TermSearch recovery button on /termsearch/{missing}: click → resetLoaderByAction + create + absolute navigate → expired state clears and URL carries the new UUID"
+    test_class: integration
+    criticality: MEDIUM
+    note: "IT-125 asserts this flow for /search only (spec lines 70-77); the termsearch test stops at expired-state visibility"
+  - behaviour: "createTermSearch failure on cold mount (network/5xx): user sees the error toast but the page stays blank; no retry affordance"
+    test_class: integration
+    criticality: MEDIUM
+  - behaviour: "TermsForm size-1000 fetch vs child size-30 fetch race on mount for a TERM_CREATE user — visible list cardinality + duplicate rows at >1000-term catalogs"
+    test_class: integration
+    criticality: MEDIUM
+    note: "Probe P-247 emitted this session"
+  - behaviour: "Expired/error branch selection logic (404 → SearchSessionExpired; 500 → AppErrorPage; no-status → AppErrorPage 'Unknown Error') as a pure-render unit test over mocked selector states"
+    test_class: unit
+    criticality: MEDIUM
+  - behaviour: "Toolbar Dictionary-tab click always creates a NEW session (server-row churn) even when a live session exists in Redux"
+    test_class: integration
+    criticality: LOW
+- test_files:
+  - "integration-tests/e2e/specs/search-session-not-found.spec.ts (odd-team; IT-125 — re-grounded 2026-06-11 per its header, lines 3-25)"
+  - "Zero co-located unit tests: no *.test.* under odd-platform-ui/src/components/Terms/TermSearch/ (Glob over that subtree this session returned 12 .tsx sources, no test files)"
+- gaps: |
+    The headline #1760 contract is now integration-pinned (IT-125), which is the right
+    bucket — the regression was a route-wiring + error-translation chain no unit test
+    could see. The worst remaining hole is integration-class: dispatch cardinality
+    (debouncer recreation, P-246) and the shared-slice race (P-247) are exactly the
+    LSN-017 shape where only counting real network calls tells the truth. Unit-class
+    coverage of the new branch logic (lines 46-60, 98-104) would pin the 404-vs-other
+    discrimination cheaply.
 
 ## docs_link_semantic
 
-- declared_docs: []
+- declared_docs: []   # no @docs annotation in the source (grep '@docs' over the file returned nothing this session)
 - inferred_docs:
   - url: "https://docs.opendatadiscovery.org/features/data-glossary/business-glossary"
-    anchor: "#the-dictionary-tab"
-    rationale: "Live business-glossary.md page enumerates the Dictionary tab and explicitly states: 'The Dictionary tab is the catalog-wide list of all terms in the platform' (line 28); 'Create a new term (gated by TERM_CREATE)' (line 31); listing the 7 TERM_* permissions table (lines 51-60). This UI component IS the Dictionary tab. WebFetched in this session 2026-05-20 — live status 200. Confidence promoted to MEDIUM because the live page directly names this UI's role + the TERM_CREATE permission gate."
-    last_verified_at: "2026-05-20T00:00:00Z"
+    anchor: ""
+    rationale: "The Dictionary-tab reference. Live page (re-fetched this session) now describes the server-side faceted-search session, the session-shared /termsearch/{uuid} URL, the TERM_* permission table, the namespace non-isolation posture, AND the 1500 ms facet rate-limit caveat — i.e. it has absorbed most of the gaps the 2026-05-20 enrichment flagged (old UI-DOC-GAP D/E/G/H: facet sidebar, search affordance, read-collaborative posture, URL share-ability — all now present)."
+    last_verified_at: "2026-06-11"
     last_verified_status: 200
-    last_verified_via: "WebFetch in this session against the live URL; response confirmed Dictionary-tab framing + TERM_CREATE gate"
     confidence: MEDIUM
+    fetched_excerpts: |
+      "the catalog-wide entry point for browsing and curating terms" … "implemented as a
+      server-side faceted-search session rather than a flat list" … "Create a new term
+      (gated by TERM_CREATE)" … "[namespace is] not a read-time isolation boundary —
+      Every authenticated user sees every term from every namespace in Dictionary search
+      results" … "[the URL is] session-shared — sharing the URL with a colleague gives
+      them the same session view, including any filters and pagination state. … Treat the
+      URL as a working-view share, not as a deep-link to fixed results." … "lands you on a
+      results page with an empty results table until you either type a query, apply a
+      facet filter, or use the platform's term-listing API directly" … "The Dictionary
+      tab's facet rate-limit (1500 ms) does not function as intended."
   - url: "https://docs.opendatadiscovery.org/features/data-glossary"
     anchor: ""
-    rationale: "P-06 pillar landing — Data Glossary section. The pillar page mentions 'Open it from the top-level navigation Dictionary tab' (per WebFetch in this session). The Dictionary tab is THIS component."
-    last_verified_at: "2026-05-20T00:00:00Z"
+    rationale: "P-06 pillar landing — names the top-nav Dictionary tab and routes readers to business-glossary for the full reference. No search-session / expired-link content (verified ABSENT this session)."
+    last_verified_at: "2026-06-11"
     last_verified_status: 200
-    last_verified_via: "WebFetch in this session — confirmed Dictionary-tab reference + redirect to /features/data-glossary/business-glossary for full reference"
     confidence: MEDIUM
-- fetched_excerpts: |
-    From live WebFetch of `https://docs.opendatadiscovery.org/features/data-glossary/business-glossary` (status 200, 2026-05-20):
-
-    **Section "The Dictionary tab" (line 26-34 of source):**
-    > "The Dictionary tab is the catalog-wide list of all terms in the platform. From here you can:
-    >  * Browse terms across every namespace.
-    >  * Create a new term (gated by TERM_CREATE).
-    >  * Open a term's detail page to edit its description, manage owners, link to other terms, and review which data entities reference it."
-
-    **Permissions table (lines 51-60 of source):** 7 TERM_* permissions enumerated:
-    `TERM_CREATE`, `TERM_UPDATE`, `TERM_DELETE`, `TERM_OWNERSHIP_CREATE`, `TERM_OWNERSHIP_UPDATE`, `TERM_OWNERSHIP_DELETE`, `TERM_TAGS_UPDATE`.
-
-    From live WebFetch of `https://docs.opendatadiscovery.org/features/data-glossary` (status 200, 2026-05-20):
-    > "Open it from the top-level navigation Dictionary tab (the in-app surface for browsing and curating terms)."
-    The page directs readers to `business-glossary.md` for the full Dictionary-tab reference.
 - doc_drift_findings:
-  - "**UI-DOC-GAP-D: The live Business Glossary doc does NOT document the FACET SIDEBAR.** business-glossary.md mentions 'Browse terms across every namespace' (line 30) but says nothing about the left-sidebar filter UI (`<TermSearchFilters/>` at TermSearch.tsx:74). The Dictionary tab has a faceted-filter affordance (filter by namespace, owner, tag — per TermSearchFilters/TermSearchFilterItem/* subcomponents) that the doc page does not describe. Operators reading the docs are unaware the filter sidebar exists. Severity: LOW (usability friction; not misleading)."
-  - "**UI-DOC-GAP-E: The live doc does NOT document the SEARCH affordance.** business-glossary.md's Dictionary-tab section (line 26-34) lists three user actions (Browse / Create / Open) — NONE of them mention free-text search. The `<TermSearchInput/>` at the top of the page (per TermSearchHeader.tsx:16) is undocumented in the operator-facing reference. Severity: LOW."
-  - "**UI-DOC-GAP-F: The live doc does NOT document the PAGINATION / INFINITE-SCROLL behaviour.** business-glossary.md is silent on pageSize=30 + infinite-scroll. For deployments with hundreds of terms, this is a perceptible UX trait that operators should know — especially given the F-002 batch-N `listTermRefDtos count-vs-list filter mismatch` drift class which means the reported `total` may exceed the actual count for paginated lists. Severity: LOW."
-  - "**UI-DOC-GAP-G: The live doc does NOT document the READ-COLLABORATIVE posture.** business-glossary.md does not state that every authenticated user sees every Term across every namespace. Operators expecting per-namespace or per-owner isolation (as the term 'Namespace-scoped terms' at business-glossary.md line 38 might imply) discover only at SQL-layer inspection that 'Searches and term-to-entity link operations resolve within the namespace by DEFAULT' (line 41) — but the **Dictionary tab list view ignores namespace scoping entirely**, surfacing all terms regardless of namespace. Per F-002 drift class `cross_namespace_term_pollution`. Severity: MEDIUM (operator-misleading expectation — 'scoped by namespace' sounds like isolation, but the Dictionary catalog ignores it for listing)."
-  - "**UI-DOC-GAP-H: The live doc does NOT document the URL-backed deep-link share-ability of filtered views.** A useful feature — share `/termsearch/{uuid}` with a teammate to restore the same filter state — is undocumented. Pairs with the session-expiry caveat (bugs_limitations_corner_cases — stale UUID broken-page) which IS surfaced HERE but should be cross-linked to the doc page if the share-ability is ever documented. Severity: LOW."
+  - "**Empty-results-table claim is code-contradicted (MEDIUM).** Live business-glossary says opening the Dictionary 'lands you on a results page with an empty results table until you either type a query, apply a facet filter…'. The code auto-fetches page 1 as soon as the fresh session syncs (TermSearchResults.tsx:52-61) and an empty-query/empty-filter state matches ALL non-deleted terms ordered TERM.ID ASC (ReactiveTermRepositoryImpl.java:277-292; countByState drives total the same way) — the default view is the first 30 terms of the whole catalog, oldest-id first."
+  - "**'…including any filters and pagination state' overstates URL sharing (LOW).** The restored session carries query + facetState + total only (getFacetsData, TermSearchServiceImpl.java:113-119); the slice resets results to page 0 on restore (termSearch.slice.ts:85-88) and the recipient re-paginates from page 1. Filters: yes; pagination position: no."
+  - "**The #1760 expired-session UX and the deep-link restore fix are not yet documented — correctly so.** The behaviour exists only on the contrib branch (commit 074c9927, PR for #1760); per the release-train rule the doc update rides the milestone train when the fix merges and releases. Flagging so doc-gap-finder schedules it rather than treating live-doc silence as a miss today."
+  - "**Coherence note (no drift):** the live page's caveat 'The Dictionary tab's facet rate-limit (1500 ms) does not function as intended' AGREES with the code defect (bugs[2]) — docs and code are aligned on the bug's existence."
+
+## implicit_adrs
+
+- "**Dead deep-links are a graceful product state, not an error.** A 404 on session restore renders an explanation + recovery CTA instead of an error page; every other status stays an error. The discrimination is deliberate and commented in BOTH this component and the shared element." — evidence: TermSearch.tsx:46-51 + SearchSessionExpired.tsx:12-13 — intent_anchor: "Mirror of the catalog search dead-link handling (#1760): a deep-linked term-search session that 404s is an expired link, not a platform fault." (TermSearch.tsx:46-47) — confidence: HIGH
+- "**Error state is owned by the global loader slice, not the feature slice.** The termSearch slice has no `.rejected` reducers (termSearch.slice.ts:193-228 — fulfilled-only, re-verified); failure status + ErrorState are captured generically by act-type matchers (loader.slice.ts:42-49) and read back via createStatusesSelector/createErrorSelector (loader-selectors.ts:7-22). Recovery = `resetLoaderByAction` deleting both keys (loader.slice.ts:18-24). The #1760 fix EXTENDED this pattern (added `getTermSearchError`) rather than adding rejected reducers to the feature slice." — evidence: termSearch.selectors.ts:26-34 + loader.slice.ts:18-49 + TermSearch.tsx:54 — intent_anchor: the generic `/pending|/fulfilled|/rejected` suffix matchers ARE the convention; the new selector composes them instead of bypassing them — confidence: HIGH
+- "**Server-side URL-backed session with merge-patch updates.** Session persisted in `search_facets`, UUID in the URL, facet PUTs are deltas merged server-side (`FacetStateDto.merge`, variable literally named `delta` at TermSearchServiceImpl.java:83). The delta contract is why the UI can send only unsynced options and why concurrent facet PUTs are additive rather than destructive (modulo the read-merge-write window, stress E2)." — evidence: TermSearch.tsx:62-76 + termSearch.selectors.ts:98-102 + TermSearchServiceImpl.java:82-90 + FacetStateDto.java:41-66 — intent_anchor: "final FacetStateDto delta = facetStateMapper.mapForm(formData);" — confidence: HIGH
+- "**Permission-gated Create CTA via render-null (UI hide, not enforcement).** WithPermissionsProvider injects context and always renders (WithPermissionsProvider.tsx:12-49, verified passthrough); the inner WithPermissions returns null without TERM_CREATE (WithPermissions.tsx:27-31). Backend enforcement is a separate layer." — evidence: TermSearch.tsx:113-118 + TermSearchHeader.tsx:17-23 — intent_anchor: the Provider/consumer split API shape (Component | render | children, always-render) — confidence: HIGH
+- "**1500 ms leading-edge debouncer for facet mutations; text query fires synchronously.** Explicit `{leading: true}` (TermSearch.tsx:89); Enter/search-click dispatch immediately (TermSearchInput.tsx:25-35) — explicit intent does not wait." — evidence: TermSearch.tsx:78-92 + TermSearchInput.tsx:25-35 — intent_anchor: the `{ leading: true }` option — confidence: HIGH
+
+## bugs_limitations_corner_cases
+
+- "[0] **LSN-017-class dep smell #1 (latent): `termSearchId` read in effect-1's guard but missing from its deps.** Lines 62-71: deps `[routerTermSearchId, createTermSearch, isTermSearchCreating]`; the guard also reads `termSearchId` (line 63). Correct today because the create's fulfilment writes `termSearchId` (slice updateTermsSearchState) in the same React batch as the navigate-driven `routerTermSearchId` change; a refactor reordering those would surface a double-create. `createTermSearch` in deps is a stable import (no-op dep)." — evidence: TermSearch.tsx:62-71 + termSearch.slice.ts:76-90 — severity: MEDIUM
+- "[1] **LSN-017-class dep smell #2 (active re-fire surface): facet-sync effect deps `[termSearchFacetParams]` while the guard reads `termSearchFacetsSynced`.** Lines 94-96. `getTermSearchFacetsParams` is a createSelector over `state.termSearch` whose body (mapValues+pickBy) builds a NEW object whenever the slice identity changes (termSearch.selectors.ts:98-102) — i.e. after EVERY termSearch slice action, not only facet edits. The effect therefore re-fires after every fulfilled response; the `isFacetsStateSynced: true` write on fulfilment (slice:84) makes the guard skip, bounding the damage. Dispatch cardinality per facet click is the runtime question → P-246." — evidence: TermSearch.tsx:94-96 + termSearch.selectors.ts:98-102 + termSearch.slice.ts:84 — severity: MEDIUM
+- "[2] **Debouncer recreated on every facet change — the 1500 ms rate-limit does not rate-limit.** `useCallback(useDebouncedCallback(...), [termSearchId, termSearchFacetParams])` (lines 78-92): every facet click changes `termSearchFacetParams` → new debounced instance → `{leading: true}` fires immediately on each instance; the trailing window dies with the replaced instance. Net: ~1 PUT per click instead of coalescing. The live doc page now documents this caveat verbatim. NOTE: the merge-patch server contract (invariants) means the extra PUTs are additive deltas, not lost updates — the cost is load + the E2 race window, not facet loss." — evidence: TermSearch.tsx:78-92 — severity: MEDIUM
+- "[3] **No `.catch` on either create chain — create failure leaves a blank page (toast only).** Effect 1 (lines 65-69) and the recovery handler (55-59) both `.unwrap().then(navigate)` with no catch. On rejection: `showServerErrorToast` fires from the thunk wrapper when a Response status exists (handleResponseThunk.ts:37-39 + errorHandling.tsx:77-79), the create-status rejection is recorded in the loader slice, but the render reads only `isTermSearchCreating` — the page stays blank with no retry affordance, and the unhandled rejection hits the console. The #1760 fix covered the RESTORE failure path, not the CREATE one." — evidence: TermSearch.tsx:53-71 + handleResponseThunk.ts:24-42 — severity: MEDIUM
+- "[4] **TermsForm (mounted for every TERM_CREATE user) fetches `size: 1000` into the SHARED results slice on every mount and every facet-sync.** TermsForm.tsx:71-75: `fetchTermsSearchResults({searchId, page: 1, size: 1000})` whenever `searchId && isTermSearchFacetsSynced` — it races the child's page-1 size-30 fetch (TermSearchResults.tsx:52-61) on the same slice (last write wins; both replace items at page 1). Purpose: the client-side duplicate-name check (TermsForm.tsx:84-95) reads `getTermSearchResults`. Visible consequences: (a) double results GET per mount/facet-change for TERM_CREATE users; (b) the duplicate check sees at most 1000 terms AND only terms matching the CURRENT session's facet state — a duplicate outside the active filter or beyond row 1000 passes the check; (c) for >1000-term catalogs, a subsequent infinite-scroll fetch (page 2, size 30) appends rows 31-60 onto the 1000-item list — duplicate React keys. Owning node: TermsForm (this sidecar records the mount-tree cardinality; full enrichment belongs to the TermsForm node — REFERENCE, unresolved: true). Race outcome at runtime → P-247." — evidence: TermsForm.tsx:71-75, 84-95 + TermSearchResults.tsx:38-43, 52-61 + termSearch.slice.ts:197-206 — severity: MEDIUM
+- "[5] **`pageSize: 30` in the form-data payloads is a dead field — it never reaches the wire.** The OpenAPI schema for TermSearchFormData declares only `query` + `filters` (components.yaml:2659-2680); the generated serializer emits only those two (generated-sources/models/TermSearchFormData.ts:68-79); the backend mapper reads only query+filters (FacetStateMapperImpl.java:106-130); `getPageSize()` has ZERO matches under odd-platform-api/src/main/java and `pageSize|page_size` ZERO under odd-platform-api/src/main/resources (both greps this session, scopes as named). The previous sidecar revision's invariant 'the session-server respects whatever the client sends, so the two 30-literals must stay aligned' is retracted: only TermSearchResults.tsx:38 is load-bearing. TS excess-property checking is bypassed because the literal flows through an intermediate const." — evidence: TermSearch.tsx:64 + TermSearchInput.tsx:26 + ToolbarTabs.tsx:109 + the four scoped citations above — severity: LOW
+- "[6] **Top-nav Dictionary click ALWAYS creates a fresh session — server-row churn + lost working view.** ToolbarTabs.tsx:107-119: every click on the Dictionary tab dispatches `createTermSearch` and navigates to the new UUID, even when Redux already holds a live session. Each click INSERTs a `search_facets` row; the prior session is orphaned until housekeeping eviction, and a user who tabs away and clicks back loses their filters." — evidence: ToolbarTabs.tsx:107-119 + ReactiveSearchFacetRepositoryImpl.java:76-82 — severity: LOW
+- "[7] **In-SPA navigation to the INDEX route with a hot Redux session shows an id-less URL.** Mount at `/termsearch` with `termSearchId` cached → effect 1 guard skips create, effect 2 guard skips restore → 0 network calls, previous session renders, but the URL stays `/termsearch` — not shareable until something navigates with the UUID (row-click back-nav does: TermDetails.tsx:50)." — evidence: TermSearch.tsx:62-76 — severity: LOW
+- "[8] **Graceful expired page + red error toast render together.** The restore thunk passes `{}` options, so `showServerErrorToast` fires for the 404 (handleResponseThunk.ts:37-39; toast shown because `response.status` is truthy, errorHandling.tsx:77-79) at the same time as SearchSessionExpired's 'not a platform fault' framing. Cosmetic contradiction; `switchOffErrorMessage` exists for exactly this." — evidence: termSearch.thunks.ts:35-42 + errorHandling.tsx:58-80 + SearchSessionExpired.tsx:12-13 — severity: LOW
+- "[9] **Cross-namespace term visibility at the row level (inherited, unchanged).** Every row renders `namespace.name` for all teams (TermSearchResultItem.tsx:36-37); no 'my namespace' affordance in the filters. Now openly documented on the live page (read-time non-isolation), so the residual concern is product posture, not doc drift." — evidence: TermSearchResultItem.tsx:36-37 + live business-glossary fetch this session — severity: LOW
+- "[10] **`usingCount` flattens 3 server counts with no breakdown** (entities+columns+linkedTerms, TermSearchResultItem.tsx:20-23, 51-55); **empty-state copy 'No matches found' doubles as the fresh-deployment zero-terms state** (TermSearchResults.tsx:105-107). Both carried forward unchanged from the previous revision." — evidence: as cited — severity: LOW
+
+## stress_findings
+
+```yaml
+stress_findings:
+  tunables:
+    - location: "TermSearch.tsx:64 (also TermSearchInput.tsx:26, ToolbarTabs.tsx:109)"
+      name: "termSearchFormData.pageSize"
+      value: "30"
+      questions:
+        - q: "What at N=0 / N=1 / N=3000?"
+          a: "No observable change at ANY value — the field is dropped by the generated serializer before the wire (TermSearchFormDataToJSON emits only query+filters) and the schema does not declare it. Dead input; see request_inputs[1]."
+          confidence: STATIC-INFERRED
+          evidence: "generated-sources/models/TermSearchFormData.ts:68-79 + components.yaml:2659-2680"
+        - q: "What does the operator see at each boundary?"
+          a: "Nothing — the effective page size is the results GET's size param (TermSearchResults.tsx:38 size=30; TermsForm.tsx:73 size=1000). Boundary behaviour of THOSE belongs to the child nodes."
+          confidence: REFERENCE
+          evidence: "node: TermSearchResults / TermsForm sidecars (unresolved)"
+    - location: "TermSearch.tsx:88-89"
+      name: "debounce interval, leading edge"
+      value: "1500 ms, {leading: true}"
+      questions:
+        - q: "What at 5 facet clicks inside one 1500 ms window?"
+          a: "Static trace: each click replaces the debounced instance (useCallback deps include termSearchFacetParams, line 91) → each new instance leading-fires → ~5 PUTs, no trailing coalesce. Runtime count not yet measured."
+          confidence: PROBE-NEEDED
+          evidence: "probe_id: P-246"
+        - q: "What at exactly 1 click (the intended case)?"
+          a: "1 immediate PUT (leading edge) — correct UX; the recreation bug is invisible at N=1."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:78-92"
+        - q: "What does the operator see at the overflow boundary?"
+          a: "No error — N concurrent merge-patch PUTs; server state converges to the union unless the read-merge-write race drops a delta (resource_boundaries[1]); UI reconciles via assignFacetStateWithNewFacets keeping unsynced divergences."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearchServiceImpl.java:82-90 + termSearch.slice.ts:61-84"
+    - location: "TermSearch.tsx:51"
+      name: "expired-state status gate"
+      value: "404"
+      questions:
+        - q: "What at status 401/403/500?"
+          a: "AppErrorPage with the real status + statusText (TermSearch.tsx:102-104; AppErrorPage.tsx:24-30). Not the expired page."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:48-51, 102-104"
+        - q: "What at a network error with NO Response object?"
+          a: "getErrorResponse returns status undefined (errorHandling.tsx:30-35) → isTermSearchSessionExpired false → AppErrorPage renders an empty error code + 'Unknown Error' (the || fallback is commented in-source for empty HTTP/2 reason phrases, AppErrorPage.tsx:29-30). No toast (toast requires response.status, errorHandling.tsx:77-79)."
+          confidence: STATIC-INFERRED
+          evidence: "errorHandling.tsx:14-35, 77-79 + AppErrorPage.tsx:25-30"
+  name_behavior_pairs:
+    - name: "isTermSearchSessionExpired / SearchSessionExpired"
+      promise: "the followed search link's session has expired"
+      implementation: "ANY 404 on the deep-link restore — including UUIDs that never existed (foreign/typo). The UI copy explicitly covers both: 'has expired or does not exist'. Backend 404 source: NotFoundException('Search not found'), TermSearchServiceImpl.java:108-111."
+      drift: NONE
+      operator_visible_consequence: ""
+      confidence: STATIC-INFERRED
+      evidence: "TermSearch.tsx:50-51 + SearchSessionExpired.tsx:29-33"
+    - name: "handleStartNewTermSearch"
+      promise: "start a brand-new term search and land the user on it"
+      implementation: "reset loader keys for the GET act-type → POST create → absolute navigate to /termsearch/{newId}. Matches; replay nuance in resource_boundaries[2]."
+      drift: NONE
+      operator_visible_consequence: ""
+      confidence: STATIC-INFERRED
+      evidence: "TermSearch.tsx:53-60"
+    - name: "UI route '/termsearch' vs wire path '/api/terms/search'"
+      promise: "(naming surface) a reader of the UI route or the thunk names would guess the API path is /api/termsearch"
+      implementation: "the API is /api/terms/search[/{search_id}] (openapi.yaml:2982-3107). The PREVIOUS revision of this sidecar shipped the wrong wire path — corrected throughout this revision."
+      drift: MINOR
+      operator_visible_consequence: "None at runtime; documentation/debugging confusion only (curl against /api/termsearch returns the SPA fallback, not the API)."
+      confidence: STATIC-INFERRED
+      evidence: "openapi.yaml:2982-3107 + integration-tests/e2e/specs/search-session-not-found.spec.ts:109-115"
+  orderings:
+    - location: "ReactiveTermRepositoryImpl.java:277-292 (reached via this page's default fetch)"
+      questions:
+        - q: "What is the actual ORDER BY at the lowest layer for the default (empty-query) Dictionary view?"
+          a: "TERM.ID ASC only (line 292 — the unconditional order field). No FTS rank without a query. Default view = oldest-created terms first."
+          confidence: STATIC-INFERRED
+          evidence: "ReactiveTermRepositoryImpl.java:281-292"
+        - q: "Tie-breaker when sort keys are equal?"
+          a: "TERM.ID is unique — deterministic. With a query: rank DESC then TERM.ID ASC — also deterministic."
+          confidence: STATIC-INFERRED
+          evidence: "ReactiveTermRepositoryImpl.java:282-292"
+        - q: "Which subset at result-set > page size?"
+          a: "First 30 by the above order (child size=30); deeper windows via infinite scroll. The TermsForm size-1000 fetch can reset the window to 1000 rows for TERM_CREATE users — interplay in bugs[4]."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearchResults.tsx:38-43 + TermsForm.tsx:73"
+        - q: "Does any upstream layer re-sort or filter?"
+          a: "No — the map renders server order unmodified (TermSearchResults.tsx:98-103)."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearchResults.tsx:98-103"
+  auth_gates:
+    - location: "TermSearch.tsx:113-118 (+ App.tsx:66-69 route mount)"
+      endpoint: "/termsearch UI surface; Permission.TERM_CREATE provider"
+      questions:
+        - q: "What does this surface show under DISABLED / LOGIN_FORM / OAUTH2 / LDAP?"
+          a: "The component has no auth logic; reachability is the app shell's concern. Under DISABLED everything renders for anyone reaching the port; under the other modes, post-login. Per-mode permission resolution feeding usePermissions is owned by the auth wiring nodes."
+          confidence: REFERENCE
+          evidence: "node: P-09 auth wiring sidecars (App shell / PermissionProvider)"
+        - q: "What does an unauthenticated caller see?"
+          a: "Platform-level redirect-to-login under non-DISABLED modes; not enforced in this file (no auth check present in the source — verified by reading all 127 lines)."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:1-127 (absence)"
+        - q: "What does a wrong-role caller (no TERM_CREATE) see?"
+          a: "Full list + search + filters; NO 'Add term' button (WithPermissions renders null, WithPermissions.tsx:27-31); and — side effect of the gate — NO TermsForm mount, so no size-1000 fetch (bugs[4] applies only to permitted users)."
+          confidence: STATIC-INFERRED
+          evidence: "WithPermissions.tsx:27-31 + TermSearchHeader.tsx:17-23"
+        - q: "Where does the mutation gate actually live?"
+          a: "UI hide here; backend enforcement for POST /api/terms is the authorization framework's registration — not re-verified this session."
+          confidence: REFERENCE
+          evidence: "node: SecurityConstants / TermController create-path sidecars"
+  resource_boundaries:
+    - location: "TermSearch.tsx:78-92"
+      kind: concurrency
+      questions:
+        - q: "Can two simultaneous calls corrupt state?"
+          a: "Client side: no shared mutable state beyond Redux (reducers serialise). The recreated debouncers leak at most ~one pending timer per replaced instance for ≤1500 ms."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:78-92"
+        - q: "Is the facet PUT replay-safe?"
+          a: "Yes for identical deltas — merge is idempotent (re-adding a selected id keeps it; re-removing an absent id is filtered). Lost-update risk is cross-delta, below."
+          confidence: STATIC-INFERRED
+          evidence: "FacetStateDto.java:51-66"
+    - location: "TermSearchServiceImpl.java:82-90 + ReactiveSearchFacetRepositoryImpl.java:85-96"
+      kind: transactional
+      questions:
+        - q: "Can two CONCURRENT facet PUTs lose a delta?"
+          a: "The service does fetch → merge → UPDATE with no lock/version (plain UPDATE by id); two in-flight PUTs that both read the same stored state will each write their own merge — last write drops the other's delta. The broken debouncer (≈1 PUT per click) widens this window. UI partially self-heals: the dropped option re-appears locally as unsynced (slice resolver flags selected divergence, termSearch.slice.ts:68-71) and re-PUTs on the next facetParams change — but only when a later response exposes the divergence. Runtime outcome folded into P-246's final-state assert."
+          confidence: PROBE-NEEDED
+          evidence: "probe_id: P-246"
+    - location: "TermSearch.tsx:53-60 + 62-71"
+      kind: idempotency
+      questions:
+        - q: "Double-click 'Start new search' / StrictMode double-mount — duplicate side effects?"
+          a: "Each invocation POSTs a new session row; the later navigate wins; earlier rows are orphaned until housekeeping eviction (LAST_ACCESSED_AT-based). Same class as the toolbar's create-per-click (bugs[6]) and dev-only StrictMode double-create. No user-visible corruption; server-row churn only."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:53-60 + ReactiveSearchFacetRepositoryImpl.java:76-82 + ToolbarTabs.tsx:107-119"
+  request_inputs:
+    - location: "TermSearch.tsx:34, 74-75"
+      input_kind: path-param
+      input_name: "termSearchId (:termSearchId)"
+      questions:
+        - q: "Name promise?"
+          a: "the term-search session to restore"
+          confidence: STATIC-INFERRED
+          evidence: "routes/termsRoutes.ts:7-8, 54-63"
+        - q: "Actual use?"
+          a: "Bound verbatim as searchId → GET /api/terms/search/{search_id} → search_facets PK lookup (fetchFacetState). As of THIS COMMIT the binding is real; pre-fix the splat route never populated it (the #1760 regression)."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:73-76 + App.tsx:66-69 + TermSearchServiceImpl.java:108-111"
+        - q: "Scope match?"
+          a: "MATCHES"
+          drift: NONE
+          confidence: STATIC-INFERRED
+          evidence: "as above"
+        - q: "Wrong-assumption visibility?"
+          a: "Dead/foreign UUID → graceful expired state (404); that is now the designed surface."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:98-100"
+        - q: "Available-but-unused closer match?"
+          a: "NONE"
+          confidence: STATIC-INFERRED
+          evidence: "n/a"
+    - location: "TermSearch.tsx:64 (+ TermSearchInput.tsx:26, ToolbarTabs.tsx:109)"
+      input_kind: body-field
+      input_name: "termSearchFormData.pageSize"
+      questions:
+        - q: "Name promise?"
+          a: "sets the session's results page size to 30"
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:64"
+        - q: "Actual use?"
+          a: "NONE — dropped at the generated-client serialization boundary; absent from the wire schema; never read server-side (scoped greps: getPageSize() zero matches under odd-platform-api/src/main/java; pageSize|page_size zero under odd-platform-api/src/main/resources)."
+          confidence: STATIC-INFERRED
+          evidence: "generated-sources/models/TermSearchFormData.ts:68-79 + components.yaml:2659-2680 + FacetStateMapperImpl.java:106-130"
+        - q: "Scope match?"
+          a: "TRANSLATES_SILENTLY — a source-level field that silently becomes nothing; a maintainer tuning it would observe no effect."
+          drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+          confidence: STATIC-INFERRED
+          evidence: "as above"
+        - q: "Wrong-assumption visibility?"
+          a: "Page size stays 30 regardless (the child's literal). No error, no warning — TS excess-property check bypassed via intermediate const."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearchResults.tsx:38"
+        - q: "Available-but-unused closer match?"
+          a: "The `size` query param on GET /api/terms/search/{id}/results — the input that actually does what pageSize promises."
+          confidence: STATIC-INFERRED
+          evidence: "TermController.java:184-191 + TermSearchResults.tsx:42"
+      routes_to_finding: "bugs_limitations_corner_cases[5]"
+    - location: "TermSearch.tsx:81-86 (PUT) vs :64 (POST)"
+      input_kind: body-field
+      input_name: "termSearchFormData.filters"
+      questions:
+        - q: "Name promise?"
+          a: "the filter state of the search"
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:81-86"
+        - q: "Actual use?"
+          a: "Endpoint-dependent: POST treats it as the full initial state (removeUnselected, TermSearchServiceImpl.java:73); PUT treats it as a MERGE-PATCH delta (merge at :86; add on selected=true, remove on selected=false, FacetStateDto.java:51-66). The UI honours the delta contract by sending only unsynced options (selectors.ts:98-102)."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearchServiceImpl.java:72-90 + FacetStateDto.java:30-66"
+        - q: "Scope match?"
+          a: "TRANSLATES_LEGITIMATELY — the delta semantics are explicit in the implementation (variable named `delta`; merge helpers) and the UI selector is built for it. Caveat-grade: the SAME field name carries replacement semantics on POST and patch semantics on PUT; third-party API callers sending 'the full state' to PUT cannot DESELECT by omission — they must send selected:false explicitly."
+          drift: MINOR
+          confidence: STATIC-INFERRED
+          evidence: "as above"
+        - q: "Wrong-assumption visibility?"
+          a: "An API caller PUTting `filters:{}` expecting a reset observes... no reset (facets persist). The UI's own TermSearchInput does exactly this — and the persistence is the CORRECT behaviour for it (typing a query keeps your facets), which the previous sidecar revision mis-read as 'filters are reset + facet race discards selections'; both retracted this revision."
+          confidence: STATIC-INFERRED
+          evidence: "TermSearchInput.tsx:26-27 + FacetStateDto.java:41-49"
+        - q: "Available-but-unused closer match?"
+          a: "NONE (clearTermSearchFacets exists client-side and expresses clearing as explicit selected:false deltas — consistent with the contract)"
+          confidence: STATIC-INFERRED
+          evidence: "termSearch.slice.ts:96-120"
+    - location: "TermSearch.tsx:82 (PUT payload `query`)"
+      input_kind: body-field
+      input_name: "termSearchFormData.query"
+      questions:
+        - q: "Name promise?"
+          a: "the free-text search query"
+          confidence: STATIC-INFERRED
+          evidence: "TermSearch.tsx:81-82"
+        - q: "Actual use?"
+          a: "Replaced wholesale on every PUT (merge takes delta.getQuery(), FacetStateDto.java:48); empty query → no FTS condition → full catalog; non-empty → FTS + rank ordering (ReactiveTermRepositoryImpl.java:282-291). The facet-debounce PUT re-sends the CURRENT redux query so facet edits don't clobber it."
+          confidence: STATIC-INFERRED
+          evidence: "FacetStateDto.java:48 + ReactiveTermRepositoryImpl.java:282-292"
+        - q: "Scope match?"
+          a: "MATCHES"
+          drift: NONE
+          confidence: STATIC-INFERRED
+          evidence: "as above"
+        - q: "Wrong-assumption visibility?"
+          a: "n/a (no drift)"
+          confidence: STATIC-INFERRED
+          evidence: "n/a"
+        - q: "Available-but-unused closer match?"
+          a: "NONE"
+          confidence: STATIC-INFERRED
+          evidence: "n/a"
+  probes_emitted:
+    - probe_id: P-246
+      question: "Facet-click PUT cardinality per 5 rapid clicks (debouncer-recreation hypothesis) + lost-update detection across concurrent merge-patch PUTs"
+      probe_path: "lineage/odd-platform/probes/P-246.yaml"
+    - probe_id: P-247
+      question: "TermsForm size-1000 fetch vs child size-30 fetch: which wins the shared results slice on Dictionary mount for a TERM_CREATE user, and does >1000-term scroll produce duplicate rows?"
+      probe_path: "lineage/odd-platform/probes/P-247.yaml"
+  stress_summary:
+    triggers_total: 13
+    questions_total: 32
+    answers_static_inferred: 26
+    answers_probe_needed: 3
+    answers_reference: 3
+    drift_flags: 3   # wire-path naming (MINOR), pageSize (DRIFT_INPUT_NAME_VS_IMPLEMENTATION), filters PUT-vs-POST semantics (MINOR, legitimate)
+```
 
 ## security
 
-- **auth_mode_relevance**: `LOGIN_FORM | OAUTH2 | LDAP` — the Dictionary tab is a UI/API surface protected by the three non-DISABLED auth modes per the SECURITY_RULES wiring; reaching `/termsearch/*` requires an authenticated session in those modes. Under `auth.type=DISABLED` the route is reachable by anyone able to hit the platform's HTTP port (per pillar P-09 dev-only mode). The component itself does not gate by auth mode — the upstream route shell + `WithPermissionsProvider` chain decide whether `TermSearch` mounts; the route mount at App.tsx:63 is unconditional but the platform-level redirect-to-login behaviour on session miss enforces auth at the network layer.
-- **ingestion_filter_relevance**: `NO — UI/API surface, not ingestion`. The `auth.ingestion.filter.enabled` filter applies only to `/ingestion/entities` — this component drives `/api/termsearch` traffic on the UI/API surface, governed by SECURITY_RULES not the ingestion filter.
+- **auth_mode_relevance**: `LOGIN_FORM | OAUTH2 | LDAP` (UI surface behind the authenticated shell; reachable by anyone under `DISABLED`). No auth logic in this file; the route mount (App.tsx:66-69) is unconditional within the shell.
+- **ingestion_filter_relevance**: `NO — UI/API surface (/api/terms/search), not ingestion`.
 - **authorization_assertions**:
-  - "`<WithPermissionsProvider allowedPermissions={[Permission.TERM_CREATE]} resourcePermissions={[]}>` (TermSearch.tsx:77-80) wrapping `<TermSearchHeader/>` — UI-only INJECTION of the permission context; does NOT gate route rendering (per WithPermissionsProvider.tsx:30-38 verified passthrough)."
-  - "`<WithPermissions permissionTo={Permission.TERM_CREATE}>` (TermSearchHeader.tsx:17) wrapping the `TermsForm` 'Add term' button — UI-only HIDE of the Create CTA. The button is INVISIBLE (not greyed) to users without TERM_CREATE — same pattern as PolicyList batch-Q."
-  - "**NO row-level authorization on TermSearchResults rendering.** TermSearchResults.tsx:98-103 maps every result through `<TermSearchResultItem/>` unconditionally — there is no `WithPermissions`, no per-Term owner check, no per-Term permission check. Every authenticated user sees every Term row. The `<S.TermSearchResultsItemLink to={termDetailsOverviewLink}>` at TermSearchResultItem.tsx:26 is also unconditional — every authenticated user can navigate to every Term's detail page."
-- **owner_scoping**: `BYPASSES — read-collaborative posture inherited from F-002 batch-N ReactiveTermRepositoryImpl`. The repository tier has no `odd.tenant-id` reference and no per-owner / per-namespace filter on any read. This UI surfaces the unscoped catalog. Cross-batch link: F-002 drift_class `cross_namespace_term_pollution` (the SECURITY half is silent-disclosure, see known_security_gaps).
+  - "`WithPermissionsProvider allowedPermissions=[Permission.TERM_CREATE] resourcePermissions=[]` (TermSearch.tsx:113-118) — context injection only; always renders (WithPermissionsProvider.tsx:12-49)."
+  - "`WithPermissions permissionTo={Permission.TERM_CREATE}` hides the Add-term CTA (TermSearchHeader.tsx:17-23; render-null at WithPermissions.tsx:27-31). Side effect worth knowing: the gate ALSO prevents TermsForm's size-1000 fetch for unpermitted users (bugs[4])."
+  - "NO row-level or read authorization anywhere in this tree — list, search input, filters and row links render for every authenticated user (TermSearchResults.tsx:98-103; TermSearchResultItem.tsx:26)."
+- **owner_scoping**: `BYPASSES — read-collaborative posture` (repository tier applies no owner/namespace read filter per F-002 batch-N; now openly stated on the live doc page — fetched this session).
 - **data_exposure**:
-  - "List view exposes `{id, name, namespace.name, ownership[].owner.name, entitiesUsingCount, columnsUsingCount, linkedTermsUsingCount, createdAt, updatedAt}` per Term row (TermSearchResultItem.tsx:25-69) → audience is EVERY authenticated user. Names like `finance/Customer`, `marketing/PII Tracking`, `compliance/Restricted Data Class` may reveal organisational structure, sensitive-data categorisation, or compliance taxonomy. The full catalog is informational disclosure of the platform's term vocabulary."
-  - "Click-through to TermDetails exposes the FULL TERM JSON (definition, description-relations, term-to-term links, ownership history, tags) — only after clicking a row, but no permission check inside this component prevents that click. The row's Link is RENDERED for everyone who can see the row. Per the F-002 batch-N `getTermDetailsDto` 12-JOIN HOT PATH, the detail-page query carries the full neighbour graph (10 owners × 20 tags × 100 data-entities × ...) — every authenticated user navigating to a Term detail page pulls this graph."
-  - "Create-term CTA visibility leaks the user's TERM_CREATE permission to the DOM. An adversary inspecting the DOM can infer the current user's permission set by enumerating which Dictionary-tab CTAs are visible. Pattern identical to batch-Q PolicyList; not a per-component decision."
-  - "URL-visible session UUID (`/termsearch/{uuid}`) — the UUID is opaque to outside observers but constitutes an unguessable bearer of session state on the server. Sharing the URL shares the filter state. If session-eviction happens server-side, the UUID becomes dangling reference (no info-leak; just functionally broken)."
+  - "Term rows `{name, namespace.name, owners[], usingCount, createdAt, updatedAt}` → every authenticated user (TermSearchResultItem.tsx:25-69). Term/namespace taxonomies can reveal org structure or compliance vocabulary."
+  - "Session UUID in the URL is an unguessable working-view handle; missing-session reads return uniform 404 USR002 (IT-125 spec lines 36-47) — no existence oracle beyond validity of the UUID itself."
+  - "Create-CTA visibility leaks the caller's TERM_CREATE bit to the DOM (pattern-wide, not per-component)."
 - **known_security_gaps**:
-  - "**Read-collaborative posture — every authenticated user sees every Term across every namespace.** No per-owner filter, no per-namespace filter, no role-based row-hide at this layer or any downstream layer (per F-002 batch-N + batch-K). An organisation expecting team-isolation (team-A's `Customer` not visible to team-B) discovers from this UI that no such isolation exists. The 7 `TERM_*` permissions gate MUTATIONS — they do NOT gate reads. Names like `finance/PII Subject Identifiers` or `compliance/Restricted Trade Data` may leak organisational taxonomy. Cross-batch link: F-002 drift_class `cross_namespace_term_pollution`. The pattern matches PolicyList batch-Q known_security_gaps[3] (informational disclosure of role-attached policies) but at a broader scope (all users, all namespaces)." — evidence: TermSearch.tsx:70-86 (no permission wrap on TermSearchResults) + TermSearchResultItem.tsx:25-69 (unconditional render) + F-002 batch-N ReactiveTermRepositoryImpl sidecar + TermServiceImpl batch-K cross_namespace_term_pollution drift facet — severity: MEDIUM (read-collaborative is a documented architecture stance per system-mission.md line 267; the UI surface is the consequence)
-
-  - "**Create-term backend-bypass via direct API.** The UI hides the Create button when TERM_CREATE absent (TermSearchHeader.tsx:17), but the backend route `POST /api/terms` (TermController.java:69-75) is gated via SECURITY_RULES at SecurityConstants.java (the `/api/terms` POST registration — not re-verified this session; out of scope for the UI sidecar's confirmed surface). Per F-002 batch K notes, the SecurityConstants registrations for the term-LINK paths (singular vs plural `/term[s]/`) carry the REFACTOR-217 bug; the create-term path is a SEPARATE registration and the bug may or may not apply. UI guard is defensive; backend enforcement is the operative defence." — evidence: TermSearchHeader.tsx:17 + TermController.java:69-75 (no @PreAuthorize on createTerm; relies on SECURITY_RULES) + F-002 contributing_nodes SecurityConstants — severity: LOW (defence-in-depth is fine; the UI is presentation-only by design)
-
-  - "**Session UUID is unguessable but session-eviction is silent.** A user reloading after 30 days (default `housekeeping.ttl.search_facets_days`) sees a permanently broken page at `/termsearch/{stale-uuid}` (per bugs_limitations_corner_cases[5]). This is not a security gap per se (no info leak, no privilege escalation) but it's a session-lifecycle quirk operators should know. Cross-batch link: F-010 / P-08:F-002 SearchFacetsHousekeepingJob (LSN-018 case-law for the search_facets TTL eviction)." — evidence: TermSearch.tsx:45-48 + F-010.yaml (SearchFacetsHousekeepingJob) — severity: LOW
-
-  - "**No audit-log surface on UI-side term mutations.** Clicking Create-term routes to TermsForm + dispatches `createTerm` thunk → backend → emits `TERM_CREATED` activity event (per F-002 contributing_nodes TermAssignmentActivityHandler), but the Dictionary tab does NOT surface 'who created this term when' on the row — only `createdAt` (line 56-60) and `updatedAt` (line 62-66), no `createdBy` / `updatedBy`. The Ownership field shows current OWNERS (line 42-49), distinct from authorship. An operator investigating 'who added the `compliance/Restricted Trade Data` term' has no UI affordance on this page — they must navigate to the term's Activity tab. Pattern mirrors batch-Q PolicyList known_security_gaps[4] (no audit-log UI surface on RBAC mutations) — generalised to Term mutations." — evidence: TermSearchResultItem.tsx:25-69 (no createdBy/updatedBy fields) + F-002 contributing_nodes TermAssignmentActivityHandler — severity: LOW
-
-  - "**Unhandled-rejection silent-failure on session-create / restore.** Lines 37-41 (createTermSearch promise chain — no .catch); slice missing .rejected reducers. Auth-token-expired mid-session reproduces: the GET `/api/termsearch/{searchId}` returns 401 → thunk rejects → slice silent → URL retains `:termSearchId` → user sees frozen empty page → refresh repeats. Pairs with bugs_limitations_corner_cases[3] + [5]. This is a UX/availability concern; not a privacy leak." — evidence: TermSearch.tsx:37-41, 45-48 + slice.ts:193-228 (no rejected handlers) — severity: MEDIUM (defence-in-depth + observability — silent failures inhibit operator diagnostics)
+  - "Read surface ungated by design (read-collaborative); mutation enforcement for POST /api/terms is backend-owned and not re-verified this session — carried as REFERENCE in stress auth_gates." — evidence: TermSearch.tsx:106-123 — severity: LOW
 
 ## performance
 
 - **hot_paths**:
-  - "Initial mount fires `createTermSearch` → POST `/api/termsearch` → server-side INSERT into `search_facets` row + facet-state JSON construction + `TermSearchService.search` query execution (out of scope but referenced; per F-002 batch-N TermSearchService relies on `TERM_SEARCH_ENTRYPOINT` FTS join — see countByState/findByState asymmetry drift). For a fresh user, this is one HTTP round-trip + one server-side session write + one TermSearchFacetsData response payload (typically <50KB for a moderate catalog). The follow-up `navigate(termSearch.searchId)` triggers a client-side route transition + (because the URL match-criteria is unchanged, just the param) NOT a re-mount — verified by React Router v6 default behaviour for path-param changes." — evidence: TermSearch.tsx:34-42 + termSearch.thunks.ts:21-24 + slice.ts:36-90
-  - "Filter sidebar interactions fire `updateTermSearch` via the broken debouncer (see bugs_limitations_corner_cases[2]) — every click currently dispatches one PUT immediately (instead of coalescing). For a user rapidly toggling 5 facets in 2 seconds, server takes 5 PUTs in 2 seconds — each a session-state write + facet recompute. Server-side cost per PUT scales O(# facet options × # facets) in `TermSearchService.updateFacets` (out of scope)." — evidence: TermSearch.tsx:50-68 (broken debouncer) + termSearch.thunks.ts:26-33 + slice.ts:36-90
-  - "Restore-from-URL fires `getTermsSearch` → GET `/api/termsearch/{searchId}` once per deep-link / reload. Cost: one HTTP round-trip + one server-side session read + one full facet-state response. Cold-cache deep-link to a 30-day-old session: probably 404 (session evicted) → 0 cost but broken UI." — evidence: TermSearch.tsx:45-48 + termSearch.thunks.ts:35-42 + F-010.yaml (30-day TTL)
+  - "Cold mount: 1 POST (create) + 1 results GET (child, page 1 size 30); for TERM_CREATE users ALSO the TermsForm size-1000 GET (bugs[4]) — i.e. the most-privileged users get the heaviest Dictionary mount." — evidence: TermSearch.tsx:62-71 + TermSearchResults.tsx:52-61 + TermsForm.tsx:71-75
+  - "Facet click: ~1 PUT per click (debouncer recreation, bugs[2]) + per-sync results refetch (child) + per-sync size-1000 refetch (TermsForm, permitted users)." — evidence: TermSearch.tsx:78-96 + TermsForm.tsx:71-75
+  - "Deep-link restore: 1 GET; 404 short-circuits to the expired page with zero further traffic." — evidence: TermSearch.tsx:73-76, 98-100
 - **throughput_characteristics**:
-  - "Single-item mutation per facet change — no bulk-facet API. Each click is one PUT. With the broken debouncer (above) the server takes N PUTs per N clicks instead of 1 coalesced PUT."
-  - "Infinite-scroll page loads (child component): one HTTP round-trip per page. `pageSize=30` hardcoded; for a 1000-term catalog, ~34 paginated GETs to fully load — only happens if the user actually scrolls. Server-side per-page cost is bounded by the underlying paginated query (the F-002 batch-N `listTermRefDtos` + `findByState` cost model)."
-  - "Text-query search fires one synchronous PUT on Enter/click (TermSearchInput.tsx:25-28) — no batching, no debounce. A user spamming Enter 3 times in 500ms fires 3 PUTs. Server-side `updateTermSearch` is idempotent for the same payload but the cost is wasted."
+  - "Merge-patch PUTs are small (delta-only filters) — payload size does not grow with selected-facet count, only with per-gesture change size." — evidence: termSearch.selectors.ts:98-102
+  - "No bulk-facet API; one PUT per gesture (debounce intent unfulfilled)."
 - **resource_allocation**:
-  - "Each render allocates the lodash `mapValues(termSearchFacetParams, values)` (line 55) — a fresh object per dispatch. The selector at termSearch.selectors.ts:93-97 also allocates fresh references on every selector run (mapValues+pickBy lodash chain), driving re-renders downstream."
-  - "The 1500ms debouncer (when correctly working) holds a closure over `[termSearchQuery, termSearchFacetParams, termSearchId]` — but because it's recreated on every facet change (bugs section), no significant memory accumulation. The garbage-collected prior debouncer's timer is also dropped — but `use-debounce` internally uses `setTimeout` which the runtime will fire even if the closure is unreachable, until the callback returns. Net: each broken-debouncer transition keeps a pending timer alive for up to 1500ms after being replaced — bounded by # of facet clicks per 1500ms window. Worst case: ~5 simultaneous pending timers if user spams 5 clicks within a debounce window."
-  - "Redux store size: TermSearchState per slice.ts:23-34 holds the full facet-state map (potentially N=hundreds of facet options across N=7+ facet types) + result items + suggestions. For a 1000-term catalog, the in-memory Redux state is bounded by ~30-60KB."
+  - "Replaced debounced instances can hold ≤1500 ms pending timers (bounded by click rate); `mapValues(termSearchFacetParams, values)` allocates per dispatch — negligible." — evidence: TermSearch.tsx:78-92
+  - "Redux results slice can hold up to 1000 items when TermsForm's fetch wins the race — ~10-30x the intended 30-row window, plus the corresponding DOM rows." — evidence: TermsForm.tsx:73 + termSearch.slice.ts:197-206
 - **scaling_characteristics**:
-  - "Stateless component (no module-level mutable state — verified by reading TermSearch.tsx:1-90 end-to-end; no `let ` outside the component body). React 18+ Strict Mode double-mount in dev fires the create-session twice — the second create returns a NEW session UUID and overwrites the first; the prior session is orphaned server-side until `SearchFacetsHousekeepingJob` evicts it. Dev-only; production builds do not Strict-Mode-double-mount."
-  - "URL-driven re-mounts: changing `/termsearch/X` → `/termsearch/Y` (manual URL edit) triggers ONE useEffect cycle (line 45-48 with `[termSearchId, routerTermSearchId]` deps — `routerTermSearchId` changed → re-fire → guard `(!termSearchId && routerTermSearchId)` evaluates dependent on whether Redux has been cleared first; race-prone."
+  - "Stateless component; horizontal UI scale-out trivial. Server-side: session-row churn from toolbar-click-creates (bugs[6]) and recovery/double-click creates is bounded by housekeeping eviction." — evidence: ToolbarTabs.tsx:107-119
 - **known_performance_gaps**:
-  - "**Broken debouncer — 1500ms intent not realised; every facet click dispatches.** Per bugs_limitations_corner_cases[2], the `useCallback` recreates the debouncer on every `termSearchFacetParams` change, defeating its purpose. Net effect on a slow connection: a user clicking 5 facets in rapid succession sees 5 in-flight PUT requests instead of 1 coalesced PUT. Server-side P99 latency degrades. Recommended fix: useMemo the debouncer outside `useCallback` OR remove `termSearchFacetParams` from the `useCallback` deps." — evidence: TermSearch.tsx:50-64 + useCallback deps line 63 — severity: MEDIUM
-  - "**Re-fire storm on facet-state selector instability.** Per bugs_limitations_corner_cases[1] + bugs section [2], the `getTermSearchFacetsParams` selector at termSearch.selectors.ts:93-97 produces a fresh object reference on every store update (lodash `mapValues(..., pickBy(...))`); the useEffect at lines 66-68 with deps `[termSearchFacetParams]` may re-fire on every render. Combined with `!termSearchFacetsSynced` guard, the re-fire is bounded — but during the in-flight PUT window, the effect could re-fire repeatedly. LSN-017's measurement-truth principle applies: a live probe should confirm dispatch cardinality per facet click." — evidence: termSearch.selectors.ts:93-97 + TermSearch.tsx:66-68 — severity: MEDIUM (LSN-017-class observability gap)
-  - "**Empty-state copy + zero-catalog onboarding affordance — UX latency.** Per bugs_limitations_corner_cases[8], the empty-state copy 'No matches found' on a fresh deployment slows operator onboarding. A new ODD operator landing on `/termsearch` sees the message + no obvious next step; the 'Add term' button is in the header (visible) but the empty-state placeholder does not point at it." — evidence: TermSearchResults.tsx:105-107 — severity: LOW (UX, not perf — included here for cross-link to UX-onboarding consideration)
+  - "Broken debouncer — N PUTs for N rapid clicks (intended 1-2). Measured cardinality → P-246." — evidence: TermSearch.tsx:78-92 — severity: MEDIUM
+  - "TermsForm size-1000 fetch on every mount/facet-sync for permitted users — the single heaviest avoidable query this page triggers; a server-side uniqueness check (or a suggestions endpoint) would delete it." — evidence: TermsForm.tsx:71-75 — severity: MEDIUM
 
-## tests_coverage_semantic
+## upstream_callers
 
-- covered_behaviours: []
-- uncovered_behaviours:
-  - "Mount with no URL param + no cached session → `createTermSearch` dispatch + `navigate(searchId)` follow-through (TermSearch.tsx:34-42)"
-    test_class: "TermSearch.test.tsx"
-  - "Mount with URL param but no cached session → `getTermsSearch` dispatch (TermSearch.tsx:45-48)"
-    test_class: "TermSearch.test.tsx"
-  - "Mount with URL param AND cached session → neither dispatch fires (idempotent restore)"
-    test_class: "TermSearch.test.tsx"
-  - "Facet change with synced=true → no update dispatch (TermSearch.tsx:66-68 guard)"
-    test_class: "TermSearch.test.tsx"
-  - "Facet change with synced=false → debouncer fires once per 1500ms window (currently FAILS per bugs section — debouncer recreated on every render)"
-    test_class: "TermSearch.test.tsx"
-  - "`WithPermissions permissionTo={Permission.TERM_CREATE}` shows/hides Create CTA based on `usePermissions().hasAccessTo`"
-    test_class: "TermSearchHeader.test.tsx (sister component coverage)"
-  - "Race: facet change + text-query submission within debounce window → assert eventually-consistent state (downstream_side_effects table — race scenario)"
-    test_class: "TermSearch.integration.test.tsx (cross-component)"
-  - "Session-expiry: stale URL UUID → 404 response → assert UI degraded state + suggest fallback"
-    test_class: "TermSearch.integration.test.tsx"
-  - "Unhandled-rejection: createTermSearch fails → assert error boundary catches OR slice surfaces error"
-    test_class: "TermSearch.test.tsx"
-  - "React-Router-Dom Strict-Mode double-mount → assert only one session is held; the second is orphaned"
-    test_class: "TermSearch.test.tsx (dev-mode only)"
-- test_files: []
-- gaps: |
-    Zero existing tests for this component (Grep verified at `<odd-platform-ui-repo>/src/components/Terms/TermSearch/**/*.test.*` returned zero matches). The Terms/ UI tree as a whole is sparsely tested; the Dictionary tab is the most complex orchestrator under it. Regression risk: a refactor changing the debouncer wiring, the URL-backing of session UUID, the `WithPermissionsProvider` wrap, or the dep-array shape would ship unchallenged. The highest-leverage UI-anchored regression-pin for F-002 here is **a live probe that opens `/termsearch`, clicks a facet 5 times in 2 seconds, and asserts the number of `PUT /api/termsearch/{searchId}` calls** — if the debouncer is working, count == 1 (or 2 with leading-edge); if the bug stands, count == 5. This is the LSN-017 measurement-truth principle applied to a UI-side dep-array bug. Pair with a probe for the empty-state copy on a zero-term deployment and a probe for the stale-session 404 path.
+- entry_point: "ui_route:/termsearch (index)"
+  caller_node: "App.tsx routes (lazy mount at App.tsx:35; nested route at App.tsx:66-67)"
+  multiplicity_per_trigger: 1
+  evidence: "App.tsx:66-67 — index element <TermSearch/>; cold mount with empty redux fires exactly one create POST (effect-1 guard), then navigates to the param route WITHOUT remount (same element type at the same route position; only useParams output changes)"
+  observation_class: ui-call
+- entry_point: "ui_route:/termsearch/:termSearchId (deep-link / reload / share)"
+  caller_node: "App.tsx:68"
+  multiplicity_per_trigger: 1
+  evidence: "TermSearch.tsx:73-76 — exactly one GET per mount while redux is empty; e2e-pinned by IT-125 (spec lines 113-115). Pre-#1760 this entry point was DEAD (splat dropped the param) — restored by this commit"
+  observation_class: ui-call
+- entry_point: "ui_click:top-nav Dictionary tab"
+  caller_node: "ToolbarTabs.tsx:65-69, 107-119"
+  multiplicity_per_trigger: 1
+  evidence: "ToolbarTabs.tsx:111-118 — the CLICK HANDLER itself creates the session (1 POST) and navigates to /termsearch/{newId}; TermSearch then mounts with redux already holding the new id → 0 additional session calls. Every click = a fresh session (bugs[6])"
+  observation_class: ui-call
+- entry_point: "ui_click:back-navigation from TermDetails"
+  caller_node: "TermDetails.tsx:50"
+  multiplicity_per_trigger: 1
+  evidence: "navigate(termsSearchPath(termSearchId)) — returns to the existing session URL; restore GET fires only if redux was cleared (e.g. full reload)"
+  observation_class: ui-call
+  unresolved: true   # TermDetails node not yet enriched against this revision
+
+## downstream_side_effects
+
+- side_effect_class: db-write
+  description: "INSERT one search_facets session row per create (cold index mount, recovery click, toolbar click, StrictMode dev double-mount)"
+  evidence: "TermSearch.tsx:62-71, 53-60 → termSearch.thunks.ts:21-24 → TermSearchServiceImpl.java:72-79 → ReactiveSearchFacetRepositoryImpl.java:76-82"
+  cardinality_per_call: 1
+  reachable_from_entry_points: ["ui_route:/termsearch (index)", "ui_click:top-nav Dictionary tab", "ui_click:Start-new-search (expired page)"]
+- side_effect_class: db-write
+  description: "UPDATE the session row (filters merge + query replace + LAST_ACCESSED_AT bump — the TTL clock) per facet gesture / per text-query submit"
+  evidence: "TermSearch.tsx:78-96 + TermSearchInput.tsx:25-28 → TermSearchServiceImpl.java:82-90 → ReactiveSearchFacetRepositoryImpl.java:85-96"
+  cardinality_per_call: "~1 per facet click while the debouncer-recreation bug stands (intended: coalesced); 1 per Enter/search-click"
+  reachable_from_entry_points: ["ui_route:/termsearch (index)", "ui_route:/termsearch/:termSearchId (deep-link / reload / share)", "ui_click:top-nav Dictionary tab"]
+- side_effect_class: page-render
+  description: "Expired page (404) / error page (other captured statuses) / three-pane Dictionary layout (otherwise)"
+  evidence: "TermSearch.tsx:98-123"
+  cardinality_per_call: 1
+  reachable_from_entry_points: ["ui_route:/termsearch/:termSearchId (deep-link / reload / share)"]
+- side_effect_class: log-emit
+  description: "Red error toast on every rejected session call carrying a Response status — INCLUDING the 404 the expired page handles gracefully (bugs[8])"
+  evidence: "handleResponseThunk.ts:37-39 + errorHandling.tsx:77-79"
+  cardinality_per_call: "1 per rejected thunk with a status"
+  reachable_from_entry_points: ["ui_route:/termsearch/:termSearchId (deep-link / reload / share)", "ui_route:/termsearch (index)"]
+- side_effect_class: cache-mutate
+  description: "Redux: termSearch slice session-state writes per fulfilled call; loader slice status+error keys per lifecycle action; recovery click DELETES the GET act-type's loader keys (resetLoaderByAction)"
+  evidence: "termSearch.slice.ts:193-228 + loader.slice.ts:18-49 + TermSearch.tsx:54"
+  cardinality_per_call: 1
+  reachable_from_entry_points: ["all of the above"]
+- side_effect_class: redirect-issue
+  description: "navigate() to /termsearch/{newId} after every successful create (relative from index, absolute from the recovery handler)"
+  evidence: "TermSearch.tsx:67-69 (relative; index route only) + :57-59 (absolute via termsSearchPath — executes from the :termSearchId route)"
+  cardinality_per_call: 1
+  reachable_from_entry_points: ["ui_route:/termsearch (index)", "ui_click:Start-new-search (expired page)"]
+- side_effect_class: external-call
+  description: "Child-tree fetches this mount unleashes: results GET page-1 size-30 (always), TermsForm results GET page-1 size-1000 (TERM_CREATE users only — REFERENCE, owning node TermsForm, unresolved: true)"
+  evidence: "TermSearchResults.tsx:52-61 + TermsForm.tsx:71-75"
+  cardinality_per_call: "1-2 per mount + per facet-sync"
+  reachable_from_entry_points: ["all UI entry points above"]
 
 ## coherence_check (LSN-018 Rule 6)
 
-Performed pre-emit coherence check across `feature-flows/` + sibling sidecars. Findings:
-
-- **Strengthens** F-002 / P-06:F-001 Term-to-Entity Linkage — this sidecar provides the UI-half evidence for the read-collaborative posture and the cross-namespace pollution drift class. The F-002 feature flow currently aggregates 22 drift facets across the controller/service/repository tiers (batches G, K, L, N); this UI sidecar adds the **front-end consequence layer** — every authenticated user sees every Term across every namespace via the Dictionary tab; the Create-term button is permission-gated UI-only; the facet sidebar exists but the docs don't mention it. New back-links emitted: `related_features: [F-002]` + `related_pillar_features: [P-06:F-001]`.
-
-- **Strengthens** batch-Q PolicyList + RolesList catalogue-vs-grant pattern — by NEGATIVE COMPARISON. PolicyList renders permission CODES (JSON-Schema vocabulary the operator authors against, distinct from the GRANT the backend resolves); RolesList renders Role names + attached Policies. TermSearch renders **first-class user-facing entities (Terms)** — there is NO catalogue-vs-grant asymmetry here because Terms are not RBAC artefacts. The catalogue-vs-grant pattern is RBAC-specific, not a generic UI pattern. This sidecar EXPLICITLY refutes the prompt's hypothesis "(c) catalogue-vs-grant pattern from batch-Q PolicyList — does this UI render JSON-schema codes or human labels?" — Answer: this UI renders human-labelled Terms; the catalogue-vs-grant pattern does NOT apply.
-
-- **Strengthens** F-010 / P-08:F-002 Housekeeping TTL — `SearchFacetsHousekeepingJob` is THE eviction mechanism for the server-side session UUID this UI creates. Stale session UUID after 30 days reproduces the broken-page UX. Cross-batch link: F-010 feature flow + LSN-018 case-law (TEST-GAP-523 superseded — the housekeeping job DOES touch search_facets exactly as designed).
-
-- **Refutes (partially)** the prompt's LSN-017 hypothesis ("(a) useEffect dep-array LSN-017 doubling pattern?"). The shape is NOT identical to the view_count case (no dep computed from the fetch RESPONSE that closes the loop). HOWEVER, two LSN-017-class dep-array smells are present: (1) `termSearchId` read in condition but missing from useEffect deps at lines 34-43 (latent regression vector — currently masked by React batch ordering); (2) `termSearchFacetsSynced` read in condition but missing from useEffect deps at lines 66-68 (potentially active re-fire storm — recommended live probe). These are CLASS-MATCHES to LSN-017, not exact-pattern matches. The class is "deps and conditions out of sync" — the LSN-017 view_count case is one instance; these are siblings.
-
-- **Refutes** the prompt's RBAC-mutation-buttons hypothesis ("(b) RBAC-gated mutation buttons (create-term, delete-term)?"). Only ONE mutation button surfaces on the Dictionary tab itself: 'Add term' (TermSearchHeader.tsx:18-22), gated by TERM_CREATE. Delete-term is NOT on this surface — it lives on the TermDetails page (out of scope for this orchestrator). Edit-term is also on TermDetails. So the Dictionary tab's RBAC posture is: 1 mutation button (create), permission-gated UI-only.
-
-- **No conflicts surfaced** with existing artefacts. No supersede notes needed. The batch-Q PolicyList sidecar's note that "the catalogue-vs-grant pattern matches LSN-001" does NOT extend to this UI because Terms are not a catalogue-vs-grant entity class.
-
-Back-link emit summary: `related_features: [F-002]`, `related_pillar_features: [P-06:F-001]`, `related_retrospectives: [LSN-017, LSN-018]`.
+- **Refresh deltas vs the 2026-05-20 revision (divergence-detection log):** (1) wire path corrected `/api/termsearch` → `/api/terms/search` (spec-verified); (2) the "text-search resets filters / facet race discards selections" claim RETRACTED — merge-patch semantics make `filters:{}` a facet no-op (FacetStateDto.merge traced end-to-end); the real race is the narrower read-merge-write lost-update (stress E2); (3) "session-server respects client pageSize" RETRACTED — dead field (bugs[5]); (4) old bug 'session-expiry: no recovery path' RESOLVED by this commit (SearchSessionExpired + recovery handler); (5) old bug 'unhandled-rejection silent failure' NARROWED to the create path only (restore failures now render); (6) old doc-gaps D/E/G/H now satisfied by the live page; two NEW doc drifts logged (empty-table claim; pagination-state share claim).
+- **Strengthens** F-002 (UI half of the read-collaborative posture, unchanged) and F-017/#1760 (the termsearch mirror of the search-session contract; IT-125 pins both surfaces).
+- **Strengthens** F-010 housekeeping: LAST_ACCESSED_AT bump on every facet PUT means actively-used sessions self-renew their TTL; only idle links die — sharpening the expired-state story (an expired link is an IDLE link).
+- **No conflicts** with sibling sidecars surfaced; TermsForm findings recorded here as references, not absorbed (Rule 3). Sibling probes emitted this session for Search.tsx/App.tsx took P-244/P-245; this sidecar's probes are P-246/P-247.
 
 ## sources
 
-- understanding ← TermSearch.tsx:1-90 + termsRoutes.ts:1-63 + App.tsx:35, 63 + TermSearchHeader.tsx:1-28 + TermSearchResults.tsx:1-114 + TermSearchResultItem.tsx:1-75 + TermSearchInput.tsx:1-50 + termSearch.thunks.ts:21-42 + termSearch.slice.ts:23-34, 36-90, 193-228 + TermController.java:178-216
-- concepts.entities ← TermSearch.tsx:16, 78 + termSearch.slice.ts:23-34 + TermSearchResultItem.tsx:1-69 + termsRoutes.ts:5-19, 54-63 + WithPermissionsProvider.tsx:5-49 + PageWithLeftSidebar (line 6, layout primitive)
-- concepts.operations ← TermSearch.tsx:34-68 + TermSearchInput.tsx:25-46 + TermSearchResults.tsx:40-61 + termSearch.thunks.ts:21-42
-- concepts.invariants[0] (server-side URL-backed session) ← TermSearch.tsx:34-48 + termsRoutes.ts:5-19 + App.tsx:63 + slice.ts:23-34
-- concepts.invariants[1] (Create CTA gated; LIST + search + filters ungated) ← TermSearch.tsx:77-82 + TermSearchHeader.tsx:17 + TermSearchResults.tsx:1-114 (no permission wrap on the map)
-- concepts.invariants[2] (read-collaborative + no UI-level scoping) ← TermSearch.tsx:74 + TermSearchResults.tsx:64-110 + TermSearchResultItem.tsx:25-69 + F-002.yaml batch-N drift facets
-- concepts.invariants[3] (no URL backing for text-query) ← TermSearch.tsx:34-48 + TermSearchInput.tsx:25-28 + slice.ts:184-190 (`updateTermSearchQuery` reducer)
-- concepts.invariants[4] (pageSize=30 hardcoded) ← TermSearch.tsx:36 + TermSearchResults.tsx:38
-- concepts.invariants[5] (empty state lives in child) ← TermSearchResults.tsx:105-107
-- dependencies_semantic.requires-feature ← F-002.yaml + business-glossary.md:49-60 + WebFetch responses + ReactiveTermRepositoryImpl sidecar (batch N) + TermServiceImpl sidecar (batch K)
-- dependencies_semantic.requires-config ← TermSearch.tsx:36, 60 + TermSearchResults.tsx:38 (hardcoded literals)
-- dependencies_semantic.requires-runtime ← TermSearch.tsx:1-21 (import block)
-- dependencies_semantic.couples-to ← TermSearchHeader.tsx:1-28 + TermSearchInput.tsx:1-50 + TermSearchResults.tsx:1-114 + TermSearchResultItem.tsx:1-75 + termSearch.thunks.ts:21-42 + slice.ts:36-228 + TermController.java:178-216
-- upstream_callers ← App.tsx:35, 63 + termsRoutes.ts:5-19 + TermSearchResultItem.tsx:26 (row Link)
-- downstream_side_effects ← TermSearch.tsx:34-68 + termSearch.thunks.ts:21-42 + slice.ts:36-228 + TermSearchInput.tsx:25-28 + TermSearchResults.tsx:40-61
-- implicit_adrs[0] (URL-backed session) ← TermSearch.tsx:34-48 + termsRoutes.ts:5-19 + slice.ts:23-34 + F-010.yaml (housekeeping)
-- implicit_adrs[1] (UI hide pattern) ← TermSearch.tsx:77-82 + TermSearchHeader.tsx:17-23 + WithPermissionsProvider.tsx:1-52
-- implicit_adrs[2] (1500ms leading-edge debouncer; text-query excluded) ← TermSearch.tsx:50-64 + TermSearchInput.tsx:25-28
-- implicit_adrs[3] (read-collaborative posture inherited) ← TermSearch.tsx:74 + TermSearchResults.tsx + F-002 batch-N + system-mission.md line 267
-- implicit_adrs[4] (pageSize=30 hardcoded twice) ← TermSearch.tsx:36 + TermSearchResults.tsx:38
-- bugs_limitations_corner_cases[0] (latent LSN-017 dep-array smell in createTermSearch effect) ← TermSearch.tsx:34-43 + slice.ts:36-90
-- bugs_limitations_corner_cases[1] (active LSN-017 dep-array smell in facet-sync effect) ← TermSearch.tsx:66-68 + termSearch.selectors.ts:92-97 + slice.ts:84
-- bugs_limitations_corner_cases[2] (broken debouncer — recreated on every render) ← TermSearch.tsx:50-64
-- bugs_limitations_corner_cases[3] (no .catch on create-session) ← TermSearch.tsx:37-41 + slice.ts:193-228
-- bugs_limitations_corner_cases[4] (facet/text-query race) ← TermSearch.tsx:50-58 + TermSearchInput.tsx:25-28 + slice.ts:36-90
-- bugs_limitations_corner_cases[5] (session-expiry no recovery) ← TermSearch.tsx:45-48 + F-010.yaml
-- bugs_limitations_corner_cases[6] (cross-namespace pollution UI surface) ← TermSearchResultItem.tsx:36-37 + F-002 drift class
-- bugs_limitations_corner_cases[7] (usingCount sum without breakdown) ← TermSearchResultItem.tsx:20-23, 51-55
-- bugs_limitations_corner_cases[8] (empty-state copy) ← TermSearchResults.tsx:105-107 + business-glossary.md (WebFetched 2026-05-20 status 200)
-- docs_link_semantic ← business-glossary.md WebFetched 2026-05-20 status 200 + data-glossary.md WebFetched 2026-05-20 status 200
-- security.auth_mode_relevance ← TermSearch.tsx:1-90 + App.tsx:63 (route mount under post-auth shell) + system-mission.md P-09
-- security.ingestion_filter_relevance ← TermSearch.tsx (fetches /api/termsearch, not /ingestion/*)
-- security.authorization_assertions ← TermSearch.tsx:77-82 + TermSearchHeader.tsx:17 + WithPermissionsProvider.tsx:1-52 + TermSearchResults.tsx (no permission wrap)
-- security.owner_scoping ← TermSearchResults.tsx + TermSearchResultItem.tsx + F-002 batch-N ReactiveTermRepositoryImpl sidecar
-- security.data_exposure ← TermSearchResultItem.tsx:25-69 + URL `/termsearch/{uuid}` shape
-- security.known_security_gaps[0] (read-collaborative posture) ← TermSearch.tsx:70-86 + F-002 batch-N + batch-K
-- security.known_security_gaps[1] (create-term backend-bypass) ← TermSearchHeader.tsx:17 + TermController.java:69-75
-- security.known_security_gaps[2] (session UUID eviction silent) ← TermSearch.tsx:45-48 + F-010.yaml
-- security.known_security_gaps[3] (no audit-log UI surface) ← TermSearchResultItem.tsx:25-69
-- security.known_security_gaps[4] (unhandled-rejection silent failure) ← TermSearch.tsx:37-41, 45-48 + slice.ts:193-228
-- performance.hot_paths ← TermSearch.tsx:34-48, 50-68 + termSearch.thunks.ts:21-42 + F-002 batch-N hot-paths cross-link
-- performance.throughput_characteristics ← TermSearch.tsx:50-68 + TermSearchInput.tsx:25-28 + TermSearchResults.tsx:38-50
-- performance.resource_allocation ← TermSearch.tsx:55 (mapValues per dispatch) + termSearch.selectors.ts:92-97 (selector instability) + slice.ts:23-34 (state shape)
-- performance.scaling_characteristics ← TermSearch.tsx:1-90 + slice.ts:36-90 + App.tsx:60-65 (route mount)
-- performance.known_performance_gaps[0] (broken debouncer) ← TermSearch.tsx:50-64
-- performance.known_performance_gaps[1] (re-fire storm on selector instability) ← TermSearch.tsx:66-68 + termSearch.selectors.ts:92-97
-- performance.known_performance_gaps[2] (empty-state UX) ← TermSearchResults.tsx:105-107
+- understanding ← odd-platform-ui/src/components/Terms/TermSearch/TermSearch.tsx:1-127 + odd-platform-ui/src/components/App.tsx:35, 66-69 + odd-platform-specification/openapi.yaml:2982-3107
+- concepts.entities ← components.yaml:2659-2688 + lib/errorHandling.tsx:14-35 + loader.slice.ts:9-49 + SearchSessionExpired.tsx:7-44 + AppErrorPage.tsx:8-39 + termSearch.selectors.ts:22-34 + ReactiveSearchFacetRepositoryImpl.java:76-96
+- concepts.operations ← TermSearch.tsx:46-123 + termSearch.thunks.ts:21-42 + loader.slice.ts:18-24
+- concepts.invariants ← App.tsx:66-69 + integration-tests/e2e/specs/search-session-not-found.spec.ts:108-122 + termSearch.selectors.ts:98-102 + TermSearchServiceImpl.java:72-90, 108-119 + FacetStateDto.java:41-66 + WithPermissions.tsx:27-31 + TermSearchResults.tsx:38, 52-61 + ReactiveTermRepositoryImpl.java:277-292
+- dependencies_semantic ← TermSearch.tsx:1-29 (import block) + TermsForm.tsx:71-75 + ToolbarTabs.tsx:65-69, 107-119 + TermController.java:178-216
+- tests_coverage_semantic ← integration-tests/e2e/specs/search-session-not-found.spec.ts:3-122 + Glob over odd-platform-ui/src/components/Terms/TermSearch (this session: 12 sources, zero test files)
+- docs_link_semantic ← WebFetch 2026-06-11 of both URLs (status 200 each) + TermSearchResults.tsx:52-61 + ReactiveTermRepositoryImpl.java:277-292 + TermSearchServiceImpl.java:113-119 + termSearch.slice.ts:85-88
+- implicit_adrs ← TermSearch.tsx:46-60 + SearchSessionExpired.tsx:12-13 + loader.slice.ts:18-49 + termSearch.selectors.ts:26-34 + TermSearchServiceImpl.java:82-90 + WithPermissionsProvider.tsx:12-49 + TermSearchInput.tsx:25-35
+- bugs_limitations_corner_cases[0] ← TermSearch.tsx:62-71 + termSearch.slice.ts:76-90
+- bugs_limitations_corner_cases[1] ← TermSearch.tsx:94-96 + termSearch.selectors.ts:98-102 + termSearch.slice.ts:84
+- bugs_limitations_corner_cases[2] ← TermSearch.tsx:78-92
+- bugs_limitations_corner_cases[3] ← TermSearch.tsx:53-71 + handleResponseThunk.ts:24-42 + errorHandling.tsx:77-79
+- bugs_limitations_corner_cases[4] ← TermsForm.tsx:71-95 + TermSearchResults.tsx:38-61 + termSearch.slice.ts:197-206
+- bugs_limitations_corner_cases[5] ← TermSearch.tsx:64 + TermSearchInput.tsx:26 + ToolbarTabs.tsx:109 + generated-sources/models/TermSearchFormData.ts:68-79 + components.yaml:2659-2680 + FacetStateMapperImpl.java:106-130 + scoped absence greps (named in the entry: odd-platform-api/src/main/java and odd-platform-api/src/main/resources)
+- bugs_limitations_corner_cases[6] ← ToolbarTabs.tsx:107-119 + ReactiveSearchFacetRepositoryImpl.java:76-82
+- bugs_limitations_corner_cases[7] ← TermSearch.tsx:62-76 + TermDetails.tsx:50
+- bugs_limitations_corner_cases[8] ← termSearch.thunks.ts:35-42 + errorHandling.tsx:58-80 + SearchSessionExpired.tsx:12-13
+- bugs_limitations_corner_cases[9] ← TermSearchResultItem.tsx:36-37
+- bugs_limitations_corner_cases[10] ← TermSearchResultItem.tsx:20-23, 51-55 + TermSearchResults.tsx:105-107
+- stress_findings ← all citations inline in the block (each `evidence:` field)
+- security ← TermSearch.tsx:106-123 + WithPermissions.tsx:27-31 + WithPermissionsProvider.tsx:12-49 + TermSearchResultItem.tsx:25-69 + integration-tests/e2e/specs/search-session-not-found.spec.ts:36-47
+- performance ← TermSearch.tsx:62-96 + TermsForm.tsx:71-75 + TermSearchResults.tsx:52-61 + termSearch.selectors.ts:98-102 + ToolbarTabs.tsx:107-119
+- upstream_callers ← App.tsx:35, 66-69 + ToolbarTabs.tsx:65-69, 107-119 + TermDetails.tsx:50 + integration-tests/e2e/specs/search-session-not-found.spec.ts:113-115
+- downstream_side_effects ← TermSearch.tsx:53-123 + termSearch.thunks.ts:21-42 + TermSearchServiceImpl.java:72-90 + ReactiveSearchFacetRepositoryImpl.java:76-96 + handleResponseThunk.ts:37-39 + TermsForm.tsx:71-75
 
 ## confidence_per_field
 
 - understanding: HIGH
 - concepts: HIGH
 - dependencies_semantic: HIGH
-- tests_coverage_semantic: HIGH (zero tests verified via Glob over `<odd-platform-ui-repo>/src/components/Terms/TermSearch/**/*.test.*` returning zero matches)
-- docs_link_semantic: HIGH (live WebFetch of business-glossary.md + data-glossary.md in this session — both 200; live page directly confirms Dictionary-tab + TERM_CREATE framing)
+- tests_coverage_semantic: HIGH (IT-125 spec read end-to-end this session; unit-test absence verified by Glob over the component subtree)
+- docs_link_semantic: HIGH (both URLs WebFetched 2026-06-11, status 200; drift claims code-anchored)
 - implicit_adrs: HIGH
-- bugs_limitations_corner_cases: HIGH
+- bugs_limitations_corner_cases: HIGH (every entry traced to current line numbers; two prior-revision claims explicitly retracted with the disproving trace cited)
 - security: HIGH
-- performance: MEDIUM (the broken-debouncer + selector-instability claims are reasoned from static reading + slice/selectors source; a live probe per LSN-017 measurement-truth principle would confirm dispatch cardinality per facet click — recommended as a P-N probe per the gaps section)
+- performance: MEDIUM (cardinality claims for the debouncer and the TermsForm race are static-traced; runtime counts pending P-246/P-247)
+- upstream_callers: HIGH (one unresolved reference: TermDetails back-nav, flagged)
+- downstream_side_effects: HIGH (TermsForm-owned effects recorded as references, unresolved)
+- stress_findings: MEDIUM (3 of 32 questions PROBE-NEEDED — all cardinality/race refinements; every load-bearing behavioural claim is STATIC-INFERRED with end-to-end trace or pinned by IT-125)
 
 ## Maintainer notes
 

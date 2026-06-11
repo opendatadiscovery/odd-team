@@ -342,4 +342,12 @@ stress_findings:
 
 ## Maintainer notes
 
-(no prior sidecar — empty)
+2026-06-11 (CTRIB-005 / odd-platform#1760, commit 074c9927 — NOT a re-enrichment; searchRoutes.ts
+itself is unchanged): the deep-link claims in this sidecar's corner-cases predate the fix. Until
+074c9927, App.tsx mounted `/search/*` as a SPLAT (since #1551, Dec 2023), so `useSearchRouteParams().searchId`
+was ALWAYS undefined and every cold `/search/{id}` silently created a fresh session — the "deep-link
+sharing" semantics described here were unreachable through the UI. Post-fix: nested `:searchId` routes
+restore the session; a 404 renders the "This search has expired" recovery state (IT-125 re-grounded;
+F-017-UC-14). The Category-F naming drift this sidecar pins (session-row UUID posing as a saved-search
+id) REMAINS valid — see TEST-GAP-1007 + REFACTOR-676 status notes. Re-enrich this node when
+searchRoutes.ts itself next changes.

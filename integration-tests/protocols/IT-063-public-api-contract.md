@@ -27,15 +27,18 @@ that does **not** depend on the hung `/api/v3` spec endpoint. It takes documente
   spec-declared response field-set: `/api/dataentities/classes` → `DataEntityClassAndTypeDictionary.entity_classes`;
   `/api/dataentities/usage` → `DataEntityUsageInfo.{total_count,unfilled_count,data_entity_classes_info}` (all
   required); `/api/identity/whoami` → `AssociatedOwner.identity` (required).
-- **UC-12 (conformance gap, GREEN pin):** paginated lists (`/api/tags`) honour the spec `{items,page_info}`
-  envelope **with** the spec-required `page`+`size` params, but return **500 SYS001** when the required params
-  are omitted — not the spec-declared 200, and not a typed 400.
+- **UC-12 (conformance gap, narrowed 2026-06-11):** paginated lists (`/api/tags`) honour the spec
+  `{items,page_info}` envelope **with** the spec-required `page`+`size` params; omitting them now returns a
+  typed **400 USR001** (the advice pass-through — #1760/#1761, CTRIB-005; was an opaque 500 SYS001). The
+  residual gap stays pinned: the spec declares only 200 (no error responses), so even the correct 400 is
+  spec-undeclared.
 - **UC-12 / PLT-141 pin:** the live OpenAPI document still fails to load (no machine-readable contract to
   conform against on a running deployment) — the reason the conformance endpoints must be hand-picked.
 
 **Operator caveat (why pin it):** with no spec↔platform conformance gate, status-code/response-shape drift
-ships undetected (F-029 catalogues 14 such drift classes). A consumer that omits a required query param gets an
-opaque 500 instead of a 400, and there is no served spec to code-generate a correct client from.
+ships undetected (F-029 catalogues 14 such drift classes). A consumer that omits a required query param now at
+least gets a typed 400 (since the #1761-class fix), but there is still no served spec to code-generate a
+correct client from (PLT-141).
 
 ## 2. Preparation
 

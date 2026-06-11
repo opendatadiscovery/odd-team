@@ -36,9 +36,13 @@ async function ingestDatasetWithField(request: APIRequestContext): Promise<numbe
 }
 
 test.describe('F-095 Statistics Ingestion — input-validation gaps (PLT-142)', () => {
-  test('PINS PLT-142 (UC-11): an empty / null stats body 500s instead of a clean 4xx', async ({ request }) => {
-    expect((await request.post(STATS, { data: '', headers: JSON_HEADERS })).status(), 'empty body -> 500 (bug)').toBe(500);
-    expect((await request.post(STATS, { data: 'null', headers: JSON_HEADERS })).status(), 'null body -> 500 (bug)').toBe(500);
+  test('UC-11 (PLT-142, transport half FIXED): an empty / null stats body is a clean 400', async ({ request }) => {
+    // FLIPPED 2026-06-11: the advice ResponseStatusException pass-through (#1760/#1761, CTRIB-005)
+    // keeps the framework's 400 for an unreadable/missing body instead of the old 500 SYS001.
+    // PLT-142's SEMANTIC validation gaps (UC-10 ghost-field accept, UC-5 out-of-range accept) are
+    // untouched and stay pinned below.
+    expect((await request.post(STATS, { data: '', headers: JSON_HEADERS })).status(), 'empty body -> clean 400').toBe(400);
+    expect((await request.post(STATS, { data: 'null', headers: JSON_HEADERS })).status(), 'null body -> clean 400').toBe(400);
   });
 
   test('PINS PLT-142 (UC-10): stats for an unknown/typo field ODDRN are silently accepted (201)', async ({ request }) => {

@@ -1,6 +1,6 @@
 ---
 id: IT-045
-title: "Stats ingestion input-validation gaps — 500 on empty body, silent-accept of unknown field, out-of-range stored (pins PLT-142)"
+title: "Stats ingestion input-validation gaps — clean 400 on empty body (fixed #1761-class), silent-accept of unknown field, out-of-range stored (pins PLT-142)"
 gates:
   validates: [F-095]
   enforces: []
@@ -19,7 +19,8 @@ status: ready
 The stats endpoint (`POST /ingestion/entities/datasets/stats`) does NO input validation — three
 unverified F-095 promises, all CONTRADICTED, pinned as LSN-029 characterization pins:
 
-- **UC-11:** an empty/`null` body returns **500**, not a clean 4xx.
+- **UC-11 (transport half FIXED 2026-06-11):** an empty/`null` body returns a clean **400**
+  (was 500 — the advice pass-through, #1760/#1761/CTRIB-005). The semantic gaps below remain.
 - **UC-10:** stats for an unknown/typo field ODDRN are **silently accepted (201)** — no failure signal.
 - **UC-5:** out-of-range stats (negative counts, inverted min/max) are **stored verbatim** (read-back proves it).
 
@@ -38,7 +39,9 @@ no-op with a success response. Each pin flips RED when PLT-142 (input validation
 
 ## 4. Run protocol
 
-1. UC-11: `POST .../datasets/stats` with body `''` and `'null'` → **500** each.
+1. UC-11: `POST .../datasets/stats` with body `''` and `'null'` → **400** each (transport half
+   fixed 2026-06-11 by the advice `ResponseStatusException` pass-through — #1760/#1761, CTRIB-005;
+   was 500).
 2. UC-10: ingest a dataset+field; `POST` stats keyed by a non-existent field ODDRN → **201** (silent).
 3. UC-5: `POST` stats `{low_value:100, high_value:1, nulls_count:-5, unique_count:-9}` → 201; `GET
    /api/datasets/{id}/structure` → the field's `number_stats` carries those out-of-range values verbatim.
@@ -47,8 +50,10 @@ no-op with a success response. Each pin flips RED when PLT-142 (input validation
 
 ## 5. Assertions
 
-- **PASS (today)** when: empty/null → 500; unknown field → 201; out-of-range stored verbatim (bugs reproduced).
-- **FLIPS** when: validation lands (empty→4xx / unknown→4xx-or-warn / out-of-range→reject-or-normalise) — invert the pins.
+- **PASS (today)** when: empty/null → 400 (clean transport 4xx); unknown field → 201; out-of-range stored verbatim
+  (the SEMANTIC gaps still reproduced).
+- **FLIPS** when: semantic validation lands (unknown→4xx-or-warn / out-of-range→reject-or-normalise) — invert those
+  pins; or empty/null regresses off 400.
 
 ## 6. Result log
 

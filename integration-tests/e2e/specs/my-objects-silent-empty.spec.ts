@@ -138,24 +138,21 @@ test.describe('IT-056 F-064 — "My objects" silent-empty under DISABLED', () =>
     ).toBe(0);
   });
 
-  test('CORNER (KNOWN BUG): the activity endpoint mistranslates a missing required query param to HTTP 500 instead of 400', async ({
+  test('CORNER (FIXED #1761): the activity endpoint maps a missing required query param to a clean 400', async ({
     request,
   }) => {
-    // KNOWN BUG (PLT-needed, same class as PLT-076): ControllerAdvice has no @ExceptionHandler for
-    // Spring's MissingRequestValueException / ServerWebInputException (subclasses of ResponseStatusException,
-    // semantically 400). A request missing the required begin_date raises that exception with status 400
-    // (visible in the server log as: 400 BAD_REQUEST "Required query parameter 'begin_date' is not present.")
-    // but it falls through to @ExceptionHandler(Exception.class) -> HTTP 500 SYS001 on the wire
-    // (ControllerAdvice.java:61-66). This pins the CURRENT wrong behaviour; it goes RED (and this assertion
-    // must change to .toBe(400)) the day a MissingRequestValueException/ServerWebInputException handler is added.
+    // FLIPPED 2026-06-11 per this pin's own pre-authored protocol (it asserted the 500 and named
+    // the flip condition): the ControllerAdvice ResponseStatusException pass-through (#1760/#1761,
+    // CTRIB-005) keeps the framework's 400 BAD_REQUEST ("Required query parameter 'begin_date' is
+    // not present.") instead of the catch-all's 500 SYS001. The unit guard for this exact surface
+    // is FrameworkErrorStatusMappingTest.missingRequiredQueryParamKeepsFramework400 (odd-platform CI).
     const res = await request.get(`${BASE}/api/activity?type=ALL&size=5`); // no begin_date / end_date
     expect(
       res.status(),
-      'F-064 CORNER / KNOWN BUG: a missing required query parameter on /api/activity returns 500 (SYS001) ' +
-        'instead of 400 — ControllerAdvice lacks a MissingRequestValueException handler (same defect class ' +
-        'as PLT-076). When fixed this returns 400; flip the pin then.',
-    ).toBe(500);
+      'F-064 CORNER: a missing required query parameter on /api/activity is the client\'s 400 (USR001), ' +
+        'not a platform 500 — fixed by the advice pass-through (#1761).',
+    ).toBe(400);
     const body = (await res.json()) as { code?: string };
-    expect(body.code, 'the mistranslated error carries the generic SYS001 server-error code').toBe('SYS001');
+    expect(body.code, 'the 400 carries the user-error code USR001, not SYS001').toBe('USR001');
   });
 });

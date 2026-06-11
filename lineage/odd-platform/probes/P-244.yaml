@@ -1,0 +1,77 @@
+---
+probe_id: P-244
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__Search.md
+emitted_at: 2026-06-11T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-017
+test_class: performance
+verified_against_commit: 074c9927 (branch contrib/CTRIB-005-search-session-not-found)
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: Search.tsx effect 1 (Search.tsx:58-63) guards on
+  `!routerSearchId && !isSearchCreating && !searchId` with deps
+  `[routerSearchId, isSearchCreating]`. When POST /api/search REJECTS, the loader
+  status transitions pending->rejected, so `isSearchCreating` flips true->false,
+  the effect re-fires, the guard passes again (no searchId was ever stored), and
+  createSearch dispatches AGAIN — statically this is an unbounded retry loop with
+  no backoff for as long as the failure persists. Hypothesis: a Catalog-page mount
+  against a 500-ing POST /api/search issues a tight retry loop (bounded only by
+  round-trip latency — order of 10+ POSTs in 10 seconds locally), and the error
+  toast (showServerErrorToast, deduped by id=response.url) renders as a single
+  persistent toast rather than stacking. The probe measures the actual request
+  cardinality in a 10-second window and pins the loop's existence + rate. A
+  failing hypothesis (exactly 1 POST) means an undiscovered guard exists and the
+  sidecar's bugs[5] claim must be re-traced.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-minimal stack; platform healthy; UI served
+  - kind: playwright-context
+    note: |
+      Authenticated browser context (DISABLED auth mode acceptable on odd-minimal).
+      Install a route interception BEFORE navigation:
+        page.route('**/api/search', route => {
+          if (route.request().method() === 'POST') {
+            postCount++;
+            return route.fulfill({ status: 500, contentType: 'application/json',
+              body: JSON.stringify({ code: 'SYS001', message: 'probe-forced failure' }) });
+          }
+          return route.fallback();
+        });
+      Counter `postCount` initialised to 0 in the spec scope.
+act:
+  - kind: dom-probe
+    note: |
+      page.goto('/search')  — the bare Catalog route (no :searchId), which fires
+      Search.tsx effect 1 on mount. Then page.waitForTimeout(10_000) while the
+      interception keeps fulfilling 500s.
+observe:
+  - kind: dom-probe
+    note: capture postCount after the 10s window
+    capture_as: post_count_10s
+  - kind: dom-probe
+    note: |
+      count visible error toasts at t=10s:
+      page.locator('[class*="Toast"], [role="status"]').count() (adjust selector to
+      AppToast's rendered shape at run time)
+    capture_as: visible_toast_count
+assert:
+  - "post_count_10s >= 5  # loop hypothesis: persistent-failure retry with no backoff"
+  - "visible_toast_count <= 1  # toast dedupe by id=response.url holds (single persistent toast)"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__ts__react-component__component__Search]
+  retrospectives: [LSN-017]
+realism_caveats: |
+  Route interception simulates a backend that 500s POST /api/search while the rest
+  of the stack stays healthy — a partial-outage shape (e.g. search_facets table
+  lock/exhaustion) rather than a full platform outage. The probe does NOT verify
+  the loop under real backend failure modes (DB down would also fail the selectors'
+  other fetches), nor the production-build React behaviour vs dev StrictMode
+  (run against the production UI bundle, as odd-minimal serves it, to avoid
+  dev-double-mount noise). Rate assertions are machine-dependent; >=5 in 10s is a
+  conservative floor for a localhost round-trip.

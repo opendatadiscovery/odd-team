@@ -1,0 +1,70 @@
+---
+probe_id: P-246
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__TermSearch.md
+emitted_at: 2026-06-11T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-002
+test_class: integration
+verified_against_commit: 074c9927
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (TermSearch.tsx:78-96, LSN-017 measurement-truth class): the facet
+  debouncer is declared as useDebouncedCallback(..., 1500, {leading: true}) but is
+  recreated on every facet-state change because the wrapping useCallback's deps include
+  termSearchFacetParams (TermSearch.tsx:91). Static hypothesis: 5 rapid facet clicks
+  (<1500 ms apart) produce ~5 PUT /api/terms/search/{id} requests (one leading-edge
+  fire per recreated instance) instead of the intended 1-2. Secondary question (sidecar
+  stress E2): the backend update is read-merge-write with a plain last-write-wins UPDATE
+  (TermSearchServiceImpl.java:82-90 + ReactiveSearchFacetRepositoryImpl.java:85-96)
+  — do concurrent delta PUTs drop a selection? Final server-side facet state after the
+  burst should contain ALL 5 selections if no delta was lost.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      -- 5 namespaces + 5 terms so the Namespace facet has >=5 clickable options
+      INSERT INTO namespace (id, name, created_at, updated_at)
+      SELECT 9000 + i, 'p246-ns-' || i, NOW(), NOW() FROM generate_series(1, 5) AS i;
+      INSERT INTO term (id, name, definition, namespace_id, created_at, updated_at)
+      SELECT 9000 + i, 'p246-term-' || i, 'probe term', 9000 + i, NOW(), NOW()
+      FROM generate_series(1, 5) AS i;
+  - kind: rest
+    method: POST
+    path: /api/terms/search
+    body: '{"query": "", "filters": {}}'
+    capture_as: created_session   # wire is snake_case: created_session.search_id
+act:
+  - kind: dom-probe
+    note: |
+      Playwright (reuse the odd-platform/tests harness rails): page.goto('/termsearch/' +
+      created_session.search_id). Wait for the facets sidebar to render. Register a
+      request collector for PUT requests whose pathname == '/api/terms/search/' +
+      created_session.search_id. Then click 5 DIFFERENT Namespace facet options
+      (p246-ns-1 .. p246-ns-5) with <=300 ms between clicks (all inside one 1500 ms
+      window). Wait 3 s for any trailing debounce to flush and in-flight PUTs to settle.
+    capture_as: put_requests
+observe:
+  - kind: rest
+    method: GET
+    path: /api/terms/search/{created_session.search_id}
+    capture_as: final_facets
+assert:
+  - "put_requests.length >= 4  # drift hypothesis: ~1 PUT per click (intended coalesced: <= 2). PASS pins the debouncer-recreation bug (sidecar bugs[2]); FAIL means the debounce coalesces and bugs[2] must be re-read"
+  - "final_facets.facet_state.namespaces.filter(o => o.selected).length == 5  # lost-update detector: all 5 deltas survived the concurrent read-merge-write; FAIL pins stress E2's last-write-wins drop"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__ts__react-component__component__TermSearch]
+  retrospectives: [LSN-017]
+realism_caveats: |
+  Click pacing via Playwright is not perfectly deterministic; a slow CI machine could
+  stretch clicks past the 1500 ms window and undercount PUTs — the >=4 threshold (not
+  ==5) absorbs one boundary miss. The lost-update assert only detects drops when PUTs
+  actually overlap server-side; sequential completion hides the race (a PASS does not
+  prove the read-merge-write is safe, only that this run did not lose a delta). The
+  probe does not verify the catalog-search (Search.tsx) twin, which shares the same
+  debouncer shape but has its own slice, selectors, and wire endpoints.

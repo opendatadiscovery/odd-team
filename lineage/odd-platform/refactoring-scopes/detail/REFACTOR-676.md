@@ -90,3 +90,11 @@ Also: fix the type-lie (the `as` cast at line 19) by either making the type `Par
 - STRENGTHENS: REFACTOR-344 (no user binding — this scope is the URL-side manifestation of the same architectural absence); REFACTOR-352 (unbounded growth — bookmark fragility depends on the TTL question); ADR-CANDIDATE-052 (server-side session — this is the URL-naming gap the ADR does not cover).
 - SUPERSEDES: none.
 - CONFLICTS: none.
+
+**2026-06-11 status note (CTRIB-005 / odd-platform#1760, commit 074c9927):** failure mode 1
+(bookmark fragility) is now SOFTENED, not gone — deep-links actually load the session again
+(the #1551 splat had silently minted a fresh session for every cold `/search/{id}`), and an
+evicted UUID renders "This search has expired" + Start-new-search instead of a silent reset
+(IT-125 re-grounded; docs train DOC-444). The NAMING drift itself (session-row UUID posing as
+a saved-search id, mutated on every facet change, no user binding) is untouched and this scope
+stays open.

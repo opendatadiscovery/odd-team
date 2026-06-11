@@ -21,7 +21,7 @@ Every published ADR holds the standard a Principal engineer would hold on a deci
 - **Code-evidenced** — every claim cites the `file:line` that embodies it, re-verified against the substrate commit (Cornerstone 3 / Gate A2).
 - **Homed once** — one ADR per page under the decision log; never conflated with the workspace's internal methodology ADRs (Cornerstone 4).
 - **Human-ratified** — published only after the maintainer ratifies; the ontology edge is recorded after the fact, never auto-created (Cornerstone 5).
-- **Published** — verified live on the site, same GitBook hazards as any doc page (Gate 8 + the ≤200-char / YAML-parse rules).
+- **Published** — verified live on the site, same GitBook hazards as any doc page (Gate 8 + the ≤200-char / YAML-parse rules). An ADR-log page describing a decision whose behaviour is not yet in a published odd-platform release rides the documentation release train like any release-gated doc (`adrs/drafts/release-train-doc-gating.md`).
 
 ## Success signals
 

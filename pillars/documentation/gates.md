@@ -71,6 +71,8 @@ The executable procedure lives in `playbooks/unset-parameter-audit.md`. This sec
 
 For every user-visible code path touched by the change, verify the doc covers it as a **feature**, **known limitation**, **performance note**, or **security consideration**. Missing coverage in either direction is itself a finding to log as a backlog item. "Found but out of scope" is acceptable and the correct action; "not looked" is not.
 
+For a code path merged to odd-platform `main` but **absent from the latest published release**, "documented" means present on the open release train (`release/{version}` — cite the train commit), not live: the live manual describes the latest published release, and the release gate makes the coverage live (`adrs/drafts/release-train-doc-gating.md`).
+
 ## 7. Layout and completeness.
 
 `SUMMARY.md` reflects the real page list; orphan pages are adopted or deleted; index / `README.md` / section-landing pages stay in sync with SUMMARY; headings match the TOC levels. A new page ships with its SUMMARY entry and all link-backs in the **same commit** (rule lives in `pillars/documentation/authoring.md`). **In-page TOCs stay synchronized with the H2s they index** — pages with an in-page TOC at the top (canonical example: `docs/Features.md`) must update that list whenever an H2 is added, renamed, or removed on the page, in the same commit (`retrospectives/LSN-005-features-toc-desync.md`).
@@ -80,6 +82,8 @@ For every user-visible code path touched by the change, verify the doc covers it
 ## 8. Publishing standards always.
 
 Every doc change ships with live-site verification on `docs.opendatadiscovery.org` (performed by `/review`, not the implementer). Build-time rendering and live-site rendering are not the same system; only the live site is authoritative. If a URL returns a GitHub-fallback substring or the intended change isn't visible, the item reopens as `blocked`. The fallback-cache failure mode is `retrospectives/LSN-004-s2s-fallback-cache.md`.
+
+**Release-gated changes** *(2026-06-11; `adrs/drafts/release-train-doc-gating.md`)*: an item with `milestone:` set is authored on the `release/{version}` train and is **invisible to the live site until the release gate merges the train** (GitBook publishes only `main`). `/review` runs every branch-verifiable Gate 8 sub-check (PyYAML frontmatter parse, ≤200-char description, tree-relative link targets) against the train, records the verdict **`PENDING-RELEASE ({version} — URLs + expected phrases recorded)`**, and flips the item to `pending-release` — never `done`. The live half runs once per release at `playbooks/release-train-merge.md` half 2. The rule is **never skip**: the deferral is scheduled and structurally enforced by the status machine; an unscheduled skip remains a Gate 8 FAIL.
 
 **Raw-HTML head + visible page-subtitle inspection** *(2026-05-28; mandatory whenever the change touches `description:` frontmatter or any other element that renders into `<head>` — title, og:title, og:description, twitter:description, canonical, og:image, structured data).* WebFetch's markdown extraction strips `<head>` and does not surface the visible page subtitle reliably. The executable procedure lives in `playbooks/live-site-verification.md` step 3 (the raw-HTML inspection sub-step + the mechanical `curl -sL` command). Documentation-pillar specialisation:
 

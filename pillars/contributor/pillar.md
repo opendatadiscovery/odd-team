@@ -7,7 +7,7 @@ adr: adrs/drafts/contributor-pillar.md
 
 # Contributor pillar — the odd-team as a virtual contributor
 
-This pillar is where the odd-team stops *describing* Open Data Discovery and starts *changing* it. A `/contribute` run takes a GitHub issue on `opendatadiscovery/odd-platform` and resolves it end-to-end — scope → reproduce → root-cause → plan → code → unit + integration tests → docs → ontology refresh → draft PR — posting clarifying questions and root-cause back to the issue thread.
+This pillar is where the odd-team stops *describing* Open Data Discovery and starts *changing* it. A `/contribute` run takes a GitHub issue on `opendatadiscovery/odd-platform` and resolves it end-to-end — scope → reproduce → root-cause → plan → code → unit + integration tests → docs → ontology refresh → draft PR — posting clarifying questions and root-cause back to the issue thread. Every issue rides a **release train**: it must carry an open milestone titled with the future release tag (hard stop otherwise — G-C11), and docs describing the unreleased behaviour are authored on the documentation branch `release/{version}`, publishing when that release ships — the live manual describes the latest published release, never `main` (`adrs/drafts/release-train-doc-gating.md`).
 
 ## The bar
 

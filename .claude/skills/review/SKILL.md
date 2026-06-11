@@ -55,9 +55,11 @@ Run each gate by invoking its playbook in **verification mode** (re-derive what 
 | Gate 10 — Content type homing | (pillar-specific; `pillars/documentation/gates.md` Gate 10) | Read the `Sources:` footer as a content-type signal: 3+ `Spec:` lines on a feature page → API reference content embedded incorrectly (`retrospectives/LSN-006`). 5+ `Config:` lines on a non-config page → configuration reference embedded incorrectly. |
 | Gate 11 — Audience isolation *(2026-05-27)* | (pillar-specific; `pillars/documentation/gates.md` Gate 11) | Run the mechanical banned-term grep on `../documentation/docs/**/*.md` files touched by the change. Every workspace-internal term (`Cornerstone N`, `Gate N`, `LSN-NNN`, `SHB-NNN`, `feature-flow-builder`, `Quality Bar`, etc.) on a published doc line = FAIL → flip item to `blocked` with the leak cited; the implementer rewrites in operator language. Contextual stop-words (`sidecar`, `maintainer`, `methodology`, `playbook`, `pillar`, `backlog`, `findings`, `lineage`, `scanners`, `retrospectives`) need per-hit classification per the Gate 11 Exceptions table. Case-law: `retrospectives/LSN-026` — stance-only enforcement missed a single-sentence leak ("Cornerstone 5 holds…") in `data-discovery/tagging.md:56` despite two prior `/review` passes. |
 
-### 3. Check for regressions
+### 3. Check for regressions — FULL suites, never only the impacted scope (maintainer directive 2026-06-11)
 
-- Run the relevant test suite for the target repo (if any).
+- **Regression is measured, not inferred.** Run the FULL test sets of the target repo, both buckets — the impacted items' tests are the inner loop, never the gate:
+  - **Unit**: the full CI-replica build (`scripts/run-platform-tests.sh`) on the exact reviewed commit. A CI full-suite run on the same head SHA is citable evidence of the same measurement.
+  - **Integration** (code changes in odd-platform scope): the reviewer's own full run against the SUT built from the reviewed commit — `integration-tests/run-suite.sh feature-complete` (must be green) + `multi-stack` (green-target) + `known-bugs` (expected RED; an unexpected GREEN = an un-flipped fix → tests-pillar flip-on-fix checklist). One e2e suite at a time — never concurrent with a possible maintainer run; read actual pass/fail counts, not exit codes.
 - For doc changes: WebFetch every link on the affected pages.
 - For code comments: verify against surrounding code.
 - For test additions: verify they test what they claim.

@@ -136,6 +136,7 @@ header, the README line, and the sibling flows F-141/F-176 — both `/contribute
 
 - `scripts/run-platform-tests.sh` green in odd-platform CI on every PR (unit + JaCoCo gate).
 - `integration-tests/run-suite.sh feature-complete` green; `known-bugs` red-by-design; every red→green move recorded as a regression closure **via the flip-on-fix checklist above**.
+- Every `/contribute` implement AND every `/review` of a code change measures **FULL-set regression, both buckets** (full unit build on the exact commit + `feature-complete`/`multi-stack`/`known-bugs`) — the impacted tests are the inner loop, never the gate (maintainer directive 2026-06-11).
 - The scorecard's promise-coverage frontier and Test-Traceability dimension climb batch over batch and **never silently regress**.
 - A maintainer can ask "is F-NNN verified?" and get one answer from one place.
 

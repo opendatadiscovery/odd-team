@@ -10,8 +10,8 @@ adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-11 — 'Approve as written': full plan incl. term-search mirror, Closes #1760 + #1761, scope comment posting)"
 plan_approved_at: "2026-06-11"
 docs_routing: "release/0.28.0 — SHIPPED on the train (documentation@1d43d6e; search.md session bullets + ADR-0007 handler enumeration; paired item DOC-444 review-ready/milestone-gated; docs main untouched)"
-pr_url: ""
-pr_draft: false
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1771"
+pr_draft: true
 ---
 
 # CTRIB-005 — search session not-found: filters 500-vs-404 inconsistency + SPA "Unknown Error" for expired deep-links (#1760)
@@ -231,6 +231,26 @@ lifecycle semantics, untouched per the issue's own "keep separate loci".
   (author `odd-contributor[bot]`, status 201; ASCII-verified).
 - A short cross-link comment on **#1761** (closed by the same advice fix) — posts with the
   draft PR (Phase E), not at GATE 1.
+- **POSTED 2026-06-11 (with the draft PR):**
+  https://github.com/opendatadiscovery/odd-platform/issues/1761#issuecomment-4684224104
+  (author `odd-contributor[bot]`; names the unit pin + the e2e sibling surfaces).
+
+## Branch / PR
+
+- Branch `contrib/CTRIB-005-search-session-not-found` pushed to
+  `opendatadiscovery/odd-platform` (commit `074c9927`, authored + committed
+  `odd-contributor[bot]`; 18 files, +305/−17 — BE advice + test pins, FE routes/expired
+  state/error unwrap, 6 locale files, exactly the approved plan).
+- Draft PR: **#1771** — https://github.com/opendatadiscovery/odd-platform/pull/1771
+  (`draft: true`, `Closes #1760` + `Closes #1761`, `Milestone: 0.28.0` line, docs note
+  `documentation@release/0.28.0 (1d43d6e) — publishes with the 0.28.0 release`; review
+  requested from `RamanDamayeu`; the bot cannot merge — GATE 2 is the human's). Both
+  issues' milestones re-verified `0.28.0` open at PR time (G-C11).
+- Scope/root-cause comment on #1760 (GATE-1-approved, posted pre-code):
+  https://github.com/opendatadiscovery/odd-platform/issues/1760#issuecomment-4683383984
+- Docs train: documentation@`release/0.28.0` commit `1d43d6e` (pushed same-name); paired
+  item `backlog/docs/DOC-444.md`.
+- Workspace batch: odd-team commit `93c5412`.
 
 ## Plan
 

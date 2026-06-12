@@ -4,7 +4,7 @@ github_issue_number: 1759
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1759
 class: bug
 milestone: "0.28.0"
-status: pr-draft  # all four DoD gates met on the branch content; /review (separate session) then GATE 2 remain
+status: review-ready  # /review ACCEPTED 2026-06-12 (separate session, reviewer-run full regression on the PR-head SUT); GATE 2 (human review + merge of draft PR #1777) is the remaining step
 reproduced: "live 2026-06-12 on the working-tree SUT (odd-platform:odd-team-sut built from clean main @ 7f905a5a, image sha256:15b44a45…, odd-minimal stack). (1) `curl -m 8 -i http://127.0.0.1:18080/api/v3/swagger-ui.html` → curl exit 28 (timeout, ZERO response bytes — not even headers) — the OpenAPI JSON route hangs. (2) `GET /api/v3/api-docs` → 302 Location: /api/v3/webjars/swagger-ui/index.html (the UI shell route works). (3) Container log at the moment of the spec request: `reactor.core.Exceptions: throwIfFatal detected a jvm fatal exception` → `java.lang.NoSuchMethodError: 'void org.springframework.web.method.ControllerAdviceBean.<init>(java.lang.Object)' at org.springdoc.core.service.GenericResponseService.lambda$getGenericMapResponse$8(GenericResponseService.java:700) ~[springdoc-openapi-starter-common-2.2.0.jar:2.2.0]` — twice (both groups). (4) IT-042 pin GREEN on this SUT: 2 passed (run-log 2026-06-12-IT-042.md) — the LSN-029 pin reproduces the failure. (5) Bytecode proof replicated from the local dependency cache: javap on springdoc 2.2.0 GenericResponseService shows `invokespecial ControllerAdviceBean.\"<init>\":(Ljava/lang/Object;)V`; javap on spring-web 6.2.11 ControllerAdviceBean shows its ONLY public constructor is (String, BeanFactory, ControllerAdvice)."
 adr_required: false  # dependency patch-line bump restoring a dead documented feature; no migration, no auth/security-posture change, no public-contract break (G-C7 clean)
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-12 — 'Approve as written': 2.8.17 bump + both-bucket failing-first tests + IT-042/IT-063 flips + train-only docs + PLT-222 deferral; scope comment posting approved)"
@@ -422,3 +422,216 @@ Draft PR #1777 open (GATE 2 pending) · `/review` in a separate session is the n
 step · docs publish at the 0.28.0 release gate (DOC-450 tracks) · PLT-222 logged for
 the path-swap footnote · PLT-141 flips `closed` when the human merges (#1759
 auto-closes).
+
+## Review (2026-06-12, session: separate from the implementing session — post-2643699)
+
+- **Result**: ACCEPTED — `pr-draft` → `review-ready`. GATE 2 (human review + merge of
+  draft PR #1777) is the remaining step. Paired DOC-450 flipped `review-ready` →
+  `pending-release` (Gate 8 PENDING-RELEASE 0.28.0) with one reviewer note recorded in
+  it (the train commit's missing `Sources:` footer — remediation at the release gate).
+- **PR head unmoved**: branch + PR head = `76dc0225` = exactly the commit this review
+  ran on (ls-remote + PR API at review time); base `main` @ `7f905a5a`.
+- **Re-verification protocol**: every load-bearing claim re-derived from branch source /
+  live GitHub API / `git ls-remote` / live pages / the reviewer's own javap replication /
+  the reviewer's own full-regression runs — not from this record.
+
+### Definition of Done (LSN-032 four gates) — re-verified
+
+1. **Unit (full build on the PR head)** — PASS. Reviewer's own
+   `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build`: test + checkstyle
+   + assemble) on the clean tree @ `76dc0225` → **BUILD SUCCESSFUL in 5m 14s**;
+   `OpenApiDocsContractTest` **3/3** in-run (platformApiGroupDocumentLoads 17.3s —
+   the request class that pre-fix hung 60s+; ingestion 1.4s; swagger-config 0.5s).
+   Independently: CI on the exact head `76dc0225` — all 6 check runs SUCCESS
+   (`run_tests` + `Test Results` 15:34Z).
+2. **Integration (FULL regression, reviewer's own runs, SUT built fresh from the clean
+   tree @ `76dc0225` per suite)** — PASS. One suite at a time, actual counts read:
+   `feature-complete` **279 passed / 0 failed (3.7m)** — both flipped specs GREEN
+   in-suite (IT-042 shell lock + grouped-docs lock 2.9s + rendered-UI browser drive
+   864ms with 'Failed to load API definition' count 0; IT-063 it20630/31/32 green,
+   it20632 inverted lock 3.5s); api-probe rail PASS. `multi-stack` **9 / 0 (3.1m)**.
+   `known-bugs` **5 failed / 0 passed — EXPECTED all-RED**, every failure its documented
+   pin (IT-007 LSN-001/PLT-086 · IT-006 TEST-GAP-1013 · IT-004 PLT-052 · IT-003×2
+   PLT-090/PLT-127), zero unexpected GREENs. `ingestion-e2e` **6 / 0 (57.4s)**.
+   Container log after the full load: **0** `NoSuchMethodError`. All counts identical
+   to the implement run. RED half: the implement run-logs carry the `ODD_SUT=ref:main`
+   proofs (IT-042 2f/1p — group-doc curl exit 28 zero bytes, 75 NoSuchMethodError in
+   that container's log; IT-063 1f/2p — exactly it20632), with the honest SUT-attribution
+   note on the image-bypass entry; the failure MECHANISM is additionally proven by the
+   reviewer's own bytecode replication (below) — not re-run live.
+3. **Docs** — PASS; train half PENDING-RELEASE (0.28.0). Remote truth via `ls-remote`
+   (DOC-448): docs `main` = `188eb8e` (untouched — `api-reference.md` unchanged since
+   the merge-base, verified), train `release/0.28.0` = `f67851e` (parent `756361c`,
+   fast-forward same-name push, LSN-034). Train diff re-read: danger hint → version-
+   anchored info "Fixed in 0.28.0" + "194-operation" → "about 200 operations" (durable);
+   frontmatter PyYAML OK, description 171 ≤ 200; Gate 11 banned-term grep zero leaks
+   (the one grep hit = the product's Lineage feature link). Live no-leak RE-verified:
+   the published page still serves the old caveat ("Failed to load API definition" ×2,
+   "194-operation" ×2) and **zero** "Fixed in 0.28.0" / "2.8.17". Train-tree claim
+   sweep: zero stale "194"/"Failed to load"/"2.7.x line" anywhere on the train.
+   3-way merge-preview train→main: **clean** (0 conflict markers). One process finding:
+   `f67851e` lacks the `Sources:` footer (CTRIB-007's `6be1f90` had one) — claims trace
+   via the workspace commit `2643699` footer; remediation noted in DOC-450.
+4. **Ontology** — PASS. F-097 UC-001 `verified` with the FIXED bracket + corrected op
+   counts and `use_case_coverage` 1/11 bracket-superseded note (history preserved);
+   UC-007 (path swap) correctly untouched; F-029 UC-12 it20632-inverted bracket +
+   PENDING-F-029-1 UNBLOCKED; both flows PyYAML OK. IT-042/IT-063 protocols re-grounded
+   (2.8.x shell-path truth, op counts; frontmatter `regresses: [PLT-141]` retained as
+   regression-lock provenance); suites.yaml NO lane moves (both pins were
+   GREEN-while-broken in green lanes) with I10 comments updated; PHASE3 narratives
+   bracket-annotated; TST-044's IT-063-protocol rows marked healed-en-route (and the
+   `public-api-contract.spec.ts` header-:22 stale "500 SYS001" line observed this review
+   is ALREADY tracked there — no new item); PLT-141 fix-shipped note; PLT-112
+   UI-header hypothesis FALSIFIED-by-driving note; PLT-222 drafted (path-swap footnote);
+   release-plan row 6 SHIPPED; CTRIB-007 `merged` (PR #1775 = main `7f905a5a` ✓);
+   graph build-info nodes=7083 / edges=9180 / vectors=8014 @ 2026-06-12 — exactly as
+   the commit body claims.
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS. `reproduced:` carries the live capture (curl exit 28
+  zero bytes on the spec route; 302 on the UI route; the container-log NoSuchMethodError
+  at `GenericResponseService.java:700` ×2 groups; IT-042 pin GREEN-on-broken). The
+  bytecode half REPLICATED by the reviewer on the gradle cache: springdoc 2.2.0
+  `GenericResponseService` `invokespecial ControllerAdviceBean."<init>":(Object)V`;
+  spring-web 6.2.11 ships ONLY `(String, BeanFactory, ControllerAdvice)` public ctor;
+  2.8.17 has ZERO `<init>` refs and uses `invokestatic findAnnotatedBeans(...)` — the
+  incompatibility and the fix proven by construction.
+- **G-C2 running system, not the diff** — PASS via DoD 1+2 (reviewer's own full unit
+  build + full FOUR-suite regression on PR-head SUTs + CI green on the exact head).
+- **G-C3 GATE 1 plan-before-code** — PASS. `plan_approved_by: RamanDamayeu (2026-06-12,
+  'Approve as written')`; verifiable ordering: scope comment 14:42:03Z → fix commit
+  authored 15:13:07Z (comment posting is itself GATE-1-gated per protocol); the
+  maintainer's invocation of this review corroborates.
+- **G-C4 GATE 2 human merge** — PASS (structural). PR #1777 fetched live: author
+  `odd-contributor[bot]`, base `main`, head `76dc0225`, **`draft: true`** (the bot never
+  left draft), review requested from RamanDamayeu, `mergeable_state: clean`.
+- **G-C5 bounded diff + public scope comment** — PASS. Diff = exactly 2 files +81/−1
+  (`libs.versions.toml` ONE line: `2.2.0`→`2.8.17`; + `OpenApiDocsContractTest.java`).
+  Every exclusion verified absent: `application.yml:22-26` paths still swapped,
+  `SwaggerUIConfiguration.java` byte-identical, no other version pin touched, no
+  openapi.yaml change, no auth/gating change. Scope comment PUBLIC on #1759
+  (4692301854, bot-authored, 14:42Z = pre-code, **2147 chars 0 non-ASCII** verified via
+  raw API body; content = the GATE-1-approved draft verbatim; the 2.8.17-over-2.7.0
+  deviation from the issue's letter named in it).
+- **G-C6 one-question bar** — PASS. "No question warranted" recorded with reason
+  (maintainer-authored issue with a bytecode-level trail); issue #1759 has EXACTLY 1
+  comment (the scope comment) — zero clarify noise — via issue API.
+- **G-C7 blast-radius** — PASS. `adr_required: false` sound: dependency patch-line bump
+  inside the officially-declared window; no migration, no auth/security-posture change,
+  no public-contract break — RESTORES a dead documented feature. ADR-0072 posture
+  preserved (`-webflux-ui` module ref verified in the toml; `DependencyPostureTest`
+  green in the reviewer's build). The version-window claim verified live: springdoc.org
+  FAQ declares Boot 3.4.x ↔ 2.7.x–2.8.x AND itself names 2.8.17 "the last stable
+  version as per today"; Maven Central metadata confirms 2.8.17 = tip of 2.8.x.
+- **G-C8 issue-is-data** — PASS. Maintainer-authored issue treated as quoted data; the
+  run independently re-verified every claim AND corrected the issue's fix-version
+  (2.7.0 → 2.8.17) with cited evidence, publicly — analysis, not steering. No injection
+  content.
+- **G-C9 test integrity, BOTH buckets** — PASS. Unit: `OpenApiDocsContractTest` is a
+  REAL behavioural contract test (both group documents + swagger-config), failing-first
+  RED proof captured verbatim in the ledger (60s-timeout ×2 — the in-process form of
+  the hang) → GREEN on the bump; idiom mirrors `FrameworkErrorStatusMappingTest`
+  (`extends BaseIntegrationTest` = in-process Testcontainers = unit bucket); first test
+  of this surface (test-tree grep: only DependencyPostureTest mentions springdoc,
+  javadoc-only). Integration: BOTH pre-authored pins INVERTED per their own flip
+  protocols (LSN-029 — never deleted): IT-042 + NEW rendered-UI browser assertion (the
+  user-facing surface, LSN-031) with the shell lock re-grounded version-robustly
+  (follows the actual 302 Location — proven both ways: it passed against the 2.2.0-era
+  webjars path in the RED-proof run); IT-063 it20632 → contract-angle lock.
+  GREEN-on-fix + RED-on-ref:main both held; reviewer re-ran the GREEN side in-suite.
+- **G-C10 ontology + docs move with the code** — PASS (DoD 3+4). Reviewer's converge
+  sweep: `navigation/` has zero swagger/springdoc pointers (nothing stale); every other
+  workspace surface flipped or correctly historical; remaining "Failed to load API
+  definition" mentions are DOC-450's expected-phrase list + historical records (correct);
+  remaining lineage "194 operations" figures refer to the SPEC FILE (openapi.yaml,
+  untouched — a different referent than the served 198), correct as-is.
+- **G-C11 milestone gate** — PASS. Issue #1759 milestone `0.28.0` OPEN (due 2026-06-22)
+  re-verified via issue API at review time; PR body carries `Closes #1759` +
+  `Milestone: 0.28.0` + the docs-train note (`documentation@release/0.28.0 (f67851e)`);
+  docs routed train-only per the classifier (main untouched — the caveat stays true for
+  released 0.27.x); paired DOC-450 milestone-gated. (No GitHub milestone OBJECT on the
+  PR — CTRIB-004..007 precedent; the issue carries it.)
+
+### Universal Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS. The unit test is the FIRST coverage of the
+  springdoc surface (grep-verified); the e2e flips EXTEND the two existing pins rather
+  than adding parallel specs; PLT-222 deduped (the footnote tracked once, cross-linked
+  from PLT-141 + the scope comment).
+- **Gate 2 (aliases)** — N/A. No new doc concept/alias introduced.
+- **Gate 3 (caveats)** — PASS. The resolved caveat migrates to a version-anchored
+  `{% hint style="info" %}` Fixed-in-0.28.0 note (DOC-190 companion contract); the
+  0.27.x audience keeps the workaround INSIDE the new hint; the still-true auth-matrix
+  reachability warning admonition untouched and re-read.
+- **Gate 4 (consumer-read)** — PASS. Workspace commit `2643699` carries the full
+  `Consumer-read:` footer; key consumers re-walked this review: `application.yml:22-26`
+  (swapped paths intact), `SwaggerUIConfiguration.java` (exactly 2 GroupedOpenApi
+  groups, builder API unchanged), `libs.versions.toml` (the `-webflux-ui` module ref),
+  `BaseIntegrationTest`/`FrameworkErrorStatusMappingTest` (idiom),
+  `DependencyPostureTest` (javadoc-only springdoc mention — no re-grounding needed).
+- **Gate 5 (unset-parameter)** — N/A (no SDK builder in scope; the springdoc bump
+  introduces no new builder parameters — `GroupedOpenApi.builder()` call sites
+  byte-identical).
+- **Gate 6 (bidirectional code↔doc)** — PASS. Code→doc: the behaviour change rides the
+  train (f67851e); doc→code: every changed claim matched to source/live behaviour this
+  review (springdoc version + matrix, both definitions, raw-JSON path, ~200 operations
+  = 191+7+198 drive, 0.27.x-still-affected). The operational shell-path move
+  (2.8.x: `/api/v3/swagger-ui/index.html`) is documented in the PR body + commit body +
+  protocol; the published operator URL (`/api/v3/api-docs`) behaves identically — no
+  operator-doc change needed for it (the docs never named the internal shell path).
+- **Gate 7 (layout/completeness)** — PASS. In-page edit only (no SUMMARY change, no
+  heading changes — in-page TOC unaffected); `#openapi-specifications` anchor target
+  exists on the page (cross-link inside the new hint resolves).
+- **Gate 8 (publishing/live)** — PASS for all public surfaces fetched live this review
+  (PR #1777, issue #1759 + comment, check-runs, live api-reference page, springdoc FAQ,
+  Maven metadata). Docs train half: **PENDING-RELEASE (0.28.0)** — branch sub-checks
+  green now; post-merge URL + phrases recorded in DOC-450 (flipped `pending-release`).
+- **Gate 9 (claim provenance)** — PASS. Every load-bearing record claim re-derived (diff
+  vs plan; GitHub state via 5 API fetches; train via ls-remote + show + grep + merge-
+  preview; live page via curl with entity-decode; bytecode via the reviewer's own javap
+  on 3 jars; version window via springdoc.org + Maven Central; ontology via disk reads +
+  PyYAML ×3; regression via the reviewer's own five runs). Outbound URL sweep: 8 fetches,
+  0 broken in shipped content. Banned-phrase check over this review: none used. One
+  process finding: the train commit's missing `Sources:` footer → recorded in DOC-450
+  (remediation at the release gate), NOT blocking — provenance exists via the paired
+  workspace commit footer + this review's independent re-verification.
+- **Gate 10 (content-type homing)** — PASS. Work record in `contributor/`, run evidence
+  in `run-log/`, issue drafts in `issues/`, the release-gated doc edit on the train with
+  a paired `backlog/docs/` item, protocol truth in `protocols/` — per canonical-homes.
+- **Gate 11 (audience isolation)** — PASS. Banned-term grep over the touched page at the
+  train ref: zero leaks (sole hit = the product's user-facing Lineage feature link).
+  PR body + issue comment are operator/contributor language.
+
+### Verdict bookkeeping
+
+- **Regressions**: none — measured, not inferred: full unit build GREEN (5m14s, mine) +
+  CI success on the exact head + feature-complete 279/0 + multi-stack 9/0 + known-bugs
+  5/5-still-RED + ingestion-e2e 6/0, all reviewer-run on SUTs built fresh from the clean
+  tree @ `76dc0225`; 0 NoSuchMethodError under the full load.
+- **Navigation**: consistent — zero swagger/springdoc pointers existed; nothing stale.
+- **Upstream issues logged**: none new this review (PLT-222 was logged by the implement
+  session; the `public-api-contract.spec.ts` stale-header observation is already
+  TST-044's tracked instance).
+- **Doc-product editorial findings** (audit per
+  `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused pass per CTRIB-004..007 precedent (full-tree sweep
+    was 2026-06-08): the touched page end-to-end at BOTH refs (main `188eb8e` + train
+    `f67851e`); repo-wide claim-class sweeps over the train tree (springdoc /
+    "Failed to load" / "194" / "2.7.x line"); in-page anchor checks; the 3-way
+    merge-preview into main.
+  - **Findings**: none surfaced this run — the page coheres post-change (the fixed-in
+    note, the still-true reachability warning, the screenshots accurate again post-fix,
+    the spec pointers consistent).
+- **Minor notes (non-blocking, all tracked)**: (1) train commit `f67851e` missing
+  `Sources:` footer → DOC-450 reviewer note + release-gate remediation; (2) the
+  implement session's suite run-log entries left `evidence/notes` placeholders unfilled
+  (counts live in the CTRIB record + commit body; the reviewer's own entries carry full
+  counts) — convention reminder, no retro-fill of another session's entries; (3)
+  F-097-UC-001 `promise` text still reads "194-operation" (the historical hypothesis
+  layer; the corrected counts live in `test_ref` + the docs now say "about 200") — the
+  promise field is the as-authored hypothesis record, bracket discipline applies to
+  verification fields; left as-is deliberately.
+- **Reviewer-committed artefacts**: 4 attributed run-log entries (feature-complete /
+  multi-stack / known-bugs / ingestion-e2e on `76dc0225`), DOC-450 flip + notes, this
+  verdict.

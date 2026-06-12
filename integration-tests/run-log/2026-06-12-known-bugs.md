@@ -58,3 +58,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-12 — suite/protocol: known-bugs
+- runner: AI-assisted Claude (/review CTRIB-008 — reviewer-run regression)
+- odd-platform working-tree HEAD: 76dc0225 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 76dc0225  (image odd-platform:odd-team-sut, digest sha256:7d3a216e32f01c66745bbc913fc63707412e65a895dca52374c4aea8844a6cce)
+- protocols: IT-003 IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/search-tsquery-poisoning.spec.ts specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **5 failed / 0 passed — EXPECTED all-RED** — the REVIEWER's independent run (/review CTRIB-008) on the PR-head SUT. Every failure is its documented pin: IT-007 LSN-001/PLT-086 (attachment lost on recreate) - IT-006 TEST-GAP-1013/F-042 (error boundary) - IT-004 PLT-052 (out-of-enum run status) - IT-003 x2 PLT-090/PLT-127 (tsquery poisoning). ZERO unexpected GREENs (no un-flipped fix).
+

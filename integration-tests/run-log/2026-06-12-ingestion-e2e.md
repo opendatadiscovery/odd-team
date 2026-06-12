@@ -38,3 +38,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-12 — suite/protocol: ingestion-e2e
+- runner: AI-assisted Claude (/review CTRIB-008 — reviewer-run regression)
+- odd-platform working-tree HEAD: 76dc0225 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 76dc0225  (image odd-platform:odd-team-sut, digest sha256:bd1a964b72c5a597ae0050f82f6138d51c726b005d5c93bd021e7b487ea69e9a)
+- protocols: IT-128
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **6 passed / 0 failed (57.4s)** — the REVIEWER's independent run (/review CTRIB-008) on the PR-head SUT; the real source->collector->platform->UI relationship stand unaffected by the springdoc bump. Container log after the full four-suite load: 0 NoSuchMethodError.
+

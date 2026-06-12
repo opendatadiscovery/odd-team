@@ -48,3 +48,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-12 — suite/protocol: multi-stack
+- runner: AI-assisted Claude (/review CTRIB-008 — reviewer-run regression)
+- odd-platform working-tree HEAD: 76dc0225 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 76dc0225  (image odd-platform:odd-team-sut, digest sha256:c15da183832b00ed55cd03861eb7327f6bf4363b6f974cee580337106ca94ce1)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **9 passed / 0 failed (3.1m)** — the REVIEWER's independent run (/review CTRIB-008) on the PR-head SUT. All stack permutations green; the springdoc bump does not disturb remote-attachment / auth-boundary / LDAP / WAL / session / RBAC surfaces.
+

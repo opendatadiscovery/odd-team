@@ -413,6 +413,8 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   (302→webjars shell 200) + JSON spec=`/api/v3/swagger-ui.html`. The UI shell loads; the SPEC HANGS
   (springdoc 2.2.0 × Spring 6.2 `NoSuchMethodError` → PLT-141). F-097 IS testable → IT-042 (UI-shell
   lock + spec-hang pin). LESSON: never conclude a feature is ABSENT from a default-path probe — read the build+config.
+  [FIXED 2026-06-12: #1759/CTRIB-008 bumped springdoc 2.2.0 → 2.8.17; the IT-042 + IT-063 pins INVERTED to
+  lock the working spec surface (LSN-029 flip); unit-bucket OpenApiDocsContractTest added in odd-platform CI.]
 - 2026-06-04 — IT-036 (F-030 Metrics Ingestion) — e2e:metrics-ingestion.spec.ts. Collector ingests a GAUGE
   family (POST /ingestion/metrics→201) → GET /api/dataentities/{id}/metrics serves it back; no-metrics
   entity → no family. **GREEN (2 passed 1.8s).** Helper ingest.ts +ingestMetrics/gaugeFamily/getEntityMetricsBody.
@@ -489,6 +491,7 @@ odd-minimal (DISABLED → permitAll, entities-filter OFF) the POSTs need no coll
   F-208 staleness (IT-041, 1/12) · F-005 lineage via ingestion (IT-043) · F-097 Swagger discovery (IT-042, 1/11).
 - **Swagger recovery:** corrected a false "no Swagger" claim; recovered the orphaned API-Reference doc page
   (live-verified 200) + documented the known-issue; PLT-141 (springdoc 2.2.0 × Spring 6.2 spec-hang).
+  [PLT-141 FIXED 2026-06-12 — #1759/CTRIB-008.]
 - **Engine:** ingestion-API seed helper (broke the raw-seed plateau) + persistent-stack (~1-2s/IT).
 - **2 upstream bug drafts:** PLT-141 (Swagger spec-hang, high) · PLT-142 (stats no-validation, medium).
 - **Honesty:** ~+14 promise verifications across 6 features; IT-043/044 upgraded probe→durable-IT (no

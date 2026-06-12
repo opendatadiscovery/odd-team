@@ -1,6 +1,6 @@
 ---
 id: IT-063
-title: "Platform Public API Contract — spec <-> running-platform conformance (does not depend on the hung spec endpoint)"
+title: "Platform Public API Contract — spec-file <-> running-platform conformance + the live OpenAPI document loads (locks the #1759/PLT-141 fix)"
 gates:
   validates: [F-029]
   enforces: []
@@ -18,10 +18,11 @@ status: ready
 
 F-029's structural root finding (UC-12) is that there is **zero** end-to-end conformance check between the
 4212-line `odd-platform-specification/openapi.yaml` and the running platform — every other drift class
-accumulates undefended. IT-042 already covers the Swagger UI shell + pins the hung spec endpoint (PLT-141:
-springdoc 2.2.0 × Spring 6.2). This protocol does something **different**: a SPEC→PLATFORM conformance check
-that does **not** depend on the hung `/api/v3` spec endpoint. It takes documented GET operations straight from
-`openapi.yaml` and asserts the LIVE platform honours them (status + spec-declared response shape).
+accumulates undefended. IT-042 covers the Swagger UI surface end-to-end. This protocol does something
+**different**: a SPEC-FILE→PLATFORM conformance check — documented GET operations straight from
+`openapi.yaml` asserted against the LIVE platform (status + spec-declared response shape). It was authored
+hand-picked BECAUSE the served OpenAPI document was dead (PLT-141: springdoc 2.2.0 × Spring 6.2 — **fixed
+2026-06-12**, #1759/CTRIB-008: springdoc → 2.8.17); step 6 now LOCKS the fixed state from the contract angle.
 
 - **UC-14 (CONFIRMED):** the spec is the path/method authority — documented GETs are served live with their
   spec-declared response field-set: `/api/dataentities/classes` → `DataEntityClassAndTypeDictionary.entity_classes`;
@@ -32,13 +33,14 @@ that does **not** depend on the hung `/api/v3` spec endpoint. It takes documente
   typed **400 USR001** (the advice pass-through — #1760/#1761, CTRIB-005; was an opaque 500 SYS001). The
   residual gap stays pinned: the spec declares only 200 (no error responses), so even the correct 400 is
   spec-undeclared.
-- **UC-12 / PLT-141 pin:** the live OpenAPI document still fails to load (no machine-readable contract to
-  conform against on a running deployment) — the reason the conformance endpoints must be hand-picked.
+- **UC-12 / PLT-141 lock (inverted pin, 2026-06-12):** the live platform-api OpenAPI document LOADS —
+  a machine-readable contract exists on a running deployment. (Driving the whole conformance loop from the
+  live document is the follow-up PENDING-F-029-1.)
 
-**Operator caveat (why pin it):** with no spec↔platform conformance gate, status-code/response-shape drift
-ships undetected (F-029 catalogues 14 such drift classes). A consumer that omits a required query param now at
-least gets a typed 400 (since the #1761-class fix), but there is still no served spec to code-generate a
-correct client from (PLT-141).
+**Operator caveat (why lock it):** with no spec↔platform conformance gate, status-code/response-shape drift
+ships undetected (F-029 catalogues 14 such drift classes). A consumer that omits a required query param gets a
+typed 400 (since the #1761-class fix), and — since the #1759 fix — the served document is again available to
+code-generate clients from / drive conformance against.
 
 ## 2. Preparation
 
@@ -59,25 +61,27 @@ correct client from (PLT-141).
 2. `GET /api/dataentities/usage` → 200, body has `total_count`, `unfilled_count`, `data_entity_classes_info`.
 3. `GET /api/identity/whoami` → 200, body has `identity`.
 4. `GET /api/tags?page=1&size=10` → 200, body has `items` (array) + `page_info`.
-5. `GET /api/tags` (no page/size) → 500 with `{"code":"SYS001"}`.
-6. `GET /api/v3/swagger-ui.html` (the served OpenAPI document) within an 8s budget → does NOT return an
-   `"openapi"`/`"paths"` document (hangs/errors) — PLT-141 pin.
+5. `GET /api/tags` (no page/size) → 400 with `{"code":"USR001"}` (the advice pass-through — #1760/#1761,
+   CTRIB-005; was an opaque 500 SYS001).
+6. `GET /api/v3/swagger-ui.html/platform-api` (the served OpenAPI document) within an 8s budget → returns a
+   genuine `openapi`+`paths` document — locks the #1759/PLT-141 fix (was the GREEN-while-broken hang pin;
+   inverted 2026-06-12).
 
 **Automated rail:** `ODD_STACK_EXTERNAL=1 integration-tests/run-suite.sh IT-063`.
 
 ## 5. Assertions
 
-- **PASS** when: steps 1-4 return the spec-declared status + top-level field-set; step 5 returns 500/SYS001;
-  step 6's spec does not load (PLT-141 still open).
-- **FLIPS** when: a documented GET drifts off its spec status/shape (a real conformance regression — investigate);
-  OR step 5 starts returning 200/400 (the platform began validating required params — re-scope UC-12); OR step 6's
-  spec loads (PLT-141 fixed — **invert** the pin to drive conformance from the live spec).
+- **PASS** when: steps 1-4 return the spec-declared status + top-level field-set; step 5 returns 400/USR001;
+  step 6's document loads (`openapi` + non-empty `paths`).
+- **FLIPS (investigate a regression)** when: a documented GET drifts off its spec status/shape; OR step 5
+  regresses to an opaque 500 (the #1761 class returning); OR step 6 fails/hangs again (a springdoc × Spring
+  binary-drift recurrence — the #1759 class).
 
 ## 6. Result log
 
 Appends to `integration-tests/run-log/{YYYY-MM-DD}-IT-063.md`.
 
 ## Cross-references
-- Source: F-029 UC-14 (spec path/method authority — CONFIRMED) + UC-12 (no spec↔platform conformance gate); PLT-141 (hung spec endpoint, shared with IT-042 from the UI-shell angle).
+- Source: F-029 UC-14 (spec path/method authority — CONFIRMED) + UC-12 (no spec↔platform conformance gate); regression-locks PLT-141/#1759 (fixed by CTRIB-008: springdoc 2.2.0 → 2.8.17; shared with IT-042 from the UI angle).
 - Spec: `odd-platform-specification/openapi.yaml` (info.title legacy "ProspectLog…" = UC-10) + `components.yaml` (PageParam/SizeParam required).
 - Plan: `lineage/odd-platform/test-plan.md` batch I10 (public-API contract + operator-introspection exposure).

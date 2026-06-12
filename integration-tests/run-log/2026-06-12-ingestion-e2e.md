@@ -28,3 +28,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **6 passed / 0 failed (1.2m)** — the reviewer's independent IT-128 run on the PR-HEAD SUT `1a196254`: GRAPH x3 (5 neo4j edge types + direction, UNKNOWN-typed attrs, detail) + ERD (both FK derivation paths) + UI list/overview through the real source->collector->platform pipeline. Ephemeral stand up + torn down (down -v). Count identical to the implement run. The tag-ordering fix touches no ingestion surface; measured anyway per the full-set directive.
 
+## 2026-06-12 — suite/protocol: ingestion-e2e
+- runner: (fill: AI-assisted <model> | human <name>)
+- odd-platform working-tree HEAD: 76dc0225 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 76dc0225  (image odd-platform:odd-team-sut, digest sha256:7d81d5519ca14fc0326eb37eeeb6a7895521cbc3854cd8be9756878980146ee4)
+- protocols: IT-128
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

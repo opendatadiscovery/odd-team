@@ -48,3 +48,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **5 failed / 0 passed — EXPECTED all-RED**, every failure its documented pin: IT-007 (LSN-001/PLT-086 attachment durability), IT-006 (TEST-GAP-1013 error boundary), IT-004 (PLT-052 DQ unknown-status crash), IT-003 x2 (PLT-090 catalog + PLT-127 dictionary tsquery). ZERO unexpected GREENs on the PR-HEAD SUT `1a196254` — the post-flip 4-protocol lane composition runs clean (the implement session's one-off TST-042 sequencing flake did not recur).
 
+## 2026-06-12 — suite/protocol: known-bugs
+- runner: (fill: AI-assisted <model> | human <name>)
+- odd-platform working-tree HEAD: 76dc0225 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 76dc0225  (image odd-platform:odd-team-sut, digest sha256:5896df1f03edb3b3343da76684808d1e66ab82fd86b1ce7e60f198b7d5e53d63)
+- protocols: IT-003 IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/search-tsquery-poisoning.spec.ts specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

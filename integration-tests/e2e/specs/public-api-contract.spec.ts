@@ -5,14 +5,16 @@ import { test, expect, type APIRequestContext } from '@playwright/test';
  *
  * Protocol: integration-tests/protocols/IT-063-public-api-contract.md
  * Gates: validates F-029 (UC-14 spec path/method is authoritative · UC-12 spec<->platform conformance);
- *        pins PLT-141 (the live OpenAPI spec endpoint fails to load — distinct from IT-042's UI-shell test).
+ *        regression-locks #1759/PLT-141 (the live OpenAPI document loads — inverted from the original pin
+ *        2026-06-12 when springdoc was bumped 2.2.0 -> 2.8.17; distinct from IT-042's UI-angle lock).
  *
  * F-029's structural root finding (UC-12) is that there is ZERO end-to-end conformance check between the
  * 4212-line `odd-platform-specification/openapi.yaml` and the running platform — every other drift class
- * accumulates undefended. IT-042 already covers the Swagger UI shell + pins the hung spec endpoint
- * (PLT-141: springdoc 2.2.0 x Spring 6.2). This spec does something DIFFERENT: a SPEC->PLATFORM conformance
- * check that does NOT depend on the hung /api/v3 spec endpoint. It takes documented GET operations straight
- * from openapi.yaml and asserts the LIVE platform honours them (status + spec-declared response shape).
+ * accumulates undefended. IT-042 covers the Swagger UI surface end-to-end. This spec does something
+ * DIFFERENT: a SPEC-FILE->PLATFORM conformance check — documented GET operations straight from openapi.yaml
+ * asserted against the LIVE platform (status + spec-declared response shape). Historical note: it was
+ * authored hand-picked BECAUSE the served document was dead (PLT-141, fixed 2026-06-12 — see it20632);
+ * driving the loop from the LIVE document is the follow-up PENDING-F-029-1.
  *
  * GROUNDED 2026-06-07 against :18080 + read of odd-platform-specification/openapi.yaml + components.yaml:
  *   GET /api/dataentities/classes -> 200 {"entity_classes":[...]}            (DataEntityClassAndTypeDictionary)
@@ -107,28 +109,29 @@ test.describe('F-029 Platform Public API Contract — spec <-> platform conforma
     ).toBe('USR001');
   });
 
-  test('it20632_UC-12 PINS PLT-141: the live OpenAPI spec document still FAILS to load (no machine-readable contract to conform against)', async ({
+  test('it20632_UC-12 LOCKS #1759/PLT-141 fix: the live OpenAPI document loads (a machine-readable contract exists on a running deployment)', async ({
     request,
   }) => {
-    // The reason a SPEC->PLATFORM conformance check must hand-pick endpoints (above) instead of reading the live
-    // spec: the served OpenAPI document does not load. springdoc 2.2.0 x Spring 6.2 throws NoSuchMethodError on
-    // ControllerAdviceBean and the spec request hangs/errors (PLT-141; IT-042 pins the same break from the
-    // UI-shell angle). Here it is pinned from the CONTRACT angle: there is no consumable machine-readable contract
-    // on a running deployment. GREEN while PLT-141 is open; flips RED when springdoc is bumped and the document
-    // returns — at which point this test should be inverted to drive the conformance loop from the LIVE spec.
+    // INVERTED PIN (2026-06-12, #1759/CTRIB-008 — springdoc 2.2.0 -> 2.8.17): this was the CONTRACT-angle
+    // characterization pin of PLT-141 (springdoc 2.2.0 x Spring 6.2 NoSuchMethodError on ControllerAdviceBean
+    // hung every spec request; GREEN-while-broken asserting the document did NOT load). The fix landed, so per
+    // the pin's own flip protocol it now asserts the platform-api group document LOADS — a consumable
+    // machine-readable contract exists on a running deployment. The hand-picked conformance checks above remain
+    // valuable as spec-FILE -> platform checks; driving the whole conformance loop from the LIVE document is the
+    // separate follow-up PENDING-F-029-1. IT-042 locks the same fix from the UI angle.
     let specLoads = false;
     try {
-      const res = await request.get('/api/v3/swagger-ui.html', { timeout: 8000 });
+      const res = await request.get('/api/v3/swagger-ui.html/platform-api', { timeout: 8000 });
       if (res.ok()) {
-        const body = (await res.text()).toLowerCase();
-        specLoads = body.includes('"openapi"') || body.includes('"paths"');
+        const body = (await res.json()) as { openapi?: string; paths?: Record<string, unknown> };
+        specLoads = Boolean(body.openapi) && Object.keys(body.paths ?? {}).length > 0;
       }
     } catch {
       specLoads = false; // timeout / hang / error = the spec did not load
     }
     expect(
       specLoads,
-      'PLT-141: the live OpenAPI spec document must currently NOT load; flip + invert this when springdoc is bumped',
-    ).toBe(false);
+      'the live platform-api OpenAPI document must load with openapi+paths (regression-lock for #1759/PLT-141)',
+    ).toBe(true);
   });
 });

@@ -8,3 +8,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: 9 passed / 0 failed (3.1m) on the fix SUT (working tree @ cc248bac + the uncommitted CTRIB-009 mapper guards). Baseline count held (MinIO / LOGIN_FORM / LDAP / notifications-WAL self-managed stacks). Zero regressions.
 
+## 2026-06-13 — suite/protocol: multi-stack
+- runner: AI-assisted Claude Fable 5 (/review CTRIB-009 — reviewer's own FULL-regression gate, suite 2/4)
+- odd-platform working-tree HEAD: 1653a909 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 1653a909  (image odd-platform:odd-team-sut, digest sha256:8526cc439c5509c6bd10fb06988ef41352dc39a024419e02b6e423c7c5ef7199)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: REVIEWER RUN (separate session): 9 passed / 0 failed (3.3m) on the SUT built fresh from the CLEAN tree @ the committed PR head 1653a909 (image 8526cc43). Baseline held (MinIO / LOGIN_FORM / LDAP / notifications-WAL self-managed stacks). Zero regressions.
+

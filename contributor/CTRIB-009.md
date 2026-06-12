@@ -4,7 +4,7 @@ github_issue_number: 1755
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1755
 class: bug
 milestone: "0.28.0"
-status: pr-draft  # implement complete 2026-06-13: DoD all four gates green (ledger below); draft PR #1779 open; /review (separate session) then GATE 2 (human merge) remain
+status: review-ready  # REVIEWED 2026-06-13 (separate session): ACCEPTED — every contributor gate (G-C1..C11), every applicable universal gate (1-11), and the LSN-032 DoD re-verified with the reviewer's OWN evidence (full unit build + RED-proof replication + four-suite regression on PR-head SUTs); GATE 2 (human review + merge of draft PR #1779) is the remaining step
 reproduced: "live 2026-06-12 on the PRE-FIX working-tree SUT (odd-platform:odd-team-sut built from clean main @ 3f02dd63, image sha256:def06b3d…, odd-minimal stack). (1) Rail: run-suite.sh IT-068 → 2/2 GREEN — the PLT-147 LSN-029 pin asserts results-GET ≥500 + no row rendered (run-log/2026-06-12-IT-068.md). (2) Manual, transformer class {2} seed id 20688 (entity_class_ids={2}, specific_attributes NULL, FTS vector): POST /api/search {query:'ctrib009xfm'} → 200, total:1, facet entity_classes shows {id:2, count:1} (the self-contradicting 'Transformers | 1'); GET /api/search/{id}/results → 500 {code:SYS001}; GET /api/dataentities/20688 → 500 {code:SYS001}. (3) Manual, quality-test class {4} seed id 20689: search results GET → 500 SYS001; GET /api/dataentities/20689 → 500 SYS001. (4) Container log — all four throw sites: mapPojo:99 (getDataTransformerDetailsDto null → SearchController#getSearchResults checkpoint), mapPojo:114 (getDataQualityTestDetailsDto null), mapDtoDetails:298 (transformer detail → DataEntityController#getDataEntityDetails checkpoint), mapDtoDetails:314 (QT detail, expectationType first deref). (5) Seeds deleted post-capture (count 0); empty-query results GET back to 200 — no toxic residue (CTRIB-005 lesson)."
 adr_required: false  # defensive null-guard inside one mapper; no migration, no auth/security-posture change, no public-contract break (G-C7 clean — response SHAPE unchanged; absent sub-projections render as absent fields, exactly the DEG/mapPojo precedent)
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-12 — 'Approve as written': guards in both methods incl. the symmetric DEG-details guard; unit test + IT-068 flip with detail click-through; no docs change; scope comment posting approved; PLT-223 + TST-047 follow-ups)"
@@ -411,3 +411,186 @@ draft verbatim; ASCII-verified in-band before post — 2395 chars, 0 non-ASCII).
 Draft PR #1779 open (GATE 2 pending) · `/review` in a separate session is the next
 step · PLT-223 + TST-047 logged · PLT-147 flips `closed` when the human merges (#1755
 auto-closes) · CTRIB-008/PLT-141 merge bookkeeping folded in en route.
+
+## Review (2026-06-13, session: separate from the implementing session — post-cce4044)
+
+- **Result**: **ACCEPTED** — `pr-draft` → `review-ready`. GATE 2 (human review + merge of
+  draft PR #1779) is the remaining step.
+- **PR head unmoved**: branch + PR head = `1653a909` = exactly the commit this review ran
+  on (git fetch + PR API at review time); base `main` @ `cc248bac` = origin/main head.
+- **Re-verification protocol**: every load-bearing claim re-derived from branch source /
+  live GitHub API / the reviewer's own unit build + failing-first RED replication +
+  four-suite regression on PR-head SUTs / docs-repo git + tree greps / disk reads — not
+  from this record.
+
+### Definition of Done (LSN-032 four gates) — re-verified
+
+1. **Unit (full build on the PR head)** — PASS. Reviewer's own
+   `scripts/run-platform-tests.sh` (no-arg = test + checkstyle + assemble) on the clean
+   tree @ `1653a909` → **BUILD SUCCESSFUL in 5m 11s**; `DataEntityMapperImplTest`
+   **12/12** in-run (test XML read). Independently: CI on the exact head — all 6 check
+   runs SUCCESS (`run_tests` + `Test Results` 22:21–22:22Z). **Failing-first REPLICATED
+   by the reviewer**: throwaway worktree @ `cc248bac` (pre-fix mapper, 0 guards) + the
+   committed test file → **12 tests / 9 failed**, every null-injection case NPE'd at its
+   branch (XML verdict: the exact 9 null cases failed, the exact 3 populated locks
+   passed) — byte-identical to the implement ledger's claim. BUILD FAILED 1m35s as
+   expected; worktree removed.
+2. **Integration (FULL regression, reviewer's own runs, SUT built fresh per suite from
+   the clean tree @ `1653a909`)** — PASS. One suite at a time, actual counts read:
+   `feature-complete` **279 passed / 0 failed (3.9m)** (image `0cf73aad…`; IT-068 both
+   tests GREEN in-suite — the F-148 happy path 2.1s + the flipped PLT-147 regression
+   lock 2.1s: results GET 200, row renders, detail click-through 200; api-probe rail
+   P-001 PASS). `multi-stack` **9/0 (3.3m)** (`8526cc43…`). `known-bugs` **5 failed /
+   0 passed — EXPECTED all-RED** (`d77bbd9d…`): every failure its documented pin (IT-007
+   LSN-001/PLT-086 · IT-006 TEST-GAP-1013 · IT-004 PLT-052 · IT-003×2 PLT-090/PLT-127),
+   ZERO unexpected GREENs. `ingestion-e2e` **6/0 (1.0m)** (`6cc6e88b…`). Platform
+   container log under suite load: **0** `NullPointerException`. Counts identical to the
+   implement run — now measured on the COMMITTED head (the implement integration evidence
+   was on `cc248bac`+uncommitted; this closes that gap, CTRIB-004 precedent). RED half:
+   the implement run-log carries the `ODD_SUT=ref:main` proof (1 failed / 1 passed —
+   `Expected: 200 / Received: 500` at spec `:159`, exactly the pinned reason; the
+   GC-thrash transient honestly logged + retried clean), and the reviewer's own unit RED
+   replication independently re-proves the NPE mechanism.
+3. **Docs** — PASS (routed: `none`, verified). Both pages read END-TO-END by the reviewer
+   at the train ref (`release/0.28.0` @ `f67851ed`; main @ `188eb8e1`): no claim made
+   false by bug or fix — the per-class panel matrix describes panels rendering what was
+   ingested (a null-details entity now renders empty class fields = the documented DEG
+   precedent), and `entity-detail-page.md`'s silent-absence warning covers a different
+   state (no-panel-at-all: empty/unrecognised class array or run-classes). Repo-wide
+   train-tree grep `SYS001|NullPointerException|Internal Server Error`: 4 hits, ALL other
+   failures (Azure logout-uri NPE ×2, lineage_depth NPE ×2 pages, GenAI timeout) — no
+   page documents THIS failure, so there is no published claim to retire (the
+   CTRIB-007/008 contrast, where train edits retired existing caveats). Doc log since
+   2026-06-12: zero CTRIB-009 commits on main or train — `docs_routing: none` true on the
+   remote. The train-vs-main diff on both pages = pre-existing 0.28.0 content (view-count,
+   search-expiry — other items' fingerprints, not this one's).
+4. **Ontology** — PASS, verified on disk. F-206 UC-7 `test_ref` bracket-note LIFTED +
+   TST-047 pointer (history preserved); IT-068 protocol + spec re-grounded with flip
+   provenance (frontmatter `regresses: [PLT-147]` retained as regression-lock provenance);
+   IT-073 spec + protocol bracket-annotated (constraint lifted, original rationale kept);
+   suites.yaml wave-2 FLIPPED-list comment updated, **no lane moves** (IT-068 confirmed
+   in the `feature-complete` + `ui-e2e` member lists); PLT-147 `fix_note` (+#1779, status
+   stays `filed` until the human merge); NEW PLT-223 (draft, needs-repro) + NEW TST-047
+   (pending) both dedup-verified; release-plan row 2 SHIPPED; CTRIB-008 `merged` +
+   PLT-141 `closed` verified against origin/main (`3f02dd63` = merged #1777); **no
+   substrate sidecar maps to the mapper** (understanding/ grep re-run — recorded, not
+   skipped); P-001 probe merge-backs are append-only `probe_verifications` entries; graph
+   build-info `nodes=7083 / edges=9180 / vectors=8014` @ 2026-06-13 — exactly as the
+   commit body claims.
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS. Run-log `2026-06-12-IT-068.md` entry 1 = the pre-fix
+  rail reproduction (2/2 pin-GREEN on the clean-main SUT, image `def06b3d…`) + the manual
+  four-surface captures (transformer + quality-test × search-results + detail, NPE frames
+  log-localized to `mapPojo:99/:114` + `mapDtoDetails:298/:314`); seeds cleaned, residue
+  checked. The reviewer's RED replication re-proves the NPE mechanism empirically.
+- **G-C2 running system, not the diff** — PASS via DoD 1+2: all reviewer-own runs on the
+  committed PR head.
+- **G-C3 GATE 1 plan-before-code** — PASS. `plan_approved_by: RamanDamayeu (2026-06-12,
+  'Approve as written')`; verifiable ordering: scope comment 21:37:47Z → fix commit
+  authored 22:14:58Z (2026-06-13T00:14:58+02:00). The maintainer's invocation of this
+  review corroborates.
+- **G-C4 GATE 2 human merge** — PASS (structural). PR #1779 fetched live: author
+  `odd-contributor[bot]`, base `main`, head `1653a909`, **`draft: true`** (the bot never
+  left draft), `mergeable_state: clean`, review requested from RamanDamayeu.
+- **G-C5 bounded diff + public scope comment** — PASS. Diff = exactly the approved plan:
+  2 files +251/−13 (`mapPojo` 4 guards; `mapDtoDetails` 4 guards + the DEG inner guard
+  with `setManuallyCreated` kept unconditional; 2 constraint-stating comments; the new
+  test). Every exclusion verified absent: `mapDataQualityTest` untouched (still derefs
+  at `:372+` post-fix numbering), `DataEntityServiceImpl` / FE / openapi.yaml untouched
+  (2-file diffstat). Scope comment PUBLIC on #1755 (4695651669, bot-authored,
+  **pre-code**, 2395 chars / 0 non-ASCII via raw API) naming the one deviation from the
+  issue's letter (the symmetric DEG-details guard) AND the deferred third surface.
+- **G-C6 one-question bar** — PASS. "No question warranted" recorded with reason
+  (maintainer-authored issue, verified line numbers, deterministic repro, pre-authored
+  flip); issue #1755 has EXACTLY 1 comment (the scope comment) — zero clarify noise.
+- **G-C7 blast-radius** — PASS. `adr_required: false` sound: no migration, no
+  auth/security-posture change, no public-contract break — the affected response fields
+  were already optional (absent-field rendering = the existing DEG precedent); a
+  defensive guard inside one mapper.
+- **G-C8 issue-is-data** — PASS. Maintainer-authored issue treated as quoted data; every
+  claim re-verified against main; the one beyond-issue finding (the `mapDtoDetails` DEG
+  branch was ALSO unguarded — the issue's "DEG does guard" holds for `mapPojo` only)
+  handled transparently and named publicly in the scope comment. No injection content.
+- **G-C9 test integrity, BOTH buckets** — PASS. Unit: REAL behavioural Mockito test
+  (first of this mapper's class-branch logic — verified against the `cc248bac` test tree:
+  only `DataEntityStatusKnownBugTest` existed, a different method); 9 null-injection
+  cases with the failing condition injected explicitly (`entityClassIds` set, details DTO
+  null) + 3 populated-path locks; RED→GREEN proven by the reviewer's own runs on BOTH
+  sides. Correctly homed in the unit bucket (pure Mockito, no boundary). Integration: the
+  LSN-029 pin RE-GROUNDED per its own pre-authored flip note (never deleted) + EXTENDED
+  with the user-facing detail click-through (the second #1755 surface — LSN-031);
+  GREEN-on-fix in-suite (reviewer's run) + RED-on-`ref:main` (implement run-log).
+- **G-C10 ontology + docs move with the code** — PASS (DoD 3+4).
+- **G-C11 milestone gate** — PASS. Issue #1755 milestone `0.28.0` OPEN (due 2026-06-22)
+  re-verified via issue API at review time; PR body carries `Closes #1755` +
+  `Milestone: 0.28.0` + the docs-none note; `docs_routing: none` — correctly nothing
+  rides the train; no paired DOC item needed.
+
+### Universal Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS. PLT-223 is the SOLE tracker of the
+  `mapDataQualityTest` deref (PLT-178's mention is the pagination defect — different
+  class); TST-047 disjoint from TST-026 (raw-seed e2e widening vs palette-lockstep unit
+  guard); the unit test is first coverage of the surface (grep-verified pre-fix tree).
+- **Gate 2 (aliases)** — N/A. No new doc concept/alias.
+- **Gate 3 (caveats)** — PASS/N-A. No doc change; the fix's empty-state is the
+  already-documented composition behaviour; no new caveat owed (verified by the
+  end-to-end page reads + the train-tree grep).
+- **Gate 4 (consumer-read)** — PASS. `Consumer-read:` + `Sources:` footers on workspace
+  commit `cce4044`; key consumers re-walked this review: `enrichEntityClassDetails`
+  iterates `specific_attributes` keys (`DataEntityServiceImpl.java:546`) with DEG
+  hydrated unconditionally (`:593-601`); `mapDtoDetails` single production caller
+  (`:208`, full-repo grep); `TruncatedCell.tsx:85` `dataList?.map` (FE null-tolerance).
+- **Gate 5 (unset-parameter)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — PASS. Code→doc: the behaviour change restores
+  the documented behaviour (no-doc-change decision verified independently); doc→code:
+  both pages' claims checked against the fix — nothing falsified either direction.
+- **Gate 7 (layout/completeness)** — PASS. No doc-tree change (no SUMMARY/TOC impact);
+  workspace artefacts in canonical homes; suites.yaml membership verified, no lane moves.
+- **Gate 8 (publishing/live)** — PASS. All public surfaces fetched live this review
+  (PR #1779, issue #1755 + comment via raw API, check-runs on the head); no docs URL
+  affected — nothing to verify on the live manual; the unmerged draft PR is the EXPECTED
+  GATE-2-pending end state per the contributor lifecycle (not a DEFERRED).
+- **Gate 9 (claim provenance)** — PASS. Every load-bearing record claim re-derived: diff
+  vs plan via git; GitHub state via 4 live API fetches; unit via the reviewer's own build
+  + test XML; failing-first via the reviewer's own RED replication; integration via the
+  reviewer's own four suite runs; docs via `git show` + tree greps at both refs; ontology
+  via disk reads; en-route bookkeeping via origin/main log. Outbound URL sweep: the
+  record's URLs (PR / issue / comment) all fetched live, 0 broken. Banned-phrase check
+  over this review: none used.
+- **Gate 10 (content-type homing)** — PASS. Work record in `contributor/`, issue drafts
+  in `issues/odd-platform/`, the test item in `backlog/tests/`, protocol truth in
+  `protocols/`, run evidence in `run-log/` — per canonical-homes.
+- **Gate 11 (audience isolation)** — PASS. No published doc page touched (the mechanical
+  grep has no scope); public GitHub artifacts re-read — operator/contributor language;
+  the upstream test javadoc's `odd-platform#1755 (PLT-147)` cross-ref is the established
+  provenance convention (CTRIB-008 precedent).
+
+### Verdict bookkeeping
+
+- **Regressions**: none — measured, not inferred: reviewer's own full unit build
+  (5m11s) + CI 6/6 on the head + feature-complete 279/0 + multi-stack 9/0 + known-bugs
+  5/5-still-RED + ingestion-e2e 6/0, all on SUTs built fresh from the clean tree @
+  `1653a909`; 0 NPE under load.
+- **Navigation**: consistent — zero `DataEntityMapperImpl` pointers existed; nothing
+  stale.
+- **Upstream issues logged**: none new this review (PLT-223 + TST-047 were logged by the
+  implement session; both dedup-verified here).
+- **Doc-product editorial findings** (audit per
+  `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused pass per CTRIB-004..008 precedent (full-tree sweep
+    was 2026-06-08): both affected pages end-to-end at the train ref + the
+    failure-surface claim-class grep over the whole train tree (4 hits classified — all
+    other failures) + the train-vs-main diff on both pages (pre-existing 0.28.0 content).
+  - **Findings**: none surfaced this run — both pages cohere post-fix.
+- **Minor notes (non-blocking)**: the implement session's integration evidence was
+  gathered on the working tree (`cc248bac`+uncommitted) before the commit existed; the
+  reviewer's four suite runs on the committed `1653a909` close that gap (mapper
+  byte-identical — same class as CTRIB-004's review-side closure). VERIFIED via the
+  reviewer's own runs above.
+- **Reviewer-committed artefacts**: 4 attributed run-log entries (feature-complete /
+  multi-stack / known-bugs / ingestion-e2e on `1653a909`), the P-001 harness re-stamps
+  (probe-run yaml + 2 sidecar appendices + feature-flows pointer), this verdict + the
+  status flip + the PROGRESS update.

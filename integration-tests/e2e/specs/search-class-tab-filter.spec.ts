@@ -6,7 +6,9 @@ import { seedSearchableEntity, dbQuery } from '../helpers/db';
  *
  * Protocol: integration-tests/protocols/IT-068-search-class-tab-filter.md
  * Gates: validates F-148 (UC-001 — clicking the Datasets tab narrows the result list to dataset-class
- *        entities); regresses PLT-147 (transformer-class entity NPEs the results list — RED-on-fix pin).
+ *        entities); regresses PLT-147/#1755 (FIXED 2026-06-12: a null-details transformer used to NPE
+ *        the results list AND the detail page; the former GREEN-while-broken pin is re-grounded to a
+ *        regression lock asserting both surfaces work — LSN-029 flip, CTRIB-009).
  *
  * The 9-tab strip (All / My Objects / Datasets / Transformers / ...) is a distinct UX surface from the
  * 7-facet sidebar (SearchResultsTabs.tsx). A class tab carries the numeric backend class id as its value
@@ -21,9 +23,10 @@ import { seedSearchableEntity, dbQuery } from '../helpers/db';
  * react-query caveat: every search/facet results GET is awaited before asserting.
  *
  * Class choice for the SUCCESS test: DATA_SET (class 1) vs DATA_ENTITY_GROUP (class 8). Both render cleanly
- * through DataEntityMapperImpl. The obvious second class — DATA_TRANSFORMER (class 2) — was DISQUALIFIED
- * for the happy path because it triggers a real platform bug (see the second test): the mapper NPEs on a
- * transformer whose details DTO is null, 500ing the whole results list.
+ * through DataEntityMapperImpl. The obvious second class — DATA_TRANSFORMER (class 2) — was originally
+ * DISQUALIFIED for the happy path because it triggered PLT-147 (the mapper NPEd on a transformer whose
+ * details DTO is null, 500ing the whole results list). That bug is FIXED (#1755, 2026-06-12); the class
+ * choice stays as-is — the second test now locks the transformer contract end-to-end on its own.
  *
  * Namespace: ids 20680-20689 · oddrn //e2e-it068/ · names it068_*
  */
@@ -81,11 +84,11 @@ async function typeQuery(page: import('@playwright/test').Page, query: string): 
 }
 
 test.describe('F-148 Search Class-Tab Filter — narrows results by entity class', () => {
-  // The PLT-147 characterization seed (a class-2 transformer with NULL specific_attributes, id 20682)
-  // is TOXIC to the shared stack if left behind: an EMPTY-query search matches every entity, so the
-  // poisoned row 500s the results list of the plain Catalog page and of every expired-search recovery
-  // for ALL later users of the stack (maintainer hit it live, 2026-06-11 — CTRIB-005). The FTS-token
-  // isolation only protects other SPECS' queries, not empty searches. Clean ALL three seeds up.
+  // Clean ALL three seeds up. History: while PLT-147 was open, a leftover class-2 transformer with NULL
+  // specific_attributes (id 20682) was TOXIC to the shared stack — an EMPTY-query search matches every
+  // entity, so the poisoned row 500d the plain Catalog page for ALL later users (maintainer hit it live,
+  // 2026-06-11 — CTRIB-005). The #1755 null-guard fix removed the 500, but seed hygiene stays: leftover
+  // rows still pollute other specs' counts and empty-query result pages.
   test.afterAll(async () => {
     await dbQuery('DELETE FROM search_entrypoint WHERE data_entity_id = ANY($1::bigint[])', [
       [DATASET_ID, GROUP_ID, TRANSFORMER_ID],
@@ -128,14 +131,17 @@ test.describe('F-148 Search Class-Tab Filter — narrows results by entity class
     ).toBeVisible({ timeout: 15_000 });
   });
 
-  // KNOWN BUG (PLT-147): DataEntityMapperImpl.mapPojo (DataEntityMapperImpl.java:99, via mapPojos:175)
-  // dereferences dto.getDataTransformerDetailsDto().sourceList() with NO null guard. A DATA_TRANSFORMER
-  // (class {2}) entity whose details DTO is null therefore NPEs -> the whole search-results GET 500s
-  // (SYS001). The DATA_SET branch is null-safe (mapStats tolerates null) and DATA_ENTITY_GROUP is
-  // explicitly guarded; transformer + quality-test are not. This is a LSN-029 characterization pin:
-  // GREEN today (asserts the CURRENT broken behaviour), flips RED when the mapper is null-guarded
-  // (then the row renders and the GET returns 200). DO NOT "fix" this test to assert the ideal.
-  test('CHARACTERIZATION (PLT-147): a transformer-class result currently 500s the list and renders no row', async ({
+  // REGRESSION LOCK (PLT-147 / #1755 — FIXED): DataEntityMapperImpl used to dereference
+  // dto.getDataTransformerDetailsDto().sourceList() with NO null guard (mapPojo:99 via mapPojos, and
+  // mapDtoDetails:298 on the detail path). A DATA_TRANSFORMER (class {2}) entity whose details DTO is
+  // null (entity_class_ids says transformer, specific_attributes has no transformer block) NPEd -> the
+  // WHOLE search-results GET (and the entity-detail GET) 500d SYS001. This test was the LSN-029
+  // characterization pin of that behaviour (GREEN-while-broken, asserting >=500 + no row); it flipped
+  // RED on the null-guard fix and is RE-GROUNDED here (2026-06-12, CTRIB-009) to lock the FIXED
+  // contract on BOTH #1755 surfaces: the results list renders the transformer row (200), and clicking
+  // through, its detail page loads (200). The seed shape is unchanged — exactly the null-details row
+  // that used to kill both pages.
+  test('REGRESSION (PLT-147 fixed): a transformer-class result renders in the list and its detail page loads', async ({
     page,
   }) => {
     await seedSearchableOfClass(TRANSFORMER_ID, TRANSFORMER_NAME, '{2}', 5); // DATA_TRANSFORMER class {2}, type JOB
@@ -145,17 +151,33 @@ test.describe('F-148 Search Class-Tab Filter — narrows results by entity class
     await typeQuery(page, TRANSFORMER_NAME);
     const resp = await resultsResp;
 
-    // ---- ground truth: the results GET currently 500s on the transformer-class entity ----
+    // ---- the fixed contract: the results GET succeeds on a null-details transformer ----
     expect(
       resp.status(),
-      'PLT-147: the results GET currently 500s on a transformer-class entity (NPE in DataEntityMapperImpl). ' +
-        'If this is now 200, the mapper was fixed — flip this pin to assert the row renders.',
-    ).toBeGreaterThanOrEqual(500);
+      'PLT-147 regression: the results GET must be 200 on a transformer-class entity whose details DTO ' +
+        'is null (a >=500 here means the DataEntityMapperImpl null-guard regressed — see #1755)',
+    ).toBe(200);
 
-    // ---- what the user sees: NO result row for the transformer (the list failed to render) ----
+    // ---- what the user sees: the transformer renders as a result row (empty Sources/Targets cells) ----
+    const row = page.getByTestId('search-result-item').filter({ hasText: TRANSFORMER_NAME });
     await expect(
-      page.getByTestId('search-result-item').filter({ hasText: TRANSFORMER_NAME }),
-      'PLT-147: the transformer entity does not render as a result row (the list 500d)',
-    ).toHaveCount(0, { timeout: 10_000 });
+      row,
+      'PLT-147 regression: the transformer entity must render as a result row',
+    ).toBeVisible({ timeout: 15_000 });
+
+    // ---- the second #1755 surface: the detail page (mapDtoDetails) loads for the same entity ----
+    const detailResp = page.waitForResponse(
+      (r) =>
+        new RegExp(`/api/dataentities/${TRANSFORMER_ID}$`).test(r.url()) && r.request().method() === 'GET',
+    );
+    await row.getByText(TRANSFORMER_NAME).click(); // the whole row navigates (ResultItem onClick)
+    expect(
+      (await detailResp).status(),
+      'PLT-147 regression: the entity-detail GET must be 200 for a null-details transformer (mapDtoDetails path)',
+    ).toBe(200);
+    await expect(
+      page.getByText(TRANSFORMER_NAME).first(),
+      'PLT-147 regression: the detail page renders the entity (header shows the name)',
+    ).toBeVisible({ timeout: 15_000 });
   });
 });

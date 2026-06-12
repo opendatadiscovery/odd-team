@@ -37,6 +37,10 @@ Source: feature-flow F-206 (UC-7).
 > null guard (only the DATA_SET branch is null-safe via `mapStats`). So a "distinct class" corner
 > cannot use a second class via this raw-seed path; the encoding-distinctness corner therefore runs on
 > the DATA_SET row itself (DS present, the transformer token "TS" absent).
+>
+> **[2026-06-12 — constraint LIFTED: PLT-147/#1755 FIXED (CTRIB-009 null-guards every class branch;
+> IT-068 carries the regression lock). Widening this corner to a second raw-seeded class = TST-047;
+> the box above is kept as the build-time rationale for the current DATA_SET-only shape.]**
 
 ## 3. Readiness check
 - Platform health: `curl -fsS http://localhost:18080/actuator/health` → `{"status":"UP"}`.

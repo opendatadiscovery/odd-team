@@ -25,7 +25,9 @@ import { seedSearchableEntity, dbQuery } from '../helpers/db';
  * dereferences getDataTransformerDetailsDto() with no null guard — already filed as PLT-147,
  * convergently re-confirmed live during this IT-073 build). DATA_SET is the only NPE-safe class for
  * this raw-seed path (mapStats tolerates null details), so the encoding-distinctness corner runs on
- * the DATA_SET row itself.
+ * the DATA_SET row itself. [2026-06-12: PLT-147/#1755 FIXED (CTRIB-009) — the constraint is lifted;
+ * widening the corner to a second raw-seeded class is tracked as TST-047. IT-068 locks the fixed
+ * mapper contract; this spec's shape is unchanged until TST-047.]
  *
  * GROUND-TRUTH: ResultItem renders `EntityClassItem entityClassName={entityClass.name}` ->
  * DataEntityClassLabelMap.get(name).short. Class ids per DataEntityClassDto: DATA_SET=1. The label

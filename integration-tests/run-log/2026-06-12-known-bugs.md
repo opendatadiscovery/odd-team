@@ -38,3 +38,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **5 failed / 0 passed — EXPECTED all-RED**, every failure its documented pin (IT-003 x2 PLT-090/PLT-127 tsquery poisoning; IT-004 PLT-052 DQ unknown-status; IT-006 TEST-GAP-1013 error boundary; IT-007 LSN-001/PLT-086 attachment durability). ZERO unexpected GREENs — no fix landed un-flipped; IT-005 is correctly OUT of this lane (flipped by CTRIB-007, now in feature-complete).
 
+## 2026-06-12 — suite/protocol: known-bugs
+- runner: AI-assisted Claude (Fable 5) — CTRIB-007 /review session (the reviewer's own full-regression gate, G-C2)
+- odd-platform working-tree HEAD: 1a196254 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 1a196254  (image odd-platform:odd-team-sut, digest sha256:54a72a107c24cce73d1437325e07ec2fe000bb78e889012743321be54ebb87f1)
+- protocols: IT-003 IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/search-tsquery-poisoning.spec.ts specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **5 failed / 0 passed — EXPECTED all-RED**, every failure its documented pin: IT-007 (LSN-001/PLT-086 attachment durability), IT-006 (TEST-GAP-1013 error boundary), IT-004 (PLT-052 DQ unknown-status crash), IT-003 x2 (PLT-090 catalog + PLT-127 dictionary tsquery). ZERO unexpected GREENs on the PR-HEAD SUT `1a196254` — the post-flip 4-protocol lane composition runs clean (the implement session's one-off TST-042 sequencing flake did not recur).
+

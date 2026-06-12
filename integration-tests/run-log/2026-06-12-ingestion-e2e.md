@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **6 passed / 0 failed (1.2m)** — IT-128 relationships pipeline (neo4j GRAPH truth + postgres-FK ERD truth through the REAL collector) unaffected by the CTRIB-007 tag-ordering fix.
 
+## 2026-06-12 — suite/protocol: ingestion-e2e
+- runner: AI-assisted Claude (Fable 5) — CTRIB-007 /review session (the reviewer's own full-regression gate, G-C2)
+- odd-platform working-tree HEAD: 1a196254 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 1a196254  (image odd-platform:odd-team-sut, digest sha256:4099e5b99c81b7a6c70eeb1ebdb0589f011a2d834c6132bac78f6c9d1995b14e)
+- protocols: IT-128
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **6 passed / 0 failed (1.2m)** — the reviewer's independent IT-128 run on the PR-HEAD SUT `1a196254`: GRAPH x3 (5 neo4j edge types + direction, UNKNOWN-typed attrs, detail) + ERD (both FK derivation paths) + UI list/overview through the real source->collector->platform pipeline. Ephemeral stand up + torn down (down -v). Count identical to the implement run. The tag-ordering fix touches no ingestion surface; measured anyway per the full-set directive.
+

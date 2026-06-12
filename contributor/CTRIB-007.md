@@ -4,7 +4,7 @@ github_issue_number: 1773
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1773
 class: bug
 milestone: "0.28.0"
-status: pr-draft  # implement complete (tests-green, docs-done, ontology-refreshed); draft PR #1775 open; next: /review (separate session) -> review-ready -> GATE 2
+status: review-ready  # /review ACCEPTED 2026-06-12 (separate session, on the PR HEAD 1a196254 = 82812cdf + the maintainer's update-branch merge of main 8b0155f7); GATE 2 — human review + merge of draft PR #1775 — is the remaining step
 reproduced: "live 2026-06-12 on the shared odd-minimal stack (probe-odd-platform healthy; image odd-platform:odd-team-sut built 2026-06-12T11:32Z from the clean main tree @ 6f356b72). Seeded the IT-005 discriminating shape via psql (35 tags: 30 OLD usedCount=1, ids 7-36 + 5 young POP usedCount=5, ids 37-41; cleaned after capture — 0 residue verified). D1: GET /api/tags?page=1&size=30&query=it005- -> total 35, returned 30, POP present: [] — window = it005-old-001..030 (id order, max usedCount in window 1); control GET size=35 -> response top-5 = the 5 POP at usedCount 5 (the outer count-DESC sort works once un-truncated — the inner window IS the defect). D3-entity FALSIFICATION: PUT /api/dataentities/20054/tags (5 POP -> [POP-001, ctrib007-audit-probe]) then GET /api/dataentities/20054/activity -> TAG_ASSIGNMENT_UPDATED event id 21 with old_state.tags = ALL 5 prior names and new_state.tags = the 2 new names — the entity path captures the FULL before/after; the issue's 'entity = id-only, no payload diff' claim is falsified on the running system. Corroboration: IT-005 RED (PLT-026 pin) in BOTH 2026-06-12 known-bugs suite runs (implement + review sessions) on the same main content."
 adr_required: false  # for THIS run's scope (Thread A — a bug fix restoring the spec'd contract). Threads B and C are deferred BECAUSE each needs an ADR (see Scope analysis).
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-12 — 'Approve as written': Thread A only + IT-005 flip + two-route docs + B/C deferred ADR-first; scope comment posting approved)"
@@ -482,3 +482,233 @@ upstream; author + committer `odd-contributor[bot]`:
   https://github.com/opendatadiscovery/odd-platform/issues/1773#issuecomment-4691179092
   (author `odd-contributor[bot]`, HTTP 201; ASCII-verified in-band before post; content =
   the GATE-1-approved draft verbatim).
+
+## Review (2026-06-12, session: separate from the implementing session — post-5264579)
+
+- **Result**: ACCEPTED — `pr-draft` → `review-ready`. GATE 2 (human review + merge of
+  draft PR #1775) is the remaining step. Paired DOC-449 flipped `review-ready` →
+  `pending-release` (Gate 8 PENDING-RELEASE 0.28.0), with two reviewer corrections
+  recorded in it (canonical live URL carries the `features/` prefix — the recorded
+  prefix-less form 404s, sitemap-verified; + a new release-gate criterion verifying the
+  merge-healed audit rows, below).
+- **The PR head moved before review**: the maintainer pressed update-branch at
+  15:28+0200 — head `1a196254` = the bot's fix `82812cdf` + main `8b0155f7` (pt-BR
+  #1564). Inter-head diff = ONLY the 3 translation files (verified); the fix content is
+  byte-identical. **This review ran on `1a196254`** — exactly what merges at GATE 2.
+- **Re-verification protocol**: every load-bearing claim re-derived from branch source /
+  live GitHub API / `git ls-remote` / live pages / the reviewer's own full-regression
+  runs — not from this record.
+
+### Definition of Done (LSN-032 four gates) — re-verified
+
+1. **Unit (full build on the PR head)** — PASS. Reviewer's own
+   `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build`: test +
+   checkstyle + assemble) on the clean tree @ `1a196254` → **BUILD SUCCESSFUL in
+   6m 16s**. Independently: CI `Run tests` on the exact head = success
+   (2026-06-12T13:28Z). **One CI anomaly attributed**: the `82812cdf` CI run failed 1 of
+   420 — `PrometheusMetricsIngestionTest.testHistogramAndSummary` (500 on
+   assertMetrics) — a transient: the same backend content passed CI on `1a196254` (the
+   merge added only UI translation files), the implement build, and the reviewer's
+   build; the diff touches tag pagination + an assert-only guard, not metrics. Filed
+   **TST-046** (flake tracker; check-run 81037139088 annotation preserved).
+2. **Integration (FULL regression, reviewer's own runs on the PR-head SUT
+   `1a196254`, image digest `sha256:9feb0734…`)** — PASS. One suite at a time:
+   `feature-complete` **278 passed / 0 failed (4.6m)** — IT-005 GREEN in-suite (test
+   275: all 5 most-used youngest tags render on the Top Tags strip); `multi-stack`
+   **9 passed / 0 failed (4.5m)**; `known-bugs` **5 failed / 0 passed — EXPECTED
+   all-RED**, every failure its documented pin (IT-007 LSN-001/PLT-086 · IT-006
+   TEST-GAP-1013 · IT-004 PLT-052 · IT-003×2 PLT-090/PLT-127), zero unexpected GREENs
+   (the implement session's one-off TST-042 lane flake did not recur — and its IT-003
+   isolation re-run 2/2-RED triage was verified from the run-log); `ingestion-e2e`
+   **6 passed / 0 failed (1.2m)** — the real source→collector→platform→UI stand. All
+   counts identical to the implement run. The IT-005 flip chain re-verified from the
+   5-entry run-log: born-RED pin → locator defect honestly surfaced at first PASS-side
+   run (fix WAS rendered; chip textContent `it005-POP-0055` CSS-margin nuance) →
+   re-grounded STRONGER (substring + ALL-5 loop) → GREEN 1/1 → honest SUT-BUILD-FAILED
+   interlude → `ODD_SUT=ref:main` RED for exactly the pinned reason (LSN-029/LSN-033).
+3. **Docs** — PASS; train half PENDING-RELEASE (0.28.0). **Remote truth via
+   `git ls-remote` (DOC-448)**: docs `main` = `188eb8e` (the released-truth correction —
+   the local single-branch clone's tracking ref lags; ls-remote authoritative), train
+   `release/0.28.0` = `756361c` ⊇ `6be1f90` (parent `f61b9c2` — same-name push as
+   recorded). **Main route live-verified** (canonical URLs under the `features/`
+   prefix, sitemap-resolved): tagging — entity row "capturing the before-and-after tag
+   list" LIVE, "three different decoders" GONE; activity-feed — "Carries
+   before-and-after tag lists" + "both carry the full before-and-after tag lists" LIVE;
+   raw `<head>` meta descriptions intact (112/182 chars, PyYAML OK both routes).
+   **No-leak verified**: the 0.27.x ordering caveat ("sorted by tag id, not by
+   popularity") still serves live; zero "Fixed in 0.28.0" live. Doc claims
+   code-verified: `TagActivityHandlerImpl.java:26-50` resolves FULL before/after states
+   (the entity id is the lookup key); `TermServiceImpl.upsertTags:253-264` has no
+   `@ActivityLog`. Gate 11 banned-term grep: zero hits, both routes. Reviewer's
+   claim-sweep over the train tree: the only other ordering surface
+   (catalog-overview.md "most-used tags") becomes simply TRUE with the fix — no edit
+   needed, as the implement session concluded.
+4. **Ontology** — PASS. Both sidecars `enriched_at_commit: 82812cdf` + enrichment.log
+   13:05Z entries + manifest enrichment block (`enriched_node_count: 214`); the
+   repository sidecar's fixed-chain invariants verified against the actual diff
+   (aggregate-first shape :137-171, helper exemption :141-146); F-018 PyYAML OK —
+   UC-001 `verified` with both test refs, `use_case_coverage` **3/15**, drift facet
+   bracket-stamped FIXED with history preserved, matrix updated, P-010 retired into the
+   real tests; suites.yaml lane moves exact (IT-005: known-bugs→feature-complete +
+   ui-e2e rejoin + I7 comment re-grounded; known-bugs = 4 protocols / 5 tests);
+   P-LSN019 `drift-fixed` with provenance; NEW P-249 (post-fix full-directory
+   aggregation cost — pending-stress-protocol); PLT-026 `filed` + the 3-thread public
+   status section; CTRIB-006 `merged` recorded (PR #1772 = `6f356b72` ✓); graph
+   build-info **nodes=7083 / edges=9180 / vectors=8014 @ 2026-06-12** — exactly as the
+   commit body claims.
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS. `reproduced:` carries the live API capture (35-tag
+  seed: page1/size30 = 30 oldest, zero of the 5 most-used; size=35 control = the 5
+  most-used on top) + the D3-entity falsification (old_state 5 names → new_state 2);
+  the pre-fix code shape (paginate-by-id-inside-CTE, `82812cdf^` read this review)
+  entails exactly that observation; IT-005 RED on pre-fix content in both prior runs.
+  The shared-stack 0-residue claim could not be independently re-checked (the review's
+  own multi-stack run recreated probe-database before the check landed — race noted
+  honestly); the implementer's record states it verified, and the discriminating
+  `ctrib007%` marker is absent from the recreated stack.
+- **G-C2 running system, not the diff** — PASS via DoD 1+2 (reviewer's own full unit
+  build + full FOUR-suite regression on the PR-head SUT + CI on the exact head).
+- **G-C3 GATE 1 plan-before-code** — PASS. `plan_approved_by: RamanDamayeu (2026-06-12,
+  'Approve as written')`; the verifiable ordering half: scope comment 12:16:27Z →
+  first code commit 12:30:58Z (14 min; comment posting is itself gated on GATE-1
+  approval per protocol). Single-workspace-commit shape means no separate plan-commit
+  timestamp exists (unlike CTRIB-006) — noted; the maintainer's own post-plan actions
+  (update-branch + invoking this review) corroborate.
+- **G-C4 GATE 2 human merge** — PASS (structural). PR #1775 fetched live: author
+  `odd-contributor[bot]`, base `main`, head `1a196254`, **`draft: true`** (the bot never
+  left draft), review requested from RamanDamayeu, `mergeable_state: clean`.
+- **G-C5 bounded diff + public scope comment** — PASS. Code diff = 4 files +139/−11 =
+  exactly the approved plan (aggregate-then-paginate restructure; homogeneityCheck
+  computed-alias exemption subsuming RANK_FIELD_ALIAS; 2 failing-first test files).
+  Every exclusion verified absent from the diff: no Thread B code (no
+  TagServiceImpl/permission change), no Thread C code (no @ActivityLog/schema change),
+  no spec change, no UI change, no parallel `paginateAfterAggregation` method. Scope
+  comment PUBLIC on #1773 (4691179092, bot-authored, 12:16Z = pre-code, **2994 chars
+  100% ASCII** verified via raw API body; content = the GATE-1-approved draft; the
+  helper-generalisation deviation from the issue's letter is named in it).
+- **G-C6 one-question bar** — PASS. "No question warranted" recorded with reason; issue
+  #1773 has EXACTLY 1 comment (the scope comment) — zero clarify noise — via issue API.
+- **G-C7 blast-radius** — PASS. `adr_required: false` sound for Thread A: no migration,
+  no auth/security-posture change, no contract break — the fix RESTORES the published
+  contract (`odd-platform-specification/openapi.yaml:345-346` "sorted by popularity",
+  re-located this review). The helper change is loosening-only BY CONSTRUCTION
+  (assert-only method: skip-or-throw; previously-throwing inputs were runtime 500s,
+  none live; `RANK_FIELD_ALIAS = field("rank")` unqualified → still exempt). Threads
+  B/C correctly STOPPED at ADR-first; C's structural blocker re-verified in source
+  (`V0_0_48__add_activity.sql:4,12` — `data_entity_id bigint NOT NULL` FK).
+- **G-C8 issue-is-data** — PASS. Maintainer-authored issue treated as quoted data; the
+  run FALSIFIED the issue's D3-entity claim live and corrected two issue mis-cites
+  (TopTagsList client-sort; the LSN-019 citation) — evidence of analysis, not steering;
+  the falsification is public in the scope comment. No injection content.
+- **G-C9 test integrity, BOTH buckets** — PASS. Unit: the repository test seeds the
+  discriminating shape (5 old/low-use low-id + 3 young/most-used high-id, page size 5)
+  and asserts exact page-1 membership AND order (`containsExactly`: usage DESC, id-ASC
+  ties) + total 8 + hasNext — RED on pre-fix code by construction (ledger's verbatim
+  `[18..22]` vs `[23,24,25,18,19]`); the helper test pins the exemption (RED pre-fix)
+  AND the still-guarded two-table rejection. Integration: IT-005 re-grounded STRONGER
+  (1 exact-match → all-5 substring loop), GREEN-on-fix + RED-on-ref:main, lane move =
+  the regression closure. The LEFT-JOIN union shape verified (`:385,:393` + coalesce):
+  zero-usage tags survive aggregation — no management-list tag-dropping regression;
+  `_total` still counts all filtered tags (both arms verified: window `count() over()` +
+  empty-page `fetchCount`).
+- **G-C10 ontology + docs move with the code** — PASS (DoD 3+4). Reviewer's converge
+  grep: `navigation/` has ZERO stale tag-ordering pointers (the TST-045 class does not
+  recur here); every IT-005/LSN-019 workspace surface is flipped or correctly
+  historical.
+- **G-C11 milestone gate** — PASS. Issue #1773 milestone `0.28.0` OPEN (due 2026-06-22)
+  re-verified via issue API at review time; PR body carries verbatim `Part of #1773`
+  (NOT Closes — the issue stays open for B/C, correct per the decomposition) +
+  `Milestone: 0.28.0` + the two-route docs note; docs routed per the classifier
+  (released-truth → main `188eb8e`; unreleased → train `6be1f90`); paired DOC-449
+  milestone-gated. (No GitHub milestone OBJECT on the PR — CTRIB-004/005/006 precedent;
+  the issue carries it.)
+
+### Universal Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS. The ranking test EXTENDS the existing
+  TagRepositoryImplTest class; JooqQueryHelperTest is the first test of that class (no
+  prior duplicate); the helper exemption SUBSUMES the RANK_FIELD_ALIAS special case
+  (net duplication reduction); TST-046 deduped vs TST-042 (unit-CI transient vs e2e
+  lane-composition — distinct classes; grep'd backlog first).
+- **Gate 2 (aliases)** — N/A. No new doc concept/alias introduced.
+- **Gate 3 (caveats)** — PASS. The resolved caveat migrates to a version-anchored
+  `{% hint style="info" %}` Fixed-in-0.28.0 note (the DOC-190 companion contract
+  honoured); the corrected audit-asymmetry rows stay INSIDE the existing warning
+  admonition; all other operator caveats untouched and re-read.
+- **Gate 4 (consumer-read)** — PASS. Workspace commit `5264579` carries the 27-file
+  `Consumer-read:` footer; key consumers re-walked this review: `paginate` internals
+  (order-field resolution BY NAME against the wrapped table — `getOrderFields`),
+  `pageifyResult` metadata contract, `getDataEntityWithDatasetFields` union,
+  `fetchCount` empty-page total, `TagActivityHandlerImpl`, `TermServiceImpl.upsertTags`,
+  `FTSConstants.RANK_FIELD_ALIAS`, the 16 paginate caller files (loosening-only
+  argument verified by construction + every FTS caller exercised GREEN in-suite).
+- **Gate 5 (unset-parameter)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — PASS. Code→doc: the behaviour change rides the
+  train; the live-falsified doc claim corrected on main. Doc→code: every changed doc
+  claim matched to source read this review. Claim-class sweeps (ordering + audit
+  payload) across BOTH doc trees: one residual surface found — the TRAIN's stale copy
+  of the audit rows (below, editorial) — tracked via DOC-449's new criterion.
+- **Gate 7 (layout/completeness)** — PASS. No SUMMARY change needed (in-page edits
+  only); no heading changes (in-page TOC unaffected); the
+  `#known-limitations-and-operator-caveats` anchor intact on both refs (the
+  activity-feed cross-link resolves); suites-lane registration verified.
+- **Gate 8 (publishing/live)** — PASS for all public surfaces fetched live this review
+  (PR #1775, issue #1773, comment, check-runs ×2 heads, docs pages ×2, sitemap). Docs
+  train half: **PENDING-RELEASE (0.28.0)** — branch sub-checks green now; post-merge
+  URLs + phrases recorded in DOC-449 **with the canonical `features/`-prefixed URL**
+  (the prefix-less URL 404s — caught by this review's live fetch, fixed in DOC-449).
+- **Gate 9 (claim provenance)** — PASS. Every load-bearing record claim re-derived
+  (diff vs plan; GitHub state via 7 API fetches; train via ls-remote + show + grep;
+  live pages via WebFetch + raw curl `<head>`; ontology via disk reads + PyYAML ×3;
+  regression via the reviewer's own four-suite + full-build runs; spec via grep at
+  `openapi.yaml:345-346`; migration via read at `V0_0_48:4,12`). Outbound URL sweep:
+  10 fetches, 0 broken in shipped content; 1 trap caught (the `features/` URL prefix —
+  the 404 suggestion + sitemap resolved it). Banned-phrase check over this review:
+  none used.
+- **Gate 10 (content-type homing)** — PASS. Work record in `contributor/`, run evidence
+  in `run-log/`, probes in `probes/`, behaviour caveats on the feature page, audit
+  semantics on both feature pages consistently, follow-ups in `backlog/` — per
+  canonical-homes.
+- **Gate 11 (audience isolation)** — PASS. Banned-term grep over the touched pages at
+  BOTH refs (`188eb8e` + `release/0.28.0`): zero hits. PR body + issue comment are
+  operator/contributor language (the `contributor/CTRIB-007.md` pointer is repo-public
+  traceability, CTRIB-004..006 precedent).
+
+### Verdict bookkeeping
+
+- **Regressions**: none — measured, not inferred: full unit build GREEN (6m16s, mine) +
+  CI success on the exact head + feature-complete 278/0 + multi-stack 9/0 + known-bugs
+  5/5-still-RED + ingestion-e2e 6/0, all reviewer-run on the PR-head SUT `1a196254`.
+  The one CI anomaly (Prometheus flake on `82812cdf`) attributed with 3 green runs of
+  the same content → TST-046.
+- **Navigation**: consistent — zero stale tag-ordering pointers in
+  `navigation/domains/` (grep'd: listMostPopular / oldest-by-id / LSN-019 /
+  getPopularTagList).
+- **Upstream issues logged**: none new (PLT-026 IS the cluster tracker; Threads B/C
+  ride it).
+- **Doc-product editorial findings** (audit per
+  `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused pass per CTRIB-004..006 precedent (full-tree sweep
+    was 2026-06-08): both touched pages end-to-end at BOTH refs (main `188eb8e` state +
+    train `release/0.28.0` state); ordering-claim sweep over the train tree;
+    audit-payload claim sweep over both trees; cross-link/anchor checks; a 3-way
+    **merge-preview of the train into main**.
+  - **Findings**:
+    - ONE (parallel-surfaces-with-drift, transient): the train branch still carries the
+      pre-correction audit-asymmetry text ("with the entity id in the payload" /
+      "three different decoders" — train `tagging.md:100,104`, `activity-feed.md:61,66`)
+      because the train was cut before main's `188eb8e` correction. **Merge-preview
+      verified the 3-way merge heals it cleanly** (zero conflict markers; the merged
+      result = main's corrected rows + the train's Fixed-in note; the falsified text
+      survives nowhere). Tracked as a new RELEASE-GATE CRITERION in DOC-449 (the gate
+      now explicitly verifies the healed rows) — no new item needed; git's own merge
+      machinery guards the conflicting-edit case.
+- **Follow-ups filed this review**: `backlog/tests/TST-046.md` (low — the Prometheus
+  CI flake instance + recurrence tracking); DOC-449 reviewer corrections (canonical
+  URL + heal criterion + `pending-release` flip).
+- **Reviewer-committed artefacts**: 4 attributed run-log entries (feature-complete /
+  multi-stack / known-bugs / ingestion-e2e on `1a196254`), the harness re-stamps from
+  the reviewer's P-001 run (probe-run yaml + feature-flows stamp + 2 sidecar
+  appendices), TST-046, DOC-449, this verdict.

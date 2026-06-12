@@ -19,17 +19,29 @@ const ENTITY = 'IT022SearchableEntity';
 const OTHER = 'IT022OtherEntity';
 const NOMATCH = 'ZZZNoSuchEntityZZZ';
 
-const resultsFetch = (page: import('@playwright/test').Page) =>
-  page.waitForResponse(
-    (r) => /\/api\/search\/[0-9a-f-]+\/results/.test(r.url()) && r.request().method() === 'GET' && r.ok(),
-  );
-
 async function search(page: import('@playwright/test').Page, query: string): Promise<void> {
+  // HARDENED 2026-06-12 (TST-042 instance, caught in the maintainer's ui-e2e run):
+  // /search mounts by CREATING an empty session and only then rewriting the URL to
+  // /search/{id} (useCreateSearch navigates after the POST unwraps); the box's Enter
+  // dispatches updateDataEntitiesSearch({ searchId: storedSearchId }) — pressed BEFORE
+  // the session exists in redux it silently no-ops, and the UNFILTERED initial list
+  // stays rendered (the old any-ok results waiter was then satisfied by the empty
+  // session's own fetch). So: (1) wait for the URL rewrite — the deterministic "redux
+  // has the session" signal; (2) confirm the Enter's PUT /api/search/{id}
+  // (updateSearchFacets) resolved ok — the search REALLY executed. The callers' 10s
+  // DOM assertions absorb the post-PUT results render.
+  await page.waitForURL(/\/search\/[0-9a-f-]+/, { timeout: 15_000 });
+  const sessionId = new URL(page.url()).pathname.split('/').pop();
   const box = page.getByPlaceholder('Search', { exact: true });
   await box.fill(query);
-  const results = resultsFetch(page);
+  const updated = page.waitForResponse(
+    (r) =>
+      new RegExp(`/api/search/${sessionId}$`).test(r.url().split('?')[0]) &&
+      r.request().method() === 'PUT' &&
+      r.ok(),
+  );
   await box.press('Enter'); // the main catalog search box searches on Enter
-  await results;
+  await updated;
 }
 
 test.describe('F-017 Catalog search — /search', () => {

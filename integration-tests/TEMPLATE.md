@@ -25,7 +25,16 @@ consequence if it FAILS — why this regression matters. Cite the source finding
 
 ## 2. Preparation — build the test stand
 <Everything needed BEFORE running. Each item: the human-readable intent + the exact
-command. Anyone (or the probe) can reproduce this state.>
+command. Anyone (or the probe) can reproduce this state.
+
+TIER DECISION first (pillars/tests/pillar.md "Integration has two tiers"): if the
+feature's semantics depend on the collector mapping (relationships direction, lineage
+edges, dataset structure, metadata, stats), the stand is INGESTION-GRADE — real source
+systems + the real odd-collector, nothing seeded into the platform DB; assertions compare
+ODD against the SOURCE truth (adrs/drafts/ingestion-grade-e2e-stands.md; reference
+instance IT-128). Direct platform-DB seeding is the fast tier for read-path/UI mechanics
+and edge rows an adapter cannot emit. "We do not mock the components — we arrange the
+integration stand." (2026-06-12).>
 
 - **Stack**: bring up `<stack>` — `scripts/run-platform-tests.sh` is for unit; for
   the integration stack use the probe runtime, e.g.

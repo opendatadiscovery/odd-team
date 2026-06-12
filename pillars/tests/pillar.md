@@ -38,6 +38,23 @@ ODD distinguishes tests **functionally**, by what boundary they cross — not by
 - **No → odd-platform CI.** Anything that runs inside `./gradlew build` belongs here: pure unit (Mockito/StepVerifier), WebFlux slice (`@WebFluxTest` / `WebTestClient`), and **in-process Testcontainers DB tests** (`BaseIntegrationTest`). Crossing the DB via Testcontainers is still CI-resident — it needs no separate protocol.
 - **Yes → odd-team `integration-tests/`.** Browser e2e (Playwright), collectors, Slack/S3-MinIO/LDAP/OAuth, multi-replica failover — anything requiring `run-suite.sh` + a docker-compose `IT-NNN` protocol with documented preparation.
 
+### Integration has two tiers — direct-seed and ingestion-grade (2026-06-12 directive)
+
+Within the integration bucket, *how the catalog gets its data* is a tier decision
+(`adrs/drafts/ingestion-grade-e2e-stands.md`):
+
+- **Direct-seed tier** (the fast lane): the spec seeds the platform DB and asserts the
+  read path / UI mechanics. Right for rendering, list mechanics, error states, and edge
+  rows a real adapter cannot emit on demand (soft-DELETED + hollow + excluded). This is
+  most of `feature-complete`.
+- **Ingestion-grade tier** (`ingestion-e2e` lane): the REAL pipeline — real source-system
+  containers + the real `odd-collector` + the platform; **nothing seeded into the platform
+  DB**. The assertion model is *seed a KNOWN truth in the source system; assert ODD's API +
+  UI agree with that truth*, with the mapping semantics cited from the adapter code in the
+  protocol. **Mandatory when the feature's semantics depend on the collector mapping**
+  (relationships direction, lineage edges, dataset structure, metadata, stats). "We do not
+  mock the components — we arrange the integration stand." First instance: IT-128.
+
 ### Probes are not a bucket
 
 A **probe** (`P-NNN`) is a one-shot measurement run against an ephemeral local stack to turn an *inferred* hypothesis into a *measured* fact cheaply — its job is to de-risk authoring the durable test. A `PROBED` test-matrix cell is **not coverage**. Every probe worth keeping **graduates** into a unit or integration test that lives in CI/the suite and carries a gate; the rest are discarded. Probes are scaffolding, never a deliverable.
@@ -136,7 +153,7 @@ header, the README line, and the sibling flows F-141/F-176 — both `/contribute
 
 - `scripts/run-platform-tests.sh` green in odd-platform CI on every PR (unit + JaCoCo gate).
 - `integration-tests/run-suite.sh feature-complete` green; `known-bugs` red-by-design; every red→green move recorded as a regression closure **via the flip-on-fix checklist above**.
-- Every `/contribute` implement AND every `/review` of a code change measures **FULL-set regression, both buckets** (full unit build on the exact commit + `feature-complete`/`multi-stack`/`known-bugs`) — the impacted tests are the inner loop, never the gate (maintainer directive 2026-06-11).
+- Every `/contribute` implement AND every `/review` of a code change measures **FULL-set regression, both buckets** (full unit build on the exact commit + `feature-complete`/`multi-stack`/`known-bugs`/`ingestion-e2e`) — the impacted tests are the inner loop, never the gate (maintainer directive 2026-06-11; `ingestion-e2e` joined the set 2026-06-12).
 - The scorecard's promise-coverage frontier and Test-Traceability dimension climb batch over batch and **never silently regress**.
 - A maintainer can ask "is F-NNN verified?" and get one answer from one place.
 

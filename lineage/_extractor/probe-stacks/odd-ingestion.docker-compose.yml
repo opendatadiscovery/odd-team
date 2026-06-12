@@ -1,0 +1,144 @@
+# Probe-stack: INGESTION-GRADE relationships pipeline stand (IT-128).
+#
+# The first full-product-pipeline e2e stand (adrs/drafts/ingestion-grade-e2e-stands.md,
+# maintainer directive 2026-06-12): REAL source systems + the REAL odd-collector + the
+# platform — no mocks, no direct platform-DB seeding. The assertion model is
+# "seed a KNOWN truth in the source system; assert ODD agrees with that truth":
+#
+#   neo4j (4 labelled nodes / 5 typed, directed relationships — seeded by the one-shot
+#          cypher container)             ──┐
+#                                          ├─→ odd-collector (neo4j + postgresql plugins,
+#   source-postgres (3 tables / 2 named    │   pulls every minute, pushes via the
+#          FK constraints — initdb.d seed) ─┘   ingestion API with a REAL collector token)
+#                                                  │
+#                                                  ▼
+#   odd-platform (SUT image) + its own postgres — what ODD shows is asserted against
+#   the seeds above: GET /api/relationships + the Data Modelling → Relationships UI.
+#
+# Collector token bootstrap is the REAL flow: the spec registers the collector via
+# POST /api/collectors and passes the returned one-shot token to the `collector`
+# profile as $COLLECTOR_TOKEN (helpers/ingestion-stack.ts). The collector service
+# therefore sits behind a profile — `up` of the base stand never starts it.
+#
+# Ports (distinct from every other probe stack — minimal 18080/15432, minio 18081/15433,
+# loginform 18082, ldap 18083, notifications 18084/15435, ha 18085/18086/15436/15437):
+#   platform 18087 · platform-db 15438 · neo4j 17474 (browser) / 17687 (bolt) ·
+#   source-postgres 15439.
+# Project name: oddingest (helpers/ingestion-stack.ts) — coexists with the shared stack.
+#
+# Image policy (maintainer directive 2026-06-12): neo4j:latest + postgres:latest for the
+# SOURCE systems (the stand mirrors what an operator runs today; each run-log records the
+# resolved versions), odd-collector:latest (the shipped collector), and the platform via
+# ${ODD_PLATFORM_IMAGE} — the SUT is a run parameter (LSN-033), set by run-suite.sh.
+# Lifecycle: fully ephemeral — the spec runs `down -v` in afterAll; no cross-run residue.
+# Local-only per APPROACH.md section 5 rule 12.
+
+services:
+  probe-ingest-database:
+    image: postgres:13.2-alpine
+    container_name: probe-ingest-database
+    restart: "no"
+    environment:
+      POSTGRES_USER: odd-platform
+      POSTGRES_PASSWORD: odd-platform-password
+      POSTGRES_DB: odd-platform
+    ports:
+      - "15438:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odd-platform -d odd-platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  probe-ingest-odd-platform:
+    image: ${ODD_PLATFORM_IMAGE:-ghcr.io/opendatadiscovery/odd-platform:latest}
+    container_name: probe-ingest-odd-platform
+    restart: "no"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://probe-ingest-database:5432/odd-platform
+      SPRING_DATASOURCE_USERNAME: odd-platform
+      SPRING_DATASOURCE_PASSWORD: odd-platform-password
+      AUTH_TYPE: DISABLED
+    depends_on:
+      probe-ingest-database:
+        condition: service_healthy
+    ports:
+      - "18087:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+
+  # --- SOURCE SYSTEM 1: Neo4j (GRAPH relationships) -------------------------------
+  probe-ingest-neo4j:
+    image: neo4j:latest
+    container_name: probe-ingest-neo4j
+    restart: "no"
+    environment:
+      NEO4J_AUTH: neo4j/odd-neo4j-password
+    ports:
+      - "17474:7474" # browser UI (protocol section 2 — a human can inspect the graph)
+      - "17687:7687" # bolt
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p odd-neo4j-password 'RETURN 1' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  # One-shot: (re)seeds the graph. Idempotent — wipes and recreates the KNOWN truth
+  # the spec asserts against (4 nodes / 5 typed relationships).
+  probe-ingest-neo4j-seed:
+    image: neo4j:latest
+    container_name: probe-ingest-neo4j-seed
+    restart: "no"
+    depends_on:
+      probe-ingest-neo4j:
+        condition: service_healthy
+    volumes:
+      - ./odd-ingestion/neo4j-seed.cypher:/seed.cypher:ro
+    entrypoint:
+      ["cypher-shell", "-a", "bolt://probe-ingest-neo4j:7687", "-u", "neo4j", "-p", "odd-neo4j-password", "-f", "/seed.cypher"]
+
+  # --- SOURCE SYSTEM 2: PostgreSQL (ERD relationships from FK constraints) ---------
+  probe-ingest-source-postgres:
+    image: postgres:latest
+    container_name: probe-ingest-source-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop-password
+      POSTGRES_DB: shop
+    ports:
+      - "15439:5432"
+    volumes:
+      - ./odd-ingestion/source-postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # --- THE REAL COLLECTOR (behind a profile: needs the one-shot token first) -------
+  probe-ingest-collector:
+    image: ghcr.io/opendatadiscovery/odd-collector:latest
+    container_name: probe-ingest-collector
+    profiles: ["collector"]
+    restart: "no"
+    volumes:
+      - ./odd-ingestion/collector_config.yaml:/app/collector_config.yaml:ro
+    environment:
+      PLATFORM_HOST_URL: http://probe-ingest-odd-platform:8080
+      # Default-empty (NOT :?-required): compose interpolates the whole file at parse time,
+      # so a required var would break the BASE `up -d` that runs before the token exists.
+      # startCollector() (helpers/ingestion-stack.ts) passes the real value; a collector
+      # started without it fails ingestion auth visibly.
+      COLLECTOR_TOKEN: ${COLLECTOR_TOKEN:-}
+    depends_on:
+      - probe-ingest-odd-platform
+      - probe-ingest-neo4j
+      - probe-ingest-source-postgres

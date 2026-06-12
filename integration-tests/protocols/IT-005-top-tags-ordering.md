@@ -10,7 +10,7 @@ stack: odd-minimal
 automation: "e2e:specs/top-tags-ordering.spec.ts"
 plan_ref: "I7 (search/session — tag ordering) — Tier-1 DISABLED-stack clean UI flow"
 status: ready
-expected_result: "RED until listMostPopular aggregates BEFORE paginating — today page 1 is the 30 OLDEST tags by id, so the youngest most-used tags never appear. PLT-026 / LSN-019."
+expected_result: "GREEN — guards the FIXED contract (#1773 Thread A / CTRIB-007, 2026-06-12): listMostPopular aggregates usage over the FULL directory, then orders usage DESC with id-ASC ties, then paginates; the most-used tags appear on the strip however young. Was the known-bugs RED pin of PLT-026 / LSN-019 (paginate-before-COUNT) until the fix; flipped GREEN-on-fix + RED-on-ref:main proven 2026-06-12 (run-log)."
 ---
 
 # IT-005 — Top Tags ordering (oldest-by-id, not most-popular)
@@ -23,13 +23,15 @@ expected_result: "RED until listMostPopular aggregates BEFORE paginating — tod
 
 ## 1. What this checks
 "Top Tags" (and `GET /api/tags` / `getPopularTagList`) must return tags ordered by
-popularity. **Known bug (PLT-026 / LSN-019):** `ReactiveTagRepositoryImpl.listMostPopular`
-paginates by `TAG.ID ASC` **before** it aggregates usage
-(`ReactiveTagRepositoryImpl.java:147-148`): page 1 (size 30) is the 30 OLDEST tags by
-id, and the usage ranking is applied only *within* that already-truncated window. Once
-there are >30 tags, the most-popular tags created latest never reach page 1 — the
-OpenAPI "sorted by popularity" promise (`openapi.yaml:344-346`) and the "Top Tags" UI
-label are both broken.
+popularity. **Guards the fixed contract (was PLT-026 / LSN-019, fixed by #1773 Thread A /
+CTRIB-007, 2026-06-12):** `ReactiveTagRepositoryImpl.listMostPopular` used to paginate by
+`TAG.ID ASC` **before** aggregating usage (pre-fix `ReactiveTagRepositoryImpl.java:147-148`):
+page 1 (size 30) was the 30 OLDEST tags by id, the usage ranking applied only *within*
+that already-truncated window — past 30 tags, the most-popular young tags never reached
+page 1, breaking the OpenAPI "sorted by popularity" promise (`openapi.yaml:343-346`) and
+the "Top Tags" UI label. The fix aggregates usage over the FULL filtered directory, then
+orders `usage_count DESC, tag.id ASC` (deterministic ties), then paginates. This spec is
+the regression guard: it flips RED if the window ever truncates before aggregation again.
 
 **Operator-facing consequence if it FAILS:** "Top Tags" — a primary discovery affordance
 — surfaces stale, low-value tags and hides the labels the team actually uses most; the
@@ -58,21 +60,24 @@ Source: F-018 H-001 · PLT-026 · LSN-019 · `ReactiveTagRepositoryImpl.java:147
   `psql "$ODD_DB_URL" -c "SELECT name,id FROM tag WHERE name LIKE 'it005-POP-%' ORDER BY id DESC LIMIT 1;"`
 
 ## 4. Run protocol — what to run
-- **Automated rail**: `integration-tests/run-suite.sh known-bugs`
-  (or `cd integration-tests/e2e && npx playwright test top-tags-ordering`).
+- **Automated rail**: `integration-tests/run-suite.sh feature-complete` (IT-005's lane
+  since the 2026-06-12 flip; single run: `integration-tests/run-suite.sh IT-005`, or
+  `cd integration-tests/e2e && npx playwright test top-tags-ordering`).
 - **Manual (human-carryable)**: open `http://localhost:18080/` and read the "Top Tags"
-  strip; look for the `it005-POP-*` names (the most-used). DB cross-check of what the
-  buggy query returns (page 1 = the 30 lowest-id non-deleted tags, regardless of usage):
-  `psql "$ODD_DB_URL" -c "SELECT name FROM tag WHERE deleted_at IS NULL ORDER BY id ASC LIMIT 30;"`
-  → the `it005-POP-*` names are absent from this list today; a correct popularity sort
-  would surface them. (The exact REST endpoint/shape is the `getPopularTagList` operation;
-  confirm the live path from the running stack rather than assuming it.)
+  strip; the `it005-POP-*` names (the most-used, youngest) must be visible. API
+  cross-check: `GET /api/tags?page=1&size=30` returns the POP tags FIRST (usedCount 5)
+  before the low-use olds — usage DESC, id-ASC ties.
 
 ## 5. What it checks — assertions
-- **PASS** when: the most-used tag (`it005-POP-005`, youngest, usedCount 5) is visible on
-  the "Top Tags" strip — a correct popularity sort puts it at/near the top.
-- **FAIL (expected today)** when: the `it005-POP-*` tags are absent and the strip shows
-  older `it005-old-*` tags instead — listMostPopular returned the 30 oldest by id.
+- **PASS (expected since 0.28.0 / the #1773 Thread A fix)** when: ALL five most-used tags
+  (`it005-POP-001..005`, the youngest, usedCount 5) are visible on the "Top Tags" strip.
+  NOTE the locator nuance: the TagItem chip renders the name + usedCount with a CSS-margin
+  gap (textContent `it005-POP-0055`) — match the name as a SUBSTRING, never exact/word-
+  boundary (the pin was born RED; its PASS side first ran on the 2026-06-12 fix and
+  exposed this).
+- **FAIL** when: any `it005-POP-*` tag is absent and the strip shows older `it005-old-*`
+  tags instead — listMostPopular truncated before aggregating again (the PLT-026 / LSN-019
+  regression; proven RED against pre-fix main 2026-06-12, run-log).
 
 ## 6. Result log
 `integration-tests/run-log/{YYYY-MM-DD}-{suite-or-IT}.md`; Playwright trace/screenshot under
@@ -80,7 +85,7 @@ Source: F-018 H-001 · PLT-026 · LSN-019 · `ReactiveTagRepositoryImpl.java:147
 `date · stack_commit · runner · outcome · evidence (which tag names rendered vs the seeded POP names) · notes`.
 
 ## Cross-references
-- Source: F-018 H-001 · PLT-026 (Thread A) · LSN-019 · `ReactiveTagRepositoryImpl.java:147-148` · `openapi.yaml:344-346` · TEST-GAP-855/856
+- Source: F-018 H-001 / UC-001 · PLT-026 (Thread A) · LSN-019 · `ReactiveTagRepositoryImpl.java:137-167` (fixed shape) · `openapi.yaml:343-346` · TEST-GAP-855/856
 - Plan: `lineage/odd-platform/test-plan.md` batch I7 (tag ordering) + the Tier-1 e2e build-out
 - Automation: `integration-tests/e2e/specs/top-tags-ordering.spec.ts` (seed: `helpers/db.seedPopularYoungTags`)
-- Fix that flips this GREEN: move `ORDER BY usage_count DESC` OUTSIDE the paginate primitive (PLT-026 Thread A — compute COUNT over the full tag set, then order, then truncate), then move IT-005 to `feature-complete`.
+- **FLIPPED 2026-06-12 (the pre-authored fix landed — LSN-029, pin re-grounded never deleted):** odd-platform #1773 Thread A / CTRIB-007 (`contrib/CTRIB-007-tag-popularity-ordering` @ 82812cdf) moved the usage aggregation BEFORE pagination (usage DESC, id-ASC ties) — IT-005 moved `known-bugs` → `feature-complete` (+ rejoined `ui-e2e`); GREEN-on-fix (1/1, 3.8s) + RED-on-`ref:main` proof in `run-log/2026-06-12-IT-005.md`. Unit twin: `TagRepositoryImplTest.testListMostPopularReturnsGloballyMostUsedTags` (failing-first, RED on pre-fix main).

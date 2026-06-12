@@ -3,7 +3,7 @@ probe_id: P-LSN019-listMostPopular-drift
 source_node: odd-platform java service:TagServiceImpl
 source_finding: S-B-1 (Stress Protocol Category B — name-behaviour drift)
 related_lsn: LSN-019 (Stress Protocol canary batch)
-status: skeleton-emitted
+status: drift-fixed  # 2026-06-12 — the discriminating probe ran live both sides (CTRIB-007): pre-fix main returned the OLDEST window (POP tags absent); the fix (#1773 Thread A, contrib/CTRIB-007-tag-popularity-ordering @ 82812cdf) returns the most-used first (usage DESC, id-ASC ties). Resolution = the (a)-shaped restructure foreseen below: the COUNT aggregation moved BEFORE pagination. Regression guards: TagRepositoryImplTest.testListMostPopularReturnsGloballyMostUsedTags (unit) + IT-005 (e2e, flipped to feature-complete).
 canary_batch: true
 ---
 

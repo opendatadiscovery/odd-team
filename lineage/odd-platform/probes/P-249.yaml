@@ -1,0 +1,219 @@
+---
+probe_id: P-249
+feature_id: F-018
+test_class: performance
+verified_against_commit: 82812cdf
+prompt_version: file-analyser/0.5.0
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl
+emitted_at: "2026-06-12T00:00:00Z"
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A/C, post-fix cost profile): the CTRIB-007 fix
+  (#1773 Thread A, commit 82812cdf) moved `listMostPopular`'s pagination
+  AFTER the usage aggregation. The per-call cost class changed from
+  O(page-size) aggregates (pre-fix: the CTE was truncated to `size` rows
+  before counting) to O(full-filtered-directory) aggregates (post-fix: two
+  LEFT JOIN + GROUP BY arms over tag_to_data_entity AND tag_to_dataset_field
+  across EVERY matching tag, on EVERY call, regardless of `size`). The
+  endpoint (`GET /api/tags`, operationId getPopularTagList) feeds the
+  "Top tags" strip on Catalog Overview — a hot, every-operator-lands-here
+  surface — and has no cache.
+
+  Question the code cannot answer statically: what is the actual execution
+  cost at directory scale (10,000 tags, ~200,000 tag_to_data_entity rows)?
+  Hypothesis: NOT confirmed from code — the plan shape (two hash aggregates
+  + a sort over 10k grouped rows) is statically visible, but the wall-clock
+  budget is runtime-only. Budget for the assertion: 500 ms execution time
+  on the odd-minimal stack (a starting line in the absence of a stated SLO;
+  the maintainer tightens or relaxes after the first measured run).
+
+  Correctness side-assertion at scale: the 30 returned tags are drawn from
+  the 100 heavy-usage YOUNGEST tags (ids 29900..29999, 50 usages each),
+  not from the low-id 20-usage bulk — re-confirming the fixed ordering
+  holds at directory scale, not just at the 8-tag unit-test scale.
+---
+
+# P-249 — post-fix listMostPopular full-directory aggregation cost at scale (F-018)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1020, '//probe-source-P-249/db', 'probe-source-P-249')
+      ON CONFLICT (id) DO NOTHING
+
+  # 50 usage-target entities, ids 20000..20049.
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      SELECT 20000 + gs,
+             '//probe-source-P-249/db/tables/p249_entity_' || lpad(gs::text, 3, '0'),
+             'p249_entity_' || lpad(gs::text, 3, '0'),
+             1020, 1, 0, NOW(), NOW()
+      FROM generate_series(0, 49) AS gs
+      ON CONFLICT (id) DO NOTHING
+
+  # 10,000 tags, ids 20000..29999 (created in id order: lowest = oldest).
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name, important, created_at, updated_at)
+      SELECT 20000 + gs, 'p249_tag_' || lpad(gs::text, 5, '0'), false, NOW(), NOW()
+      FROM generate_series(0, 9999) AS gs
+      ON CONFLICT (id) DO NOTHING
+
+  # Base usage distribution: every tag tagged on 20 distinct entities
+  # (~200,000 relation rows).
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external)
+      SELECT t.id, 20000 + ((t.id + g) % 50), false
+      FROM tag t
+      CROSS JOIN generate_series(0, 19) AS g
+      WHERE t.id BETWEEN 20000 AND 29999
+      ON CONFLICT (tag_id, data_entity_id) DO NOTHING
+
+  # Heavy-usage YOUNGEST 100 tags (ids 29900..29999): tagged on ALL 50
+  # entities -> usage 50 each vs 20 for the bulk. Page 1 (size=30) must be
+  # ids 29900..29929 post-fix (count DESC, id ASC ties).
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external)
+      SELECT t.id, de.id, false
+      FROM tag t
+      CROSS JOIN data_entity de
+      WHERE t.id BETWEEN 29900 AND 29999
+        AND de.id BETWEEN 20000 AND 20049
+      ON CONFLICT (tag_id, data_entity_id) DO NOTHING
+
+act:
+  # Warm-up call (connection pools, planner caches).
+  - kind: rest
+    method: GET
+    path: /api/tags?page=1&size=30
+    capture_as: warmup_response
+
+  # Measured-correctness call.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=1&size=30
+    capture_as: popular_tags_response
+
+observe:
+  - kind: jsonpath
+    from: popular_tags_response_body
+    path: "$.items[*].id"
+    capture_as: returned_tag_ids
+
+  - kind: jsonpath
+    from: popular_tags_response_body
+    path: "$.items"
+    capture_as: returned_items_list
+
+  # Server-side execution time of the faithful post-fix SQL shape
+  # (jOOQ chain at ReactiveTagRepositoryImpl.java:137-171 wrapped by
+  # JooqQueryHelper.paginate:62-89), via EXPLAIN ANALYZE FORMAT JSON.
+  - kind: sql
+    query: |
+      EXPLAIN (ANALYZE, FORMAT JSON)
+      WITH tag_cte AS (
+        SELECT * FROM tag WHERE deleted_at IS NULL
+      )
+      SELECT t.*, (t._row <> t._total) AS _next
+      FROM (
+        SELECT u.*, count(*) OVER () AS _total,
+               row_number() OVER (ORDER BY u.count DESC, u.id ASC) AS _row
+        FROM (
+          SELECT uu.id, uu.name, uu.important, uu.created_at, uu.updated_at,
+                 uu.deleted_at,
+                 bool_or(uu.external) AS external, sum(uu.count) AS count
+          FROM (
+            SELECT tag_cte.*, coalesce(bool_or(ttde.external), false) AS external,
+                   count(ttde.tag_id) AS count
+            FROM tag_cte
+            LEFT JOIN tag_to_data_entity ttde ON ttde.tag_id = tag_cte.id
+            GROUP BY tag_cte.id, tag_cte.name, tag_cte.important,
+                     tag_cte.created_at, tag_cte.updated_at, tag_cte.deleted_at
+            UNION ALL
+            SELECT tag_cte.*, coalesce(bool_or(ttdf.origin <> 'INTERNAL'), false) AS external,
+                   count(ttdf.tag_id) AS count
+            FROM tag_cte
+            LEFT JOIN tag_to_dataset_field ttdf ON ttdf.tag_id = tag_cte.id
+            GROUP BY tag_cte.id, tag_cte.name, tag_cte.important,
+                     tag_cte.created_at, tag_cte.updated_at, tag_cte.deleted_at
+          ) uu
+          GROUP BY uu.id, uu.name, uu.important, uu.created_at, uu.updated_at,
+                   uu.deleted_at
+        ) u
+        ORDER BY u.count DESC, u.id ASC
+        LIMIT 30 OFFSET 0
+      ) t
+      ORDER BY t.count DESC, t.id ASC
+    capture_as: explain_json
+
+assert:
+  # Correctness at scale: page 1 is the heavy-usage youngest slice.
+  - "len(returned_items_list) == 30"
+  - "29900 in returned_tag_ids"
+  - "29929 in returned_tag_ids"
+  - "20000 not in returned_tag_ids"
+  - "29999 not in returned_tag_ids"  # count ties break id ASC: 29930..29999 fall to later pages
+
+  # Cost budget: server-side execution of the faithful SQL under 500 ms.
+  - "explain_json[0]['Execution Time'] < 500"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag_to_data_entity WHERE tag_id BETWEEN 20000 AND 29999
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE id BETWEEN 20000 AND 29999
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id BETWEEN 20000 AND 20049
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 1020
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl
+  related_probes:
+    - P-010  # pre-fix equal-count pin; its regime is fix-invariant (see sidecar stress note)
+  retrospectives: [LSN-019]
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java"
+    lines: "137-171"
+    role: "fixed method body — aggregate over full filtered directory first (comment at 147-149), paginate the aggregated select ordered count DESC, id ASC at 159-162"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/util/JooqQueryHelper.java"
+    lines: "62-89"
+    role: "paginate shape — _total window at 72, _row window at 73, inner ORDER/LIMIT/OFFSET at 79-81, outer ORDER at 88"
+
+realism_caveats: |
+  - The dataset-field arm of the UNION ALL joins an EMPTY tag_to_dataset_field
+    table in this seed (seeding dataset fields requires dataset_version
+    scaffolding). The LEFT JOIN + GROUP BY arm is still planned and executed,
+    but its row-volume contribution is zero; a catalog with heavy dataset-field
+    tagging is costlier than this probe measures.
+  - The EXPLAIN-side execution time is a server-side proxy, not the REST
+    wall-clock the operator experiences (reactive pipeline + JSON mapping add
+    overhead on top). The REST calls in `act` confirm correctness; if the
+    probe-runner's harness records wall-clock per rest step, prefer that
+    number over the EXPLAIN proxy.
+  - The 500 ms budget is a starting line chosen in the absence of a stated
+    SLO for Catalog Overview tiles, not a contract. First measured run
+    calibrates it.
+  - The hand-written EXPLAIN SQL mirrors the jOOQ chain's structure (CTE,
+    UNION ALL arms, outer aggregate, three-level paginate wrap) but is not
+    byte-identical to the jOOQ-generated SQL; planner choices are expected
+    to match because the shapes match, and a divergence is itself a finding.

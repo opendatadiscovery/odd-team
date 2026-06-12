@@ -19,9 +19,11 @@ import { seedPopularYoungTags } from '../helpers/db';
  * from the UI because the backend never returned them. We seed a catalog where the
  * 5 most-used tags are also the 5 youngest, then read the rendered Top Tags.
  *
- * EXPECTED RESULT TODAY: RED. The 5 most-popular (youngest) tags are absent from Top
- * Tags; the strip shows older, less-used tags. Goes green when listMostPopular
- * aggregates BEFORE paginating (move ORDER BY usage_count DESC outside the paginate).
+ * EXPECTED RESULT: GREEN since the 2026-06-12 fix (#1773 Thread A / CTRIB-007) —
+ * listMostPopular now aggregates usage over the FULL directory, then orders
+ * usage DESC with id-ASC ties, then paginates. This spec guards that contract:
+ * it flips RED if pagination ever truncates before aggregation again (proven
+ * RED against pre-fix main, run-log 2026-06-12).
  */
 test.describe('IT-005 Top Tags — the most-popular tags must appear, even when youngest', () => {
   test('the 5 most-used (youngest) tags surface on the Overview "Top Tags" strip (PLT-026 / F-018 H-001)', async ({
@@ -38,17 +40,24 @@ test.describe('IT-005 Top Tags — the most-popular tags must appear, even when 
     // Give the Top Tags query time to resolve and render its TagItems.
     await page.waitForTimeout(1500);
 
-    // ---- assert: the most-popular tag (usedCount=5, youngest) MUST be on the strip.
-    //      It is the clearest falsifier — a correct popularity sort ranks it #1; the
-    //      buggy oldest-by-id pagination drops it off page 1 entirely. ----
-    const mostPopular = popNames[popNames.length - 1]; // the last-seeded = youngest = highest id
-    await expect(
-      page.getByText(mostPopular, { exact: true }),
-      `The most-used tag "${mostPopular}" (usedCount=5, the youngest) must appear in ` +
-        `"Top Tags". If it is absent, listMostPopular returned the 30 OLDEST tags by id ` +
-        `and re-ranked only within them (PLT-026 / LSN-019, ReactiveTagRepositoryImpl.java:147-148) ` +
-        `— the "Top Tags"/getPopularTagList "sorted by popularity" contract is broken past page 1. ` +
-        `Seeded popular-young tags: ${JSON.stringify(popNames)}.`,
-    ).toBeVisible();
+    // ---- assert: EVERY most-used tag (usedCount=5, the youngest five) MUST be on the
+    //      strip — a correct popularity sort ranks them on page 1; the old oldest-by-id
+    //      pagination dropped them off page 1 entirely (fixed by #1773 Thread A /
+    //      CTRIB-007: usage aggregated over the full directory, THEN paginated).
+    //      The TagItem chip renders the name and the usedCount span with a CSS-margin
+    //      gap (no whitespace text node): textContent is "it005-POP-0055". So match the
+    //      name as a SUBSTRING, never exact/word-boundary (the pin was born RED — its
+    //      PASS side first ran on the 2026-06-12 fix and exposed this). ----
+    for (const name of [...popNames].reverse()) { // youngest (highest id) first — the clearest falsifier
+      await expect(
+        page.getByText(name),
+        `The most-used tag "${name}" (usedCount=5, among the youngest) must appear in ` +
+          `"Top Tags". If it is absent, listMostPopular returned the 30 OLDEST tags by id ` +
+          `and re-ranked only within them (PLT-026 / LSN-019, the pre-0.28.0 bug at ` +
+          `ReactiveTagRepositoryImpl.java:147-148) — the "Top Tags"/getPopularTagList ` +
+          `"sorted by popularity" contract would be broken past page 1. ` +
+          `Seeded popular-young tags: ${JSON.stringify(popNames)}.`,
+      ).toBeVisible();
+    }
   });
 });

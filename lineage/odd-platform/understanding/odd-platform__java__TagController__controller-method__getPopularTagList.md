@@ -3,13 +3,14 @@ node_id: "odd-platform java TagController controller-method:getPopularTagList"
 node_kind: controller-method
 axis: controllers
 extracted_at_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
-enriched_at_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
+enriched_at_commit: 82812cdf
+enriched_at_branch: "contrib/CTRIB-007-tag-popularity-ordering (base: main @ 6f356b72)"
 extractor_version: 0.1.0
 prompt_version: file-analyser/0.5.0
 schema_version: v0.4.0
 enrichment_status: complete
 confidence_overall: HIGH
-session_id: ontology-rev5-sprint-2026-05-21-TAGGING-getPopularTagList
+session_id: ontology-refresh-2026-06-12-CTRIB-007-getPopularTagList
 pillar_anchored_features:
   - P-01:F-018 Manual Object Tagging
   - P-08 Management & Administration (Tags tab)
@@ -25,17 +26,16 @@ mapped by the OpenAPI-generated `TagApi` interface that `TagController` implemen
 (`TagController.java:36-44`). It is a 2-line reactive delegation: it takes four query
 parameters (`page`, `size`, `query`, `ids`) and forwards them — with an argument-order
 swap — to `tagService.listMostPopular(query, ids, page, size)` (line 42), mapping the
-resulting `Page<TagDto>` to a `TagsResponse` payload. **The endpoint is misnamed at every
-layer.** Its name (`getPopularTagList`), the service method it calls (`listMostPopular`),
-and the OpenAPI description (`'Gets the list of existing tags sorted by popularity'`,
-`openapi.yaml:345`) all promise popularity-ranked results. The downstream SQL does NOT
-deliver that: `ReactiveTagRepositoryImpl.listMostPopular` truncates the candidate pool to
-`size` rows ordered by `TAG.ID ASC` (creation order, since `tag.id` is a serial PK) at
-`ReactiveTagRepositoryImpl.java:148` BEFORE usage counts are computed; the outer
-`orderBy(field(COUNT_FIELD).desc())` at line 158 re-ranks only those already-selected rows.
-For any directory with more than `size` tags, the response is the OLDEST `size` tags — the
-LSN-019 drift, empirically reproduced by the maintainer on 2026-05-20 (35 equally-popular
-tags returned the oldest 30). The endpoint carries **no SecurityRule** — `SecurityConstants.SECURITY_RULES`
+resulting `TagsResponse` payload to a 200. **As of this commit (82812cdf, the CTRIB-007 /
+GitHub #1773 Thread A fix, milestone 0.28.0) the popularity promise is HONOURED:**
+`ReactiveTagRepositoryImpl.listMostPopular` aggregates per-tag usage (tag_to_data_entity
++ tag_to_dataset_field via a UNION-ALL CTE) over the FULL filtered tag directory first
+(`ReactiveTagRepositoryImpl.java:144-157`), then paginates ordering by summed usage count
+DESC with `TAG.ID ASC` as the deterministic tie-break (`:159-162`). *Historical note
+(dated): until this fix — i.e. on main @ 6f356b72 and every published release through
+0.27.x — the SQL truncated to `size` rows by `TAG.ID ASC` BEFORE counting, returning the
+OLDEST `size` tags (the LSN-019 / PLT-026 drift, empirically reproduced 2026-05-20).*
+The endpoint still carries **no SecurityRule** — `SecurityConstants.SECURITY_RULES`
 (`SecurityConstants.java:138-142`) registers POST/PUT/DELETE entries for `/api/tags` but
 no GET entry, so the request falls through to the catch-all `pathMatchers("/**").authenticated()`
 (`AuthorizationCustomizer.java:29-30`): any authenticated user can enumerate the entire
@@ -45,92 +45,101 @@ global tag directory regardless of which `TAG_*` permissions they hold.
 
 - entities: [
     "`TagApi` — OpenAPI-generated controller interface; `getPopularTagList` is an `@Override` of its generated abstract method (`TagController.java:36-37`).",
-    "`page: Integer` — query parameter, OpenAPI `PageParam` (`openapi.yaml:348`); flows to `(page - 1) * size` as the SQL OFFSET expression (`ReactiveTagRepositoryImpl.java:148`).",
-    "`size: Integer` — query parameter, OpenAPI `SizeParam` (`openapi.yaml:349`); flows to the SQL LIMIT inside `paginate(...)` (`ReactiveTagRepositoryImpl.java:148`).",
-    "`query: String` — query parameter, OpenAPI `SearchParam` (`openapi.yaml:350`); case-insensitive substring name-filter via `nameField.containsIgnoreCase(nameQuery)` (`ReactiveAbstractCRUDRepository.java:243`).",
-    "`ids: List<Long>` — query parameter, OpenAPI `IdsParam` (`openapi.yaml:351`); optional tag-id-set filter — adds `TAG.ID.in(ids)` only when non-empty (`ReactiveTagRepositoryImpl.java:141-142`).",
+    "`page: Integer` — query parameter, OpenAPI `PageParam` (`openapi.yaml:348`); flows to `(page - 1) * size` as the SQL OFFSET expression (`ReactiveTagRepositoryImpl.java:162`).",
+    "`size: Integer` — query parameter, OpenAPI `SizeParam` (`openapi.yaml:349`); flows to the SQL LIMIT inside `paginate(...)` (`ReactiveTagRepositoryImpl.java:162`). Post-fix, `size` bounds only the OUTPUT rows — it no longer determines WHICH rows are candidates.",
+    "`query: String` — query parameter, OpenAPI `SearchParam` (`openapi.yaml:350`); case-insensitive substring name-filter via `nameField.containsIgnoreCase(nameQuery)` (`ReactiveAbstractCRUDRepository.java:242-243`).",
+    "`ids: List<Long>` — query parameter, OpenAPI `IdsParam` (`openapi.yaml:351`); optional tag-id-set filter — adds `TAG.ID.in(ids)` only when non-empty (`ReactiveTagRepositoryImpl.java:141-143`).",
     "`ServerWebExchange` — Spring WebFlux reactive request context; injected (`TagController.java:41`) but unused by this method.",
-    "`TagsResponse` — OpenAPI paginated response wrapper `{pageInfo, items: List<Tag>}` returned to the caller (`openapi.yaml:358`).",
-    "`Page<TagDto>` — the service/repository-layer paginated shape `listMostPopular` returns before `tagMapper::mapToTagsResponse` converts it (`TagServiceImpl.java:73-77`).",
-    "`TagService` — the single injected service bean (`TagController.java:20`); this method invokes exactly one of its 9 methods (`listMostPopular`)."
+    "`TagsResponse` — OpenAPI paginated response wrapper `{pageInfo, items: List<Tag>}` returned to the caller (`openapi.yaml:358`); produced by the service (`TagService.java:22` returns `Mono<TagsResponse>`).",
+    "`Page<TagDto>` — the repository-layer paginated shape (`ReactiveTagRepositoryImpl.java:138` returns `Mono<Page<TagDto>>`) that `tagMapper::mapToTagsResponse` converts at the service (`TagServiceImpl.java:75-76`).",
+    "`TagService` — the single injected service bean (`TagController.java:20`); this method invokes exactly one of its methods (`listMostPopular`)."
   ]
 - operations: [
     "`getPopularTagList(Integer page, Integer size, String query, List<Long> ids, ServerWebExchange exchange)` (`TagController.java:36-44`) — 2-line reactive read: `tagService.listMostPopular(query, ids, page, size).map(ResponseEntity::ok)`. Note the argument-order swap: the controller signature is `(page, size, query, ids)`; the service call is `(query, ids, page, size)` (line 42).",
     "delegation to `TagServiceImpl.listMostPopular` (`TagServiceImpl.java:72-77`) — straight-through `reactiveTagRepository.listMostPopular(query, ids, page, size).map(tagMapper::mapToTagsResponse)`; no re-sort, no filter, no auth check at the service layer.",
-    "delegation to `ReactiveTagRepositoryImpl.listMostPopular` (`ReactiveTagRepositoryImpl.java:137-167`) — the SQL pipeline: (a) `listCondition(query)` builds the soft-delete + optional name-substring conditions (line 140); (b) optional `TAG.ID.in(ids)` added when `ids` non-empty (lines 141-142); (c) `paginate(selectFrom(TAG).where(conditions), [OrderByField(TAG.ID, ASC)], (page-1)*size, size)` truncates to `size` rows by `TAG.ID ASC` (line 148); (d) the truncated set becomes `tag_cte` (line 150); (e) `getDataEntityWithDatasetFields` UNION-ALLs `tag_to_data_entity` + `tag_to_dataset_field` usage counts over the CTE rows only (lines 373-392); (f) the outer `cteSelect.orderBy(field(COUNT_FIELD).desc())` re-ranks those rows by summed count desc (lines 153-158); (g) `pageifyResult` with `fetchCount(query, ids)` for the total (lines 162-166)."
+    "delegation to `ReactiveTagRepositoryImpl.listMostPopular` (`ReactiveTagRepositoryImpl.java:137-171`) — the FIXED SQL pipeline: (a) `listCondition(query)` builds the soft-delete + optional name-substring conditions (line 140; soft-delete via `ReactiveAbstractSoftDeleteCRUDRepository.java:87-88`); (b) optional `TAG.ID.in(ids)` added when `ids` non-empty (lines 141-143); (c) `homogeneousQuery = selectFrom(TAG).where(conditions)` — the FULL filtered directory, unpaginated (lines 144-145); (d) `tag_cte` = that full select (line 150); (e) `getDataEntityWithDatasetFields` UNION-ALLs `tag_to_data_entity` + `tag_to_dataset_field` usage counts over ALL CTE rows (line 151 → lines 377-396); (f) `aggregatedSelect` groups per tag, summing the two usage counts and boolOr-ing the `external` flag (lines 153-157); (g) `paginate(aggregatedSelect, [OrderByField(count, DESC), OrderByField(TAG.ID, ASC)], (page-1)*size, size)` applies the ordering + window AFTER aggregation (lines 159-162 → `ReactiveAbstractCRUDRepository.java:294-299` → `JooqQueryHelper.java:62-89`); (h) `pageifyResult` with `fetchCount(query, ids)` as the empty-page total supplier (lines 164-170)."
   ]
 - invariants: [
     "Pure 2-line delegation — no business logic, no transformation, no programmatic auth check in this method body (`TagController.java:36-44`); it is a stub-implementation of the generated `TagApi.getPopularTagList`.",
-    "The endpoint promises popularity ordering at three independent layers (method name `getPopularTagList`; service method `listMostPopular`; OpenAPI `description: 'Gets the list of existing tags sorted by popularity'` at `openapi.yaml:345`) but the SQL selects by `TAG.ID ASC` before counting — the response IS popularity-ordered only when the directory holds <= `size` tags. See stress_findings.name_behavior_pairs[0] (LSN-019).",
+    "The popularity promise made at three layers (method name `getPopularTagList`; service method `listMostPopular`; OpenAPI `description: 'Gets the list of existing tags sorted by popularity'` at `openapi.yaml:345`) is HONOURED at this commit: the executed SQL orders the aggregated directory by `count DESC, tag.id ASC` before applying LIMIT/OFFSET (`ReactiveTagRepositoryImpl.java:159-162` + `JooqQueryHelper.java:73-82`). Tie-break is deterministic (`TAG.ID ASC`). Verified at runtime 2026-06-12: e2e IT-005 GREEN on this commit + RED on pre-fix main 6f356b72 (`integration-tests/run-log/2026-06-12-IT-005.md`).",
     "`getPopularTagList` is the ONLY endpoint among the four on `/api/tags` with no `SecurityRule` entry — `SecurityConstants.SECURITY_RULES` has POST/PUT/DELETE entries for `/api/tags` (`SecurityConstants.java:138-142`) but no GET entry; the request inherits the catch-all `authenticated()` (`AuthorizationCustomizer.java:29-30`).",
-    "Page total semantics are correct — `fetchCount(query, ids)` (`ReactiveTagRepositoryImpl.java:165` → `ReactiveAbstractCRUDRepository.java:229-234`) uses `listCondition(nameQuery, ids)` (BOTH filters), so `pageInfo.total` reflects the full filtered directory size, not the page size. The drift is in WHICH `size` rows are returned, not in the reported total.",
-    "OpenAPI declares only a `'200'` response for this read endpoint (`openapi.yaml:353`); the controller returns 200 via `ResponseEntity::ok` (line 43) — NO status-code drift on this method (unlike `createTag` / `updateTag`, which return 200 against an OpenAPI-declared 201).",
-    "`query` substring matching is case-insensitive (`containsIgnoreCase`, `ReactiveAbstractCRUDRepository.java:243`) — asymmetric with the case-SENSITIVE exact-name lookup the directory-write path uses (`listByNames` → `TAG.NAME.in(names)`); a user can search 'post' and see both 'Postgres' and 'postgres' if both rows exist."
+    "Page total semantics are correct and, for non-empty pages, snapshot-consistent with the returned rows: `_total` is a `count().over()` window computed in the SAME statement as the page rows (`JooqQueryHelper.java:72, 75-82`, consumed at `:113`); the separate `fetchCount(query, ids)` SELECT (`ReactiveTagRepositoryImpl.java:169` → `ReactiveAbstractCRUDRepository.java:229-234`) fires only when the page is EMPTY (`JooqQueryHelper.java:118-126`) and applies BOTH filters, so `pageInfo.total` always reflects the full filtered directory size.",
+    "OpenAPI declares only a `'200'` response for this read endpoint (`openapi.yaml:353`); the controller returns 200 via `ResponseEntity::ok` (line 43) — NO status-code drift on this method (unlike sibling `createTag`, which returns 200 against an OpenAPI-declared 201 at `openapi.yaml:372`).",
+    "`query` substring matching is case-insensitive (`containsIgnoreCase`, `ReactiveAbstractCRUDRepository.java:242-243`) — asymmetric with the case-SENSITIVE exact-name lookup the directory-write path uses (`listByNames` → `TAG.NAME.in(names)`, `ReactiveTagRepositoryImpl.java:120-125`); a user can search 'post' and see both 'Postgres' and 'postgres' if both rows exist."
   ]
 - audiences: [
-    "odd-platform-ui-end-user — the response feeds the Catalog Overview 'Top Tags' chip strip, the tag-search facet, the data-entity / dataset-field detail-page tag dropdown, and the Management -> Tags tab listing.",
+    "odd-platform-ui-end-user — the response feeds the Catalog Overview 'Top Tags' chip strip (`Overview.tsx:20-23`), the app-boot tags preload (`App.tsx:50`), the Management → Tags tab listing (`TagsList.tsx:45-58`), the tag autocompletes on data-entity / term / dataset-field detail pages, and the DataQuality tag filter.",
     "odd-api-consumer — programmatic clients of `GET /api/tags` via the OpenAPI spec.",
     "any-authenticated-user — under LOGIN_FORM / OAUTH2 / LDAP, every authenticated principal can call this endpoint and enumerate the whole directory regardless of `TAG_*` grants (open-read posture).",
-    "platform-operator — indirectly: an operator reading 'Top Tags' to assess vocabulary health is shown the OLDEST tags, not the most-used, for any directory beyond `size` tags."
+    "platform-operator — an operator reading 'Top Tags' to assess vocabulary health now sees the genuinely most-used tags (post-fix); on every published release through 0.27.x they see the OLDEST tags for any directory beyond `size`."
   ]
 
 ## dependencies_semantic
 
 - requires-feature: [
-    "`TagApi` OpenAPI-generated controller interface — supplies the `@GetMapping`-equivalent route binding for `getPopularTagList` (generated from `openapi.yaml:342-360`).",
-    "`TagService.listMostPopular` (`TagService.java`) — the sole service method this endpoint calls; its drift is propagated 1:1 (`TagServiceImpl.java:72-77`).",
-    "`ReactiveTagRepositoryImpl.listMostPopular` (`ReactiveTagRepositoryImpl.java:137-167`) — the SQL surface; the popularity-ordering drift originates here.",
-    "`JooqQueryHelper.paginate` (`ReactiveTagRepositoryImpl.java:148` calls it) — the pagination helper whose paginate-inside-CTE semantics select by `TAG.ID ASC`; the load-bearing dependency for the LSN-019 drift.",
+    "`TagApi` OpenAPI-generated controller interface — supplies the route binding for `getPopularTagList` (generated from `openapi.yaml:342-358`).",
+    "`TagService.listMostPopular` (`TagService.java:22`) — the sole service method this endpoint calls (`TagServiceImpl.java:72-77`).",
+    "`ReactiveTagRepositoryImpl.listMostPopular` (`ReactiveTagRepositoryImpl.java:137-171`) — the SQL surface; the popularity ordering is implemented here (aggregate-first, paginate-after).",
+    "`JooqQueryHelper.paginate` (`JooqQueryHelper.java:62-89`, reached via `ReactiveAbstractCRUDRepository.java:294-299`) — now load-bearing FOR correctness: it applies `ORDER BY count DESC, id ASC` + LIMIT/OFFSET over the aggregated select and emits the `_total`/`_row`/`_next` window metadata.",
+    "`JooqQueryHelper.homogeneityCheck` (`JooqQueryHelper.java:138-154`) — the enabling change for the fix: unqualified-name (computed alias) fields are exempted from the one-table invariant (comment at lines 143-145), which is REQUIRED for `paginate(aggregatedSelect, ...)` not to throw — the aggregated select's `count`/`external` aliases are unqualified, and the pre-exemption check would have compared their name-part against the `union_usages` qualifier and raised 'heterogeneous'.",
     "`SecurityConstants.SECURITY_RULES` (`SecurityConstants.java:138-142`) — the ABSENCE of a GET entry is load-bearing for this endpoint's auth posture.",
     "`AuthorizationCustomizer.customize` (`AuthorizationCustomizer.java:20-31`) — the catch-all `pathMatchers(\"/**\").authenticated()` (lines 29-30) that this endpoint falls through to."
   ]
 - requires-config: [] — N/A. This method reads no Spring properties; behaviour is unconditional.
 - requires-runtime: [
     "Spring WebFlux reactive HTTP server — `TagController` is a `@RestController` (`TagController.java:16`); `getPopularTagList` returns `Mono<ResponseEntity<TagsResponse>>`.",
-    "Spring Security ReactiveSecurityWebFilterChain — composed via `OAuthSecurityConfiguration` / `LoginFormSecurityConfiguration` / `LdapSecurityConfiguration` / `SecurityConfiguration`; `AuthorizationCustomizer` is the access wiring.",
-    "`reactor.core.publisher.Mono` — the reactive return type.",
+    "Spring Security ReactiveSecurityWebFilterChain — `AuthorizationCustomizer` is the access wiring.",
     "jOOQ + reactive Postgres driver (via `ReactiveTagRepositoryImpl`) — the actual query execution path."
   ]
 - couples-to: [
-    "`TagApi` (`TagController implements TagApi` at `TagController.java:18`) — `getPopularTagList` is `@Override` of the generated abstract method; its signature (param names/order, return type) is dictated by `openapi.yaml:342-360`.",
-    "`TagService` (constructor-injected, `TagController.java:20`) — coupled to the `listMostPopular` method signature; the controller's `(query, ids, page, size)` argument order must match the service contract.",
-    "`SecurityConstants.SECURITY_RULES` — coupled by URL convention (path-pattern match `/api/tags` + HTTP verb), NOT by code reference; a path rename to e.g. `/api/tags/popular` would silently change which rules apply (REFACTOR-217 drift class)."
+    "`TagApi` (`TagController implements TagApi` at `TagController.java:18`) — signature dictated by `openapi.yaml:342-358`.",
+    "`TagService` (constructor-injected, `TagController.java:20`) — the controller's `(query, ids, page, size)` argument order must match the service contract.",
+    "`SecurityConstants.SECURITY_RULES` — coupled by URL convention (path-pattern match `/api/tags` + HTTP verb), NOT by code reference; a path rename would silently change which rules apply (REFACTOR-217 drift class)."
   ]
 
 ## tests_coverage_semantic
 
-- covered_behaviours: [] — No `TagControllerTest.java` exists (`Grep TagController` in `odd-platform-api/src/test` returns zero matches per the existing `TagController` controller-class sidecar). The controller perimeter for `getPopularTagList` is entirely unverified.
+- covered_behaviours:
+  - behaviour: "Popularity ordering over a directory LARGER than the page size — the most-used tags reach page 1 however young (highest ids); ordering is `usage DESC, id ASC` ties; `total` counts the full filtered directory; `hasNext` true when truncated. The PLT-026 / LSN-019 regression guard."
+    test_class: integration
+    test_files: ["odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:276-335 (`testListMostPopularReturnsGloballyMostUsedTags` — failing-first: javadoc at lines 270-275 names PLT-026/LSN-019; order-SENSITIVE `containsExactly` at line 331; 5 old low-use tags + 3 young high-use tags, pageSize 5; asserts the 3 most-used youngest lead, then id-ASC fill, `total=8`, `hasNext=true`, top `usedCount=3`)"]
+  - behaviour: "Same contract verified END-TO-END at the rendered UI: the Overview 'Top Tags' strip shows all 5 seeded most-used (youngest) tags ranked above 30 older low-use tags. GREEN on this commit (1 passed, 3.8s) + RED on pre-fix main @ 6f356b72 (strip rendered the oldest window) — the complete flip proof."
+    test_class: integration
+    test_files: ["integration-tests/protocols/IT-005-top-tags-ordering.md (odd-team; lane: feature-complete + ui-e2e since the 2026-06-12 flip)", "integration-tests/run-log/2026-06-12-IT-005.md (GREEN @ 82812cdf + RED @ main 6f356b72; includes an in-band API capture: `GET /api/tags?page=1&size=30` returned the 5 most-used tags FIRST, then the olds — total 35)"]
+  - behaviour: "`query` substring filter — `listMostPopular(testName, ...)` returns only the renamed matching tags with correct total."
+    test_class: integration
+    test_files: ["odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:238-268 (`testListMostPopular` — order-blind `containsExactlyInAnyOrder`; covers the filter path, not ordering)"]
 - uncovered_behaviours:
-  - behaviour: "`getPopularTagList` LSN-019 drift — directory with > `size` tags returns the OLDEST `size` by `TAG.ID ASC`, not the most-popular `size`. With 35 equally-popular tags + size=30, response IDs must be the 30 lowest, the 5 newest absent."
-    test_class: integration
-    criticality: HIGH
-    note: "Pinned by probe P-010 (lineage/odd-platform/probes/P-010.yaml). Converting P-010's arrange/act/assert into a Testcontainers-backed @SpringBootTest would put the drift permanently under CI. The repository-layer `TagRepositoryImplTest.testListMostPopular` (`TagRepositoryImplTest.java:239-267`) is structurally blind — it uses `size = numberOfTestTags` so the LIMIT never fires, and `containsExactlyInAnyOrder` so order is never checked."
-  - behaviour: "`getPopularTagList` happy path — GET `/api/tags` with a directory <= `size` tags returns all tags ordered by usage count desc; assert the count-DESC ordering DOES hold in the non-truncated case."
+  - behaviour: "Controller perimeter — no test exercises `TagController.getPopularTagList` itself (param binding, the argument-order swap at line 42, the 200 mapping). Coverage starts at the repository layer and at the e2e layer; the controller+service hop is only covered transitively by IT-005."
     test_class: integration
     criticality: MEDIUM
-  - behaviour: "`getPopularTagList` `query` filter — GET `/api/tags?query=post` returns only tags whose name matches `%post%` case-insensitively; assert both 'Postgres' and 'postgres' match (case-insensitive substring)."
-    test_class: integration
-    criticality: MEDIUM
-  - behaviour: "`getPopularTagList` `ids` filter — GET `/api/tags?ids=1,2,3` restricts to those tag ids; assert empty `ids` is treated as no-filter (not zero-results)."
-    test_class: integration
-    criticality: MEDIUM
+    note: "grep `TagController` across odd-platform-api/src/test returns ZERO files at this branch (re-verified 2026-06-12)."
   - behaviour: "`getPopularTagList` open-read posture — assert a user holding NO `TAG_*` permission gets 200 + the full directory (the absence of a GET SecurityRule)."
     test_class: security
     criticality: MEDIUM
   - behaviour: "`getPopularTagList` unauthenticated access — assert 401 (or 302 for LOGIN_FORM) for an unauthenticated caller under LOGIN_FORM/OAUTH2/LDAP; 200 under DISABLED."
     test_class: security
     criticality: MEDIUM
-  - behaviour: "`getPopularTagList` `size` boundary — `size=0` returns an empty `items` list with a correct `pageInfo.total`; `size=100000` is accepted with no clamp (large UNION-ALL aggregation)."
+  - behaviour: "`size` boundary — `size=0` returns empty `items` with correct `pageInfo.total`; large `size` accepted with no clamp."
     test_class: performance
-    criticality: MEDIUM
-  - behaviour: "`getPopularTagList` `page`/`size` degenerate inputs — `page=0` / `page=-1` / `size=-1` reach PostgreSQL; assert the SQL-error or surprising-shape behaviour (negative OFFSET / negative LIMIT) is handled or surfaced as a clean 4xx."
+    criticality: LOW
+  - behaviour: "`page`/`size` degenerate inputs — `page=0` / `page=-1` / `size=-1` reach PostgreSQL (negative OFFSET / negative LIMIT); assert the surfaced status is a clean 4xx rather than a 500."
     test_class: integration
     criticality: MEDIUM
-    note: "stress_findings.tunables records these as PROBE-NEEDED → P-029 emitted."
+    note: "stress_findings.tunables records these as PROBE-NEEDED → P-029 (still pending; scope unaffected by the ordering fix)."
 - test_files:
-  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:239-267 (`testListMostPopular` — repository-layer only; structurally blind to the LSN-019 ordering drift per the analysis above; covers the `query` substring path, NOT popularity ordering, NOT the LIMIT-truncation case)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:238-268, 276-335"
+  - "integration-tests/protocols/IT-005-top-tags-ordering.md + integration-tests/e2e/specs/top-tags-ordering.spec.ts (odd-team e2e)"
 - gaps: |
-    The highest-leverage gap is **integration coverage of the LSN-019 drift on `getPopularTagList`** — the controller has zero tests, and the only existing test (`TagRepositoryImplTest.testListMostPopular`) cannot detect the drift because it never exercises the LIMIT (`size = numberOfTestTags`) and never checks order (`containsExactlyInAnyOrder`). Probe P-010 pins the drift at the REST boundary; promoting it to a CI `@SpringBootTest` is the single fix that would surface any future regression (e.g. a refactor that moved the count-ordering inside the paginate window). The second gap is **security tests** — no `TagControllerSecurityTest` exists, so the open-read posture (no GET SecurityRule) and any future path-pattern drift would not surface in CI. The worst-covered test_class on this node is `integration`: every operator-observable behaviour (drift, filters, pagination boundaries) is unverified end-to-end.
+    The former highest-leverage gap — integration coverage of the popularity-ordering
+    contract — is CLOSED at two layers as of 2026-06-12: the failing-first repository
+    test (`testListMostPopularReturnsGloballyMostUsedTags`, RED on pre-fix main) and the
+    e2e IT-005 (GREEN-on-fix / RED-on-ref:main, run-log evidence). The remaining gaps:
+    (1) the controller layer itself has zero direct tests — the argument-order swap at
+    `TagController.java:42` is pinned by nothing below the e2e tier; (2) no
+    `TagControllerSecurityTest` — the open-read posture and any future path-pattern drift
+    would not surface in CI; (3) degenerate page/size inputs (P-029) remain unverified at
+    runtime. The worst-covered test_class on this node is now `security`.
 
 ## docs_link_semantic
 
@@ -138,40 +147,60 @@ global tag directory regardless of which `TAG_*` permissions they hold.
 - inferred_docs:
   - url: "https://docs.opendatadiscovery.org/features/data-discovery/tagging"
     anchor: ""
-    rationale: "Operator-facing Tag UX page; the canonical destination for the 'Top Tags' surface this endpoint feeds. Verification inherited from the sibling `TagController` controller-class sidecar (WebFetch 2026-05-20, status 200) — within the ~11-day stale-probe cadence; re-verification not required this session."
-    last_verified_at: "2026-05-20T00:00:00Z"
+    rationale: "Operator-facing Manual Object Tagging page; the canonical destination for the 'Top Tags' surface this endpoint feeds. (Note: the un-prefixed `/data-discovery/tagging` variant returns 404 — verified this session.)"
+    last_verified_at: "2026-06-12T00:00:00Z"
     last_verified_status: 200
     fetched_excerpts: |
-      Live-page text (WebFetch 2026-05-20, status 200, inherited from the TagController controller-class sidecar's verification): the page "references 'Top tags' on the Catalog Overview but provides no API endpoint details, no ordering semantics, and no visibility scope." The live tagging page does NOT state the ordering contract of the Top-Tags surface — it neither confirms nor refutes popularity ordering, so it cannot be used to argue the drift away.
+      Live page (WebFetch 2026-06-12, status 200; title 'Manual Object Tagging') carries the
+      PRE-fix caveat, verbatim: "The 'Top tags' strip on Catalog Overview and the Tag-facet
+      seed list are sorted by tag id, not by popularity." — "The platform's `listMostPopular`
+      query truncates the tag directory to the requested page size **before** computing the
+      per-tag usage count" — "a catalog with 35 tags of equal popularity and `size=30` returns
+      the 30 oldest tags by id" — "The endpoint's OpenAPI summary describes it as 'sorted by
+      popularity'; the implementation cannot honour that contract today without an SQL
+      restructure."
+    pending_release: "0.28.0"
+    train_ref: "documentation release/0.28.0 train — the fixed-behaviour note migrates at the release gate; the live manual correctly describes the latest PUBLISHED release (0.27.x), where the caveat is true."
   - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
     anchor: ""
-    rationale: "Permissions catalog — names `TAG_CREATE`/`TAG_UPDATE`/`TAG_DELETE` but, per the sibling sidecar's verification, does not document that GET `/api/tags` has no RBAC gate beyond authentication."
-    last_verified_at: "2026-05-20T00:00:00Z"
+    rationale: "Permissions catalog — names the three `TAG_*` write permissions; checked for whether the GET open-read posture is documented."
+    last_verified_at: "2026-06-12T00:00:00Z"
     last_verified_status: 200
     fetched_excerpts: |
-      Live-page text (inherited from the TagController controller-class sidecar's verification): the permissions page lists the three Management-scope TAG permissions but "does not mention that GET `/api/tags` has NO RBAC gate beyond authentication."
+      Live page (WebFetch 2026-06-12, status 200; title 'Permissions') lists TAG_CREATE
+      ("Allows creating a new tag."), TAG_UPDATE, TAG_DELETE. It now ALSO documents the
+      side-door write paths, verbatim: "`TAG_CREATE` is not the only path that mints new
+      tags — four `*_TAGS_UPDATE` permissions (data entity, dataset field, term) plus
+      collector ingestion all silently create tag rows for novel names." It does NOT
+      document that GET `/api/tags` has no RBAC gate beyond authentication.
 - doc_drift_findings:
-  - "**LSN-019 — name-vs-behavior drift surfaced at the API contract:** the OpenAPI spec (`openapi.yaml:345`) describes `getPopularTagList` as `'Gets the list of existing tags sorted by popularity'`. The implementation selects the OLDEST `size` tags by `TAG.ID ASC` (`ReactiveTagRepositoryImpl.java:148`) BEFORE counting, then re-ranks only those by count desc (line 158). The OpenAPI description is therefore an inaccurate spec claim for any directory holding more than `size` tags — operator-visible: a deployment with > `size` tags renders OLD-and-unused tags as 'Top Tags'. The spec line itself is the doc artefact in drift; doc-gap-finder should flag `openapi.yaml:345` for correction or for the implementation to be fixed. Empirically confirmed by the maintainer 2026-05-20 (35 equally-popular tags → oldest 30); pinned by P-010."
-  - "Live tagging page (WebFetched 2026-05-20, status 200, inherited) provides no ordering semantics for the 'Top Tags' Catalog-Overview surface — it cannot tell an operator whether the list is most-used or oldest. The drift is invisible to a doc reader."
-  - "Live permissions page (WebFetched 2026-05-20, status 200, inherited) does not mention that GET `/api/tags` is reachable by any authenticated user with no `TAG_*` permission — the open-read posture is undocumented."
+  - "**CLOSED at 82812cdf (was LSN-019 / PLT-026 Thread A):** the OpenAPI description `'Gets the list of existing tags sorted by popularity'` (`openapi.yaml:345`) is now an ACCURATE spec claim — the executed SQL orders the full aggregated directory by `count DESC, tag.id ASC` before windowing (`ReactiveTagRepositoryImpl.java:159-162`). No spec correction needed; the code moved to the spec."
+  - "**Release-train, tracked, not actionable here:** the live tagging page (fetched 2026-06-12, status 200) still describes the pre-fix oldest-by-id caveat — correct for the latest published release (0.27.x), which ships the unfixed code. The caveat's retirement rides the documentation `release/0.28.0` train (the fix's milestone). If 0.28.0 publishes WITHOUT the caveat migration, this becomes live drift — flag for the release-gate check."
+  - "Live permissions page (fetched 2026-06-12, status 200) still does not mention that GET `/api/tags` is reachable by any authenticated user with no `TAG_*` permission — the open-read posture remains undocumented (the side-door WRITE paths, by contrast, are now documented on that page)."
 
 ## implicit_adrs
 
-- "**Read endpoints are NOT RBAC-gated — open-read posture by design.** `getPopularTagList` has no `SecurityRule` entry; the request falls through to `pathMatchers(\"/**\").authenticated()`. The same shape is consistent across sibling read endpoints (e.g. `TermController.getTermsList`, `AlertController.getAllAlerts` per the existing `TagController` controller-class sidecar)." — evidence: SecurityConstants.java:138-142 (POST/PUT/DELETE entries only, no GET entry for `/api/tags`) + AuthorizationCustomizer.java:29-30 (the catch-all) — intent_anchor: "The absence of a GET `SecurityRule` is applied consistently across the controller surface — the `SECURITY_RULES` table registers write-verb rules and deliberately omits read-verb rules; the convention IS the decision that tag-directory READ is open to all authenticated users." — confidence: MEDIUM (the convention is consistent and the `SECURITY_RULES` table is a deliberate enumerated structure, but no comment in `SecurityConstants.java` explicitly defends the read-open stance — the intent is inferred from the structural consistency, not stated)
+- "**Popularity is computed over the full filtered directory per request — correctness over query cheapness, with a deterministic tie-break.** The fix deliberately aggregates usage for EVERY matching tag before ordering/windowing, accepting the full-directory UNION-ALL cost on each call, and pins `TAG.ID ASC` as the tie-break so equal-count pages are stable." — evidence: ReactiveTagRepositoryImpl.java:147-162 — intent_anchor: "aggregate usage over the FULL filtered directory FIRST, then order by usage and paginate — paginating the raw tag select windowed by id BEFORE counting returned the oldest tags re-ranked among themselves instead of the most popular" (comment at lines 147-149) — confidence: HIGH
 
-- "**Thin OpenAPI-delegate controller-method pattern.** `getPopularTagList` is a 2-line reactive delegation `service-call.map(ResponseEntity::ok)` with no transformation and no programmatic auth check — business logic stays in the service layer." — evidence: TagController.java:36-44 (the whole method body is 2 lines) + the identical shape of the other 3 methods in the file + consistency across the controller package — intent_anchor: "The OpenAPI-generated `TagApi` interface that `TagController implements` (line 18) IS the architectural statement — the controller is a generated-contract stub; every method delegates straight to a service. The pattern repeats across the file and the package." — confidence: HIGH
+- "**Computed (unqualified-alias) fields are exempt from the paginate homogeneity invariant as a general rule.** `homogeneityCheck` guards that a paginated select reads one table; computed aliases (FTS rank, aggregations) are declared non-threatening to that invariant, making aggregated selects paginatable platform-wide rather than special-casing each alias." — evidence: JooqQueryHelper.java:138-154 — intent_anchor: "computed alias fields (the FTS rank, aggregations like count) are not table columns and cannot break the one-table invariant this check guards" (comment at lines 143-145; `RANK_FIELD_ALIAS` today lives only in FTSConstants.java:35 + the four FTS repositories — grep `RANK_FIELD_ALIAS` across odd-platform-api/src/main returns no JooqQueryHelper hit, consistent with the general exemption subsuming a former special case per the CTRIB-007 change context) — confidence: HIGH
+
+- "**Read endpoints are NOT RBAC-gated — open-read posture by design.** `getPopularTagList` has no `SecurityRule` entry; the request falls through to `pathMatchers(\"/**\").authenticated()`. The same shape is consistent across sibling read endpoints." — evidence: SecurityConstants.java:138-142 (POST/PUT/DELETE entries only, no GET entry for `/api/tags`) + AuthorizationCustomizer.java:29-30 (the catch-all) — intent_anchor: "The `SECURITY_RULES` table registers write-verb rules and consistently omits read-verb rules across the controller surface — the convention IS the decision that directory READ is open to all authenticated users." — confidence: MEDIUM (consistent convention in a deliberate enumerated structure, but no comment explicitly defends the read-open stance)
+
+- "**Thin OpenAPI-delegate controller-method pattern.** `getPopularTagList` is a 2-line reactive delegation with no transformation and no programmatic auth check — business logic stays in the service layer." — evidence: TagController.java:36-44 + the identical shape of the other 3 methods in the file — intent_anchor: "The OpenAPI-generated `TagApi` interface that `TagController implements` (line 18) IS the architectural statement — the controller is a generated-contract stub." — confidence: HIGH
 
 ## bugs_limitations_corner_cases
 
-- "**`getPopularTagList` LSN-019 name-vs-behavior drift.** The endpoint name (`getPopularTagList`), the service method (`listMostPopular`), and the OpenAPI description (`'Gets the list of existing tags sorted by popularity'`, `openapi.yaml:345`) all promise popularity ordering. `ReactiveTagRepositoryImpl.listMostPopular` (`:137-167`) uses `paginate(homogeneousQuery, [new OrderByField(TAG.ID, SortOrder.ASC)], (page-1)*size, size)` (line 148) as the row-SELECTION step — `JooqQueryHelper.paginate` emits `ORDER BY tag.id ASC LIMIT size OFFSET ...` as the inner step; only the `size` rows so-selected enter `tag_cte` (line 150). The outer `cteSelect.orderBy(field(COUNT_FIELD).desc())` (line 158) re-ranks those `size` rows by count desc but cannot reach tags excluded by the inner LIMIT. With > `size` tags where the youngest have higher usage than the oldest `size`, the response contains the OLDEST `size` and the actual-most-popular are missing. Pinned by P-010; empirically confirmed by the maintainer 2026-05-20 (35 equally-popular tags returned the oldest 30). — evidence: TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:140-167 (line 148 the inner paginate, line 158 the outer count-DESC) + ReactiveTagRepositoryImpl.java:373-392 (the UNION-ALL CTE over `tag_cte` only) + lineage/odd-platform/probes/P-010.yaml — severity: HIGH"
+- "**No RBAC gate on `getPopularTagList` — global tag directory enumeration by any authenticated user.** No `SecurityRule` entry exists for GET `/api/tags`; the endpoint inherits `authenticated()` from the catch-all. Combined with the (now live-documented) side-door write paths, a user holding only `DATA_ENTITY_TAGS_UPDATE` can both READ this directory and grow it — without ever holding `TAG_CREATE` or any `TAG_*` permission. — evidence: SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30 (catch-all) + TagController.java:36-44 (no `@PreAuthorize`) — severity: MEDIUM"
 
-- "**No RBAC gate on `getPopularTagList` — global tag directory enumeration by any authenticated user.** No `SecurityRule` entry exists for GET `/api/tags`; the endpoint inherits `authenticated()` from the catch-all. Combined with the side-door write paths (REFACTOR-223 / DOC-GAP-168), a user holding only `DATA_ENTITY_TAGS_UPDATE` can both READ this directory and grow it — without ever holding `TAG_CREATE` or any `TAG_*` permission. — evidence: SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30 (catch-all) + TagController.java:36-44 (no `@PreAuthorize`) — severity: MEDIUM"
+- "**No `size` clamp — `size=100000` is accepted at every layer.** `getPopularTagList` passes `size` straight through (`TagController.java:38, 42`); no upper bound anywhere; `paginate(...)` emits `LIMIT 100000` and the full page materialises via `collectList()` (`ReactiveTagRepositoryImpl.java:164-165`). Post-fix the aggregation cost no longer depends on `size` (it is always full-directory), so the unclamped `size` now governs only response materialisation/serialisation size. — evidence: TagController.java:37-42 (no `@Max`, no `@Valid`) + ReactiveTagRepositoryImpl.java:159-165 — severity: LOW"
 
-- "**No `size` clamp — `size=100000` is accepted at every layer.** `getPopularTagList` passes `size` straight through (`TagController.java:38, 42`); `TagServiceImpl.listMostPopular` and `ReactiveTagRepositoryImpl.listMostPopular` apply no upper bound; `paginate(...)` emits `LIMIT 100000` and the UNION-ALL CTE aggregates over the full directory. A caller can force a large in-memory aggregation. — evidence: TagController.java:37-42 (no `@Max`, no `@Valid`) + ReactiveTagRepositoryImpl.java:138-167 (no clamp) — severity: LOW"
+- "**Argument-order swap between controller signature and service call.** The controller method signature is `(page, size, query, ids)` (`TagController.java:37-41`); the service call is `tagService.listMostPopular(query, ids, page, size)` (line 42). Correct today, pinned by no controller-layer test (the repository test and IT-005 would catch a page/size transposition only indirectly). — evidence: TagController.java:37-42 — severity: LOW"
 
-- "**Argument-order swap between controller signature and service call.** The controller method signature is `(page, size, query, ids)` (`TagController.java:37-41`); the call to the service is `tagService.listMostPopular(query, ids, page, size)` (line 42). The types differ enough that a future parameter addition or reorder could silently bind the wrong values (e.g. `query` and `page` are different types so a swap fails to compile, but `page`/`size` are both `Integer` and `query` could be confused with a future `String` param). The swap is correct today but is a fragility surface with no test pinning it. — evidence: TagController.java:37-42 — severity: LOW"
+- "**`page`/`size` degenerate inputs reach PostgreSQL un-validated.** `page=0` produces OFFSET `(0-1)*size = -size` → PostgreSQL rejects a negative OFFSET; `size=-1` → `LIMIT -1` rejected; a literal `null` for `page`/`size` reaches the primitive `int` service signature (`TagServiceImpl.java:73-74`) and throws NPE on unboxing. Operator-visible result is a 500, not a clean 4xx. — evidence: TagController.java:37-42 (no validation) + TagServiceImpl.java:73-74 + ReactiveTagRepositoryImpl.java:162 (the `(page-1)*size` arithmetic) — severity: LOW"
 
-- "**`page`/`size` degenerate inputs reach PostgreSQL un-validated.** `page=0` produces OFFSET `(0-1)*size = -size` → PostgreSQL rejects a negative OFFSET; `size=-1` → `LIMIT -1` → PostgreSQL rejects a negative LIMIT; a literal `null` querystring for `page`/`size` reaches the service signature `int page, int size` (`TagServiceImpl.java:73-74`) and throws `NullPointerException` on unboxing. None of these is guarded in the controller. The operator-visible result is a 500, not a clean 4xx. — evidence: TagController.java:37-42 (no validation) + TagServiceImpl.java:73-74 (primitive `int` params) + ReactiveTagRepositoryImpl.java:148 (the `(page-1)*size` arithmetic) — severity: LOW"
+- "**UI tie-break diverges from the API tie-break among equal-count tags.** The backend contract is `count DESC, id ASC` (`ReactiveTagRepositoryImpl.java:160-161`); the Top-Tags strip then re-sorts client-side by `usedCount` DESC with an `important`-flag tie-break whose comparator ignores `a.important` (`odd-platform-ui/src/components/Overview/TopTagsList/TopTagsList.tsx:24-34`, the one-sided ternary at line 31). Primary order agrees with the backend; among equal counts the rendered chip order can differ from the API order and is not strictly deterministic at the UI layer. WHICH tags are on the strip is decided solely by the backend window. The defect (if judged one) lives in the UI node — recorded here because it shapes the surface this endpoint feeds. — evidence: TopTagsList.tsx:24-34 + ReactiveTagRepositoryImpl.java:160-161 — severity: LOW"
+
+- "**Stale probe pin:** `lineage/odd-platform/probes/P-010.yaml` (status `pending-stress-protocol`) still asserts the PRE-fix behaviour (`set(returned_tag_ids) == set(range(1009, 1039))` — the oldest-30 window). On this branch that assertion now FAILS by design; the probe's own `realism_caveats` define the flip-on-fix lifecycle (update the assertion to the fixed contract). The regression is meanwhile guarded by the unit test + IT-005, so the probe flip is bookkeeping, not a coverage hole. — evidence: lineage/odd-platform/probes/P-010.yaml:154-180, 235-269 — severity: LOW"
 
 ## stress_findings
 
@@ -180,107 +209,107 @@ stress_findings:
   tunables:
     - location: "TagController.java:37"
       name: "page"
-      value: "Integer (caller-controlled; OpenAPI PageParam default; no clamp in controller, service, or repository)"
+      value: "Integer (caller-controlled; OpenAPI PageParam; no clamp in controller, service, or repository)"
       questions:
         - q: "What at N = 0 / N = 1?"
-          a: "page=1 (typical): OFFSET = (1-1)*size = 0 — first page. page=0: OFFSET = (0-1)*size = -size — paginate emits `LIMIT size OFFSET -size`; PostgreSQL rejects a negative OFFSET (SQL state 22023) → DataAccessException → 500 to the caller. No controller guard."
+          a: "page=1: OFFSET = (1-1)*size = 0 — first page of the aggregated, count-DESC-ordered directory. page=0: OFFSET = (0-1)*size = -size — paginate emits a negative OFFSET; PostgreSQL rejects it → DataAccessException → 500 to the caller. No controller guard."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:37-42 + ReactiveTagRepositoryImpl.java:148 (the `(page-1)*size` expression) + JooqQueryHelper.paginate (referenced; not re-read this session)"
+          evidence: "TagController.java:37-42 + ReactiveTagRepositoryImpl.java:162 (the `(page-1)*size` expression) + JooqQueryHelper.java:80-81 (limit/offset emission)"
         - q: "What at N = tunable + 1 / tunable x 100?"
-          a: "page beyond the last populated page (e.g. page=5 with 10 tags and size=30): OFFSET 120 over a 10-row base → empty `items`, `pageInfo.total=10`, `pageInfo.hasNext=false`. No error — an over-range page is a clean empty page. page x 100: same — large OFFSET, empty result, no error."
+          a: "page beyond the last populated page: large OFFSET over the aggregated select → empty `items`; `pageifyResult` falls to the empty-records branch and `fetchCount(query, ids)` supplies the true total; `hasNext=false`. No error — an over-range page is a clean empty page."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:148, 162-166 (pageifyResult with fetchCount) + ReactiveAbstractCRUDRepository.java:229-234 (fetchCount)"
+          evidence: "JooqQueryHelper.java:94-100, 118-126 (empty-records branch) + ReactiveTagRepositoryImpl.java:164-170"
         - q: "What at null / negative / non-numeric?"
-          a: "page is declared `Integer` at the controller (`TagController.java:37`) but the service signature is primitive `int page` (`TagServiceImpl.java:73`); a literal `null` querystring → Spring binds `null` Integer → NullPointerException on unboxing at the service-call boundary → 500. page=-1: OFFSET = (-1-1)*size = -2*size → negative OFFSET → PostgreSQL SQL error → 500. Non-numeric → NumberFormatException at the Spring `@RequestParam` binding layer → 400."
+          a: "page declared `Integer` at the controller (`TagController.java:37`), primitive `int page` at the service (`TagServiceImpl.java:73`); literal `null` → NPE on unboxing → 500. page=-1 → OFFSET -2*size → PostgreSQL error → 500. Non-numeric → binding failure at the Spring layer → 400. Exact surfaced statuses pending runtime confirmation."
           confidence: PROBE-NEEDED
-          evidence: "P-029 (the null/negative-page variant — needs runtime confirmation of the exact HTTP status PostgreSQL's negative-OFFSET error surfaces as)"
+          evidence: "P-029 (lineage/odd-platform/probes/P-029.yaml — still pending; scope unaffected by the ordering fix)"
         - q: "What does the operator see at each boundary?"
-          a: "page=1 with directory <= size: full directory, count-DESC ordered. page=1 with directory > size: LSN-019 drift — OLDEST `size` tags. over-range page: empty list, no error. page=0 / page=-1: 500 error. The UI's 'Top Tags' surface paginates from page=1, so the drift is the dominant operator-visible boundary."
+          a: "page=1: the genuinely most-used tags (post-fix). Over-range page: empty list, no error. page=0 / page=-1: 500. The historical boundary hazard (page 1 showing the oldest window) is gone at this commit."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:140-167 + lineage/odd-platform/probes/P-010.yaml (the drift pin)"
+          evidence: "ReactiveTagRepositoryImpl.java:144-162 + integration-tests/run-log/2026-06-12-IT-005.md (GREEN/RED flip)"
     - location: "TagController.java:38"
       name: "size"
       value: "Integer (caller-controlled; OpenAPI SizeParam; no clamp at any layer)"
       questions:
         - q: "What at N = 0 / N = 1?"
-          a: "size=0: paginate emits `LIMIT 0` → empty `items` list; `pageifyResult` returns `pageInfo.total = fetchCount(...)` (the real directory size) and `hasNext=false`. size=1: paginate selects 1 row by `TAG.ID ASC` = the OLDEST tag; the outer count-DESC is a no-op on a single row."
+          a: "size=0: `LIMIT 0` → empty `items`; empty-records branch → `fetchCount` supplies the real total; `hasNext=false`. size=1: exactly the single most-used tag (count DESC, id-ASC tie) — post-fix this is the true top tag, not the oldest tag."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:148, 162-166 + ReactiveAbstractCRUDRepository.java:229-234 (fetchCount)"
+          evidence: "ReactiveTagRepositoryImpl.java:159-162 + JooqQueryHelper.java:73-82, 94-100"
         - q: "What at N = tunable + 1 / tunable x 100?"
-          a: "size larger than the directory (e.g. size=3000, 35 tags): paginate `LIMIT 3000` returns all 35; the outer count-DESC then orders all 35 by usage correctly — the drift does NOT manifest when size >= total. size=100000: accepted with no clamp; the inner paginate runs over the whole TAG table sorted by `TAG.ID ASC`, then the UNION-ALL CTE aggregates over the full result — large in-memory aggregation, no protection."
+          a: "size >= directory: all tags, count-DESC ordered, `hasNext=false`. size=100000: accepted with no clamp; since the fix the aggregation ALREADY runs over the full filtered directory regardless of size, so a huge size adds only result materialisation (`collectList()`) and serialisation cost, not extra aggregation cost."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:37-42 (no @Max) + ReactiveTagRepositoryImpl.java:138-167 (no clamp) + ReactiveTagRepositoryImpl.java:373-392 (the UNION-ALL CTE)"
+          evidence: "TagController.java:37-42 (no @Max) + ReactiveTagRepositoryImpl.java:144-165 (full-directory aggregate; collectList at 164-165)"
         - q: "What at null / negative / non-numeric?"
-          a: "size declared `Integer` at the controller, primitive `int size` at the service (`TagServiceImpl.java:74`); literal `null` querystring → NullPointerException on unboxing → 500. size=-1: paginate emits `LIMIT -1` → PostgreSQL rejects a negative LIMIT → DataAccessException → 500. Non-numeric → NumberFormatException at binding → 400."
+          a: "Literal `null` → NPE on unboxing at the primitive `int size` service boundary (`TagServiceImpl.java:74`) → 500. size=-1 → `LIMIT -1` → PostgreSQL rejects → 500. Non-numeric → 400 at binding. Exact statuses pending runtime confirmation."
           confidence: PROBE-NEEDED
-          evidence: "P-029 (the null/negative-size variant — needs runtime confirmation of the surfaced HTTP status)"
+          evidence: "P-029 (the null/negative-size variant)"
         - q: "What does the operator see at each boundary?"
-          a: "size >= total tags: full directory in correct count-DESC order. size < total tags: LSN-019 drift — the OLDEST `size` tags re-ranked among themselves by count. size=0: empty 'Top Tags' surface, no error. size=-1 / null: 500."
+          a: "Any size: the TOP-size most-used tags (the fix's contract — size bounds the output, never the candidate pool). size=0: empty strip, no error. size=-1 / null: 500."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:144-158 + lineage/odd-platform/probes/P-010.yaml"
+          evidence: "ReactiveTagRepositoryImpl.java:144-162 + odd-platform-api/src/test/.../TagRepositoryImplTest.java:276-335 (the >page-size case asserted order-sensitively)"
   name_behavior_pairs:
     - name: "TagController.getPopularTagList (TagController.java:36-44) — GET /api/tags, OpenAPI operationId getPopularTagList"
-      promise: "Returns the most-popular tags ranked by usage count. The method name (`getPopularTagList`), the service method (`listMostPopular`), the OpenAPI summary (`'List of popular tags'`) and description (`'Gets the list of existing tags sorted by popularity'`, openapi.yaml:344-345) all promise popularity-ordered results. The UI labels the response 'Top Tags'."
-      implementation: "Pipeline traced end-to-end: (1) TagController.getPopularTagList delegates to tagService.listMostPopular(query, ids, page, size) (TagController.java:42). (2) TagServiceImpl.listMostPopular delegates straight-through to reactiveTagRepository.listMostPopular (TagServiceImpl.java:75) — no re-sort. (3) ReactiveTagRepositoryImpl.listMostPopular (lines 137-167): (a) `listCondition(query)` + optional `TAG.ID.in(ids)` build the WHERE conditions (lines 140-142); (b) `DSL.selectFrom(TAG).where(conditions)` is the homogeneous base — NO ordering (lines 144-145); (c) `paginate(homogeneousQuery, List.of(new OrderByField(TAG.ID, SortOrder.ASC)), (page-1)*size, size)` (line 148) is the row-SELECTION step — emits `ORDER BY tag.id ASC LIMIT size OFFSET (page-1)*size`; (d) the truncated set becomes `tag_cte` (line 150); (e) `getDataEntityWithDatasetFields` (lines 373-392) UNION-ALLs `tag_to_data_entity` + `tag_to_dataset_field` usage counts OVER THE CTE ROWS ONLY; (f) the outer `cteSelect.orderBy(field(COUNT_FIELD).desc())` (lines 153-158) re-ranks the already-selected `size` rows by summed count desc — it CANNOT reach tags excluded by step (c)'s LIMIT."
-      drift: DRIFT_NAME_VS_BEHAVIOR
-      operator_visible_consequence: "For any directory with more than `size` tags, the response is the OLDEST `size` tags by `TAG.ID ASC` (creation order, since `tag.id` is a serial PK), re-ranked among themselves by count — NOT the `size` most-popular globally. The UI's 'Top Tags' label is operator-misleading: it is effectively 'Oldest Tags' beyond `size` tags. Maintainer's 2026-05-20 empirical test (35 equally-popular tags, size=30) returned the oldest 30 by created_at ASC."
+      promise: "Returns the most-popular tags ranked by usage count. The method name, the service method (`listMostPopular`), the OpenAPI summary (`'List of popular tags'`) and description (`'Gets the list of existing tags sorted by popularity'`, openapi.yaml:344-345) all promise popularity-ordered results. The UI labels the response 'Top Tags'."
+      implementation: "Pipeline traced end-to-end at 82812cdf: (1) controller delegates to tagService.listMostPopular(query, ids, page, size) (TagController.java:42). (2) TagServiceImpl.listMostPopular delegates straight-through (TagServiceImpl.java:75) — no re-sort. (3) ReactiveTagRepositoryImpl.listMostPopular (lines 137-171): conditions (soft-delete + optional name-substring + optional TAG.ID.in) at 140-143; the FULL filtered `selectFrom(TAG)` becomes `tag_cte` (144-150); UNION-ALL usage counts over ALL CTE rows (151 → 377-396); per-tag GROUP BY with sum(count) + boolOr(external) (153-157); `paginate(aggregatedSelect, [count DESC, TAG.ID ASC], (page-1)*size, size)` (159-162) — JooqQueryHelper emits `ORDER BY count DESC, id ASC LIMIT size OFFSET ...` over the aggregated rows plus `_total`/`_row`/`_next` window metadata (JooqQueryHelper.java:72-88). The ordering now determines WHICH rows are returned, not merely their order within a pre-cut window."
+      drift: NONE
+      operator_visible_consequence: "Promise honoured: page 1 contains the genuinely most-used tags however young. Runtime-verified 2026-06-12: unit test RED-on-main/GREEN-on-fix (TagRepositoryImplTest.java:276-335); e2e IT-005 GREEN @ 82812cdf (all 5 seeded most-used youngest tags on the strip, 1 passed 3.8s) + RED @ main 6f356b72 (strip showed the oldest window); in-band API capture returned the 5 most-used tags first. HISTORICAL (dated): until this fix the implementation truncated by `TAG.ID ASC` BEFORE counting — the LSN-019 / PLT-026 DRIFT_NAME_VS_BEHAVIOR, shipped in every release through 0.27.x; the live 0.27.x manual still documents that caveat (release-train, see docs_link_semantic)."
       confidence: STATIC-INFERRED
-      evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:140-167 (line 148 inner paginate, line 158 outer count-DESC) + ReactiveTagRepositoryImpl.java:373-392 (the CTE-scoped UNION-ALL) + openapi.yaml:344-345 (the spec promise) + lineage/odd-platform/probes/P-010.yaml (the runtime pin) + retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32 (empirical)"
+      evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-171, 377-396 + JooqQueryHelper.java:62-89 + openapi.yaml:344-345 + integration-tests/run-log/2026-06-12-IT-005.md + retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32 (the historical empirical reproduction)"
   orderings:
-    - location: "ReactiveTagRepositoryImpl.java:148 (inner paginate) + ReactiveTagRepositoryImpl.java:158 (outer cteSelect orderBy)"
+    - location: "ReactiveTagRepositoryImpl.java:159-162 (paginate over the aggregated select) + JooqQueryHelper.java:62-89 (the window emission)"
       questions:
         - q: "What is the actual ORDER BY at the lowest layer (the SQL the database executes)?"
-          a: "Two-level ordering. INNER: `paginate(homogeneousQuery, [OrderByField(TAG.ID, ASC)], (page-1)*size, size)` (line 148) — JooqQueryHelper.paginate emits `ORDER BY tag.id ASC LIMIT size OFFSET (page-1)*size` over `selectFrom(TAG).where(conditions)`; this selects the OLDEST `size` matching tags by serial PK. OUTER: `cteSelect.orderBy(field(COUNT_FIELD).desc())` (line 158) emits `ORDER BY count DESC` over the GROUPED-and-summed CTE rows. ONLY the INNER ordering determines WHICH rows are returned; the OUTER ordering only sorts the already-selected rows."
+          a: "Single-level, post-aggregation: the aggregated per-tag select (sum(count), boolOr(external), GROUP BY tag fields over the UNION-ALL CTE) is wrapped by paginate, which emits `ORDER BY count DESC, id ASC` + `LIMIT size OFFSET (page-1)*size` (JooqQueryHelper.java:75-82; order fields resolved against the derived table at :156-161), and the outer select re-orders by the same keys (:84-88). There is no longer any pre-count windowing — the inner `selectFrom(TAG)` is unpaginated (ReactiveTagRepositoryImpl.java:144-145)."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:140-167 (the full chain, read this session) + ReactiveTagRepositoryImpl.java:373-392 (the CTE)"
+          evidence: "ReactiveTagRepositoryImpl.java:144-162 + JooqQueryHelper.java:62-89 (both read end-to-end this session)"
         - q: "What is the tie-breaker when sort-key values are equal?"
-          a: "INNER `TAG.ID ASC` is over a serial PK — never tied, fully deterministic. OUTER `ORDER BY count DESC` has NO secondary sort key (line 158 is a single-field orderBy); when two tags have equal aggregated count, their relative order is PostgreSQL's implementation-defined order — practically the CTE-natural row order, which is `tag.id ASC` from the inner paginate. The maintainer's 2026-05-20 test (35 equally-popular tags) saw the oldest 30 in `tag.id ASC` order — consistent with the inner selection dominating and the outer count-DESC being a stable no-op on equal counts."
+          a: "Explicit and deterministic: `OrderByField(TAG.ID, SortOrder.ASC)` as the secondary key (ReactiveTagRepositoryImpl.java:161). Equal-count tags appear oldest-first (serial PK order). Pinned order-sensitively by the unit test: among the equal-count groups, expected ids are sorted ascending (TagRepositoryImplTest.java:319-322, 331)."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:148, 158 (the inner has an explicit OrderByField; the outer has a single-field orderBy with no tie-break)"
+          evidence: "ReactiveTagRepositoryImpl.java:160-161 + TagRepositoryImplTest.java:318-331"
         - q: "Which subset is returned when result-set > page size?"
-          a: "The FIRST `size` tags by `TAG.ID ASC` (the OLDEST), filtered by `query`/`ids`. This is the LSN-019 drift. The remaining (newer) tags — however popular — are excluded from page 1. Pinned by P-010."
+          a: "The TOP `size` tags by summed usage count DESC (id-ASC ties) out of the FULL filtered directory — the fix's whole point. Verified with most-used-are-youngest data at both the repository layer (unit test) and the rendered UI (IT-005)."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:148 + lineage/odd-platform/probes/P-010.yaml + retrospectives/LSN-019:23-32 (empirical 35-tag reproduction)"
+          evidence: "ReactiveTagRepositoryImpl.java:144-162 + TagRepositoryImplTest.java:276-335 + integration-tests/run-log/2026-06-12-IT-005.md"
         - q: "Does any upstream layer (UI, service) re-sort or filter the result?"
-          a: "Service layer (TagServiceImpl.listMostPopular, TagServiceImpl.java:72-77): no re-sort — only `.map(tagMapper::mapToTagsResponse)`. Controller (getPopularTagList, TagController.java:36-44): no re-sort — only `.map(ResponseEntity::ok)`. The UI ('Top Tags' chip strip / search facet) renders `items` in the delivered order; whether the React component re-sorts is a UI-side question — REFERENCE to the UI sidecar (ui_route Catalog-Overview Top-tags chip strip), not yet enriched."
-          confidence: REFERENCE
-          evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 (no re-sort confirmed) — UI re-sort is REFERENCE to node: ui_route:Catalog-Overview-TopTags (unresolved)"
+          a: "Service (TagServiceImpl.java:72-77): no — only `.map(tagMapper::mapToTagsResponse)`. Controller (TagController.java:36-44): no — only `.map(ResponseEntity::ok)`. UI: YES — TopTagsList re-sorts client-side by `usedCount` DESC with an `important`-flag tie-break (TopTagsList.tsx:24-34); the primary key AGREES with the backend, so the re-sort is order-confirming, but its tie-break differs (important-first-ish vs id ASC) and the comparator ignores `a.important` (line 31), so equal-count chip order is not strictly deterministic. The re-sort cannot recover tags the backend window excluded. [Resolves the REFERENCE left open by the 2026-05-21 enrichment.]"
+          confidence: STATIC-INFERRED
+          evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 + odd-platform-ui/src/components/Overview/TopTagsList/TopTagsList.tsx:24-34"
   auth_gates:
     - location: "SecurityConstants.java:138-142 (the gate-shaped ABSENCE of a GET entry) + TagController.java:36-44"
       endpoint: "GET /api/tags (getPopularTagList)"
       questions:
         - q: "What does this endpoint return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?"
-          a: "DISABLED: 200 — Spring Security is not engaged; no SecurityRule and no catch-all apply. LOGIN_FORM / OAUTH2 / LDAP: identical — there is no GET SecurityRule for `/api/tags` (`SecurityConstants.java:138-142` has only POST/PUT/DELETE entries), so the request matches the catch-all `pathMatchers(\"/**\").authenticated()` (`AuthorizationCustomizer.java:29-30`); any authenticated principal gets 200 + the full directory. The endpoint behaves the same across all three authenticating modes because `SECURITY_RULES` is mode-agnostic."
+          a: "DISABLED: 200 — Spring Security not engaged. LOGIN_FORM / OAUTH2 / LDAP: identical to each other — no GET SecurityRule exists for `/api/tags` (`SecurityConstants.java:138-142` has only POST/PUT/DELETE entries), so the request matches the catch-all `authenticated()` (`AuthorizationCustomizer.java:29-30`); any authenticated principal gets 200 + the full directory. `SECURITY_RULES` is mode-agnostic."
           confidence: STATIC-INFERRED
-          evidence: "SecurityConstants.java:138-142 + AuthorizationCustomizer.java:20-31 — auth-mode wiring is REFERENCE to OAuthSecurityConfiguration / LoginFormSecurityConfiguration / LdapSecurityConfiguration / SecurityConfiguration"
+          evidence: "SecurityConstants.java:138-142 + AuthorizationCustomizer.java:20-31 (both re-read this session)"
         - q: "What does an unauthenticated caller see (no cookie / no token)?"
-          a: "LOGIN_FORM: 302 redirect to the login form (or 401 for an XHR/JSON request). OAUTH2 / LDAP: 401. The catch-all `authenticated()` rule (AuthorizationCustomizer.java:29-30) blocks unauthenticated access even though `getPopularTagList` has no explicit SecurityRule. DISABLED: 200 — no auth check at all."
+          a: "LOGIN_FORM: 302 redirect to the login form (or 401 for an XHR/JSON request). OAUTH2 / LDAP: 401. The catch-all `authenticated()` blocks unauthenticated access even though `getPopularTagList` has no explicit SecurityRule. DISABLED: 200."
           confidence: STATIC-INFERRED
-          evidence: "AuthorizationCustomizer.java:29-30 (the catch-all that backstops the missing GET rule)"
+          evidence: "AuthorizationCustomizer.java:29-30"
         - q: "What does a wrong-role caller see (a READ_ONLY / no-TAG-permission user)?"
-          a: "A user holding NO `TAG_*` permission (or only an unrelated permission such as `DATA_ENTITY_TAGS_UPDATE`) gets 200 + the full tag directory. `getPopularTagList` has no permission requirement beyond `authenticated()` — there is no wrong-role rejection path for this read endpoint. This is the open-read posture: every authenticated user can enumerate the directory."
+          a: "A user holding NO `TAG_*` permission gets 200 + the full tag directory. There is no wrong-role rejection path for this read endpoint — the open-read posture."
           confidence: STATIC-INFERRED
           evidence: "SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30"
         - q: "Where exactly does the gate live — controller, service, repository, or nowhere?"
-          a: "The ONLY gate is the catch-all `authenticated()` in the security filter chain (`AuthorizationCustomizer.java:29-30`) — there is NO endpoint-specific permission gate. The controller method has no `@PreAuthorize` (`TagController.java:36-44`); `TagServiceImpl.listMostPopular` has no `@PreAuthorize` and no programmatic permission check (`TagServiceImpl.java:72-77`); `ReactiveTagRepositoryImpl.listMostPopular` has none. The gate is 'authenticated, full stop'."
+          a: "The ONLY gate is the catch-all `authenticated()` in the security filter chain (`AuthorizationCustomizer.java:29-30`). No `@PreAuthorize` on the controller method (`TagController.java:36-44`); no check in `TagServiceImpl.listMostPopular` (`TagServiceImpl.java:72-77`); none in the repository. The gate is 'authenticated, full stop'."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:36-44 (no @PreAuthorize) + TagServiceImpl.java:72-77 (no check) + SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30 (the catch-all)"
+          evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 + SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30"
   resource_boundaries:
     - location: "TagController.java:36-44 (getPopularTagList — a pure read path)"
       kind: concurrency
       questions:
         - q: "Can two simultaneous calls produce corrupted state?"
-          a: "No. `getPopularTagList` is a pure read — `tagService.listMostPopular` issues only SELECT statements (the paginate query + the UNION-ALL CTE + the `fetchCount` SELECT); no INSERT/UPDATE/DELETE anywhere in the chain. Two concurrent calls cannot corrupt state. Each call may observe a slightly different directory snapshot if a concurrent write commits between the paginate query and the `fetchCount` query (no `@ReactiveTransactional` wraps `listMostPopular` — TagServiceImpl.java:72-77 has no annotation) — so `pageInfo.total` and the `items` count could momentarily disagree under heavy concurrent tag creation, but this is a benign read-skew, not corruption."
+          a: "No. Pure read — the chain issues only SELECTs (the aggregated paginate statement; plus `fetchCount` ONLY for empty pages). Sharper than the pre-fix note: for NON-empty pages, `pageInfo.total` (`_total`) is a window function computed in the SAME statement as the page rows (JooqQueryHelper.java:72, 75-82, consumed at :113), so rows and total are snapshot-consistent; only the empty-page path issues a second statement (`fetchCount`, ReactiveTagRepositoryImpl.java:169), where a concurrent-write skew is benign (total for an empty page)."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 (no @ReactiveTransactional) + ReactiveTagRepositoryImpl.java:137-167 (SELECT-only) + ReactiveAbstractCRUDRepository.java:229-234 (the separate fetchCount SELECT)"
+          evidence: "ReactiveTagRepositoryImpl.java:137-171 (SELECT-only) + JooqQueryHelper.java:72-126 + ReactiveAbstractCRUDRepository.java:229-234"
         - q: "Is the call replay-safe?"
-          a: "Yes — fully idempotent. `getPopularTagList` is a read; the same `page`/`size`/`query`/`ids` against an unchanged directory returns the same response. No side effects (no DB write, no activity-feed entry, no search-vector refresh)."
+          a: "Yes — fully idempotent. Same `page`/`size`/`query`/`ids` against an unchanged directory returns the same response (the id-ASC tie-break makes the order deterministic too). No side effects."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 (read-only delegation)"
+          evidence: "TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:160-161"
         - q: "If a cache fronts this, what is the TTL / eviction key / staleness window?"
-          a: "No cache fronts this endpoint. No `@Cacheable` annotation on `getPopularTagList`, `TagServiceImpl.listMostPopular`, or `ReactiveTagRepositoryImpl.listMostPopular`; no manual cache writes; no platform-level cache layer visible in the chain. Every `GET /api/tags` is a fresh DB round-trip — confirmed by the absence of any cache annotation across all three layers."
+          a: "No server-side cache: no `@Cacheable` on controller, service, or repository — every `GET /api/tags` is a fresh DB round-trip. Client-side: the Overview hook caches under react-query key `['popularTags']` (params NOT in the key) and the generic hook under `['tagList', params]` — UI-cache semantics belong to those nodes (odd-platform-ui/src/lib/hooks/api/tags.ts:5-14, tag.ts:5-10)."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:1-53 (no @Cacheable) + TagServiceImpl.java:72-77 (no @Cacheable) + ReactiveTagRepositoryImpl.java:137-167 (no @Cacheable)"
+          evidence: "TagController.java:1-53 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-171 (no cache annotations) + odd-platform-ui/src/lib/hooks/api/tags.ts:5-14"
   request_inputs:
     - location: "TagController.java:37 (Integer page)"
       input_kind: query-param
@@ -291,20 +320,20 @@ stress_findings:
           confidence: STATIC-INFERRED
           evidence: "TagController.java:37 + openapi.yaml:348 (PageParam)"
         - q: "When supplied, what does the implementation USE the input for?"
-          a: "Controller forwards `page` to `tagService.listMostPopular(query, ids, page, size)` (TagController.java:42) -> TagServiceImpl.listMostPopular forwards to reactiveTagRepository.listMostPopular (TagServiceImpl.java:75) -> ReactiveTagRepositoryImpl.listMostPopular computes the SQL OFFSET as `(page - 1) * size` and passes it to `paginate(...)` (ReactiveTagRepositoryImpl.java:148)."
+          a: "Controller → tagService.listMostPopular(query, ids, page, size) (TagController.java:42) → TagServiceImpl (TagServiceImpl.java:75) → ReactiveTagRepositoryImpl computes the SQL OFFSET as `(page - 1) * size` into `paginate(...)` (ReactiveTagRepositoryImpl.java:162)."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:148"
+          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:162"
         - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "MATCHES — `page` is used as the page index; the `(page-1)*size` arithmetic is the standard 1-based-page-to-OFFSET translation."
+          a: "MATCHES — standard 1-based-page-to-OFFSET translation, now applied over the count-DESC-ordered aggregated directory (so page N is the Nth slice of the popularity ranking, as the name implies)."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:148"
+          evidence: "ReactiveTagRepositoryImpl.java:159-162"
         - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "N/A — no silent translation. (The only `page` hazard is `page<=0` producing a negative OFFSET → SQL error; recorded under stress_findings.tunables / bugs_limitations_corner_cases, not a naming-drift issue.)"
+          a: "N/A — no silent translation. (The `page<=0` negative-OFFSET hazard is recorded under tunables / bugs, not a naming-drift issue.)"
           confidence: STATIC-INFERRED
           evidence: "TagController.java:37"
         - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "NONE — `page` has no closer-aligned unused column; it is a pagination control, not an entity attribute."
+          a: "NONE — `page` is a pagination control, not an entity attribute."
           confidence: STATIC-INFERRED
           evidence: "TagController.java:37"
       routes_to_finding: "bugs_limitations_corner_cases (the page<=0 negative-OFFSET corner case) — no naming drift"
@@ -317,20 +346,20 @@ stress_findings:
           confidence: STATIC-INFERRED
           evidence: "TagController.java:38 + openapi.yaml:349 (SizeParam)"
         - q: "When supplied, what does the implementation USE the input for?"
-          a: "Controller forwards `size` to `tagService.listMostPopular(...size)` (TagController.java:42) -> TagServiceImpl.listMostPopular (TagServiceImpl.java:75) -> ReactiveTagRepositoryImpl.listMostPopular passes `size` as the LIMIT to `paginate(...)` (ReactiveTagRepositoryImpl.java:148) AND as a factor in the OFFSET expression `(page-1)*size`."
+          a: "Controller (TagController.java:42) → service (TagServiceImpl.java:75) → repository: `size` is the LIMIT and a factor of the OFFSET in `paginate(aggregatedSelect, ..., (page-1)*size, size)` (ReactiveTagRepositoryImpl.java:162)."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:148"
+          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:162"
         - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "MATCHES — `size` is the SQL LIMIT (page size). The caveat is operational, not naming: `size` is also the truncation boundary that surfaces the LSN-019 drift (the OLDEST `size` tags are selected). The NAME (`size` = page size) is honest; the SURROUNDING behaviour (which `size` rows) is the drift documented under name_behavior_pairs."
+          a: "MATCHES — `size` is the page size, applied AFTER the popularity ordering. The pre-fix caveat (size doubled as the truncation boundary that selected WHICH rows by id) is gone: size now bounds output only."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:148"
+          evidence: "ReactiveTagRepositoryImpl.java:144-162"
         - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "N/A — `size` does what the name says (page size). The misleading element is the ENDPOINT name (`popular`), not the `size` parameter name — see name_behavior_pairs[0]."
+          a: "N/A — `size` does what the name says."
           confidence: STATIC-INFERRED
           evidence: "TagController.java:38"
         - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "NONE — `size` is a pagination control, no closer-aligned unused column."
+          a: "NONE — pagination control, no closer-aligned unused column."
           confidence: STATIC-INFERRED
           evidence: "TagController.java:38"
       routes_to_finding: "no naming drift; the size-clamp absence is in bugs_limitations_corner_cases"
@@ -339,26 +368,26 @@ stress_findings:
       input_name: "query"
       questions:
         - q: "What does the input NAME promise the caller, in plain user-facing English?"
-          a: "A search string used to filter the tag list. The name `query` is fairly generic but, in the context of a tag-list endpoint, implies a tag-name search."
+          a: "A search string used to filter the tag list — in a tag-list context, a tag-name search."
           confidence: STATIC-INFERRED
           evidence: "TagController.java:39 + openapi.yaml:350 (SearchParam)"
         - q: "When supplied, what does the implementation USE the input for?"
-          a: "Controller forwards `query` to `tagService.listMostPopular(query, ...)` (TagController.java:42) -> TagServiceImpl.listMostPopular (TagServiceImpl.java:75) -> ReactiveTagRepositoryImpl.listMostPopular calls `listCondition(query)` (ReactiveTagRepositoryImpl.java:140) -> ReactiveAbstractCRUDRepository.listCondition adds `nameField.containsIgnoreCase(nameQuery)` when `query` is non-empty (ReactiveAbstractCRUDRepository.java:242-243). `nameField` resolves to `tag.name` (the recordTable's DEFAULT_NAME_FIELD column, ReactiveAbstractCRUDRepository.java:63)."
+          a: "Controller (TagController.java:42) → service (TagServiceImpl.java:75) → `listCondition(query)` (ReactiveTagRepositoryImpl.java:140) → soft-delete wrapper (ReactiveAbstractSoftDeleteCRUDRepository.java:87-88) → `nameField.containsIgnoreCase(nameQuery)` when non-empty (ReactiveAbstractCRUDRepository.java:242-243); `nameField` = the table's default `name` column (ReactiveAbstractCRUDRepository.java:49, 63). The filter constrains BOTH the aggregation candidate set AND the count."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:140 + ReactiveAbstractCRUDRepository.java:63, 240-243"
+          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:140, 144-145 + ReactiveAbstractCRUDRepository.java:49, 63, 240-243"
         - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "MATCHES — `query` filters by tag name via a case-insensitive substring match (`containsIgnoreCase`). It searches exactly the field a caller would expect (`tag.name`). One caveat to note (not a drift): the match is case-INSENSITIVE here, whereas the directory-WRITE existence-check (`listByNames` -> `TAG.NAME.in(names)`) is case-SENSITIVE — so `query=post` matches both 'Postgres' and 'postgres' if both exist, but the write path treats them as distinct rows. The asymmetry is a cross-path UX inconsistency, recorded in invariants."
+          a: "MATCHES — case-insensitive substring match on `tag.name`, exactly the field a caller expects. Caveat (not a drift): asymmetric with the case-SENSITIVE write-path lookup (`listByNames` → `TAG.NAME.in`, ReactiveTagRepositoryImpl.java:120-125) — recorded in invariants."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "ReactiveAbstractCRUDRepository.java:242-243 (containsIgnoreCase) + ReactiveTagRepositoryImpl.java (listByNames TAG.NAME.in — case-sensitive, per the ReactiveTagRepositoryImpl sidecar)"
+          evidence: "ReactiveAbstractCRUDRepository.java:242-243 + ReactiveTagRepositoryImpl.java:120-125"
         - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "N/A — `query` does what the name implies (a tag-name substring search). No silent scope translation."
+          a: "N/A — no silent scope translation."
           confidence: STATIC-INFERRED
           evidence: "ReactiveAbstractCRUDRepository.java:242-243"
         - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "NONE — `query` is correctly bound to `tag.name`; there is no other name-like column on the `tag` table that a search should have used instead."
+          a: "NONE — `query` is correctly bound to `tag.name`; no other name-like column exists on the `tag` table."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveAbstractCRUDRepository.java:63 (nameField = DEFAULT_NAME_FIELD)"
+          evidence: "ReactiveAbstractCRUDRepository.java:63"
       routes_to_finding: "no drift; the case-sensitivity asymmetry between read-search and write-lookup is in invariants"
     - location: "TagController.java:40 (List<Long> ids)"
       input_kind: query-param
@@ -369,73 +398,73 @@ stress_findings:
           confidence: STATIC-INFERRED
           evidence: "TagController.java:40 + openapi.yaml:351 (IdsParam)"
         - q: "When supplied, what does the implementation USE the input for?"
-          a: "Controller forwards `ids` to `tagService.listMostPopular(query, ids, ...)` (TagController.java:42) -> TagServiceImpl.listMostPopular (TagServiceImpl.java:75) -> ReactiveTagRepositoryImpl.listMostPopular: `if (CollectionUtils.isNotEmpty(ids)) conditions.add(TAG.ID.in(ids))` (ReactiveTagRepositoryImpl.java:141-142). `ids` binds to the `TAG.ID` column. Note: `ids` is also threaded into `fetchCount(query, ids)` (line 165) so the page total honours the id filter too."
+          a: "Controller (TagController.java:42) → service (TagServiceImpl.java:75) → `if (CollectionUtils.isNotEmpty(ids)) conditions.add(TAG.ID.in(ids))` (ReactiveTagRepositoryImpl.java:141-143). Also threaded into `fetchCount(query, ids)` (line 169) so the empty-page total honours the id filter too."
           confidence: STATIC-INFERRED
-          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:141-142, 165"
+          evidence: "TagController.java:42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:141-143, 169"
         - q: "Does the implementation's actual scope MATCH the name's promise?"
-          a: "MATCHES — `ids` binds directly to `TAG.ID.in(ids)`; the parameter name `ids` and the SQL column `TAG.ID` are the same concept. Empty `ids` is treated as no-filter (skipped via the `isNotEmpty` guard), not as zero-results — the documented optional-filter contract."
+          a: "MATCHES — `ids` binds directly to `TAG.ID.in(ids)`. Empty `ids` is treated as no-filter (skipped via the `isNotEmpty` guard), not as zero-results."
           drift: NONE
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:141-142"
+          evidence: "ReactiveTagRepositoryImpl.java:141-143"
         - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
-          a: "N/A — `ids` binds to `TAG.ID` with no translation. The only subtlety is the empty-collection = no-filter semantics, which matches the OpenAPI optional-parameter contract."
+          a: "N/A — direct PK bind, no translation."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:141-142"
+          evidence: "ReactiveTagRepositoryImpl.java:141-143"
         - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "NONE — `ids` is correctly bound to the primary-key column `TAG.ID`; there is no closer-aligned unused field."
+          a: "NONE — bound to the primary-key column `TAG.ID`."
           confidence: STATIC-INFERRED
-          evidence: "ReactiveTagRepositoryImpl.java:141-142"
+          evidence: "ReactiveTagRepositoryImpl.java:141-143"
       routes_to_finding: "no drift — ids binds to TAG.ID directly"
   probes_emitted:
     - probe_id: P-029
-      question: "page/size degenerate-input handling for getPopularTagList — what exact HTTP status does a null / negative / zero page or size produce? (negative OFFSET / negative LIMIT reach PostgreSQL; null Integer unboxes to NullPointerException at the int-param service boundary). Trace says 500 for negative/null and 400 for non-numeric, but the exact surfaced status needs runtime confirmation."
+      question: "page/size degenerate-input handling for getPopularTagList — exact HTTP statuses for null / negative / zero page or size. (Emitted by the 2026-05-21 enrichment pass of this node; still pending; scope unchanged by the ordering fix — only the OFFSET-expression line moved, 148 → 162.)"
       probe_path: "lineage/odd-platform/probes/P-029.yaml"
   stress_summary:
-    triggers_total: 8
-    questions_total: 35
-    answers_static_inferred: 32
+    triggers_total: 10
+    questions_total: 40
+    answers_static_inferred: 38
     answers_probe_needed: 2
-    answers_reference: 1
-    drift_flags: 1
+    answers_reference: 0
+    drift_flags: 0
 ```
 
 ## security
 
 - **auth_mode_relevance**: `LOGIN_FORM | OAUTH2 | LDAP` — `getPopularTagList` is on the HTTP UI/API surface (`GET /api/tags`). Under `DISABLED`, Spring Security is not engaged and the endpoint is open. `S2S` is orthogonal — this endpoint is not on the ingestion path (`/ingestion/**`).
-- **ingestion_filter_relevance**: `NO — UI/API surface at GET /api/tags, not /ingestion/**`. The endpoint READS a directory that the ingestion path can mutate (via `ExternalTagIngestionRequestProcessor`), but the endpoint itself does not participate in the ingestion filter.
+- **ingestion_filter_relevance**: `NO — UI/API surface at GET /api/tags, not /ingestion/**`. The endpoint READS a directory that the ingestion path can mutate, but does not itself participate in the ingestion filter.
 - **authorization_assertions**:
   - "GET `/api/tags` (getPopularTagList) has NO endpoint-specific authorization gate — no `SecurityRule` entry exists for the GET verb on `/api/tags` — evidence: SecurityConstants.java:138-142 (only POST/PUT/DELETE entries)"
   - "The only access control is the catch-all `pathMatchers(\"/**\").authenticated()` — evidence: AuthorizationCustomizer.java:29-30"
   - "No `@PreAuthorize` on the controller method — evidence: TagController.java:36-44"
   - "No `@PreAuthorize` and no programmatic permission check in the downstream `TagServiceImpl.listMostPopular` — evidence: TagServiceImpl.java:72-77"
-- **owner_scoping**: `N/A — the Tag directory has no owner concept`. The `tag` table has no `owner_id` column; `getPopularTagList` returns tags across the whole flat global namespace with no per-Owner filtering. (Confirmed against the `ReactiveTagRepositoryImpl` sidecar's `owner_scoping: N/A`.)
+- **owner_scoping**: `N/A — the Tag directory has no owner concept`. The `tag` table has no `owner_id` column; `getPopularTagList` returns tags across the whole flat global namespace with no per-Owner filtering.
 - **data_exposure**:
-  - "`Mono<ResponseEntity<TagsResponse>>` — up to `size` `Tag` records (`id, name, important, external, usedCount`) plus `pageInfo` -> any authenticated user under LOGIN_FORM/OAUTH2/LDAP, regardless of `TAG_*` permissions; or any caller at all under DISABLED. — evidence: TagController.java:36-44 + openapi.yaml:352-358"
-  - "The exposed data is the ENTIRE tag directory (paginated) — there is no scope restriction; an attacker enumerating `page` from 1 upward retrieves every tag name in the deployment. — evidence: ReactiveTagRepositoryImpl.java:137-167 (no scope filter beyond optional `query`/`ids`)"
+  - "`Mono<ResponseEntity<TagsResponse>>` — up to `size` `Tag` records (`id, name, important, external, usedCount`) plus `pageInfo` → any authenticated user under LOGIN_FORM/OAUTH2/LDAP, regardless of `TAG_*` permissions; or any caller at all under DISABLED. — evidence: TagController.java:36-44 + openapi.yaml:352-358"
+  - "The exposed data is the ENTIRE tag directory (paginated) — an attacker enumerating `page` from 1 upward retrieves every tag name in the deployment. Post-fix the usage counts exposed per tag are accurate popularity figures (mildly better recon signal than the pre-fix oldest-window, for what tags are actively used). — evidence: ReactiveTagRepositoryImpl.java:137-171 (no scope filter beyond optional `query`/`ids`)"
 - **known_security_gaps**:
-  - "Open-read posture — any authenticated user can enumerate the whole global tag directory via `getPopularTagList` regardless of `TAG_*` grants. The live permissions doc page (WebFetched 2026-05-20, status 200, inherited) does not document this. — evidence: SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30 — severity: MEDIUM"
-  - "Authorization is path-pattern-matched at the security filter chain, not annotation-based — a path rename (e.g. `/api/tags` -> `/api/tags/popular`, the REFACTOR-217 drift class) would silently change which `SecurityRule` set applies; for this read endpoint the effect would be benign (still `authenticated()`), but the fragility is shared with the write endpoints on the same controller. — evidence: SecurityConstants.java:138-142 (PathPatternParserServerWebExchangeMatcher entries) — severity: LOW"
-  - "No request-input validation on `page`/`size`/`query`/`ids` — `size` has no upper clamp, `page`/`size` have no lower bound; an unvalidated `size=100000` forces a full-directory aggregation, and `page<=0`/`size<=0` produce 500s. — evidence: TagController.java:37-42 (no `@Valid`, no `@Max`, no `@Min`) — severity: LOW"
+  - "Open-read posture — any authenticated user can enumerate the whole global tag directory via `getPopularTagList` regardless of `TAG_*` grants. The live permissions doc page (WebFetched 2026-06-12, status 200) documents the side-door WRITE paths but still does not document the open READ. — evidence: SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30 — severity: MEDIUM"
+  - "Authorization is path-pattern-matched at the security filter chain, not annotation-based — a path rename would silently change which `SecurityRule` set applies; for this read endpoint the effect would be benign (still `authenticated()`), but the fragility is shared with the write endpoints on the same controller. — evidence: SecurityConstants.java:138-142 — severity: LOW"
+  - "No request-input validation on `page`/`size`/`query`/`ids` — `size` has no upper clamp, `page`/`size` no lower bound; `page<=0`/`size<0` produce 500s. — evidence: TagController.java:37-42 (no `@Valid`, no `@Max`, no `@Min`) — severity: LOW"
 
 ## performance
 
 - **hot_paths**:
-  - "`getPopularTagList` runs on every UI page-load that renders the Catalog Overview 'Top Tags' chip strip, the tag-search facet, and the data-entity / dataset-field detail-page tag dropdown — a high-frequency read. — evidence: TagController.java:36-44 + the audiences analysis"
-  - "Downstream `ReactiveTagRepositoryImpl.listMostPopular` executes a paginate query + a UNION-ALL CTE over `tag_to_data_entity` + `tag_to_dataset_field` + a separate `fetchCount` SELECT — three SQL round-trips per call. — evidence: ReactiveTagRepositoryImpl.java:137-167, 373-392 + ReactiveAbstractCRUDRepository.java:229-234"
+  - "`getPopularTagList` runs on app boot (`App.tsx:50` — page=1,size=10 preload), on every Catalog-Overview mount (`Overview.tsx:20-23` — page=1,size=30 'Top Tags'), on the Management→Tags tab, and behind every tag autocomplete keystroke-search — a high-frequency read. — evidence: TagController.java:36-44 + odd-platform-ui call sites listed under upstream_callers"
+  - "Since the fix, EVERY call aggregates usage over the FULL filtered directory: the UNION-ALL CTE LEFT-JOINs `tag_to_data_entity` AND `tag_to_dataset_field` against all matching tags, GROUP BY twice, then sums per tag — regardless of `size`. The pre-fix shape aggregated over only `size` rows (cheaper but WRONG). This is the deliberate cost of correctness (implicit_adrs[0]). One SQL statement per non-empty page (the window metadata rides along); a second statement (`fetchCount`) only for empty pages. — evidence: ReactiveTagRepositoryImpl.java:144-171, 377-396 + JooqQueryHelper.java:62-126"
 - **throughput_characteristics**:
-  - "Reactive `Mono` end-to-end — non-blocking; the jOOQ-reactive Postgres driver releases the connection between awaits. — evidence: TagController.java:37 (Mono return) + TagServiceImpl.java:73 (Mono)"
-  - "Single read per request — no bulk shape, no streaming; the whole `Page<TagDto>` is materialised (`collectList()` at ReactiveTagRepositoryImpl.java:161) before mapping. — evidence: ReactiveTagRepositoryImpl.java:160-166"
+  - "Reactive `Mono` end-to-end — non-blocking. — evidence: TagController.java:37 + TagServiceImpl.java:73"
+  - "Single read per request — no streaming; the whole page is materialised (`collectList()`) before mapping. — evidence: ReactiveTagRepositoryImpl.java:164-165"
 - **resource_allocation**:
-  - "Memory per call is bounded by `size` — but `size` is unclamped (see below), so a `size=100000` request materialises the whole filtered directory into a `List<Record>` via `collectList()`. — evidence: ReactiveTagRepositoryImpl.java:161 + TagController.java:37-42 (no clamp)"
-  - "One DB connection per round-trip; `getPopularTagList` is NOT `@ReactiveTransactional` (`TagServiceImpl.listMostPopular` has no annotation) so the three SELECTs may run on different connections from the pool. — evidence: TagServiceImpl.java:72-77 (no @ReactiveTransactional)"
-  - "No client-side or server-side cache — every call is a fresh round-trip. — evidence: TagController.java:1-53 + TagServiceImpl.java:72-77 (no @Cacheable)"
+  - "Response memory per call is bounded by `size` (unclamped — see gaps); the DB does the aggregation, so server-side memory is page-rows only. — evidence: ReactiveTagRepositoryImpl.java:159-165"
+  - "Not `@ReactiveTransactional` — but for non-empty pages the rows + total come from ONE statement (window `_total`), so no cross-statement consistency concern remains on the hot path. — evidence: TagServiceImpl.java:72-77 (no annotation) + JooqQueryHelper.java:72-82, 113"
+  - "No server-side cache — every call re-aggregates. — evidence: TagController.java:1-53 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-171 (no @Cacheable)"
 - **scaling_characteristics**:
-  - "Stateless — `getPopularTagList` holds no per-call state; the controller scales horizontally. — evidence: TagController.java:36-44"
-  - "No locking on the read path — pure SELECTs, no `FOR UPDATE`, no advisory lock. — evidence: ReactiveTagRepositoryImpl.java:137-167"
-  - "`size` is uncapped — `size=100000` forces the inner paginate over the whole `TAG` table sorted by `TAG.ID ASC`, then a UNION-ALL aggregation over the full result; for a large directory this degrades response time with no protection. — evidence: TagController.java:37-42 + ReactiveTagRepositoryImpl.java:138-167 (no clamp)"
+  - "Stateless — scales horizontally. — evidence: TagController.java:36-44"
+  - "No locking on the read path — pure SELECTs. — evidence: ReactiveTagRepositoryImpl.java:137-171"
+  - "Aggregation cost grows with directory size × relation-table size, NOT with `size`: O(|tag| matching the filter, joined against both relation tables) per call. For typical tag directories (hundreds to low thousands) this is cheap; for very large directories the per-call CTE is the scaling boundary, uncached. — evidence: ReactiveTagRepositoryImpl.java:144-157, 377-396"
 - **known_performance_gaps**:
-  - "No `size` clamp on `getPopularTagList` — an unclamped `size` allows a caller to force a full-directory UNION-ALL aggregation + full-result `collectList()`. — evidence: TagController.java:37-42 — severity: LOW"
-  - "The UNION-ALL CTE over `tag_to_data_entity` + `tag_to_dataset_field` runs on every popular-tags fetch with no materialized view and no cache; for very large directories this is expensive. The LSN-019 drift compounds the waste — the CTE aggregates counts over the WRONG (oldest) rows. — evidence: ReactiveTagRepositoryImpl.java:137-167, 373-392 — severity: LOW"
+  - "No `size` clamp on `getPopularTagList` — an unclamped `size` allows a caller to force full-directory result materialisation + serialisation in one response. — evidence: TagController.java:37-42 — severity: LOW"
+  - "The full-directory UNION-ALL aggregation now runs on EVERY popular-tags fetch (including the app-boot preload and every Overview mount) with no materialised view and no cache. Correct by design (the fix), but a candidate for caching/materialisation if tag directories or relation tables grow large. — evidence: ReactiveTagRepositoryImpl.java:144-157, 377-396 + odd-platform-ui/src/components/App.tsx:50 — severity: LOW"
 
 ## upstream_callers
 
@@ -446,73 +475,101 @@ stress_findings:
   observation_class: rest-call
   unresolved: false
 
-- entry_point: "ui_route:Catalog Overview (Top Tags chip strip)"
-  caller_node: "ts react-component:Catalog-Overview Top-Tags component (per the existing TagController controller-class sidecar's audience analysis; the UI component is not read in this session)"
-  multiplicity_per_trigger: unresolved
-  evidence: "TagController.java:36-44 — the 'Top Tags' surface fetches `GET /api/tags?size=30`; the exact UI dispatch multiplicity (whether a React useEffect fires it once or more per mount) is a UI-side fact — REFERENCE to the (not yet enriched) UI sidecar for the Catalog-Overview Top-Tags component."
+- entry_point: "ui_route:/ Catalog Overview (Top Tags chip strip)"
+  caller_node: "ts react-component:Overview.tsx → useGetPopularTags hook"
+  multiplicity_per_trigger: 1
+  evidence: "odd-platform-ui/src/components/Overview/Overview.tsx:20-23 — `useGetPopularTags({ page: 1, size: 30 })`; the hook (odd-platform-ui/src/lib/hooks/api/tags.ts:5-14) is react-query `useQuery` with queryKey `['popularTags']` — one deduplicated fetch per mount under default options (refetch-on-window-focus per react-query defaults applies; the hook sets no overrides). NOTE the key omits params — any future caller with different params would share this cache entry. Items rendered via TopTagsList (TopTagsList.tsx:24-49), which re-sorts client-side (see stress_findings.orderings)."
   observation_class: ui-call
-  unresolved: true
+  unresolved: false
 
-- entry_point: "ui_route:tag-search-facet / data-entity detail tag-dropdown"
-  caller_node: "ts react-component:tag-search / tag-management UI control (not read in this session)"
-  multiplicity_per_trigger: unresolved
-  evidence: "TagController.java:36-44 + openapi.yaml:350 (SearchParam) — the tag-search facet and the per-entity tag dropdown call `GET /api/tags?query=...` to populate selectable tags; UI multiplicity is REFERENCE to the (not yet enriched) UI sidecar."
+- entry_point: "boot:App mount (tags preload into the redux slice)"
+  caller_node: "ts react-component:App.tsx → fetchTagsList thunk"
+  multiplicity_per_trigger: 1
+  evidence: "odd-platform-ui/src/components/App.tsx:50 — `dispatch(fetchTagsList({ page: 1, size: 10 })).catch(() => {})` dispatched from the app-level effect on boot; the thunk (odd-platform-ui/src/redux/thunks/tags.thunks.ts:13-19) calls `tagApi.getPopularTagList`. Dep-array interplay not re-read this session — multiplicity recorded as 1 per app boot from the call shape."
   observation_class: ui-call
-  unresolved: true
+  unresolved: false
+
+- entry_point: "ui_route:Management → Tags tab"
+  caller_node: "ts react-component:TagsList.tsx → fetchTagsList thunk"
+  multiplicity_per_trigger: "1 per mount + 1 per create/delete completion + 1 per pagination scroll + 1 per search submit"
+  evidence: "odd-platform-ui/src/components/Management/TagsList/TagsList.tsx:45-58 — mount/refresh effect `fetchTagsList({page: 1, size})` when no query (line 45, re-fires on isTagCreating/isTagDeleting per the dep array at line 46), next-page `{page: page + 1, size, query}` (line 54), search `{page: 1, size, query}` (line 58)."
+  observation_class: ui-call
+  unresolved: false
+
+- entry_point: "ui:tag autocompletes (data-entity / term / dataset-field tag edit forms) + DataQuality tag filter"
+  caller_node: "ts react-components: TagsEditFormAutocomplete (×2 variants), Terms TagsEditForm, DataQuality TagFilter → fetchTagsList / useGetTagList"
+  multiplicity_per_trigger: "1 per autocomplete query change / filter open"
+  evidence: "odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTags/TagsEditForm/TagsEditFormAutocomplete/TagsEditFormAutocomplete.tsx:15 + .../DatasetFieldTags/TagsEditForm/TagsEditFormAutocomplete/TagsEditFormAutocomplete.tsx:15 + odd-platform-ui/src/components/Terms/TermDetails/Overview/OverviewTags/TagsEditForm/TagsEditForm.tsx:22 (all import `fetchTagsList as searchTags`) + odd-platform-ui/src/components/DataQuality/DataQualityFilters/FilterItem/TagFilter.tsx:4, 23 (`useFilter(useGetTagList, filterKey)`; hook at odd-platform-ui/src/lib/hooks/api/tag.ts:5-10 with params-keyed query). Per-component debounce/effect cadence not read this session — call SITES first-hand, cadence summarised from the import shape."
+  observation_class: ui-call
+  unresolved: false
 
 ## downstream_side_effects
 
 - side_effect_class: page-render
-  description: "Returns a `TagsResponse` payload (`pageInfo` + up to `size` `Tag` items) to the caller — the sole externally-observable output of this read endpoint."
-  evidence: "TagController.java:42-43 (`.map(ResponseEntity::ok)`) + openapi.yaml:352-358 (the TagsResponse 200 body)"
+  description: "Returns a `TagsResponse` payload (`pageInfo` + up to `size` `Tag` items, popularity-ordered count DESC / id ASC) to the caller — the sole externally-observable output of this read endpoint."
+  evidence: "TagController.java:42-43 (`.map(ResponseEntity::ok)`) + openapi.yaml:352-358 (the TagsResponse 200 body) + ReactiveTagRepositoryImpl.java:159-162 (the delivered order)"
   cardinality_per_call: 1
   reachable_from_entry_points:
     - "rest:GET /api/tags"
-    - "ui_route:Catalog Overview (Top Tags chip strip)"
-    - "ui_route:tag-search-facet / data-entity detail tag-dropdown"
+    - "ui_route:/ Catalog Overview (Top Tags chip strip)"
+    - "boot:App mount (tags preload)"
+    - "ui_route:Management → Tags tab"
+    - "ui:tag autocompletes + DataQuality tag filter"
 
 - side_effect_class: db-write
-  description: "NONE — `getPopularTagList` is a pure read. The downstream chain (`TagServiceImpl.listMostPopular` -> `ReactiveTagRepositoryImpl.listMostPopular`) issues only SELECT statements: the paginate query, the UNION-ALL CTE, and the `fetchCount` SELECT. No INSERT/UPDATE/DELETE, no view_count increment, no activity-feed entry, no search-vector refresh."
-  evidence: "TagServiceImpl.java:72-77 (read-only delegation) + ReactiveTagRepositoryImpl.java:137-167 (SELECT-only chain) + ReactiveAbstractCRUDRepository.java:229-234 (fetchCount SELECT)"
+  description: "NONE — `getPopularTagList` is a pure read. The downstream chain issues only SELECT statements: the aggregated paginate statement (+ `fetchCount` for empty pages only). No INSERT/UPDATE/DELETE, no view-count increment, no activity-feed entry, no search-vector refresh."
+  evidence: "TagServiceImpl.java:72-77 (read-only delegation) + ReactiveTagRepositoryImpl.java:137-171 (SELECT-only chain) + ReactiveAbstractCRUDRepository.java:229-234 (fetchCount SELECT)"
   cardinality_per_call: 0
   reachable_from_entry_points: []
 
 ## sources
 
-- understanding ← TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-167, 373-392 + openapi.yaml:342-360 + SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30
+- understanding ← TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-171, 377-396 + openapi.yaml:342-358 + SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30 + integration-tests/run-log/2026-06-12-IT-005.md
 - concepts.entities.TagApi ← TagController.java:18, 36-37
-- concepts.entities.page/size/query/ids ← TagController.java:37-41 + openapi.yaml:347-351
-- concepts.entities.TagsResponse ← openapi.yaml:352-358
+- concepts.entities.page/size/query/ids ← TagController.java:37-41 + openapi.yaml:347-351 + ReactiveTagRepositoryImpl.java:141-143, 162 + ReactiveAbstractCRUDRepository.java:242-243
+- concepts.entities.TagsResponse/Page<TagDto> ← openapi.yaml:352-358 + TagService.java:22 + ReactiveTagRepositoryImpl.java:138 + TagServiceImpl.java:75-76
 - concepts.operations.getPopularTagList ← TagController.java:36-44
-- concepts.operations.listMostPopular-delegation ← TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-167
-- concepts.invariants.popularity-promise-vs-SQL ← openapi.yaml:344-345 + ReactiveTagRepositoryImpl.java:148, 158
+- concepts.operations.listMostPopular-delegation ← TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-171 + ReactiveAbstractSoftDeleteCRUDRepository.java:87-88 + ReactiveAbstractCRUDRepository.java:294-299 + JooqQueryHelper.java:62-89
+- concepts.invariants.popularity-promise-honoured ← openapi.yaml:344-345 + ReactiveTagRepositoryImpl.java:159-162 + JooqQueryHelper.java:73-82 + integration-tests/run-log/2026-06-12-IT-005.md
 - concepts.invariants.no-GET-SecurityRule ← SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30
-- concepts.invariants.page-total-semantics ← ReactiveTagRepositoryImpl.java:165 + ReactiveAbstractCRUDRepository.java:229-234
-- concepts.invariants.no-status-code-drift ← openapi.yaml:353 + TagController.java:43
-- concepts.invariants.query-case-insensitive ← ReactiveAbstractCRUDRepository.java:242-243
-- dependencies_semantic.requires-feature.* ← TagController.java:18, 20, 42 + ReactiveTagRepositoryImpl.java:137-167 + SecurityConstants.java:138-142 + AuthorizationCustomizer.java:20-31
-- tests_coverage_semantic.test_files ← odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:239-267 (per the existing ReactiveTagRepositoryImpl + TagController sidecars)
+- concepts.invariants.page-total-semantics ← JooqQueryHelper.java:72, 75-82, 94-126 + ReactiveTagRepositoryImpl.java:169 + ReactiveAbstractCRUDRepository.java:229-234
+- concepts.invariants.no-status-code-drift ← openapi.yaml:353, 372 + TagController.java:43
+- concepts.invariants.query-case-insensitive ← ReactiveAbstractCRUDRepository.java:242-243 + ReactiveTagRepositoryImpl.java:120-125
+- dependencies_semantic.requires-feature.* ← TagController.java:18, 20, 42 + ReactiveTagRepositoryImpl.java:137-171 + JooqQueryHelper.java:62-89, 138-154 + SecurityConstants.java:138-142 + AuthorizationCustomizer.java:20-31
+- tests_coverage_semantic.covered_behaviours ← odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:238-268, 270-335 + integration-tests/protocols/IT-005-top-tags-ordering.md + integration-tests/run-log/2026-06-12-IT-005.md
+- tests_coverage_semantic.uncovered_behaviours.controller-perimeter ← grep `TagController` across odd-platform-api/src/test — ZERO files (search root: odd-platform-api/src/test, re-run 2026-06-12)
 - docs_link_semantic.declared_docs ← TagController.java:1-53 (no @docs token observed during the end-to-end read)
-- docs_link_semantic.inferred_docs ← inherited verification from the TagController controller-class sidecar (WebFetch 2026-05-20, status 200)
-- docs_link_semantic.doc_drift_findings ← openapi.yaml:345 + ReactiveTagRepositoryImpl.java:148, 158
-- implicit_adrs.[0] ← SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30
-- implicit_adrs.[1] ← TagController.java:18, 36-44
-- bugs_limitations_corner_cases.[0] ← TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:140-167, 373-392 + lineage/odd-platform/probes/P-010.yaml
-- bugs_limitations_corner_cases.[1] ← SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30 + TagController.java:36-44
-- bugs_limitations_corner_cases.[2] ← TagController.java:37-42 + ReactiveTagRepositoryImpl.java:138-167
-- bugs_limitations_corner_cases.[3] ← TagController.java:37-42
-- bugs_limitations_corner_cases.[4] ← TagController.java:37-42 + TagServiceImpl.java:73-74 + ReactiveTagRepositoryImpl.java:148
+- docs_link_semantic.inferred_docs.[0] ← WebFetch https://docs.opendatadiscovery.org/features/data-discovery/tagging (2026-06-12, 200; the /data-discovery/tagging variant 404s — fetched this session)
+- docs_link_semantic.inferred_docs.[1] ← WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions (2026-06-12, 200)
+- docs_link_semantic.doc_drift_findings ← openapi.yaml:345 + ReactiveTagRepositoryImpl.java:159-162 + the two WebFetches above
+- implicit_adrs.[0] ← ReactiveTagRepositoryImpl.java:147-162 (intent comment at 147-149)
+- implicit_adrs.[1] ← JooqQueryHelper.java:138-154 (intent comment at 143-145) + grep RANK_FIELD_ALIAS across odd-platform-api/src/main (hits only in FTSConstants.java:35 + DataEntityCTEQueryConfig + 4 FTS repositories; none in JooqQueryHelper)
+- implicit_adrs.[2] ← SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30
+- implicit_adrs.[3] ← TagController.java:18, 36-44
+- bugs_limitations_corner_cases.[0] ← SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30 + TagController.java:36-44
+- bugs_limitations_corner_cases.[1] ← TagController.java:37-42 + ReactiveTagRepositoryImpl.java:159-165
+- bugs_limitations_corner_cases.[2] ← TagController.java:37-42
+- bugs_limitations_corner_cases.[3] ← TagController.java:37-42 + TagServiceImpl.java:73-74 + ReactiveTagRepositoryImpl.java:162
+- bugs_limitations_corner_cases.[4] ← odd-platform-ui/src/components/Overview/TopTagsList/TopTagsList.tsx:24-34 + ReactiveTagRepositoryImpl.java:160-161
+- bugs_limitations_corner_cases.[5] ← lineage/odd-platform/probes/P-010.yaml:154-180, 235-269
 - security.authorization_assertions ← SecurityConstants.java:138-142 + AuthorizationCustomizer.java:29-30 + TagController.java:36-44 + TagServiceImpl.java:72-77
-- security.data_exposure ← TagController.java:36-44 + openapi.yaml:352-358 + ReactiveTagRepositoryImpl.java:137-167
-- performance.hot_paths ← TagController.java:36-44 + ReactiveTagRepositoryImpl.java:137-167, 373-392
-- performance.scaling_characteristics ← TagController.java:37-42 + ReactiveTagRepositoryImpl.java:138-167
+- security.data_exposure ← TagController.java:36-44 + openapi.yaml:352-358 + ReactiveTagRepositoryImpl.java:137-171
+- security.known_security_gaps.[0] ← SecurityConstants.java:138-142 + WebFetch permissions page (2026-06-12, 200)
+- performance.hot_paths ← TagController.java:36-44 + ReactiveTagRepositoryImpl.java:144-171, 377-396 + JooqQueryHelper.java:62-126 + odd-platform-ui/src/components/App.tsx:50 + odd-platform-ui/src/components/Overview/Overview.tsx:20-23
+- performance.scaling_characteristics ← ReactiveTagRepositoryImpl.java:144-157, 377-396
 - upstream_callers.[0] ← TagController.java:36-44
-- downstream_side_effects.[0] ← TagController.java:42-43 + openapi.yaml:352-358
-- stress_findings.name_behavior_pairs[0] ← TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:140-167, 373-392 + openapi.yaml:344-345 + lineage/odd-platform/probes/P-010.yaml + retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32
-- stress_findings.orderings ← ReactiveTagRepositoryImpl.java:148, 158, 373-392
+- upstream_callers.[1] ← odd-platform-ui/src/components/Overview/Overview.tsx:20-23 + odd-platform-ui/src/lib/hooks/api/tags.ts:5-14 + odd-platform-ui/src/components/Overview/TopTagsList/TopTagsList.tsx:24-49
+- upstream_callers.[2] ← odd-platform-ui/src/components/App.tsx:50 + odd-platform-ui/src/redux/thunks/tags.thunks.ts:13-19
+- upstream_callers.[3] ← odd-platform-ui/src/components/Management/TagsList/TagsList.tsx:45-58
+- upstream_callers.[4] ← the four UI call-site files cited inline + odd-platform-ui/src/lib/hooks/api/tag.ts:5-10
+- downstream_side_effects.[0] ← TagController.java:42-43 + openapi.yaml:352-358 + ReactiveTagRepositoryImpl.java:159-162
+- downstream_side_effects.[1] ← TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-171 + ReactiveAbstractCRUDRepository.java:229-234
+- stress_findings.name_behavior_pairs[0] ← TagController.java:36-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:137-171, 377-396 + JooqQueryHelper.java:62-89 + openapi.yaml:344-345 + TagRepositoryImplTest.java:270-335 + integration-tests/run-log/2026-06-12-IT-005.md + retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32
+- stress_findings.orderings ← ReactiveTagRepositoryImpl.java:144-162 + JooqQueryHelper.java:62-89, 156-161 + TagRepositoryImplTest.java:318-331 + odd-platform-ui/src/components/Overview/TopTagsList/TopTagsList.tsx:24-34
 - stress_findings.auth_gates ← SecurityConstants.java:138-142 + AuthorizationCustomizer.java:20-31 + TagController.java:36-44 + TagServiceImpl.java:72-77
-- stress_findings.request_inputs ← TagController.java:37-42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:140-142, 148, 165 + ReactiveAbstractCRUDRepository.java:63, 240-243
-- stress_findings.probes_emitted.P-029 ← lineage/odd-platform/probes/P-029.yaml
+- stress_findings.resource_boundaries ← ReactiveTagRepositoryImpl.java:137-171 + JooqQueryHelper.java:72-126 + odd-platform-ui/src/lib/hooks/api/tags.ts:5-14
+- stress_findings.request_inputs ← TagController.java:37-42 + TagServiceImpl.java:75 + ReactiveTagRepositoryImpl.java:140-143, 162, 169 + ReactiveAbstractCRUDRepository.java:49, 63, 240-243 + ReactiveAbstractSoftDeleteCRUDRepository.java:87-93
+- stress_findings.probes_emitted.P-029 ← lineage/odd-platform/probes/P-029.yaml:1-40
 
 ## confidence_per_field
 
@@ -520,14 +577,14 @@ stress_findings:
 - concepts: HIGH
 - dependencies_semantic: HIGH
 - tests_coverage_semantic: HIGH
-- docs_link_semantic: MEDIUM — the OpenAPI drift claim is HIGH (the spec line and the SQL are both first-hand read); the live-doc excerpts are inherited from the sibling sidecar's WebFetch within the stale-probe cadence, not re-fetched this session.
+- docs_link_semantic: HIGH — both live pages WebFetched first-hand this session (2026-06-12, both 200); the tagging page's pre-fix caveat quoted verbatim; the release-train gating of its retirement is per `adrs/drafts/release-train-doc-gating.md` + the CTRIB-007 milestone (0.28.0).
 - implicit_adrs: HIGH
 - bugs_limitations_corner_cases: HIGH
 - security: HIGH
 - performance: HIGH
-- upstream_callers: MEDIUM — the REST entry point is HIGH; the two UI entry points are unresolved REFERENCE entries pending UI-sidecar enrichment.
+- upstream_callers: HIGH — all five entry points read first-hand this session (Overview.tsx, App.tsx, TagsList.tsx, the autocomplete/filter call sites, both hooks); residual softness is limited to per-component effect cadence for the autocompletes (flagged inline), not to the existence or shape of any caller.
 - downstream_side_effects: HIGH
-- stress_findings: HIGH — the load-bearing operator-observable claim (the LSN-019 popularity drift) is STATIC-INFERRED via an end-to-end JOOQ chain trace read first-hand this session, empirically confirmed by the maintainer 2026-05-20, and pinned by P-010. Of 35 stress questions, only 2 resolve to PROBE-NEEDED (the page/size degenerate-input HTTP-status question — non-load-bearing) and 1 to REFERENCE (a UI-side re-sort question).
+- stress_findings: HIGH — the load-bearing operator-observable claim (popularity ordering honoured, deterministic id-ASC ties) is STATIC-INFERRED via an end-to-end chain trace read first-hand this session AND runtime-verified 2026-06-12 (failing-first unit test RED-on-main/GREEN-on-fix; e2e IT-005 GREEN @ 82812cdf / RED @ main 6f356b72 with an in-band API capture). Of 40 stress questions, only 2 resolve to PROBE-NEEDED (the degenerate page/size HTTP-status question — non-load-bearing, P-029) and 0 to REFERENCE (the former UI re-sort REFERENCE is resolved this session via TopTagsList.tsx).
 
 ## Maintainer notes
 

@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: REVIEWER re-measurement, gate suite 2/3 (G-C2 / 2026-06-11 directive): **9 passed / 0 failed (4.1m)** on stacks built from the branch tip abe51417 — MinIO attachment durability, LOGIN_FORM ×2, LDAP RBAC ×2, WAL ×2, session-cookie posture, auth-boundary all green; the #1752 relationships fix touches none of these surfaces and none regressed. Matches the implement run's 9/9.
 
+## 2026-06-12 — suite/protocol: multi-stack
+- runner: AI-assisted Claude (Fable 5) — CTRIB-007 /contribute implement session (full-regression gate)
+- odd-platform working-tree HEAD: 82812cdf (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 82812cdf  (image odd-platform:odd-team-sut, digest sha256:de31e26190ce2ffd1d54c419b4ee1ed356bcc9ccf954df4df9d48675bd7e5eec)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **9 passed / 0 failed (4.8m)** — MinIO round-trip, auth-boundary, LDAP RBAC, WAL x2, LOGIN_FORM x2 unaffected by the CTRIB-007 tag-ordering fix.
+

@@ -611,6 +611,11 @@ observed_vs_expected:
       `cross_owner_facet_enumeration`. Severity: MEDIUM.
   - facet_id: F-018-DRIFT-LSN019-listMostPopular-ranking
     facet: |-
+      [FIXED 2026-06-12 — #1773 Thread A / CTRIB-007 @ 82812cdf: usage aggregated over
+      the FULL filtered directory BEFORE pagination (usage DESC, tag.id-ASC ties);
+      guarded by TagRepositoryImplTest.testListMostPopularReturnsGloballyMostUsedTags
+      (failing-first) + IT-005 (flipped known-bugs -> feature-complete, GREEN-on-fix +
+      RED-on-ref:main run-log proof). Historical text below.]
       listMostPopular: NAME-vs-BEHAVIOUR drift — paginate-inside-CTE yields
       OLDEST-by-tag.id-ASC, NOT MOST-POPULAR-by-count when directory size
       exceeds the page size (LSN-019 SMOKING-GUN — Stress Protocol canary
@@ -1173,9 +1178,10 @@ use_cases:
     kind: render
     promise: "GET /api/tags / the Top Tags strip returns the MOST-USED tags, not the oldest, when the directory exceeds one page."
     actor: "any catalog reader"
-    trace: "ReactiveTagRepositoryImpl.java:148 (paginate TAG.ID ASC) + :158 (outer count DESC re-rank over the truncated window)"
-    coverage: unverified
-    test_demand: functional   # contradicted (LSN-019); ALSO a regression guard for PLT-026 Thread A
+    trace: "ReactiveTagRepositoryImpl.java:137-167 (FIXED 2026-06-12: aggregate over the full directory, then paginate usage DESC / id-ASC ties — #1773 Thread A / CTRIB-007 @ 82812cdf; pre-fix: paginate TAG.ID ASC before the count)"
+    coverage: verified
+    test_ref: "TagRepositoryImplTest.testListMostPopularReturnsGloballyMostUsedTags (unit, failing-first RED on pre-fix main) + integration-tests/protocols/IT-005 e2e:specs/top-tags-ordering.spec.ts (flipped known-bugs -> feature-complete 2026-06-12; GREEN-on-fix + RED-on-ref:main)"
+    test_demand: none   # was contradicted (LSN-019); fixed + guarded both buckets 2026-06-12
   - uc_id: F-018-UC-002
     hypothesis_id: H-002
     kind: render
@@ -1276,15 +1282,16 @@ use_case_coverage:
   # LSN-030 — the SECOND coverage frontier: verified promises / total promises. Distinct from the
   # test_matrix's per-test-type cells and from line/method coverage. A user-facing feature sitting
   # near 0/N verified promises is itself a finding.
-  verified: 2
+  verified: 3
   total: 15
   note: |
-    2 of 15 user-facing promises are guarded by a real test, and BOTH are the directory-CRUD
-    happy path through the management Tags page: F-018-UC-015 (create/rename/important/delete and
-    it appears on the list — Playwright e2e tests/features/tags/*.spec.ts) and the directory-
-    soft-delete arm of F-018-UC-009 (delete removes the list row, subsumed by UC-015's delete-tag
-    spec). EVERY contradicted / partial / probe-needed promise is UNVERIFIED — including the
-    feature's most dangerous behaviours (the LSN-019 ranking lie, the silent global-mint
+    3 of 15 user-facing promises are guarded by a real test: F-018-UC-015 (directory-CRUD
+    happy path through the management Tags page — Playwright e2e tests/features/tags/*.spec.ts),
+    the directory-soft-delete arm of F-018-UC-009 (subsumed by UC-015's delete-tag spec), and —
+    since 2026-06-12 — F-018-UC-001 (the LSN-019 ranking promise, FIXED by #1773 Thread A /
+    CTRIB-007 and guarded both buckets: the failing-first unit test + the flipped IT-005 e2e).
+    EVERY OTHER contradicted / partial / probe-needed promise is UNVERIFIED — including the
+    feature's remaining dangerous behaviours (the silent global-mint
     side-channel, the open read, the incomplete Collector-ownership guard, the unclean delete) and
     the ONE fully-confirmed guardrail (F-018-UC-014: side-channel mints important=false + UI cannot
     wipe EXTERNAL relations), which has NO regression test. 13 missing-functional test demands are
@@ -1303,7 +1310,8 @@ test_matrix:
     - testCreateRelationsWithDataEntity (TagRepositoryImplTest:99-122 — all relations created)
     - testDeleteRelations (TagRepositoryImplTest:164-190 — deleteDataEntityRelations(Collection) diff-list variant only)
     - testUpdateTag (TagRepositoryImplTest:219-235 — bare repository update round-trip; NOT the service-layer orchestration)
-    - testListMostPopular (TagRepositoryImplTest:239-267 — happy-path ranking; structurally blind to LSN-019 — size=numberOfTestTags so the LIMIT never fires)
+    - testListMostPopular (TagRepositoryImplTest — happy-path name-query membership; structurally blind to LSN-019 — size=numberOfTestTags so the LIMIT never fires)
+    - 'testListMostPopularReturnsGloballyMostUsedTags (TagRepositoryImplTest, NEW 2026-06-12 CTRIB-007 failing-first — the LSN-019 discriminating shape: 5 low-use olds + 3 most-used youngest, page size 5; asserts exact page-1 membership AND order (usage DESC, id-ASC ties) + total + hasNext; RED on pre-fix main, the regression guard for #1773 Thread A) + JooqQueryHelperTest (homogeneityCheck computed-alias exemption RED-on-main + two-table rejection guard)'
     uncovered:
     - ingestData upsert path (the MOST consequential method — every Collector-pushed tag — is the LEAST covered)
     - Concurrent novel-name race (testIngestData_ConcurrentNovelName_DoesNotThrow)
@@ -1314,7 +1322,7 @@ test_matrix:
     - getDto for soft-deleted tag (testGetDto_SoftDeletedTag_ReturnsEmpty)
     - listMostPopular tag_to_dataset_field arm (testListMostPopular_TagsOnlyOnDatasetFields_RankedByUsage)
     - listTagsRelations TagOrigin filter (testListTagsRelations_FilterByOrigin)
-    - listMostPopular pagination (testListMostPopular_Pagination)
+    - listMostPopular page-2+ continuation (the new ranking test pins page 1 + total + hasNext; a page-2 fetch asserting the NEXT usage-band slice would complete the pagination story)
     - tag-name length / charset / pattern validation (testCreate_EmptyName, testCreate_VeryLongName, testCreate_ControlCharacters)
     - deleteDatasetFieldRelations(long) overload (the asymmetric-cascade method — TagRepositoryImplTest covers only the Collection overload)
     - deleteTermRelations(long) overload (used by deleteTag — uncovered; only the Collection overload is tested)
@@ -1322,12 +1330,13 @@ test_matrix:
     state: PARTIAL
     covered:
     - TagRepositoryImplTest is a BaseIntegrationTest (Testcontainers-Postgres) — happy-path repository coverage exists at the integration tier
-    - 'DIRECTORY-CRUD happy path via the management Tags page UI is e2e-covered — tests/features/tags/{add-tag,change-tag,delete-tag}.spec.ts (Playwright) drive POST/PUT/DELETE /api/tags through the modals; create/rename/important-toggle/delete are asserted on the list. This is the verified arm of use_case F-018-UC-015. NOT the per-entity side-channel; NOT ranking/case/validation/FTS/audit.'
+    - 'DIRECTORY-CRUD happy path via the management Tags page UI is e2e-covered — tests/features/tags/{add-tag,change-tag,delete-tag}.spec.ts (Playwright) drive POST/PUT/DELETE /api/tags through the modals; create/rename/important-toggle/delete are asserted on the list. This is the verified arm of use_case F-018-UC-015. NOT the per-entity side-channel; NOT case/validation/FTS/audit.'
+    - 'RANKING (F-018-UC-001) e2e-covered since 2026-06-12: IT-005 (integration-tests/protocols/IT-005-top-tags-ordering.md, e2e:specs/top-tags-ordering.spec.ts) seeds the discriminating popular-young shape and asserts ALL 5 most-used tags render on the Overview Top Tags strip — flipped known-bugs -> feature-complete on the #1773 Thread A fix (GREEN-on-fix + RED-on-ref:main, run-log 2026-06-12).'
     uncovered:
     - 'TagController has ZERO controller-perimeter tests — no TagControllerTest.java exists (X-TAGGING verified by Grep across all four controller-method sidecars; re-confirmed 2026-06-04); createTag / getPopularTagList / updateTag / deleteTag are all unverified at the API tier (the e2e specs cover the happy path via the UI, not the API contract / error / auth modes)'
     - 'createTag in-batch / cross-batch duplicate atomicity — P-026 (does a self-duplicate batch roll back wholly or partially commit?)'
     - 'createTag duplicate-name failure surfaces a 4xx not a 500 (UniqueConstraintException translation)'
-    - 'getPopularTagList LSN-019 ranking drift at the REST boundary — 35-tag fixture + size=30 + assert response IDs are the 30 LOWEST — P-010 (use_case F-018-UC-001)'
+    - 'getPopularTagList page/size REST-boundary contract beyond the fixed ranking (the LSN-019 ranking drift itself is FIXED + covered 2026-06-12 — see covered: IT-005 + the unit ranking test; P-010 retires into them)'
     - 'getPopularTagList page/size degenerate inputs (page=0 negative OFFSET, size=-1 negative LIMIT, null Integer NPE) surface as a clean 4xx not a 500 — P-029'
     - 'updateTag rename propagates the new name into search_entrypoint.tag_vector + does NOT leave the old token (overwrite-vs-append) — P-025'
     - 'deleteTag soft-deletes the tag row + hard-deletes tag_to_term + tag_to_data_entity'

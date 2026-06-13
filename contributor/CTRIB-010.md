@@ -6,12 +6,12 @@ class: bug
 milestone: "0.28.0"
 status: pr-draft  # v2 implemented + full DoD green; draft PR #1780 open (Closes #1657); GATE 2 pending; /review is the next (separate-session) step
 reproduced: "live 2026-06-13 on the PRE-FIX SUT (odd-platform:odd-team-sut, image sha256:6cc6e88b…, built from the clean tree @ 1653a909 — tree byte-identical to main @ 05ecf0a9, verified `git diff --stat` empty; odd-minimal stack). Seeds: owners alpha(id 1)/beta(id 2); mapping alice→alpha ACTIVE; activities by alice (entity 20950), bob (20950, NO mapping), dave (20951, no mapping). (1) Wire: GET /api/activity?…&user_ids=1 → alice's row; user_ids=2 → 0 rows; NO value selects bob (defect 1 — unmapped actor unfilterable). (2) REMAP (alice mapping deleted_at=NOW(), dave→alpha inserted): the IDENTICAL user_ids=1 query → DAVE's row, alice's history unreachable (defect 2 — filter follows the mutable mapping, not the recorded actor); counts user_ids=1 total 1→1 but the counted USER changed. (3) GET /api/activity/users → 404 (no enumeration endpoint). (4) Per-entity surface: GET /api/dataentities/20950/activity?user_ids=1 post-remap → 0 rows (alice authored there). (5) UI drive (Playwright scratch, screenshots captured): the User filter dropdown is fed by GET /api/owners?query=… and listed [repro1657_owner_alpha, repro1657_owner_beta] — alice/bob/dave NOT listable; selecting 'repro1657_owner_alpha' sent user_ids=1 and rendered dave's entity_two row under the alpha chip. Seeds + scratch spec deleted post-capture (residue query = 0; /api/activity 200)."
-adr_required: true  # TWO ADRs (G-C7): adrs/drafts/activity-actor-filter-audit-identity.md (3 explicit actor axes; PURELY ADDITIVE — user_ids NO LONGER deprecated) + adrs/drafts/platform-info-popover-affordance.md (NEW reusable info-(i) popover platform feature, built in this ticket)
+adr_required: true  # TWO ADRs (G-C7): adrs/drafts/activity-actor-filter-audit-identity.md (3 explicit actor axes; PURELY ADDITIVE — user_ids NO LONGER deprecated) + ADR-0076 (info-(i) affordance — REVERSE-ENGINEERED from the EXISTING InformationIcon-in-AppTooltip pattern after round-2 dropped the duplicate popover; renamed …-tooltip-affordance.md)
 contract_variant: "v2 — PURELY ADDITIVE (usernames added; user_ids KEPT as a legitimate axis, renamed in UI; no deprecation, no break). Supersedes v1 Variant A."
 plan_approved_by: "v1: RamanDamayeu (GATE 1, 2026-06-13). v2: RamanDamayeu (GATE 1, 2026-06-13 — 'Approve as written' via AskUserQuestion; labels chosen: Owner / Made by (owner) / Made by (user))."
 plan_approved_at: "v1 2026-06-13; v2 2026-06-13"
 v2_labels: "asset-owner filter = 'Owner' (ownerIds); actor's-current-owner = 'Made by (owner)' (user_ids); external username = 'Made by (user)' (usernames). Action row: username + 'current owner: B' (the as-of-now owner, explicitly labelled; raw usernames in the Made by (user) dropdown). Refined per review 2026-06-13."
-docs_routing: "release/0.28.0 train (3-axis filters + dual-name rows rewrite; supersedes the v1 train commit be702da) + docs main released-truth correction (da44e59, the 'entity-ownership axis' error) + a published ADR-log entry for the info-popover ADR (maintainer: publish now)"
+docs_routing: "release/0.28.0 train (3-axis filters + dual-name rows rewrite; supersedes the v1 train commit be702da) + docs main released-truth correction (da44e59, the 'entity-ownership axis' error) + a published ADR-log entry for ADR-0076 (info-(i) tooltip affordance, reverse-engineered; maintainer: publish now)"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1780"
 pr_draft: true
 ---
@@ -580,3 +580,53 @@ mapper + threaded params were uncovered): odd-platform commit `2feb1a2e` (Activi
 DataEntityControllerActivityTest, ActivityMapperTest.testMapToActivityUserList, ActivityServiceImplTest
 getActivityCounts/getDataEntityActivityList) — ActivityController 0%->100%, ActivityMapper 95.2%->98.1%,
 ActivityServiceImpl 59%->96% (the residual whole-file misses are pre-existing methods, not changed lines).
+
+### Review-feedback round 3 (2026-06-13) — the tooltip render fix + the process gate it proves
+
+The maintainer rejected the reused info-`(i)` tooltip on sight: *"that is a disaster... no background
+highlighting, long text in a single row... I could not go with it to users. We did just junior formal
+implementation."* And, separately, asked to fix the **process** so four recurring classes stop
+recurring (no reuse/ADR scan; no Product-Owner/SRE lens; no Principal test-sufficiency review;
+incomplete impact analysis / i18n).
+
+**Process (the root fix), odd-team commit `8fc8a70`.** `retrospectives/LSN-035` + a universal
+`playbooks/design-before-build.md` (reuse-scan · ADR-check · impact-dimension checklist · PO/SRE lens ·
+**LOOK at the rendered pixels**) + contributor `G-C12`/`G-C13` + the `/contribute` Phase-C design step +
+CLAUDE.md "Gate 0". The tooltip fix below is the **first application** of that gate's step 5.
+
+**Root cause of the bad render.** The round-2 reuse-refactor wired the hints through `AppTooltip` but
+passed the hint **text as a bare string**. `AppTooltip`'s `"light"` popper
+(`AppTooltipStyles.tsx`) supplies only `backgroundColor: background.default` with **`padding: 0`** and
+**`maxWidth: 'unset'`** — so a bare string renders edge-to-edge, in one unwrapped row, with no card to
+set it off the page. The established surfaces (`InternalDescriptionHeader`, `TermDefinition`) never pass a
+bare string: they wrap content in a styled `S.Tooltip` body that brings the padding, the wrapping
+max-width, and the border/radius/shadow. I had reused the outer component but **not its content
+container** — the exact miss the new playbook's step-5 note now calls out.
+
+**Fix — odd-platform commit `094c8a0a` (3 files, +33/-5).** A shared
+`components/shared/elements/Activity/Activity.styles.ts` `TooltipBody` (padding · `maxWidth: 360px` ·
+`whiteSpace: normal` · border · `borderRadius: 8px` · `boxShadow: shadows[9]`), used by **both**
+`ActivityFilterHints` (the 3 filter hints) **and** `ActivityActorLabel` (the row's "current owner" note —
+which had the identical bare-string defect). One shared body, not a 5th per-surface copy or a cross-file
+import smell. `docker/demo.yaml` (the maintainer's local) left untouched.
+
+**Visual verification (G-C12 step 5 — the pixel gate, not a green test).** Built the working-tree SUT
+(`sha256:45a27df…`; the build's `tsc --noEmit && vite build` is the FE type gate — clean), then drove the
+running UI and **screenshotted every tooltip**: all four (Owner / Made by (owner) / Made by (user) filter
+hints + the actor-row "current owner" note) now render as **padded, wrapped, bordered cards** with clear
+contrast. The in-context shot also confirmed the dual-name row and all three filters. (Capture spec was a
+throwaway — removed; not a committed visual-regression test.)
+
+**i18n impact dimension (the named gap, applied to this change).** The eight new activity strings are
+`en.json`-only; the six other locales (otherwise ~420/434 keys — actively maintained, NOT en-fallback by
+default) carry none → a non-English operator sees them in English. Per the new impact checklist this is
+**tracked, not machine-translated** into a published catalog I cannot verify (Ukrainian/Chinese/Armenian):
+**`issues/odd-platform/PLT-225.md`** (draft), the PLT-190 (#1748) precedent. Named in the PR scope-exclusions.
+
+**Regression (the fix SUT `45a27df…`).** `IT-129` **6/6 GREEN** · `feature-complete` **285 passed / 0
+failed** (`api:PASS e2e:PASS`; same count as the parent v2 run — the CSS-only delta changed nothing).
+Unit bucket unchanged (zero Java touched — FE styling only); `multi-stack`/`known-bugs`/`ingestion-e2e`
+are backend/data/ingestion lanes a tooltip-CSS wrap cannot affect and were green/expected-RED on the
+parent commit. `/review` (separate session) re-runs the literal full set as the gate.
+
+Pushed additively (commit `094c8a0a`) onto the draft PR branch — no history rewrite.

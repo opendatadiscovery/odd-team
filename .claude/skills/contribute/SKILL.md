@@ -17,7 +17,7 @@ This skill owns the **temporal structure**: the 12-phase loop and the **two huma
 2. `pillars/contributor/pillar.md` — the bar + cornerstones.
 3. `pillars/contributor/gates.md` — G-C1..G-C10 + the acceptance criteria + the adversarial probes.
 4. `pillars/contributor/canonical-homes.md` — where every artifact goes + the CTRIB lifecycle.
-5. `playbooks/reproduce-first.md`, `playbooks/github-write.md`.
+5. `playbooks/reproduce-first.md`, `playbooks/github-write.md`, `playbooks/design-before-build.md` (the Phase-C HOW-gate: reuse + ADR + impact + product lens, G-C12).
 6. `navigation/architecture.md` + `navigation/domains/{relevant}.md` — code pointers (localization is the #1 failure point; use the index, don't grep blind).
 
 ## Phase A — Understand (intake → scope → clarify)
@@ -38,7 +38,9 @@ This skill owns the **temporal structure**: the 12-phase loop and the **two huma
 
 ## Phase C — Plan → **GATE 1**
 
-7. **Write the plan** (the CTRIB `## Plan` section, a `/code-walk`-derived artifact): the exact change; the **explicit scope EXCLUSIONS** (what is deliberately not touched — G-C5); the ADR decision; the test plan (unit + integration); the docs decision **including routing** (docs `main` for released-truth corrections / the `release/{milestone}` train for unreleased behaviour / none + why — G-C11); the ontology nodes to refresh. **If the plan changes the issue's scope** (fixes a subset, reframes, or defers facets), the plan MUST include the drafted **scope comment** for the issue thread — what this PR covers, what is deferred and where it is tracked (ASCII, self-contained, no workspace-internal IDs). The public thread must reflect the actual PR scope; the workspace record alone is not enough (G-C5; memory `feedback_scope_change_comment_on_issue`).
+7. **Design the HOW first (G-C12)** → run `playbooks/design-before-build.md` and record its output AS THE OPENING of the plan, before the change is specified: (a) a **reuse-scan** — `/retrieve` (ontology semantic search) + a source grep for an existing component/pattern/endpoint-shape that already serves the need; reuse it, or justify a new one in one sentence; (b) an **ADR-check** — read `lineage/{repo}/implicit-adrs.md` + the published ADR-log for the area; conform, or propose a **reverse-engineered** ADR for an undocumented existing/emerging pattern; (c) the **impact-dimension checklist** — i18n (ALL locale files, never en-only-plus-backlog), generated BE+FE clients, every consumer of a changed signature, migrations, docs, ontology — each handled-here or deferred-with-a-logged-item; (d) for a **feature-shaped** change, the **Product-Owner/SRE lens** via `odd-sme` (does it help an operator work, is it the straightforward shape, what does a PO expect by default) — fold its findings into the plan BEFORE building. Skipping this is the LSN-035 failure (a duplicate `(i)` affordance + no PO/SRE view + en-only i18n, all caught at review instead of planning).
+
+8. **Write the plan** (the CTRIB `## Plan` section, a `/code-walk`-derived artifact): the exact change; the **explicit scope EXCLUSIONS** (what is deliberately not touched — G-C5); the ADR decision; the test plan (unit + integration); the docs decision **including routing** (docs `main` for released-truth corrections / the `release/{milestone}` train for unreleased behaviour / none + why — G-C11); the ontology nodes to refresh. **If the plan changes the issue's scope** (fixes a subset, reframes, or defers facets), the plan MUST include the drafted **scope comment** for the issue thread — what this PR covers, what is deferred and where it is tracked (ASCII, self-contained, no workspace-internal IDs). The public thread must reflect the actual PR scope; the workspace record alone is not enough (G-C5; memory `feedback_scope_change_comment_on_issue`).
 
 8. **GATE 1** → `playbooks/pause-and-ask.md`. **Stop. A human approves the plan before any code is written** (G-C3 — even for a one-liner). Approving a plan that carries a scope comment IS approval to post it: post it via `playbooks/github-write.md` immediately after approval, before any code, and record the comment URL in the CTRIB record. Record `plan_approved_by`/`plan_approved_at`. Do not proceed without approval.
 
@@ -64,9 +66,9 @@ This skill owns the **temporal structure**: the 12-phase loop and the **two huma
 
 13. **Ontology refresh (G-C10)** → `/enrich --touched` on the changed nodes (the sidecar that described the OLD shape is now stale) + re-embed the graph; **commit** it (not narrated).
 
-> **Definition of Done — all four gates before the PR leaves `draft` (the merge-readiness gate, not optional trailing phases — `LSN-032`):**
-> 1. full unit build green **on the working tree** · 2. the **FULL integration regression** against the working-tree SUT (`run-suite.sh feature-complete` green + `multi-stack` green + `known-bugs` still-RED + `ingestion-e2e` green; the impacted IT alone is NOT the gate — 2026-06-11/12) · 3. docs read + decided + **routed** (train or main per G-C11) · 4. ontology re-enriched + re-embedded + committed.
-> The draft PR (phase 14) may open earlier for visibility, but it stays `draft` until all four are checked in the CTRIB ledger.
+> **Definition of Done — five gates before the PR leaves `draft` (the merge-readiness gate, not optional trailing phases — `LSN-032`, `LSN-035`):**
+> 1. full unit build green **on the working tree** · 2. the **FULL integration regression** against the working-tree SUT (`run-suite.sh feature-complete` green + `multi-stack` green + `known-bugs` still-RED + `ingestion-e2e` green; the impacted IT alone is NOT the gate — 2026-06-11/12) · 3. docs read + decided + **routed** (train or main per G-C11) · 4. ontology re-enriched + re-embedded + committed · 5. **Principal sufficiency review (G-C13)** — enough + meaningful tests, the **local patch-coverage gate** met (run `:odd-platform-api:build`'s jacoco + the 98% changed-files check; never discover it in CI), no control lost, no existing functionality harmed; **and for a UI change, a screenshot of the rendered surface reviewed as a user** (contrast / wrapping / legibility / empty state — G-C12 step 5), not just a green e2e.
+> The draft PR (phase 14) may open earlier for visibility, but it stays `draft` until all five are checked in the CTRIB ledger.
 
 ## Phase E — Draft PR → **GATE 2**
 
@@ -93,5 +95,5 @@ Silence is not the target; the bar is. Don't fix without reproducing; don't trus
 - Gates + acceptance criteria + adversarial probes → `pillars/contributor/gates.md`
 - Homes + CTRIB lifecycle → `pillars/contributor/canonical-homes.md`
 - The decision + the worked example (PLT-001) → `adrs/drafts/contributor-pillar.md` (+ `research/contributor/`)
-- Protocols → `playbooks/{reproduce-first,github-write,pause-and-ask,follow-up-on-disk,release-train-merge}.md`
+- Protocols → `playbooks/{design-before-build,reproduce-first,github-write,pause-and-ask,follow-up-on-disk,release-train-merge}.md`
 - Composed skills → `/code-walk`, `/probe-run`, `/implement`, `/review`, `/enrich`, `/retrieve`

@@ -658,3 +658,15 @@ The Stress Protocol (LSN-019, Rule 9) fires on every detected trigger across fiv
 - stress_findings: HIGH (Stress Protocol Rule 9 — every detected trigger answered; 2 probes emitted (P-021 cursor-order-stability + P-022 partition-DROP-empty-only-contract); C2 corrects a v0.2 severity claim with a sharper static-inferred analysis)
 
 ## Maintainer notes
+
+## CTRIB-010 / odd-platform#1657 update (2026-06-13) — v2 fix shipped on contrib/CTRIB-010-activity-actor-filter
+
+The activity "User" filter is no longer a single owner-mediated axis. \`getCommonConditions\` now applies
+BOTH: the kept \`userIds\` -> \`USER_OWNER_MAPPING.OWNER_ID.in(userIds)\` (the actor's CURRENT owner,
+un-deprecated, intentional) AND the NEW \`usernames\` -> \`ACTIVITY.CREATED_BY.in(usernames)\` (the
+immutable external identity; selects unmapped actors; invariant under association churn). New method
+\`getActivityUsers(page,size,query)\` returns a paginated DISTINCT \`created_by\` (current-owner enriched)
+\`Page<AssociatedOwnerDto>\` feeding the new \`GET /api/activity/users\`. The LSN-020/H-001 finding is thus
+addressed by making the actor axes explicit rather than removing the owner axis. Behavioural lock:
+\`ReactiveActivityRepositoryActorFilterTest\`; e2e IT-129. (Sidecar prose above predates the fix; a full
+/enrich regeneration is a tracked follow-up.)

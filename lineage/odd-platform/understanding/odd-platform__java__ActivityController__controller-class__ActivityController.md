@@ -657,3 +657,9 @@ REFERENCE (out-of-scope; another sidecar answers).
 - stress_findings: HIGH for STATIC-INFERRED resolutions; PROBE-NEEDED entries flip to PROBE-VERIFIED after P-014/P-015/P-016/P-017 run
 
 ## Maintainer notes
+
+## CTRIB-010 / odd-platform#1657 update (2026-06-13) — v2 fix shipped on contrib/CTRIB-010-activity-actor-filter
+
+\`getActivity\` + \`getActivityCounts\` gain a \`usernames: List<String>\` param next to the kept
+\`userIds\`; NEW \`getActivityUsers(page,size,query)\` override (GET /api/activity/users). Purely additive,
+no contract break (#1657 v2). \`DataEntityController.getDataEntityActivity\` likewise gains \`usernames\`.

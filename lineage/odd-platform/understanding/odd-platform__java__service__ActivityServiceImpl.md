@@ -403,3 +403,8 @@ Triggered by Stress Protocol (LSN-019 Rule 9) — each finding records the quest
 ## Maintainer notes
 
 (empty — no prior sidecar; reserved for maintainer prose to be preserved across refreshes)
+
+## CTRIB-010 / odd-platform#1657 update (2026-06-13) — v2 fix shipped on contrib/CTRIB-010-activity-actor-filter
+
+All read signatures thread \`usernames\` next to \`userIds\`; NEW \`getActivityUsers\` passes through to the
+repository + maps via \`ActivityMapper.mapToActivityUserList\` (#1657 v2). Both actor axes are intentional.

@@ -25,7 +25,7 @@ actor names:
   association; dropdown fed by `GET /api/owners`.
 - **Made by (user)** (`usernames` -> `ACTIVITY.CREATED_BY`) — the actor's external username, immutable;
   dropdown fed by `GET /api/activity/users`; works for users with NO owner association.
-- **Action row** shows the immutable username AND the current owner name ("alice as Owner X").
+- **Action row** shows the immutable username AND the user's CURRENT owner, labelled ("alice - current owner: X", as-of-now, not the change-time owner).
 
 If it FAILS, a filter is missing/mislabelled, the username filter is owner-fed (the #1657 bug), or the row
 shows only one name. Source: feature-flows F-021 (global) + F-196 (per-entity tab); CTRIB-010; LSN-020. The

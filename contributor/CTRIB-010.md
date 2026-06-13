@@ -10,7 +10,7 @@ adr_required: true  # TWO ADRs (G-C7): adrs/drafts/activity-actor-filter-audit-i
 contract_variant: "v2 — PURELY ADDITIVE (usernames added; user_ids KEPT as a legitimate axis, renamed in UI; no deprecation, no break). Supersedes v1 Variant A."
 plan_approved_by: "v1: RamanDamayeu (GATE 1, 2026-06-13). v2: RamanDamayeu (GATE 1, 2026-06-13 — 'Approve as written' via AskUserQuestion; labels chosen: Owner / Made by (owner) / Made by (user))."
 plan_approved_at: "v1 2026-06-13; v2 2026-06-13"
-v2_labels: "asset-owner filter = 'Owner' (ownerIds); actor's-current-owner = 'Made by (owner)' (user_ids); external username = 'Made by (user)' (usernames). Action row: 'A as Owner B' framing."
+v2_labels: "asset-owner filter = 'Owner' (ownerIds); actor's-current-owner = 'Made by (owner)' (user_ids); external username = 'Made by (user)' (usernames). Action row: username + 'current owner: B' (the as-of-now owner, explicitly labelled; raw usernames in the Made by (user) dropdown). Refined per review 2026-06-13."
 docs_routing: "release/0.28.0 train (3-axis filters + dual-name rows rewrite; supersedes the v1 train commit be702da) + docs main released-truth correction (da44e59, the 'entity-ownership axis' error) + a published ADR-log entry for the info-popover ADR (maintainer: publish now)"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1780"
 pr_draft: true
@@ -539,3 +539,19 @@ RamanDamayeu, HTTP 201; the bot cannot merge — GATE 2 is the human's).
 Draft PR #1780 open · status `pr-draft` · **`/review` in a separate session is the next step**
 (it owns `pr-draft → review-ready`; the bot never self-reviews) · GATE 2 (human review + merge) closes it ·
 the doc branches + DOC-451 ride the 0.28.0 release gate.
+
+### Review-feedback refinement (2026-06-13, on the draft PR before /review)
+
+Maintainer review of the draft PR flagged two display defects (memory
+`feedback_dropdown_raw_values_audit_temporal_explicit`):
+1. the "Made by (user)" dropdown showed an artificial `Owner (User)` composite — now lists the **raw
+   usernames** it filters on;
+2. the row "bob as Owner test_1" was ambiguous about *when* test_1 was the owner — now renders
+   "bob  **current owner: test_1**" with a tooltip making explicit it is the **as-of-now** association
+   (ODD does not record the change-time owner).
+Pushed additively as commit **`a823bcb1`** (no history rewrite — the force-push was correctly blocked;
+new commit on top of 2ed71256). Re-verified: FE tsc clean; **IT-129 6/6 GREEN** + **feature-complete
+285/0** on the refined SUT. (unit build unaffected — FE-display-only, BE byte-identical; multi-stack /
+known-bugs / ingestion-e2e orthogonal to a FE-activity-display change + green on the parent v2 commit;
+`/review` re-runs the full four on the committed head.) Train doc + workspace artefacts synced to the
+"current owner" wording.

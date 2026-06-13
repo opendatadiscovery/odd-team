@@ -15,8 +15,9 @@ import { dbQuery } from '../helpers/db';
  *    mutable user_owner_mapping; dropdown fed by GET /api/owners.
  *  - "Made by (user)" (data-qa made_by_user_filter, usernames) = the actor's external username
  *    (activity.created_by), immutable; dropdown fed by GET /api/activity/users; works for unmapped users.
- *  - The action row shows BOTH names: the immutable username AND the current owner name ("alice as Owner
- *    X") — ActivityActorLabel. The wire is snake_case; we intercept it and assert on the rendered DOM.
+ *  - The action row shows BOTH names: the immutable username AND the user's CURRENT owner, labelled
+ *    ("alice  current owner: X", as-of-now) — ActivityActorLabel. The dropdown lists raw usernames. The
+ *    wire is snake_case; we intercept it and assert on the rendered DOM.
  *  - created_by NOT NULL + is_system_event=false -> the row renders the actor; created_at=NOW() lands in
  *    the live partition AND the default UI window (now-5d..now+1d).
  *

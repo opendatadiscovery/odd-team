@@ -330,5 +330,5 @@ stress_findings:
 The Activity filter panel now exposes THREE actor/asset filters (was an ambiguous two): "Owner"
 (ownerIds, asset owner), "Made by (owner)" (userIds, the actor's current owner), "Made by (user)"
 (usernames, the immutable external username) — each with an inline (i) InformationHint popover. Action
-rows render BOTH names via ActivityActorLabel ("alice as Owner X"). Per-entity tab gets the two actor
+rows render the username + the current owner via ActivityActorLabel ("alice - current owner: X", as-of-now). Per-entity tab gets the two actor
 filters. (#1657 v2 / ADR-0076.)

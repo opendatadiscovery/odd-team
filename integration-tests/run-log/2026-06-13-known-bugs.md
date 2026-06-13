@@ -38,3 +38,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-13 — suite/protocol: known-bugs
+- runner: AI-assisted Claude Opus 4.8 - separate-session /review (CTRIB-010 #1657, G-C2 independent regression)
+- odd-platform working-tree HEAD: 97978249 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 97978249  (image odd-platform:odd-team-sut, digest sha256:8a153672a14a16867dadb1f393c84f80887ddf89ec038e4f1c95be864737d2c6)
+- protocols: IT-003 IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/search-tsquery-poisoning.spec.ts specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

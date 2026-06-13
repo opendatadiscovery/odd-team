@@ -4,7 +4,7 @@ github_issue_number: 1657
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1657
 class: bug
 milestone: "0.28.0"
-status: pr-draft  # v2 implemented + full DoD green; draft PR #1780 open (Closes #1657); GATE 2 pending; /review is the next (separate-session) step
+status: review-ready  # REVIEWED 2026-06-13 (separate session) -> ACCEPTED. All 14 acceptance criteria + all Quality Bar gates PASS w/ cited evidence; reviewer's OWN FULL regression GREEN (unit build 5m49s + feature-complete 285/0 incl IT-129 6/6 + multi-stack 9/0 + known-bugs 5-RED-expected + ingestion-e2e 6/0). Gate 8 PENDING-RELEASE (0.28.0 train) + DEFERRED for the 2 local doc branches the maintainer pushes. NEXT: human GATE 2 -- review + merge draft PR #1780
 reproduced: "live 2026-06-13 on the PRE-FIX SUT (odd-platform:odd-team-sut, image sha256:6cc6e88b…, built from the clean tree @ 1653a909 — tree byte-identical to main @ 05ecf0a9, verified `git diff --stat` empty; odd-minimal stack). Seeds: owners alpha(id 1)/beta(id 2); mapping alice→alpha ACTIVE; activities by alice (entity 20950), bob (20950, NO mapping), dave (20951, no mapping). (1) Wire: GET /api/activity?…&user_ids=1 → alice's row; user_ids=2 → 0 rows; NO value selects bob (defect 1 — unmapped actor unfilterable). (2) REMAP (alice mapping deleted_at=NOW(), dave→alpha inserted): the IDENTICAL user_ids=1 query → DAVE's row, alice's history unreachable (defect 2 — filter follows the mutable mapping, not the recorded actor); counts user_ids=1 total 1→1 but the counted USER changed. (3) GET /api/activity/users → 404 (no enumeration endpoint). (4) Per-entity surface: GET /api/dataentities/20950/activity?user_ids=1 post-remap → 0 rows (alice authored there). (5) UI drive (Playwright scratch, screenshots captured): the User filter dropdown is fed by GET /api/owners?query=… and listed [repro1657_owner_alpha, repro1657_owner_beta] — alice/bob/dave NOT listable; selecting 'repro1657_owner_alpha' sent user_ids=1 and rendered dave's entity_two row under the alpha chip. Seeds + scratch spec deleted post-capture (residue query = 0; /api/activity 200)."
 adr_required: true  # TWO ADRs (G-C7): adrs/drafts/activity-actor-filter-audit-identity.md (3 explicit actor axes; PURELY ADDITIVE — user_ids NO LONGER deprecated) + ADR-0076 (info-(i) affordance — REVERSE-ENGINEERED from the EXISTING InformationIcon-in-AppTooltip pattern after round-2 dropped the duplicate popover; renamed …-tooltip-affordance.md)
 contract_variant: "v2 — PURELY ADDITIVE (usernames added; user_ids KEPT as a legitimate axis, renamed in UI; no deprecation, no break). Supersedes v1 Variant A."
@@ -630,3 +630,63 @@ are backend/data/ingestion lanes a tooltip-CSS wrap cannot affect and were green
 parent commit. `/review` (separate session) re-runs the literal full set as the gate.
 
 Pushed additively (commit `094c8a0a`) onto the draft PR branch — no history rewrite.
+**[review correction]** the published HEAD is `97978249`, not `094c8a0a` — `git reflog` shows `094c8a0a`
+was AMENDED into `97978249` (the amend added the `Consumer-read:` footer; reflog: `commit (amend)`).
+origin == local == `97978249`. The shipped artefact is well-formed; the ledger cited the pre-amend SHA.
+
+---
+
+## Review (2026-06-13, session: `/review` separate-session — distinct from implement)
+
+**Lifecycle (contributor pillar):** `/review` owns `pr-draft → review-ready`; GATE 2 (human review + merge of
+draft PR #1780) owns the tail. This is a separate session from the implement/refinement sessions — the prior
+"review round 1/2/3" commits were maintainer-feedback refinements **during implement**; this is the formal
+independent gate. Reviewed head: odd-platform **`97978249`** (verified origin == local).
+
+- **Result**: **ACCEPTED** — `pr-draft` → `review-ready`. Every contributor acceptance criterion (1–14) and every Quality Bar gate passes with cited evidence; the reviewer's own FULL regression (unit BUILD SUCCESSFUL 5m49s + feature-complete 285/0 incl. IT-129 6/6 + multi-stack 9/0 + known-bugs 5-expected-RED + ingestion-e2e 6/0) is GREEN. Gate 8 is PENDING-RELEASE (0.28.0 train) + DEFERRED for the two local released-truth doc branches the maintainer pushes. **Next: human GATE 2 — review + merge draft PR #1780** (`Closes #1657`).
+
+### Contributor acceptance criteria (gates.md §Acceptance 1–14)
+1. **Code-after-plan** — PASS (`plan_approved_by` v1+v2 GATE 1 2026-06-13; reflog: every code commit follows approval).
+2. **Reproduction logged** — PASS (`reproduced:` frontmatter — 5 defect surfaces driven live on the pre-fix SUT `sha256:6cc6e88b…`).
+3. **Diff bounded by plan** — PASS (33 files = the approved v2 plan; exclusions verified IN CODE: `user_ids` retained + deprecation-commented, no migration, no write-path change, no auth-posture change). via `git diff merge-base..HEAD`.
+4. **Unit test injects the failing condition** — PASS (`ReactiveActivityRepositoryActorFilterTest`: unmapped `bob` = defect 1; mapping churn `alice→dave` = defect 2 — both injected explicitly; `user_ids` re-attributes (the bug) while `usernames` stays invariant (the fix), asserted side-by-side). via read.
+5. **Pins re-grounded, not deleted** — PASS — the LSN-020 pin was a **structural source-grep** asserting `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` EXISTS; under the *additive* fix that string is intentionally retained, so the pin can never flip RED again. Re-grounded into the stronger behavioural test (its javadoc cites LSN-020/LSN-029; the deleted pin's own flip-protocol pre-authorized deletion on fix). Transparent subtraction. via read of both.
+6. **Docs decision + routed** — PASS (released-truth correction `da44e59`→docs `main`, page read + code-verified; unreleased behaviour→`release/0.28.0` train `3a4f6ad`/`0a88d37`/`f6f9ccc`; DOC-451 `pending-release`). via `git log`/`git show`.
+7. **Ontology committed** — PASS (4 touched sidecars carry the v2 delta on disk; `ReactiveActivityRepositoryImpl` sidecar `## CTRIB-010 … update (2026-06-13)` §; graph re-embedded per ledger). via grep.
+8. **Status review-ready, not self-done** — PASS (was `pr-draft`; this separate session flips it).
+9. **Architectural ADR before code** — PASS (G-C7 fired — breaking-contract risk; resolved ADDITIVE; ADR `activity-actor-filter-audit-identity` + ADR-0076; GATE 1 approved both before code).
+10. **Prompt injection discarded** — N/A (maintainer-authored issue, treated as quoted data per G-C8; no injection present).
+11. **DoD met before draft** — PASS (unit build GREEN 5m49s reviewer-run + integration below + docs read + ontology committed).
+12. **Milestone gate** — PASS (milestone `0.28.0` open semver; re-verified at intake + push; docs on the `release/0.28.0` train).
+13. **Design before build (G-C12)** — PASS (reuse-scan found the existing `AppTooltip`+`InformationIcon` → ADR-0076 reverse-engineered; the duplicate `InformationHint` deleted round 2; i18n ALL-locale dimension tracked as PLT-225 (NOT machine-translated — correct); PO/SRE lens = the 3-axis clarity reframe).
+14. **Principal sufficiency (G-C13)** — PASS (patch-coverage gap closed `2feb1a2e` — ActivityController 0→100%, ActivityMapper 95.2→98.1%, ActivityServiceImpl 59→96%; both ActivityItem surfaces wired to `ActivityActorLabel`; tooltip render fixed to a styled card — the LSN-035 pixel gate applied).
+
+### Quality Bar gates
+- **Gate 1 (no duplicates)** — PASS (reuse of `AppTooltip`; the duplicate `InformationHint` deleted round 2; no parallel component). via diff.
+- **Gate 4 (consumer-read)** — PASS (`2ed71256` + `97978249` footers name the consumers; cross-checked vs actual code — `getCommonConditions`/`buildBaseQuery`, `AssociatedOwnerMapper`, the FE filter wiring, `AppTooltipStyles`). via read.
+- **Gate 5 (unset-param SDK)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — PASS (every functional claim → code; the user-visible change → `activity-feed.md` both refs + ADR-0076).
+- **Gate 8 (publishing)** — **PENDING-RELEASE (0.28.0)** for the train docs (publish at the release gate; branch sub-checks PASS — PyYAML valid, descriptions 182c/198c ≤200, tree-relative links). **DEFERRED** for the released-truth corrections `da44e59` (main, the "entity-ownership axis" fix) + `1bb425a` (PLT-224 lookup caveat): both are on LOCAL documentation branches — the bot is scoped to odd-platform, so **the maintainer must push + merge them**; live-site verification runs post-merge. Post-merge URLs to verify: `docs.opendatadiscovery.org/active-platform-features/activity-feed` (the User-filter bullet) + `…/master-data-management/lookup-tables` (the Description caveat).
+- **Gate 9 (provenance)** — PASS (footers cite SoT; ADR-0076 code snippet byte-identical to `ActivityFilterHints.tsx`; doc claims code-verified; outbound links tree-relative). via read + Web-equivalent grep.
+- **Gate 10 (content homing)** — PASS (ADR content→ADR log; feature behaviour→`activity-feed.md`; caveat→`lookup-tables.md` admonition; no misplaced reference content).
+- **Gate 11 (audience isolation)** — PASS (banned-term grep clean on all touched published docs; the two `pillar` hits = ODD's published "governance pillars" vocabulary, pre-existing footer lines). via grep across `main`/`release/0.28.0`/caveat branches.
+
+### Regression (G-C2 — reviewer's OWN runs, working-tree SUT @ `97978249`)
+- **Unit**: `scripts/run-platform-tests.sh` (= `:odd-platform-api:build` = test + checkstyleMain + checkstyleTest + assemble) → **BUILD SUCCESSFUL in 5m 49s**. Includes the new `2feb1a2e` coverage tests + `ReactiveActivityRepositoryActorFilterTest` + the re-scoped `AdrActivityContractScanTest`. (Independently closes the "is a full build green on the commit that includes the new test files?" gap.)
+- **Integration** (`run-suite.sh`, SUT rebuilt fresh from the working tree @ `97978249` — LSN-033; digests per suite in the run-log):
+  - **feature-complete: 285 passed / 0 failed (4.1m)** — api:PASS e2e:PASS. **IT-129 6/6 GREEN** (three filters present · "Made by (user)" lists an unmapped actor · username-filter narrows · "Made by (owner)"=user_ids axis · dual-name row · per-entity tab) + IT-088/089/126 (activity feed + per-entity + PLT-176 fan-out) GREEN on the changed code.
+  - **multi-stack: 9 passed / 0 failed (3.3m)**.
+  - **known-bugs: 5 failed / 0 passed — EXPECTED all-RED, zero unexpected GREENs** (the 5 = IT-007/LSN-001 · IT-006/TEST-GAP-1013 · IT-004/PLT-052 · IT-003×2/PLT-090+PLT-127 — all pre-existing pins, none activity-related → no regression, no un-flipped fix).
+  - **ingestion-e2e: 6 passed / 0 failed (59.7s)**.
+  - Verdict: the reviewer's own FULL-set regression (both buckets) is GREEN; the activity change introduced no regression. via `integration-tests/run-suite.sh` + `run-log/2026-06-13-*`.
+
+### Editorial audit (step 5, `playbooks/doc-product-editorial-read.md`)
+- **Coverage this run**: the changed surface read end-to-end (`activity-feed.md` main+train, ADR-0076 train, `lookup-tables.md` caveat) + a parallel-surface sweep across `docs/**` for the activity User-filter mechanism. Broader subtrees covered by prior `/review` passes.
+- **Findings**: **DOC-452** (low, *parallel-surfaces-with-drift*) — train `activity-feed.md` says "eight facets" but `Features.md:126` still says "seven facets on the global filter panel"; publishes at 0.28.0; paired with DOC-451 at the release gate. Source: `documentation/docs/Features.md:126`. Logged on disk.
+
+### Notes
+- **Provenance**: ledger's round-3 `094c8a0a` = pre-amend SHA; published HEAD `97978249`. Corrected above. VERIFIED via `git reflog` + `git cat-file`.
+- **Workspace-draft hygiene** (NOT a PR blocker): `adrs/drafts/platform-info-popover-affordance.md` carries a correction header but its Decision body still describes the REJECTED popover (self-contradictory), and it was NOT renamed to `…-tooltip-affordance.md` as the round-2 ledger claims. The **published** ADR-0076 (train) IS correct (renamed + rewritten to the reused tooltip pattern). Recommend deleting/superseding the stale draft. NOT VERIFIED fixed → noted here.
+- **Banned-phrase check**: none used.
+- **Upstream/follow-ups on disk**: PLT-224, PLT-225 (both ASCII-clean, `user_facing_verified: true`); DOC-451 (`pending-release`); DOC-452 (this review).
+

@@ -1,3 +1,11 @@
+> **CORRECTION (2026-06-13, maintainer review):** this draft originally proposed a NEW click-popover
+> component. That was a miss — the platform ALREADY ships the inline-help affordance: an
+> `InformationIcon` wrapped in an `AppTooltip` (the Data Entity overview "About" block
+> `InternalDescriptionHeader`, Term definitions, the DQ SLA report, ...). The decision is therefore
+> to **reuse** that existing pattern, not invent a parallel one; the activity filters now do. The
+> published, accurate record is **ADR-0076** ("information icon in a hover tooltip",
+> reverse-engineered). See memory `feedback_search_existing_ui_pattern_before_building`.
+
 # ADR (draft) — A reusable inline info `(i)` popover affordance for the platform UI
 
 - **Status:** draft — GATE 1 sign-off required (CTRIB-010, odd-platform#1657). Maintainer-directed

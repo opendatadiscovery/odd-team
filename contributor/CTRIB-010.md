@@ -555,3 +555,28 @@ new commit on top of 2ed71256). Re-verified: FE tsc clean; **IT-129 6/6 GREEN** 
 known-bugs / ingestion-e2e orthogonal to a FE-activity-display change + green on the parent v2 commit;
 `/review` re-runs the full four on the committed head.) Train doc + workspace artefacts synced to the
 "current owner" wording.
+
+### Review-feedback round 2 (2026-06-13) — reuse existing pattern + a caveat logged
+
+Two more maintainer comments on the draft PR:
+1. **Reuse the existing info-(i) affordance (a real miss).** I had built a NEW `AppPopover`-based
+   `InformationHint`; the platform ALREADY ships the pattern — `InformationIcon` in an `AppTooltip`
+   (Data Entity overview "About" `InternalDescriptionHeader`, Term definitions, the DQ SLA report).
+   Refactored the activity filter hints to reuse it; **deleted `InformationHint`**; corrected the
+   train doc + **ADR-0076** to DESCRIBE the existing pattern ("information icon in a hover tooltip",
+   reverse-engineered) and renamed it `…-tooltip-affordance.md`. odd-platform commit `8ec0baac`; train
+   commit `f6f9ccc`. Re-verified: FE tsc clean + IT-129 6/6 GREEN. Memory:
+   `feedback_search_existing_ui_pattern_before_building`.
+2. **Lookup-table Description caveat.** Unrelated finding the maintainer surfaced: the Create/Edit
+   Lookup Table "Description" is stored on the lookup-table record only — `mapCreatedLookupTablePojo`
+   never sets the entity's `internal_description`, so it never shows on the entity overview "About".
+   Code-verified + reproduced live (lookup_tables.description set, data_entity.internal/external
+   description empty). Logged **`issues/odd-platform/PLT-224.md`** (draft) + a released-truth doc caveat
+   on `master-data-management/lookup-tables.md` (docs main branch `docs/lookup-table-description-caveat`,
+   commit `1bb425a`).
+
+Also added unit coverage the patch-coverage gate (98% changed-files) demanded (the new endpoint +
+mapper + threaded params were uncovered): odd-platform commit `2feb1a2e` (ActivityControllerTest,
+DataEntityControllerActivityTest, ActivityMapperTest.testMapToActivityUserList, ActivityServiceImplTest
+getActivityCounts/getDataEntityActivityList) — ActivityController 0%->100%, ActivityMapper 95.2%->98.1%,
+ActivityServiceImpl 59%->96% (the residual whole-file misses are pre-existing methods, not changed lines).

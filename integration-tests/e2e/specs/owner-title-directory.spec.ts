@@ -84,7 +84,7 @@ test.describe('F-036 Owner-Relationship Title Directory', () => {
     ).toHaveCount(0);
   });
 
-  test('a seeded title is reachable via the Data Quality runs Title filter (the one read surface)', async ({
+  test('a seeded title is reachable via the Data Quality runs "Owner title" filter (the one read surface)', async ({
     page,
   }) => {
     const titleId = await seedTitle(TITLE_NAME);
@@ -95,22 +95,24 @@ test.describe('F-036 Owner-Relationship Title Directory', () => {
     ]);
     expect(dbRows[0]?.name, 'the seeded title must exist in the directory').toBe(TITLE_NAME);
 
-    // the DQ runs page hosts two "Title" filter autocompletes (DataQualityFilters.tsx:73,88), each
+    // the DQ runs page hosts two "Owner title" filter autocompletes (DataQualityFilters.tsx:73,88), each
     // backed by GET /api/titles (useGetTitleList). Opening one fires the directory fetch.
+    // NB: this filter was relabelled "Title" -> "Owner title" in odd-platform#1767 (CTRIB-011) — it binds
+    // the ownership role (OWNERSHIP.TITLE_ID), not the dataset name — so anchor on the new label.
     const titlesFetch = page.waitForResponse(
       r => /\/api\/titles(\?|$)/.test(r.url()) && r.request().method() === 'GET' && r.ok(),
     );
     await page.goto('/data-quality');
 
     // The shared Input renders the label as a styled <label> with no htmlFor, so the a11y tree shows it
-    // as a standalone "Title" text node followed by a combobox "Search by name" (placeholder, shared by
-    // every filter). Anchor on the "Title" text and take the FIRST combobox that follows it. .first() on
-    // the text = the "Filters for tables" Title filter (deTitleIds, the first of the two TitleFilters).
+    // as a standalone "Owner title" text node followed by a combobox "Search by name" (placeholder, shared
+    // by every filter). Anchor on the "Owner title" text and take the FIRST combobox that follows it.
+    // .first() on the text = the "Filters for tables" Owner title filter (deTitleIds, first of the two).
     const titleInput = page
-      .getByText('Title', { exact: true })
+      .getByText('Owner title', { exact: true })
       .first()
       .locator('xpath=following::*[@role="combobox"][1]');
-    await expect(titleInput, 'the DQ-runs Title filter input must render').toBeVisible({ timeout: 10_000 });
+    await expect(titleInput, 'the DQ-runs "Owner title" filter input must render').toBeVisible({ timeout: 10_000 });
     await titleInput.click();
     await titlesFetch;
 
@@ -120,7 +122,7 @@ test.describe('F-036 Owner-Relationship Title Directory', () => {
     // the seeded title renders as a selectable option in the directory dropdown (UI render of the row)
     await expect(
       page.getByRole('option', { name: new RegExp(TITLE_NAME) }).first(),
-      'the seeded title must render as an option in the DQ-runs Title filter directory dropdown',
+      'the seeded title must render as an option in the DQ-runs "Owner title" filter directory dropdown',
     ).toBeVisible({ timeout: 10_000 });
   });
 });

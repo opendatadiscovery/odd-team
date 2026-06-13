@@ -4,7 +4,7 @@ github_issue_number: 1657
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1657
 class: bug
 milestone: "0.28.0"
-status: review-ready  # REVIEWED 2026-06-13 (separate session) -> ACCEPTED. All 14 acceptance criteria + all Quality Bar gates PASS w/ cited evidence; reviewer's OWN FULL regression GREEN (unit build 5m49s + feature-complete 285/0 incl IT-129 6/6 + multi-stack 9/0 + known-bugs 5-RED-expected + ingestion-e2e 6/0). Gate 8 PENDING-RELEASE (0.28.0 train) + DEFERRED for the 2 local doc branches the maintainer pushes. NEXT: human GATE 2 -- review + merge draft PR #1780
+status: merged  # MERGED 2026-06-13 — PR #1780 squash-merged to odd-platform main as 697a3b39 ("fix(activity): make the Activity feed's User vs Owner distinction explicit (#1657) (#1780)"); GATE 2 done; #1657 auto-closed. Prior: REVIEWED -> ACCEPTED (all 14 acceptance criteria + all Quality Bar gates PASS; reviewer's OWN FULL regression GREEN — unit 5m49s + feature-complete 285/0 incl IT-129 6/6 + multi-stack 9/0 + known-bugs 5-RED-expected + ingestion-e2e 6/0). Doc branches PUSHED (da44e59 main correction + 1bb425a PLT-224 caveat — PRs open for merge). Train docs + DOC-451/452 ride the 0.28.0 release gate.
 reproduced: "live 2026-06-13 on the PRE-FIX SUT (odd-platform:odd-team-sut, image sha256:6cc6e88b…, built from the clean tree @ 1653a909 — tree byte-identical to main @ 05ecf0a9, verified `git diff --stat` empty; odd-minimal stack). Seeds: owners alpha(id 1)/beta(id 2); mapping alice→alpha ACTIVE; activities by alice (entity 20950), bob (20950, NO mapping), dave (20951, no mapping). (1) Wire: GET /api/activity?…&user_ids=1 → alice's row; user_ids=2 → 0 rows; NO value selects bob (defect 1 — unmapped actor unfilterable). (2) REMAP (alice mapping deleted_at=NOW(), dave→alpha inserted): the IDENTICAL user_ids=1 query → DAVE's row, alice's history unreachable (defect 2 — filter follows the mutable mapping, not the recorded actor); counts user_ids=1 total 1→1 but the counted USER changed. (3) GET /api/activity/users → 404 (no enumeration endpoint). (4) Per-entity surface: GET /api/dataentities/20950/activity?user_ids=1 post-remap → 0 rows (alice authored there). (5) UI drive (Playwright scratch, screenshots captured): the User filter dropdown is fed by GET /api/owners?query=… and listed [repro1657_owner_alpha, repro1657_owner_beta] — alice/bob/dave NOT listable; selecting 'repro1657_owner_alpha' sent user_ids=1 and rendered dave's entity_two row under the alpha chip. Seeds + scratch spec deleted post-capture (residue query = 0; /api/activity 200)."
 adr_required: true  # TWO ADRs (G-C7): adrs/drafts/activity-actor-filter-audit-identity.md (3 explicit actor axes; PURELY ADDITIVE — user_ids NO LONGER deprecated) + ADR-0076 (info-(i) affordance — REVERSE-ENGINEERED from the EXISTING InformationIcon-in-AppTooltip pattern after round-2 dropped the duplicate popover; renamed …-tooltip-affordance.md)
 contract_variant: "v2 — PURELY ADDITIVE (usernames added; user_ids KEPT as a legitimate axis, renamed in UI; no deprecation, no break). Supersedes v1 Variant A."
@@ -13,7 +13,7 @@ plan_approved_at: "v1 2026-06-13; v2 2026-06-13"
 v2_labels: "asset-owner filter = 'Owner' (ownerIds); actor's-current-owner = 'Made by (owner)' (user_ids); external username = 'Made by (user)' (usernames). Action row: username + 'current owner: B' (the as-of-now owner, explicitly labelled; raw usernames in the Made by (user) dropdown). Refined per review 2026-06-13."
 docs_routing: "release/0.28.0 train (3-axis filters + dual-name rows rewrite; supersedes the v1 train commit be702da) + docs main released-truth correction (da44e59, the 'entity-ownership axis' error) + a published ADR-log entry for ADR-0076 (info-(i) tooltip affordance, reverse-engineered; maintainer: publish now)"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1780"
-pr_draft: true
+pr_draft: false  # merged 2026-06-13 (squash 697a3b39 on odd-platform main)
 ---
 
 # CTRIB-010 — Activity "User" filter keys on mutable owner mapping instead of the audit actor (#1657)
@@ -689,4 +689,26 @@ independent gate. Reviewed head: odd-platform **`97978249`** (verified origin ==
 - **Workspace-draft hygiene** (NOT a PR blocker): `adrs/drafts/platform-info-popover-affordance.md` carries a correction header but its Decision body still describes the REJECTED popover (self-contradictory), and it was NOT renamed to `…-tooltip-affordance.md` as the round-2 ledger claims. The **published** ADR-0076 (train) IS correct (renamed + rewritten to the reused tooltip pattern). Recommend deleting/superseding the stale draft. NOT VERIFIED fixed → noted here.
 - **Banned-phrase check**: none used.
 - **Upstream/follow-ups on disk**: PLT-224, PLT-225 (both ASCII-clean, `user_facing_verified: true`); DOC-451 (`pending-release`); DOC-452 (this review).
+
+---
+
+## GATE 2 — merged (2026-06-13)
+
+Human GATE 2 complete: the maintainer merged draft **PR #1780**. It **squash-merged** to
+`opendatadiscovery/odd-platform` `main` as **`697a3b39`** ("fix(activity): make the Activity feed's
+User vs Owner distinction explicit (#1657) (#1780)"); `origin/main` `05ecf0a9 → 697a3b39` — verified via
+`git fetch` + `git log origin/main` (the reviewed head `97978249` is not a direct ancestor because the
+merge squashed the 5 commits into one). **Issue #1657 auto-closed** by the PR (verified state **Closed**,
+closed-by #1780).
+
+**Documentation branches pushed** (the bot is scoped to odd-platform; the maintainer authorized the push):
+- `docs/CTRIB-010-activity-user-filter-mechanism` (`da44e59`) — the released-truth `main` correction.
+  PR: https://github.com/opendatadiscovery/documentation/pull/new/docs/CTRIB-010-activity-user-filter-mechanism
+- `docs/lookup-table-description-caveat` (`1bb425a`, PLT-224 caveat).
+  PR: https://github.com/opendatadiscovery/documentation/pull/new/docs/lookup-table-description-caveat
+
+Both still need a docs `main` merge to publish live — the `da44e59` correction fixes a **currently-live**
+error (the User filter is described as an "entity-ownership axis"). The 0.28.0 train docs + DOC-451 + DOC-452
+publish at the release gate (`/review release:0.28.0`). PLT-224 / PLT-225 issue drafts remain for the
+maintainer to file (the bot never creates issues).
 

@@ -525,8 +525,9 @@ RamanDamayeu, HTTP 201; the bot cannot merge — GATE 2 is the human's).
 - Touched sidecars annotated with the v2 delta (ReactiveActivityRepositoryImpl, ActivityController
   class, ActivityServiceImpl, the `activity` TS route); F-021 + F-196 carry a top fix-note (the LSN-020
   surface is addressed; drift facets kept as the historical record). Graph re-embedded
-  (`graph-build odd-platform`: nodes=7083 edges=9180 vectors **8017**). A full `/enrich` structured
-  regeneration of the sidecars is a tracked follow-up (the delta notes carry the load-bearing truth now).
+  (`graph-build odd-platform`: nodes=7083 edges=9180 vectors **8017**). The delta notes make the
+  sidecars truthful now; a `/enrich --touched` structured regeneration will refresh the generated fields
+  on the normal ontology cadence (no separate obligation — the notes carry the load-bearing truth).
 
 ### Definition of Done (LSN-032 four gates) — v2
 1. **Unit full build** ✅ 5m30s. 2. **FULL integration regression on the working-tree SUT** ✅

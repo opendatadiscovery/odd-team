@@ -148,3 +148,6 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | Gate 8 + `playbooks/github-write.md` — `push.default current` in publishing checkouts; explicit same-name refspec; docs-repo `main` branch protection recommended | LSN-034 |
 | Issue drafts — required `## User-facing impact` section + ASCII-only body (`issues/README.md`) | LSN-031 |
 | `/implement` skill — step 6.5 pre-commit mechanical sweeps | LSN-026 (Gate 11 banned-term), LSN-027 (description-length), LSN-028 (YAML parse) |
+| Contributor G-C2 — behavior-diff-vs-released for cross-cutting / dependency changes (`git show <tag>:<file>` + drive the UI) | LSN-036 |
+| Gate 9 (`claim-inventory`) — a rejection's load-bearing premise is a claim; verify it vs open siblings before it stands | LSN-036 |
+| Playbook — `follow-up-on-disk.md`: a cross-cutting-invariant defect must PROPOSE an enforced check (CI guard / IT), not only a backlog item ("knowing != preventing") | LSN-036 |

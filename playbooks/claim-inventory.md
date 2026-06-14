@@ -63,6 +63,8 @@ Any implementation commit on a pillar's content surface (documentation, tests, f
 
 6. **Prose-polish exception.** If the change makes no factual claims (whitespace, typo fix, prose-only polish), write `Sources: none (prose polish, no factual claim)` explicitly. Silence is not acceptable.
 
+7. **A rejection is a claim — verify its premise against the open backlog.** Rejecting or closing a finding asserts a load-bearing premise (e.g. "en.json is the most-complete catalogue, so a cross-locale leak can't happen"). That premise is itself a factual claim subject to this gate: before the rejection stands, grep the OPEN backlog (`issues/`, `backlog/`) for a sibling finding that falsifies it. A rejection accepted on an unverified premise that an open sibling already contradicts is the LSN-036 failure (PLT-011 rejected on "en is complete" the same day PLT-215 documented 70 en-missing keys). The rejection note ends in `PREMISE VERIFIED via {grep of open siblings}`, or it does not stand.
+
 ## exit
 
 - Every claim has a `Sources:` footer line citing a verified SoT.
@@ -79,3 +81,4 @@ Any implementation commit on a pillar's content surface (documentation, tests, f
 - `retrospectives/LSN-001-attachment-ephemeral-default.md`, `retrospectives/LSN-002-minio-region-unset.md`, `retrospectives/LSN-010-azure-admin-groups-wrong-default.md` — `Config` and `Builder` claim classes the rule was built around.
 - `retrospectives/LSN-003-dbt-wrong-repo-link.md` — `Repo` claim class.
 - `retrospectives/LSN-009-backlog-internal-duplication.md` — `Backlog` claim class.
+- `retrospectives/LSN-036-i18n-leak-catalogued-not-gated.md` — procedure 7 (a rejection's premise is a claim). PLT-011 was rejected on the premise "en.json is complete" the same day PLT-215 documented 70 en-missing keys; the unverified premise let a cross-locale i18n leak reach main.

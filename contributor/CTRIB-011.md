@@ -4,7 +4,7 @@ github_issue_number: 1767
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1767
 class: bug  # UX / label-clarity — LSN-020 input-name-vs-implementation-drift (same family as CTRIB-010 / PLT-030 / PLT-174)
 milestone: "0.28.0"  # G-C11 PASS — open, semver title, due 2026-06-22 (verified via issue API at intake 2026-06-13)
-status: pr-draft  # /review 2026-06-14: code REVIEWED -> PASS (every contributor criterion + Quality Bar gate, cited). Was briefly blocked on docs-routing (DOC-453 ad761f2 dangling) then UN-BLOCKED the same day at maintainer request: ad761f2 FF'd onto release/0.28.0 + the false routing claims corrected (here + DOC-453). Docs now genuinely on the train. REMAINING before review-ready: the deferred FULL integration regression (G-C2) must run in a SEPARATE re-/review session on a free stack (a maintainer probe stack was up during review). See ## Review + ## Fix applied.
+status: review-ready  # /review 2026-06-14 (re-review, separate session): the deferred FULL integration regression RAN GREEN on a free stack (P-001 torn down per maintainer OK) — unit BUILD SUCCESSFUL 5m51s + feature-complete 286/286 (IT-130 PASS) + multi-stack 9 + ingestion-e2e 6 + known-bugs 5-RED-as-expected (0 unexpected GREEN). All criteria + Quality Bar gates re-verified PASS. ACCEPTED -> review-ready; GATE 2 (human merge of draft PR #1782) owns the tail. A SEPARATE i18n Portuguese-leak regression surfaced during review (root cause #1564 / 8b0155f7, NOT CTRIB-011) — logged PLT-011 (reopened) + PLT-215 (escalated). See ## Re-review.
 backlog_mirror: PLT-179
 reproduced: "code-trace settled 2026-06-13 (static mislabel — fully determined by code, no data/runtime dependency); live running-system confirmation = the IT-130 e2e RED on ODD_SUT=ref:main (filter renders bare 'Title') -> GREEN on the working-tree SUT (Phase D). Trace: the DQ-dashboard filter renders name={t('Title')} (TitleFilter.tsx:29) -> en.json:341 \"Title\":\"Title\" -> rendered label 'Title'; the autocomplete value space is the ownership-Title catalog (TitleFilter.tsx:23 useFilter(useGetTitleList,...) -> title.ts:5-10 -> titleApi.getTitleList); the selected ids bind to OWNERSHIP.TITLE_ID in all three arms of ReactiveDataQualityRunsRepositoryImpl (combined owner+title :298-301, title-only :309-311) — confirmed the join is INTENDED ownership-role semantics, so the fix is relabel-not-rebind. Maintainer pre-verified user-facing (issue: user_facing_verified true, FE/BE sweep 2026-06-10)."
 adr_required: false  # no architectural change — relabel (i18n) + non-breaking OpenAPI param description; G-C7 does NOT fire (no destructive migration / no auth-security change / adding a description to an optional query param is non-breaking). Conforms to the established i18n keying pattern; not ADR-worthy (one-key relabel — wisdom test fails).
@@ -404,3 +404,67 @@ The verdict's `## Review` table stands as the point-in-time record. Status retur
 stack in a **separate** `/review` session (this session has now also done implement-side work — the FF +
 claim corrections — so a fresh session owns the flip). That re-review flips `pr-draft → review-ready`; then
 human GATE 2 merges PR #1782.
+
+---
+
+## Re-review (2026-06-14, session: separate /review — the deferred integration regression)
+
+**Result: ACCEPTED — `pr-draft` → `review-ready`.** This separate session ran the FULL integration
+regression that the prior review deferred (a maintainer P-001 probe stack had occupied the odd-minimal
+ports 18080/15432). The maintainer authorised tearing it down; I ran the whole G-C2 set on a fresh stack
+from the working-tree SUT (`a96745ef`). Every gate re-verified PASS first-hand; the docs-routing blocker
+(resolved by the un-block FF) was independently re-confirmed on disk.
+
+### Full regression (G-C2) — both buckets, my own runs on `a96745ef`
+- **Unit** (`scripts/run-platform-tests.sh` = `:odd-platform-api:build`): **BUILD SUCCESSFUL in 5m 51s**
+  (test + `checkstyleMain` + `checkstyleTest` + assemble) — the 2 OpenAPI param descriptions compile.
+- **feature-complete** (fresh odd-minimal, working-tree SUT): **286 passed / 0 failed — api:PASS e2e:PASS**.
+  IT-130 GREEN (`dq-owner-title-filter-label.spec.ts:27` — "the ownership-role filter reads 'Owner title',
+  not the bare 'Title'"); the `owner-title-directory.spec.ts:87` blast-radius spec GREEN.
+  (`run-log/2026-06-14-feature-complete.md`)
+- **multi-stack** (MinIO / LOGIN_FORM / LDAP / notifications, each self-managed): **9 passed — e2e:PASS**.
+- **ingestion-e2e** (real source -> collector -> platform stands): **6 passed — e2e:PASS**.
+- **known-bugs** (expected RED): **5 failed, all expected known-bug pins, ZERO unexpected GREEN** —
+  IT-007/PLT-086 (attachment durability), IT-006/F-042 (error boundary), IT-004/PLT-052 (DQ unknown-status),
+  IT-003/PLT-090 + IT-003/PLT-127 (tsquery poisoning). None CTRIB-011-related; no un-flipped fix.
+
+### Gates re-verified (first-hand, this session)
+- **Criterion 6 / Gates 6/8/9 (docs routed — the prior blocker)**: PASS — `git merge-base --is-ancestor
+  ad761f2 release/0.28.0` = YES; `git show release/0.28.0:docs/data-quality/dashboard.md` reads
+  "Owner title" (:60/:63/:65); routing claims corrected; `main` correctly still reads "Title".
+- **Criterion 3 (bounded diff)**: PASS — `git diff origin/main...a96745ef` = exactly the 10 planned files.
+- **Gate 4 (consumer-read)**: PASS — post-fix `t('Title')` has ONE production consumer
+  (`OwnerTitleAutocomplete.tsx:111`, untouched); `TitleFilter.tsx:29` now binds `t('Owner title')`; shared
+  `"Title"` key preserved (`en.json:342`).
+- **Gate 1**: PASS — `Owner title` in all 7 catalogs, no overload of the shared key.
+- **Criterion 7 (ontology)**: PASS — F-032 H-005 + the DataQualityFilters sidecar `[RESOLVED … CTRIB-011]`
+  notes committed (`0955445`).
+- **Gate 11**: PASS — operator/consumer language; the `OWNERSHIP.TITLE_ID` mention is GATE-1-approved wording.
+- **GitHub artefacts**: PASS — PR #1782 Open + **Draft** + `odd-contributor[bot]`, base `main`, **unmerged**;
+  issue #1767 Open, milestone **0.28.0** (WebFetch, this session).
+- **Editorial parallel-surface sweep**: clean — `dashboard.md` is the only page describing this filter.
+
+### Separate finding — i18n Portuguese-leak regression (NOT CTRIB-011; logged; does not block)
+A maintainer spot-check during this review surfaced the DQ filter placeholders (+ DataModelling labels)
+rendering Portuguese ("Buscar por nome", etc.) under every non-Brazilian locale. **Verified root cause:
+commit `8b0155f7` (#1564) inserted `br` into `fallbackLng` while `en.json` lacks the keys `br` translates
+-> the chain resolves to Portuguese for all users.** Regression vs 0.27.13 (`ede5d277`); unreleased (ships
+0.28.0). Scripted blast radius: 4 rendered strings (`Search by name`, `Query`, `Query examples`,
+`Relationships`). **CTRIB-011 is clean on this axis** — it added `Owner title` to all 7 catalogs *incl en*,
+so it cannot leak, and doesn't touch these fields. Logged: **PLT-011 reopened** (root cause + the
+`fallbackLng:'en'` fix), **PLT-215 escalated** (CI key-parity guard = lead prevention). Process-hardening
+(LSN + gate rules + a contributor code-fix at GATE 1) tracked separately per the maintainer's direction.
+
+### Working-tree byproducts (not part of the review deliverable)
+`run-suite.sh`'s probe phase re-stamped, in the odd-team working tree:
+`lineage/odd-platform/feature-flows.yaml`, the two `DataEntityController` sidecars
+(`…getDataEntityDetails.md`, `…getPopular.md`), and wrote `lineage/odd-platform/probe-runs/2026-06-14-P-001.yaml`.
+Probe-merge artefacts of the regression run, not CTRIB-011 changes — keep or `git checkout` at will.
+
+### Verdict
+- **Result**: ACCEPTED — all acceptance criteria + Quality Bar gates + the FULL G-C2 regression PASS.
+- **Status**: `pr-draft` -> `review-ready`. GATE 2 (human merge of draft PR #1782) owns the tail.
+- **Banned-phrase check**: none.
+- **VERIFIED via**: `git merge-base`/`show`/`diff` (docs FF + bounded diff), `grep` (consumers + locale keys),
+  `scripts/run-platform-tests.sh` (unit), `run-suite.sh feature-complete/multi-stack/ingestion-e2e/known-bugs`
+  (integration — fresh stacks, actual pass/fail read), WebFetch (PR + issue state), the impact script (i18n radius).

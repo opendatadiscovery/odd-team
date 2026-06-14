@@ -4,7 +4,7 @@ github_issue_number: 1751  # PLT-215 (filed) — the i18n missing-keys issue thi
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1751
 class: bug  # cross-cutting i18n regression (foreign-language leak) + the deterministic prevention guard
 milestone: "0.28.0"  # VERIFIED 2026-06-14 via GitHub — #1751 is OPEN with milestone 0.28.0 (G-C11 satisfied). The leak is UNRELEASED (root cause 8b0155f7 in no tag); the fix ships in 0.28.0 so it never reaches users.
-status: pr-draft  # GATE-1 APPROVED 2026-06-14; implemented + pushed; draft PR #1783 open (Closes #1751). Core fix (fallbackLng:'en' + en.json 70 keys + guard test) construction-verified (FE exec gated this session — maintainer catches at merge-build, per their 2026-06-14 direction). Remaining DoD: IT (odd-team) + docs (multilingual-ui caveat) + ontology (F-043). Then a SEPARATE /review session flips review-ready; GATE 2 merges.
+status: merged  # GATE 1 + GATE 2 done 2026-06-14 — PR #1783 squash-merged to odd-platform main (9c6fb074). Delivered fallbackLng:'en' + en.json +70 keys + guard test (maintainer merged the draft fast; the IT was scoped, not blocking). IMPORTANT: #1783 over-claimed "Closes #1751" — it did en+guard+leak, NOT the per-locale TRANSLATION (each non-en catalog missing 84 of en's 505 keys, ~500 strings). #1751 REOPENED 2026-06-14 (issuecomment-4701762200); PLT-215 tracks the translation; PLT-011 (fallbackLng) closed-resolved.
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1783"  # DRAFT, author odd-contributor[bot], 2026-06-14
 pr_draft: true
 issue_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1751#issuecomment-4701630189"  # root-cause + scope (post-GATE-1)

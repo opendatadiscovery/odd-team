@@ -14,6 +14,17 @@ session_id: session-2026-05-20-X
 
 # MinioConfig — semantic understanding
 
+> **PENDING CHANGE — CTRIB-013 / odd-platform#1741 (draft PR, ships 0.28.0).** The LSN-002 code-side residue
+> described below is FIXED in #1741: `MinioConfig` gains an optional `@Value("${attachment.remote.region:}")`
+> region passed to `.region(region)` when non-blank, so AWS S3 outside `us-east-1` works (unset = the SDK's
+> `us-east-1` default, backwards-compatible). The region-absence claims below (understanding, `requires-config`,
+> the `unset_parameter_audit` `.region` row = caveat-defaulted, the `bugs_limitations` region entry) and the
+> "zero test coverage" claim describe odd-platform `main` (still true PRE-merge); they FLIP on merge. The two
+> LSN-002 pins are re-grounded GREEN (LSN-029, not deleted): `MinioConfigRegionTest` (behavioural — the
+> configured region reaches the built client; `@pins`->`@regresses PLT-086`) + `MinioRegionUnsetRegressionPinTest`
+> (config-key contract). MinioConfig patch coverage = 100% (both `isNotBlank` branches). Docs: DOC-455
+> (release/0.28.0 train). Full re-enrich scheduled on merge.
+
 ## understanding
 
 `MinioConfig` is a 26-line Spring `@Configuration` class that produces a single `MinioAsyncClient` bean — the lone HTTP client used by the REMOTE attachment-storage backend to talk to a MinIO / S3-compatible endpoint. It is the canonical LSN-002 surface: the `MinioAsyncClient.builder()` call (MinioConfig.java:21-24) sets only `.endpoint(url)` and `.credentials(accessKey, secretKey)` — `.region(...)` is never called, leaving the SDK's `us-east-1` default in effect and silently restricting AWS S3 operators to that single region. The bean is conditionally registered (`@ConditionalOnProperty(value = "attachment.storage", havingValue = "REMOTE")` — MinioConfig.java:10) so the entire class is skipped when LOCAL storage is in effect (the default). The class participates in the LSN-001 lineage indirectly: it is the gate for REMOTE persistence (the LSN-001 doc-remediation's recommended posture) but contributes nothing toward solving LSN-001's in-code residue (the hard-coded `/tmp/odd/chunks` staging path in `FileUtils.java:24` is shared by both modes and is NOT a MinioConfig concern).
@@ -241,4 +252,12 @@ Per RULE 6 (LSN-018): this sidecar STRENGTHENS BOTH LSN-001 (attachment-ephemera
 **Coherence verdict:** STRENGTHENS LSN-002 (primary source + Gate-5 audit + code-side remediation gap explicit); STRENGTHENS LSN-001 (cross-link to the chunk-staging residue at FileUtils.java:24 that REMOTE persistence does NOT cover). No retrospective is REFUTED. No CONTRADICTS verdict.
 
 ## Maintainer notes
+
+- 2026-06-14 (CTRIB-013 / odd-platform#1741, draft PR): region made configurable via the optional
+  `attachment.remote.region` `@Value` passed to `.region(...)`. See the PENDING CHANGE banner at the top — the
+  region-absence claims throughout this sidecar describe `main` (accurate pre-merge) and flip on merge. The two
+  LSN-002 pins were re-grounded (LSN-029): the `unset_parameter_audit` `.region` row moves caveat-defaulted ->
+  `configured from attachment.remote.region`; `tests_coverage_semantic` is no longer empty (both pins now build
+  the real client / assert the config-key contract; 100% patch coverage). Out of #1741's scope and still open:
+  `.httpClient(...)` timeouts (REFACTOR-034), `.credentialsProvider(...)` / IAM (PLT-086 Defect 2). Docs: DOC-455.
 

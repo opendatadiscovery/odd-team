@@ -29,15 +29,19 @@ file.
 
 **Why the store is eu-west-1 (and the LSN-002 connection):** this stack runs MinIO with
 `MINIO_SITE_REGION=eu-west-1` — NOT us-east-1. That makes this run double as the
-empirical record that **LSN-002 does not reproduce against a vanilla MinIO**:
-`MinioConfig` builds the client without `.region(...)`, but minio-java auto-discovers the
-bucket region via `GetBucketLocation` and adapts, so the upload succeeds. The real
-LSN-002 (no region knob → only works against us-east-1) bites **real AWS S3 under
-least-privilege IAM** (no `s3:GetBucketLocation` → the SDK falls back to us-east-1 →
-cross-region requests rejected), which a local MinIO cannot faithfully reproduce. That
-defect is pinned **structurally** in odd-platform (`MinioConfigRegionTest`, `@regresses
-PLT-086`) — a unit test asserting `MinioConfig` sets `.region(...)` from a config key and
-that `attachment.remote.region` exists. See `retrospectives/LSN-002`.
+empirical record that **LSN-002 does not reproduce against a vanilla MinIO**: with no
+region set, minio-java auto-discovers the bucket region via `GetBucketLocation` and adapts,
+so the upload succeeds. The real LSN-002 (no region knob → only works against us-east-1)
+bites **real AWS S3 under least-privilege IAM** (no `s3:GetBucketLocation` → the SDK falls
+back to us-east-1 → cross-region requests rejected), which a local MinIO cannot faithfully
+reproduce. **As of #1741 (CTRIB-013) the fix has shipped:** `attachment.remote.region` is
+now a config key, and this stack sets `ATTACHMENT_REMOTE_REGION=eu-west-1` so the platform
+signs for the store's region **explicitly** (not via auto-discovery) — so this run is now
+also the e2e smoke that the new knob threads through and REMOTE still round-trips. The
+LSN-002 discriminator remains the **unit** pin (`MinioConfigRegionTest`, now `@regresses
+PLT-086`, a behavioural assertion that the configured region reaches the built client) — a
+local MinIO still cannot faithfully reproduce the least-priv-IAM failure. See
+`retrospectives/LSN-002`.
 
 **Operator-facing value:** confirms REMOTE/S3 storage actually works end-to-end (the
 durable alternative to the LOCAL default that IT-007 shows is lossy).
@@ -45,10 +49,13 @@ durable alternative to the LOCAL default that IT-007 shows is lossy).
 ## 2. Preparation — build the test stand
 - **Stack**: `odd-minio` — `lineage/_extractor/probe-stacks/odd-minio.docker-compose.yml`
   (postgres + MinIO@eu-west-1 + a one-shot `mc` bucket-init for `odd` + the platform with
-  `ATTACHMENT_STORAGE=REMOTE`). Distinct ports (platform 18081, pg 15433, minio 19000) +
-  project `oddminio`, so it coexists with the shared odd-minimal stack. The spec brings it
+  `ATTACHMENT_STORAGE=REMOTE` + `ATTACHMENT_REMOTE_REGION=eu-west-1`). The platform image
+  honours the working-tree SUT via `${ODD_PLATFORM_IMAGE}` (run-suite.sh sets it) — `:latest`
+  only as a standalone fallback, so the run tests the fix under review, not the published
+  release (LSN-032). Distinct ports (platform 18081, pg 15433, minio 19000) + project
+  `oddminio`, so it coexists with the shared odd-minimal stack. The spec brings it
   up/tears it down; manually: `docker-compose -p oddminio -f lineage/_extractor/probe-stacks/odd-minio.docker-compose.yml up -d`.
-- **Auth/config**: `AUTH_TYPE=DISABLED`; `ATTACHMENT_REMOTE_URL=http://probe-minio:9000`, `ACCESS_KEY/SECRET_KEY=minioadmin`, `BUCKET=odd`.
+- **Auth/config**: `AUTH_TYPE=DISABLED`; `ATTACHMENT_REMOTE_URL=http://probe-minio:9000`, `ACCESS_KEY/SECRET_KEY=minioadmin`, `BUCKET=odd`, `REGION=eu-west-1`.
 - **Browser toolchain**: Node 18+ (workspace pins 24) → `cd integration-tests/e2e && npm install`. No browser needed (REST + docker).
 - **Seed**: a data entity (id 2008) inserted into the stack's DB (the spec's `seedEntity`).
 

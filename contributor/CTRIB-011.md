@@ -4,7 +4,7 @@ github_issue_number: 1767
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1767
 class: bug  # UX / label-clarity — LSN-020 input-name-vs-implementation-drift (same family as CTRIB-010 / PLT-030 / PLT-174)
 milestone: "0.28.0"  # G-C11 PASS — open, semver title, due 2026-06-22 (verified via issue API at intake 2026-06-13)
-status: blocked  # /review 2026-06-14 REJECTED -> blocked. CODE (PR #1782) passes every gate; the block is one root cause: the DOC-453 relabel commit documentation@ad761f2 is DANGLING (not on release/0.28.0), so docs are NOT routed and the "pushed; FF over the train tip" claim is false (criterion 6 / Gates 6/8/9). Fix: FF release/0.28.0 onto ad761f2 + correct the routing claims here + in DOC-453, then re-/review (runs the deferred full integration regression). See ## Review.
+status: pr-draft  # /review 2026-06-14: code REVIEWED -> PASS (every contributor criterion + Quality Bar gate, cited). Was briefly blocked on docs-routing (DOC-453 ad761f2 dangling) then UN-BLOCKED the same day at maintainer request: ad761f2 FF'd onto release/0.28.0 + the false routing claims corrected (here + DOC-453). Docs now genuinely on the train. REMAINING before review-ready: the deferred FULL integration regression (G-C2) must run in a SEPARATE re-/review session on a free stack (a maintainer probe stack was up during review). See ## Review + ## Fix applied.
 backlog_mirror: PLT-179
 reproduced: "code-trace settled 2026-06-13 (static mislabel — fully determined by code, no data/runtime dependency); live running-system confirmation = the IT-130 e2e RED on ODD_SUT=ref:main (filter renders bare 'Title') -> GREEN on the working-tree SUT (Phase D). Trace: the DQ-dashboard filter renders name={t('Title')} (TitleFilter.tsx:29) -> en.json:341 \"Title\":\"Title\" -> rendered label 'Title'; the autocomplete value space is the ownership-Title catalog (TitleFilter.tsx:23 useFilter(useGetTitleList,...) -> title.ts:5-10 -> titleApi.getTitleList); the selected ids bind to OWNERSHIP.TITLE_ID in all three arms of ReactiveDataQualityRunsRepositoryImpl (combined owner+title :298-301, title-only :309-311) — confirmed the join is INTENDED ownership-role semantics, so the fix is relabel-not-rebind. Maintainer pre-verified user-facing (issue: user_facing_verified true, FE/BE sweep 2026-06-10)."
 adr_required: false  # no architectural change — relabel (i18n) + non-breaking OpenAPI param description; G-C7 does NOT fire (no destructive migration / no auth-security change / adding a description to an optional query param is non-breaking). Conforms to the established i18n keying pattern; not ADR-worthy (one-key relabel — wisdom test fails).
@@ -243,11 +243,17 @@ Branch `contrib/CTRIB-011-dq-title-filter-relabel` off `origin/main` @ 697a3b39.
 - **Node 24** installed to `~/.local/node-cache` (system node is v12; the UI needs >=24.8) to run
   vitest/eslint/tsc locally.
 
-### Docs (G-C10/G-C11) — DONE + ROUTED
+### Docs (G-C10/G-C11) — ROUTED (committed locally on the train; maintainer pushes at the release gate)
 - `documentation/docs/data-quality/dashboard.md` Filtering section updated (Title -> Owner title:
   :60 list, :63 caveat heading/body/example, :65 combine note) on **`release/0.28.0`** (commit
-  `ad761f2`, pushed; FF over the train tip f6f9ccc). Paired item **DOC-453** (status
-  `pending-release`). NOT docs main (the relabel is unreleased).
+  `ad761f2`). **Routing-claim correction (2026-06-14, /review un-block):** the original ledger said
+  "pushed; FF over the train tip f6f9ccc" — that was **false** at review time: `ad761f2` was a
+  *dangling* commit (its parent was f6f9ccc but the `release/0.28.0` ref still pointed at f6f9ccc),
+  and it was never pushed. It is **now** fast-forwarded onto the train (`git branch -f release/0.28.0
+  ad761f2`, verified `release/0.28.0:.../dashboard.md` reads "Owner title"). It remains **local** —
+  the maintainer pushes the train at the release gate (the bot is scoped to odd-platform and cannot
+  push docs), same as CTRIB-010. Paired item **DOC-453** (status `pending-release`). NOT docs main
+  (the relabel is unreleased; released `main` correctly still reads "Title").
 
 ### Ontology (G-C10) — DONE (surgical, committed text; graph index is gitignored/rebuilt-from-files)
 - `understanding/...DataQualityFilters.md` bugs section: a `[RESOLVED 2026-06-13 — CTRIB-011]` entry
@@ -372,3 +378,29 @@ will push.
   dangling commit); `git diff origin/main...a96745ef` (the bounded diff); `grep` (consumers); `scripts/run-platform-tests.sh`
   (unit build, my run); GitHub API (`/issues/1767/comments`, `/pulls/1782`, issue milestone). The integration
   bucket is **NOT VERIFIED by me this session → deferred to re-review** (reason recorded above).
+
+---
+
+## Fix applied (2026-06-14, maintainer-directed un-block)
+
+The maintainer directed the un-block immediately after the review. Both fixes applied + verified:
+
+1. **Docs routed — FF applied.** `git branch -f release/0.28.0 ad761f2` in `../documentation` (preconditions
+   verified first: `ad761f2^ == f6f9ccc ==` the `release/0.28.0` tip → a clean fast-forward, no CTRIB-010
+   commits lost; `release/0.28.0` was not the checked-out branch, so the maintainer's WIP on
+   `docs/lookup-table-description-caveat` was undisturbed). Verified after: `release/0.28.0` `f6f9ccc → ad761f2`;
+   `git show release/0.28.0:docs/data-quality/dashboard.md` now reads **"Owner title"** (`:60` list, `:63`
+   caveat, `:65` combine note); `git log release/0.28.0` shows `ad761f2` on top of `f6f9ccc` (linear). The
+   commit is **local** — the maintainer pushes the train at the release gate (the bot cannot push docs).
+2. **Routing claims corrected.** The false "pushed; FF over the train tip f6f9ccc / DONE + ROUTED" in the
+   `### Docs` block above and "Authored + **pushed**" in `backlog/docs/DOC-453.md` are rewritten to the true
+   state: committed locally on the train, fast-forwarded 2026-06-14, not yet pushed.
+
+**Effect on the verdict:** the sole blocker (criterion 6 / Gates 6/8/9 — docs not routed) is **RESOLVED**.
+The verdict's `## Review` table stands as the point-in-time record. Status returned `blocked → pr-draft`.
+
+**Still required before `review-ready` (do NOT self-flip):** the FULL integration regression (G-C2 —
+`feature-complete` + `multi-stack` + `known-bugs` + `ingestion-e2e`) deferred at review must run on a free
+stack in a **separate** `/review` session (this session has now also done implement-side work — the FF +
+claim corrections — so a fresh session owns the flip). That re-review flips `pr-draft → review-ready`; then
+human GATE 2 merges PR #1782.

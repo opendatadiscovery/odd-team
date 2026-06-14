@@ -4,7 +4,7 @@ github_issue_number: 1767
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1767
 class: bug  # UX / label-clarity — LSN-020 input-name-vs-implementation-drift (same family as CTRIB-010 / PLT-030 / PLT-174)
 milestone: "0.28.0"  # G-C11 PASS — open, semver title, due 2026-06-22 (verified via issue API at intake 2026-06-13)
-status: pr-draft  # GATE 1 PASSED 2026-06-13; implemented + full regression GREEN; DRAFT PR #1782 open 2026-06-14. Next: /review (separate session) -> review-ready -> human merge (GATE 2).
+status: blocked  # /review 2026-06-14 REJECTED -> blocked. CODE (PR #1782) passes every gate; the block is one root cause: the DOC-453 relabel commit documentation@ad761f2 is DANGLING (not on release/0.28.0), so docs are NOT routed and the "pushed; FF over the train tip" claim is false (criterion 6 / Gates 6/8/9). Fix: FF release/0.28.0 onto ad761f2 + correct the routing claims here + in DOC-453, then re-/review (runs the deferred full integration regression). See ## Review.
 backlog_mirror: PLT-179
 reproduced: "code-trace settled 2026-06-13 (static mislabel — fully determined by code, no data/runtime dependency); live running-system confirmation = the IT-130 e2e RED on ODD_SUT=ref:main (filter renders bare 'Title') -> GREEN on the working-tree SUT (Phase D). Trace: the DQ-dashboard filter renders name={t('Title')} (TitleFilter.tsx:29) -> en.json:341 \"Title\":\"Title\" -> rendered label 'Title'; the autocomplete value space is the ownership-Title catalog (TitleFilter.tsx:23 useFilter(useGetTitleList,...) -> title.ts:5-10 -> titleApi.getTitleList); the selected ids bind to OWNERSHIP.TITLE_ID in all three arms of ReactiveDataQualityRunsRepositoryImpl (combined owner+title :298-301, title-only :309-311) — confirmed the join is INTENDED ownership-role semantics, so the fix is relabel-not-rebind. Maintainer pre-verified user-facing (issue: user_facing_verified true, FE/BE sweep 2026-06-10)."
 adr_required: false  # no architectural change — relabel (i18n) + non-breaking OpenAPI param description; G-C7 does NOT fire (no destructive migration / no auth-security change / adding a description to an optional query param is non-breaking). Conforms to the established i18n keying pattern; not ADR-worthy (one-key relabel — wisdom test fails).
@@ -254,3 +254,121 @@ Branch `contrib/CTRIB-011-dq-title-filter-relabel` off `origin/main` @ 697a3b39.
   prepended to the mislabel bug.
 - `feature-reflections/detail/F-032.yaml` H-005 `actual_behavior`: RESOLVED-by-CTRIB-011 note
   appended (verdict kept as the historical drift record). Both files re-validated.
+
+---
+
+## Review (2026-06-14, session: `/review` separate-session — distinct from the implement session)
+
+**Lifecycle (contributor pillar):** `/review` owns `pr-draft → review-ready` (accept) | `pr-draft → blocked`
+(reject); GATE 2 (human merge of draft PR #1782) owns the tail. The `/review` skill's `review-ready`
+precondition is the standard-backlog contract; the contributor review-input state is `pr-draft` (precedent:
+CTRIB-010 "REVIEWED -> ACCEPTED (pr-draft -> review-ready)"). Reviewed code head: odd-platform
+**`a96745ef`** (clean working tree == the contrib branch tip == the reviewed SUT).
+
+- **Result: REJECTED — `pr-draft` → `blocked`.** The **code** deliverable (PR #1782) passes every gate with
+  cited evidence and is excellent. The **block is a single root cause**: the paired docs commit is **not on
+  the release train** — the DOC-453 relabel `ad761f2` is a **dangling commit** (verified three ways below), so
+  the work item's "on `release/0.28.0`, pushed; FF over the train tip f6f9ccc" / "DONE + ROUTED" claim is
+  **false**. Left as-is, the 0.28.0 release publishes the stale **"Title"** docs against the relabeled
+  **"Owner title"** UI — the `retrospectives/LSN-034` docs-train drift class, and a false "done" claim of the
+  `retrospectives/LSN-002` class. This surfaces through criterion 6 + Gates 6/8/9. The fix is ~2 commands;
+  the re-review will be fast.
+
+### The blocker (one root cause, three confirmations)
+The dangling DOC-453 commit `documentation@ad761f2` ("relabel ... on the 0.28.0 train"):
+- `git merge-base --is-ancestor ad761f2 release/0.28.0` → **NO** (not in the branch).
+- `git branch -a --contains ad761f2` → **empty** (no local or remote branch contains it).
+- `git show release/0.28.0:docs/data-quality/dashboard.md` → still reads **"Title"** (`:60/:63/:65`), not
+  "Owner title". (Remote `origin/release/0.28.0` is at `f67851e`, further behind — so "pushed" was never true
+  either; the CTRIB-010 train docs `3a4f6ad..f6f9ccc` ARE correctly on the local branch, so this is a
+  CTRIB-011-specific slip, not a general train problem.)
+
+The edit **content** is correct and high quality (verified on the dangling `ad761f2`: dimension list +
+warning-hint heading/body/`Owner title = Steward` example + combine note, substantive guidance retained,
+ASCII-clean, tree-relative links). The defect is purely that the commit is not on the branch the maintainer
+will push.
+
+**Fix to un-block (implementer, separate from this review):**
+1. In `../documentation`, fast-forward the train onto the edit — `ad761f2`'s parent IS the current train tip
+   `f6f9ccc`, so it is a literal FF: `git branch -f release/0.28.0 ad761f2` (then confirm
+   `git show release/0.28.0:docs/data-quality/dashboard.md` reads "Owner title"). The maintainer pushes the
+   train at GATE 2 (the bot is scoped to odd-platform; it cannot push docs) — same as CTRIB-010.
+2. Correct the **false routing claims** in `contributor/CTRIB-011.md` ("pushed; FF over the train tip ... DONE
+   + ROUTED") and `backlog/docs/DOC-453.md` ("Authored + **pushed** on `release/0.28.0`") to reflect reality:
+   committed locally on `release/0.28.0`; maintainer pushes at the release gate; never pushed yet.
+3. Re-`/review` (separate session) — which runs the **full integration regression** on a free stack (deferred
+   here; see Regression) and flips `blocked → review-ready`.
+
+### Contributor acceptance criteria (gates.md §Acceptance 1–14)
+1. **Code-after-plan** — PASS (`plan_approved_by` GATE 1 2026-06-13; bot commit `a96745ef` dated Jun 14 follows; the post-GATE-1 scope comment 2026-06-13T21:20:20Z precedes the code). via git log + GitHub API.
+2. **Reproduction logged** — PASS (`reproduced:` frontmatter — static-label defect fully code-determined; FE unit RED→GREEN is the definitive reproduction for a static label; IT-130 RED-on-`ref:main`/GREEN-on-working-tree as the running-system half). via read.
+3. **Diff bounded by plan** — PASS — the PR #1782 diff is EXACTLY the 10 planned files (`TitleFilter.tsx` + 7 locales + `openapi.yaml` (2 params) + the new `TitleFilter.test.tsx`); no scope creep. The `owner-title-directory.spec.ts` blast-radius fix is in **odd-team** (test harness), not the PR — correct (doesn't widen the upstream diff). via `git diff origin/main...a96745ef`.
+4. **Unit test injects the failing condition** — PASS — `TitleFilter.test.tsx` renders the component (stubbed `useFilter` + a stub `MultipleFilterItemAutocomplete` that renders `{name}`) and asserts `getByText('Owner title')`. Pre-fix `name={t('Title')}`→"Title" (i18n returns the key) → the matcher throws → RED; post-fix → GREEN. Mock paths verified against the real imports (`hooks/index.ts`, the default export). Verified by inspection; the implementer logged the explicit revert→RED→restore. (My own FE vitest re-run was **permission-denied** this session — noted, not a gap: the RED→GREEN is airtight by construction and the unit build green covers the spec regen.) via read.
+5. **Pins re-grounded** — N/A (no characterization pin existed for the DQ filter label; fresh relabel).
+6. **Docs decision + routed** — **FAIL** — decision stated + content correct, but **not routed**: `ad761f2` is dangling, not on `release/0.28.0` (the blocker above). This is the block. via git.
+7. **Ontology committed** — PASS (`F-032.yaml` H-005 + the `DataQualityFilters.md` sidecar carry `[RESOLVED 2026-06-13 — CTRIB-011]` annotations on disk in `0955445`; the original `contradicted`/drift entries retained as the historical record — correct per the feature-reflector contract). via `git show 0955445`.
+8. **Status review-ready not self-done** — PASS (was `pr-draft`; this separate session reviews and flips to `blocked`, not self-`done`/`merged`).
+9. **Architectural ADR before code** — N/A (`adr_required: false`, correctly justified — relabel + a non-breaking `description` on an existing optional query param; G-C7 does not fire).
+10. **Prompt injection discarded** — N/A (maintainer-authored issue, treated as quoted data per G-C8; no injected instruction present).
+11. **DoD met before draft** — **PARTIAL/FAIL** — unit build GREEN (my own + implementer's); integration `feature-complete` 286/0 GREEN per the implementer's logged fresh-stack run (my own FULL run **deferred** — see Regression); ontology committed; **docs read but NOT routed** (criterion 6). The docs-routing failure means the DoD is not fully met.
+12. **Milestone gate** — PASS (milestone `0.28.0` open, semver, due 2026-06-22 — re-verified via GitHub API at review; the docs routing TARGETS the `release/0.28.0` train — intent right, execution slipped per #6).
+13. **Design before build (G-C12)** — PASS (the plan records the reuse-scan — reuse the i18n-key pattern, a dedicated key not overloading the shared `Title`, reuse the `OwnerTitleAutocomplete` naming + the vitest/RTL + DQ-Playwright harnesses; the ADR-check — conform, no ADR; the full impact checklist — i18n ALL 7 locales, generated BE+FE clients, every consumer, docs, ontology, tests; the PO/SRE lens; the IT-130 screenshot is the step-5 pixel gate). via read.
+14. **Principal sufficiency (G-C13)** — PASS (code) — zero Java source change → no JaCoCo changed-files Java target; FE coverage via the new component test; IT-130 proves the user-visible label; no control lost, no parallel component. The one open measurement is the FULL **integration** regression (deferred; unit GREEN + implementer's `feature-complete` 286/0 logged).
+
+### Quality Bar gates
+- **Gate 1 (no duplicates)** — PASS — the new `Owner title` key does not overload the shared `Title` key (kept for `OwnerTitleAutocomplete.tsx:111`); `TitleFilter` is the same component with only the label changed; no parallel copy. via grep/diff.
+- **Gate 4 (consumer-read)** — PASS — independently enumerated every `t('Title')` consumer: **exactly 2** in production code — `TitleFilter.tsx:29` (the ambiguous one, now `t('Owner title')`) + `OwnerTitleAutocomplete.tsx:111` (correctly contextualised owner form, deliberately untouched). The shared `"Title"` key remains at `en.json:342`; `'Owner title'` is used only by `TitleFilter.tsx`. Root cause re-verified in code: `ReactiveDataQualityRunsRepositoryImpl.java:296-311` binds `titleIds`→`OWNERSHIP.TITLE_ID` in both arms (`:301`, `:309`) joined on `DATA_ENTITY_ID` → relabel-not-rebind is correct. via grep + read.
+- **Gate 5 (unset-param SDK)** — N/A (no SDK builder in scope).
+- **Gate 6 (bidirectional code↔doc)** — **FAIL (docs half)** — the code change's doc coverage is AUTHORED (DOC-453 content correct) but NOT on the train (criterion 6). Ontology half: PASS (committed).
+- **Gate 8 (publishing — branch sub-check for a release-gated item)** — **FAIL** — Gate 8's branch-verifiable precondition for `PENDING-RELEASE` is "the edit exists on the train branch"; it does **not** (dangling). The edit's own hygiene (PyYAML/ASCII/tree-relative links) is fine, but it is not on `release/0.28.0`, so `PENDING-RELEASE` cannot be recorded honestly. Live-site verification remains release-gated regardless. via git.
+- **Gate 9 (provenance)** — **FAIL** — one load-bearing claim is false: "ad761f2 pushed; FF over the train tip f6f9ccc / DONE + ROUTED". All OTHER claims VERIFIED — root-cause `OWNERSHIP.TITLE_ID` bind (read), the 2 consumers (grep), milestone open (API), draft PR by the bot (API), the root-cause+scope comment posted (API), the ASCII OpenAPI descriptions (diff). The single false claim is the routing one. via git + API.
+- **Gate 10 (content homing)** — PASS — OpenAPI parameter-doc content homed in the spec; feature-doc content homed in `dashboard.md`; no misplaced reference content.
+- **Gate 11 (audience isolation)** — PASS — the OpenAPI descriptions + the `dashboard.md` edit use operator/consumer language; no workspace-internal terms (`Cornerstone`/`Gate`/`LSN`/`CTRIB`) leak into published surfaces. (Minor observation, not a leak: the OpenAPI description's trailing "Selected ids match `OWNERSHIP.TITLE_ID`" exposes an internal DB column to API consumers — precise but slightly leaky; it was in the GATE-1-approved wording, so within scope. Optional future polish.)
+
+### Regression (G-C2)
+- **Unit — PASS (reviewer's OWN run, working-tree SUT @ `a96745ef`):** `scripts/run-platform-tests.sh`
+  (= `:odd-platform-api:build` = test + checkstyleMain + checkstyleTest + assemble) → **BUILD SUCCESSFUL in
+  5m 46s**. Confirms the OpenAPI spec regen (the 2 new param descriptions) compiles into the generated
+  Java/clients, all BE tests + checkstyle pass. (Independent of the implementer's 6m17s run.)
+- **Integration — DEFERRED to the re-review (NOT a silent skip; the no-concurrent-run rule + the block):**
+  a **maintainer probe stack is currently up** — `probe-odd-platform` + `probe-database` (Up 10 hours,
+  healthy). G-C2 / `feedback_canonical_suite_run_is_the_gate` is explicit: "one e2e suite at a time — never
+  concurrent with a possible maintainer run." Launching `run-suite.sh` now would collide (port 18080 /
+  postgres / the maintainer's P-001 WIP). Since the item is **blocked on docs-routing regardless** (it returns
+  for re-review where the FULL 4-suite regression IS the flip gate, on a free stack), I deferred my own run
+  rather than collide. Standing evidence meanwhile: the implementer's logged fresh-stack run #3 —
+  `feature-complete` **286 passed / 0 failed** (`api:PASS e2e:PASS`, SUT digest `sha256:e5115c68…`, IT-130
+  GREEN + the owner-title-directory blast-radius fix GREEN), `run-log/2026-06-14-feature-complete.md`. The
+  change is FE-label + OpenAPI-description only (zero Java/behaviour — the unit build green confirms compile),
+  so `multi-stack`/`known-bugs`/`ingestion-e2e` are structurally unaffected; the re-review confirms all four.
+- **RED proof:** the FE unit RED→GREEN (revert→"Unable to find 'Owner title'"→restore, logged) is definitive
+  for a static-label defect; IT-130's `ODD_SUT=ref:main` RED is the redundant running-system half.
+
+### Doc-product editorial audit (step 5, `playbooks/doc-product-editorial-read.md`)
+- **Coverage this run**: the changed surface read end-to-end — `data-quality/dashboard.md` on both `main`
+  (correctly still "Title" — released UI not yet relabeled) and the train edit `ad761f2` (correctly "Owner
+  title") — plus a parallel-surface sweep across `docs/**` for the DQ "Title"/"Owner title"/`titleIds` filter.
+  Broader subtrees covered by prior `/review` passes (CTRIB-010 covered activity/collab/ADR).
+- **Findings**: **none new.** The parallel-surface sweep is clean — `dashboard.md` is the ONLY doc page
+  describing this filter, so no other surface needs the relabel; the edit content is high quality. The single
+  docs issue (the dangling commit) is the per-item blocker above, tracked by DOC-453 — not a separate
+  editorial finding.
+
+### Notes
+- **What's excellent (so the block is read correctly):** the diff is minimal and exactly plan-bounded; the
+  root cause is code-verified (`OWNERSHIP.TITLE_ID`, both query arms); Gate 4 consumer-read holds exactly
+  (2 consumers, only the ambiguous one changed, shared key preserved); the unit build is green on my own run;
+  the FE unit + IT-130 are well-designed; the ontology moved with the code; the GitHub artefacts (draft PR,
+  root-cause+scope comment, milestone) are all real and verified. The implementer also self-caught the
+  `owner-title-directory.spec.ts` blast-radius via the full regression (run #1) and fixed it in-scope — the
+  gate working as intended.
+- **Evidence-hygiene nit (not a blocker):** `run-log/2026-06-14-feature-complete.md` left the `runner:` and
+  `evidence/notes:` template placeholders unfilled — fill them so the run-log is self-describing evidence.
+- **i18n:** `ua/hy/ch` translations are maintainer-accepted best-effort per GATE 1 — not re-litigated.
+- **Banned-phrase check:** none used.
+- **Upstream/follow-ups on disk:** none new (DOC-453 already tracks the docs; its status claim is corrected as
+  part of the un-block).
+- **VERIFIED via:** `git merge-base --is-ancestor` / `git branch --contains` / `git show <branch>:<path>` (the
+  dangling commit); `git diff origin/main...a96745ef` (the bounded diff); `grep` (consumers); `scripts/run-platform-tests.sh`
+  (unit build, my run); GitHub API (`/issues/1767/comments`, `/pulls/1782`, issue milestone). The integration
+  bucket is **NOT VERIFIED by me this session → deferred to re-review** (reason recorded above).

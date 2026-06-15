@@ -10,7 +10,7 @@ stack: odd-minimal
 automation: "e2e:specs/search-tsquery-poisoning.spec.ts"
 plan_ref: "I7 (search/session poisoning) — Tier-1 UI scenario; lead item of the e2e build-out"
 status: ready
-expected_result: "RED until JooqFTSHelper escapes tsquery operators — a `(`/`)`/`:` 500s the read and persists a poisoned session row (PLT-090 catalog + PLT-127 dictionary; one fix closes both)"
+expected_result: "GREEN as of CTRIB-016 / odd-platform#1756 (ships 0.28.0) — JooqFTSHelper.tsQuery strips the full tsquery operator set, so a `(`/`)`/`:`/`'`/`<` returns results or \"No matches found\" and never persists a poisoned session. Was RED (the unescaped to_tsquery 500); moved known-bugs -> feature-complete 2026-06-16. Flips on main when the CTRIB-016 PR merges."
 ---
 
 # IT-003 — search tsquery poisoning (the persistent-500 footgun)
@@ -95,4 +95,4 @@ Playwright trace/screenshot land under `integration-tests/e2e/test-results/` on 
 - Related (NOT this test): PLT-109 / GHSA-rjp9-9vgm-q94c — the `ts_headline` `String.formatted` SQL-injection (different sink, separate severity class)
 - Plan: `lineage/odd-platform/test-plan.md` batch I7 (search/session poisoning) + the Tier-1 e2e build-out
 - Automation: `integration-tests/e2e/specs/search-tsquery-poisoning.spec.ts`
-- Fix that flips this GREEN: escape tsquery operators in `JooqFTSHelper.tsQuery` (or switch to `websearch_to_tsquery`) — one fix closes PLT-090 + PLT-127; then move IT-003 from the `known-bugs` suite to `feature-complete`.
+- Fix that flipped this GREEN: **CTRIB-016 / odd-platform#1756** — `JooqFTSHelper.tsQuery` now strips the full tsquery operator set before `to_tsquery` (one fix closes PLT-090 catalog + PLT-127 dictionary at the shared sink). Moved `known-bugs` -> `feature-complete` 2026-06-16; GREEN on the branch/working-tree SUT, flips on main when the PR merges. (PLT-090 defects 1 & 2 — session-row owner binding + cross-owner facet enumeration — are out of CTRIB-016's scope and remain.)

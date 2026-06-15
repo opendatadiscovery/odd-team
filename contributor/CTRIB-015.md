@@ -8,7 +8,7 @@ scope: frontend
 milestone: "0.28.0"
 status: pending-release
 reproduced: "integration-tests/e2e/specs/dq-severity-render-bleed.spec.ts (RED, 2026-06-15) — see Reproduction log"
-code_commit: "odd-platform contrib/CTRIB-015-dq-severity-confirm @ 77e4103c (local; push + draft PR pending GATE 2 — harness gates outward GitHub writes)"
+code_commit: "MERGED to odd-platform main as squash 1f32debe (PR #1786, by RamanDamayeu 2026-06-15T21:43:47Z); branch was contrib/CTRIB-015-dq-severity-confirm @ 77e4103c"
 docs_commit: "documentation release/0.28.0 @ 3882042 (local worktree; push pending maintainer at the release gate)"
 adr_required: true
 adr_draft: adrs/drafts/confirm-and-store-reduce-field-edits.md
@@ -18,7 +18,8 @@ plan_approved_at: "2026-06-15"
 plan_approved_decision: "REVISION 1 — reuse entity-Status confirm pattern (SelectableSeverity + ConfirmationDialog + .fulfilled store-reduce + key) + reverse-engineered ADR; SelectableSeverity co-located with TestReportDetailsOverview"
 docs_routing: "release/0.28.0 train (two commits in worktree /tmp/doc-release-028): (1) data-quality/sla-statuses.md 'Setting severities' confirm-step refinement @ 3882042 — paired DOC-459; (2) developer-guides/architecture-decision-log/ADR-0078 + SUMMARY/README @ 3ad09fb — paired backlog ADR-0078. Both pending-release, milestone 0.28.0; NOT docs main (unreleased). Maintainer push at the release gate."
 pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1786
-pr_draft: true
+pr_draft: false  # MERGED (squash 1f32debe) — see Post-review update
+pr_followup: "https://github.com/opendatadiscovery/odd-platform/pull/1787 (DRAFT — comment-only cleanup of the IT-081 + adrs/drafts refs that shipped in the squash; Finding 5)"
 backlog_ref: PLT-177
 found_date: "2026-06-08"
 started: "2026-06-15"
@@ -253,4 +254,10 @@ Maintainer approved REVISION 1 via in-session AskUserQuestion: reuse the entity-
 5. **Stale `IT-081` reference ships** in `SelectableSeverity.test.tsx:20` ("covered live by integration test IT-081") — the protocol is **IT-131**, and `IT-081` is a *different* pre-existing protocol. Best fixed before the PR merges: drop the workspace-internal `IT-NNN` id from the public test comment (upstream can't resolve it) or correct it to a generic "the integration e2e suite". (CTRIB-015.md Phase B/C also use the old `IT-081` — historical record drift, workspace-internal.)
 6. **F-057 sibling UC traces** (UC-001/004/005) still cite pre-rewrite `TestReportDetailsOverview.tsx:NN` line ranges that shifted (e.g. UC-005 `:78-94` → the `WithPermissions` gate is now `:61-71`). The change's *focus* aspects (UC-010/011) were correctly refreshed; the sibling line-refs are minor ontology staleness. → refresh on the next `/enrich --touched`.
 
-- **Notes**: The fix itself is correct, minimal, conforms to the platform's own entity-Status confirm pattern, and is independently verified GREEN (unit + IT-131 on the running fix SUT). VERIFIED via reviewer-run `vitest`/`tsc`/`eslint` + Playwright IT-131 + GitHub API (PR state) + `git merge-base` (scope) + doc-worktree read (release/0.28.0). The item stays `pending-release`; `/review release:0.28.0` owns the final live-verify + flip to `done` after the maintainer merges PR #1786 (GATE 2) and the 0.28.0 release ships.
+- **Notes**: The fix itself is correct, minimal, conforms to the platform's own entity-Status confirm pattern, and is independently verified GREEN (unit + IT-131 on the running fix SUT). VERIFIED via reviewer-run `vitest`/`tsc`/`eslint` + Playwright IT-131 + GitHub API (PR state) + `git merge-base` (scope) + doc-worktree read (release/0.28.0). The item stays `pending-release`; `/review release:0.28.0` owns the final live-verify + flip to `done` after the 0.28.0 release ships.
+
+### Post-review update (2026-06-15, same session — maintainer-directed comment fix)
+
+- **GATE 2 DONE for the code**: PR #1786 **MERGED** as squash `1f32debe` on odd-platform `main` by `RamanDamayeu` at `2026-06-15T21:43:47Z` (API-verified: `merged:true`, `merge_commit_sha:1f32debe`). Branch protection held (bot author; a human merged). The item remains `pending-release` — it is release-gated (0.28.0); the docs (DOC-459 + ADR-0078) still publish at the release gate, and `/review release:0.28.0` owns the flip to `done`.
+- **Finding 5 (IT-081 + `adrs/drafts/…` comment leak) — fixed via follow-up**: the merge took `77e4103c`'s content, so the unresolvable workspace-internal comment refs shipped to `main`; the pre-merge amend was therefore impossible. Maintainer directed the fix (AskUserQuestion: "Follow-up draft PR"). Landed as **DRAFT [PR #1787](https://github.com/opendatadiscovery/odd-platform/pull/1787)** (`contrib/CTRIB-015-comment-cleanup` off `main`, cherry-pick `fa40e4fa`): comment-only, 3 lines across `SelectableSeverity.tsx` + its test — `IT-081` → "the end-to-end integration suite"; the dead `adrs/drafts/confirm-and-store-reduce-field-edits.md` path → the real `SelectableEntityStatus`/`StatusSettingsForm` symbols + public `#1750`. `SelectableSeverity` unit tests re-run GREEN (3/3) post-edit. GATE 2 (human merge of #1787) owns the tail.
+- **One cleanup pending the maintainer**: my first push (attempting the pre-merge fix) re-created the auto-deleted branch `contrib/CTRIB-015-dq-severity-confirm` @ `33358b07` on the remote. It is now redundant (its content is on `main` via the squash; the comment fix is in #1787). **Deleting it was blocked by the workspace safety guard** (remote-branch deletion not explicitly authorized) — left for the maintainer to delete (GitHub UI, or grant the permission).

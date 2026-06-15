@@ -119,19 +119,31 @@ test.describe('F-029 Platform Public API Contract — spec <-> platform conforma
     // machine-readable contract exists on a running deployment. The hand-picked conformance checks above remain
     // valuable as spec-FILE -> platform checks; driving the whole conformance loop from the LIVE document is the
     // separate follow-up PENDING-F-029-1. IT-042 locks the same fix from the UI angle.
-    let specLoads = false;
-    try {
-      const res = await request.get('/api/v3/swagger-ui.html/platform-api', { timeout: 8000 });
-      if (res.ok()) {
-        const body = (await res.json()) as { openapi?: string; paths?: Record<string, unknown> };
-        specLoads = Boolean(body.openapi) && Object.keys(body.paths ?? {}).length > 0;
-      }
-    } catch {
-      specLoads = false; // timeout / hang / error = the spec did not load
-    }
-    expect(
-      specLoads,
-      'the live platform-api OpenAPI document must load with openapi+paths (regression-lock for #1759/PLT-141)',
-    ).toBe(true);
+    // springdoc builds the group document LAZILY on the first request: a cold JVM under load can take well
+    // over a single 8s window to scan every controller/schema, then serves the cached doc in ~40ms. The
+    // regression-lock asserts "a machine-readable contract LOADS on a running deployment", not "the cold
+    // lazy-scan beats one 8s window" — so POLL (the first GET warms springdoc; later GETs are instant)
+    // rather than racing a single request. (Verified 2026-06-15: this GET returns 200 + openapi+paths in
+    // ~43ms once warm; a single cold GET intermittently timed out under concurrent-build load.)
+    await expect
+      .poll(
+        async () => {
+          try {
+            const res = await request.get('/api/v3/swagger-ui.html/platform-api', { timeout: 15_000 });
+            if (!res.ok()) return false;
+            const body = (await res.json()) as { openapi?: string; paths?: Record<string, unknown> };
+            return Boolean(body.openapi) && Object.keys(body.paths ?? {}).length > 0;
+          } catch {
+            return false; // timeout / hang on a cold scan — keep polling until the deadline
+          }
+        },
+        {
+          message:
+            'the live platform-api OpenAPI document must load with openapi+paths (regression-lock for #1759/PLT-141)',
+          timeout: 45_000,
+          intervals: [1_000, 2_000, 5_000],
+        }
+      )
+      .toBe(true);
   });
 });

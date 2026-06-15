@@ -256,4 +256,82 @@ test.describe('F-043 Multilingual UI — locale switching + fallback', () => {
       'the raw English "Search relationships" placeholder must be gone under es',
     ).toHaveCount(0);
   });
+
+  // REGRESSION #1751 / PLT-205 (the second wave — the strings the no-literal-string lint MISSED):
+  // ~18 user-facing strings sat in JSX *attributes* (placeholder / label / aria-label) that the eslint
+  // guard silently skipped, so they rendered English under every locale even after the first wrap pass.
+  // CTRIB-014 wrapped them all + added a deterministic vitest attribute-guard (i18n-key-parity.test.ts).
+  // The Master Data > Lookup Tables page is one such surface — its H1 + search placeholder are now
+  // translated. Drive the real page under es and assert the body renders Spanish, not English.
+  test('the Lookup Tables page (H1 + search placeholder) renders translated under es (#1751 / PLT-205 wave 2)', async ({
+    page,
+  }) => {
+    await page.goto('/master-data/lookup-tables');
+    // baseline English — the page H1 + the (previously-unwrapped) search placeholder
+    await expect(
+      page.getByRole('heading', { name: 'Lookup Tables', exact: true }),
+      'baseline: the English "Lookup Tables" H1 must render before switching',
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByPlaceholder('Search lookup tables...'),
+      'baseline: the English "Search lookup tables..." placeholder must render before switching',
+    ).toBeVisible({ timeout: 10_000 });
+
+    await switchLanguageViaUi(page, 'Spanish');
+
+    // the page now renders its es.json values
+    await expect(
+      page.getByRole('heading', { name: 'Tablas de búsqueda', exact: true }),
+      'after switching to es, the H1 must read es.json "Tablas de búsqueda"',
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByPlaceholder('Buscar tablas de búsqueda...'),
+      'the search placeholder must read es.json "Buscar tablas de búsqueda..." (was an unwrapped literal pre-CTRIB-014)',
+    ).toBeVisible({ timeout: 10_000 });
+    // and the raw English strings are gone
+    await expect(
+      page.getByPlaceholder('Search lookup tables...'),
+      'the raw English "Search lookup tables..." placeholder must be gone under es',
+    ).toHaveCount(0);
+  });
+
+  // REGRESSION #1751 / PLT-205 (wave 3 — the maintainer's /search example, 2026-06-15): the search
+  // result-type tabs ("All", "My Objects", "Datasets", …) are string literals in a TS object array
+  // (SearchResultsTabs.tsx) rendered via <AppTabs>, so they live OUTSIDE JSX — the eslint no-literal-string
+  // rule and the JSX-attribute guard BOTH miss them; they rendered English under every locale (the maintainer
+  // drove /search under `ua` and saw the English tab strip). CTRIB-014 wrapped them in t() + added a
+  // deterministic object-property guard. Drive a real search under `ua` and assert the tab strip is Ukrainian.
+  test('the search result-type tabs render translated under a non-English locale (#1751 / PLT-205 wave 3)', async ({
+    page,
+  }) => {
+    await page.goto('/search');
+    // perform a search so the result-tab strip renders (the main catalog box searches on Enter)
+    const box = page.getByPlaceholder('Search', { exact: true });
+    await box.fill('a');
+    await box.press('Enter');
+    // baseline English: the result-type tab strip renders "All" + "My Objects" (names carry a count hint,
+    // so match by substring, like IT-068)
+    await expect(
+      page.getByRole('tab', { name: /All/ }),
+      'baseline: the English "All" search tab must render before switching',
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /My Objects/ })).toBeVisible({ timeout: 10_000 });
+
+    await switchLanguageViaUi(page, 'Ukrainian');
+
+    // the tab strip now renders its ua.json values (these were hardcoded literals pre-CTRIB-014)
+    await expect(
+      page.getByRole('tab', { name: /Усі/ }),
+      'after switching to ua, the "All" tab must read ua.json "Усі"',
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByRole('tab', { name: /Мої об'єкти/ }),
+      'the "My Objects" tab must read ua.json "Мої об\'єкти"',
+    ).toBeVisible({ timeout: 10_000 });
+    // and the raw English tab label is gone — it was a hardcoded literal, now translated
+    await expect(
+      page.getByRole('tab', { name: /My Objects/ }),
+      'the raw English "My Objects" tab must be gone under ua',
+    ).toHaveCount(0);
+  });
 });

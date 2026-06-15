@@ -13,15 +13,20 @@ session_id: session-2026-05-26-ZJ
 
 # en.json — canonical English i18n source for the platform UI — semantic understanding
 
-> **Update 2026-06-15 (CTRIB-014 / odd-platform#1751, ships 0.28.0) — supersedes the stale counts below.**
-> en.json now has **600** entries (was 418→505); there are **six** non-en locales (`es/ch/fr/ua/hy/br` — `br`
-> added by #1564), all at **exact 600-key parity**. The "~70 keys missing from all catalogs / no CI guard"
-> limitation is RESOLVED: #1751 added the missing keys + translated all six catalogs. TWO guards now exist:
-> (1) a vitest **catalog-parity** test (every non-en catalog == en's key set; was en-completeness-only) and
-> (2) an eslint **`no-literal-string`** rule (PLT-205) that fails on a user-facing JSX string not wrapped in
-> `t()` — the latter closed a SEPARATE, larger class: ~208 HARDCODED strings across 98 files that bypassed i18n
-> entirely (invisible to the t()-sweep metric). Also `fallbackLng` is now `'en'` (was the 7-locale array — the
-> #1564 Portuguese-leak, CTRIB-012). The bodied sections below predate this and describe the old shape.
+> **Update 2026-06-15 (CTRIB-014 / odd-platform#1751 + PLT-205, ships 0.28.0) — supersedes the stale counts below.**
+> en.json now has **612** entries (was 418→505→600→612); there are **six** non-en locales (`es/ch/fr/ua/hy/br` —
+> `br` added by #1564), all at **exact 612-key parity**. The "~70/84 keys missing from all catalogs" limitation is
+> RESOLVED: #1751 added the missing keys + translated all six catalogs. THREE guards now exist
+> (`src/locales/__tests__/i18n-key-parity.test.ts` (vitest) + `eslint.config.mjs`):
+> (1) a vitest **catalog-parity** test — every non-en catalog == en's key set (missing/orphan fails);
+> (2) the eslint **`no-literal-string`** rule (PLT-205) — flags unwrapped JSX **text nodes** (closed the bulk of
+>     the ~208 hardcoded strings across 98 files that bypassed `t()` entirely);
+> (3) a vitest **no-unwrapped-attribute-literal** test (PLT-205 **wave 2**) — the eslint rule silently MISSES
+>     string literals in JSX **attributes** (`placeholder`/`label`/`aria-label`/…), so ~18 strings still rendered
+>     English under a green lint; this deterministic test closes that hole (every translatable attribute must be
+>     `{t(...)}`; RED→GREEN verified).
+> Also `fallbackLng` is now `'en'` + `keySeparator/nsSeparator: false` (the #1564 Portuguese-leak fix #1783 + the
+> phrase-key fix #1751). The bodied sections below predate this and describe the old shape.
 
 ## understanding
 

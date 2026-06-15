@@ -28,7 +28,7 @@ docs_routing: "release/0.28.0"  # unreleased behaviour (the catch-up ships in 0.
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1785"  # DRAFT, odd-contributor[bot], 2026-06-15
 pr_draft: true
 backlog_mirror: "PLT-215 (translation remainder + strict-parity assertion; #3 = FE lint not in CI, human) + PLT-226 (picker regression, closed-by-PR) + PLT-205 (whole unwrapped-string class, closed-by-PR)"
-contrib_branch: "contrib/CTRIB-014-i18n-locale-translation @ 6036c49e (odd-platform, pushed) — commits fcf1b151 (catalogs+parity) / 586ac8d1 (picker PLT-226) / 6036c49e (wrap+guard PLT-205 + i18n separators)"
+contrib_branch: "contrib/CTRIB-014-i18n-locale-translation @ ce457e16 (odd-platform, pushed) — fcf1b151 (catalogs+parity) / 586ac8d1 (picker PLT-226) / 6036c49e (wrap+guard PLT-205 + i18n separators) / ce457e16 (value-quality pass — Term-as-condition + untranslated leftovers)"
 base: "odd-platform origin/main (post-#1783 @ 9c6fb074 — en.json complete @ 505 keys, fallbackLng:'en', parity test en-completeness-only)"
 ---
 
@@ -222,6 +222,23 @@ Fixed in `i18n.ts` with `keySeparator: false` + `nsSeparator: false` — the cor
 contain `:`/`.` as literal text). Also repairs pre-existing keys that were silently broken
 (`Example: …[[Finance:User]]`, the dotted-period phrases). Verified: 11 colon-keys + 13 dot-keys are all
 phrases (none `ns:key`-style), so separators-off is safe; re-ran the full regression on the rebuilt SUT.
+
+**Value-quality pass (maintainer-flagged, 2026-06-15 — commit ce457e16).** Driving the running UI, the
+maintainer found pre-existing BAD VALUES (distinct from completeness/wrap): `Term` mistranslated as a contract
+*condition* (`ua` 6: Term→умова; `hy` 18: Term→Պայման — a glossary Term is terminology) + ~79 untranslated
+leftovers (value==en, rendering English: `ua` `Updated`→`Updated`, `Statuses`, `Select language`, `Total
+entities`; `fr`/`hy` the most). Re-translated WITH per-key UI usage + an ODD domain glossary (not the bare
+existing catalog, which carried the errors): es 3 / br 5 / ch 6 / fr 6 / ua 12 / hy 47. Cognates/loanwords
+(Namespace/Token/Roles…) deliberately left. `ua` reviewed (Оновлено / ТЕРМІНИ / Додати термін / цей термін?
+— correct). Verified at the catalog level (parity 8/8 @ 600, JSON valid, values read); the live render is
+deterministic (i18next value lookup; the render path is IT-102-proven) and re-confirmed at /review's full IT.
+The lever was CONTEXT, not a different tool (no paid MT in the no-budget env). Case-law:
+`feedback_i18n_done_is_rendered_page_not_catalog_parity`.
+
+**Remaining quality (deferred, not blocking):** a FULL contextual re-translation of all ~600 keys × 6 (Option B)
+wants native speakers per locale; the rest of the wrong-value class (PLT-221: the 'main search placeholder'
+literal-key + br typos) stays its own item. The `no-literal-string` guard + the parity test hold completeness;
+value-correctness beyond the flagged set is a native-review follow-up.
 
 **Closes:** #1751 (catalog catch-up + the per-page wrap + the CI guard the issue asked for) · PLT-226 (the
 picker regression) · PLT-205 (the whole unwrapped-string class). Remaining human step: wire `pnpm lint` into

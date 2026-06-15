@@ -4,7 +4,7 @@ title: "The UI switches locale (i18next), persists the choice, and falls back to
 gates:
   validates: [F-043]
   enforces: []
-  regresses: [PLT-190]
+  regresses: [PLT-190, PLT-215, PLT-226]
 test_class: integration
 stack: odd-minimal
 automation: "e2e:multilingual-i18n.spec.ts"
@@ -48,6 +48,15 @@ rendered raw English literals beside six translated siblings under every non-Eng
 4. CORNER (fallback): pre-set `localStorage('i18nextLng')='zz-bogus'` (init script) before the
    first load; open `/directory`; observe English renders (Catalog tab "Catalog", not Spanish /
    not a key literal) — the `i18n.ts:23` `languages.includes(...) ? ... : 'en'` guard.
+5. REGRESSION #1751 (PLT-215, CTRIB-014): open `/data-modelling` (English: the "Relationships"
+   sub-tab renders); switch to "Spanish"; observe the Data Modelling sub-tabs render "Relaciones"
+   / "Ejemplos de consulta" (es.json) and no tab still reads the raw "Relationships" literal —
+   two of the 84 feature keys each non-en catalog trailed en by until CTRIB-014's catch-up.
+6. REGRESSION PLT-226 (CTRIB-014): open the user menu -> "Select language"; observe the dialog
+   offers ALL seven locales (English/Spanish/Chinese/French/Ukrainian/Armenian/Brazilian
+   Portuguese), not English alone. #1783's `fallbackLng:'en'` had collapsed `i18n.languages` — the
+   picker's source (`SelectLanguage.tsx`) — to `['en']`, hiding every non-English option; the fix
+   lists `Object.keys(LANGUAGES_MAP)`. (This is the prerequisite the four switch cases depend on.)
 
 **Automated rail**: `integration-tests/run-suite.sh IT-102` (Playwright `e2e/specs/multilingual-i18n.spec.ts`).
 
@@ -62,6 +71,15 @@ rendered raw English literals beside six translated siblings under every non-Eng
   missing from a catalog again — the PLT-190 class.)
 - **CORNER (PASS):** an unknown stored locale renders English (not Spanish, not a key id).
   (FAIL: a bogus locale leaks through → the fallback guard regressed.)
+- **REGRESSION #1751 (PASS):** under `es` the Data Modelling sub-tabs read "Relaciones" /
+  "Ejemplos de consulta"; zero tabs read the raw "Relationships". (FAIL: a feature-surface key
+  renders raw English under a non-en locale → a catalog trails en again — the 84-key #1751 class.
+  The deterministic complement is the odd-platform vitest `i18n-key-parity` catalog-parity
+  assertion, which fails the build if ANY of the 84 keys is missing from ANY locale.)
+- **REGRESSION PLT-226 (PASS):** the "Select language" dialog lists all seven supported locales.
+  (FAIL: only "English" is offered → `SelectLanguage.tsx` is reading `i18n.languages` (the
+  fallback chain, `['en']` under `fallbackLng:'en'`) instead of the supported-locale set — the
+  #1783 second-order regression; a user cannot switch locale at all.)
 
 ## 6. Result log
 - 2026-06-07 — authored; i18n config + SelectLanguage flow ground-truthed; locale switch driven

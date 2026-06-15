@@ -13,6 +13,16 @@ session_id: session-2026-05-26-ZJ
 
 # en.json — canonical English i18n source for the platform UI — semantic understanding
 
+> **Update 2026-06-15 (CTRIB-014 / odd-platform#1751, ships 0.28.0) — supersedes the stale counts below.**
+> en.json now has **600** entries (was 418→505); there are **six** non-en locales (`es/ch/fr/ua/hy/br` — `br`
+> added by #1564), all at **exact 600-key parity**. The "~70 keys missing from all catalogs / no CI guard"
+> limitation is RESOLVED: #1751 added the missing keys + translated all six catalogs. TWO guards now exist:
+> (1) a vitest **catalog-parity** test (every non-en catalog == en's key set; was en-completeness-only) and
+> (2) an eslint **`no-literal-string`** rule (PLT-205) that fails on a user-facing JSX string not wrapped in
+> `t()` — the latter closed a SEPARATE, larger class: ~208 HARDCODED strings across 98 files that bypassed i18n
+> entirely (invisible to the t()-sweep metric). Also `fallbackLng` is now `'en'` (was the 7-locale array — the
+> #1564 Portuguese-leak, CTRIB-012). The bodied sections below predate this and describe the old shape.
+
 ## understanding
 
 This file is the canonical English-locale translation bundle for the platform

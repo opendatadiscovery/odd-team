@@ -153,4 +153,107 @@ test.describe('F-043 Multilingual UI — locale switching + fallback', () => {
       'the unknown locale must NOT have loaded Spanish',
     ).toHaveCount(0);
   });
+
+  // REGRESSION PLT-226 (#1783 second-order): SelectLanguage.tsx built the picker from
+  // `i18n.languages` (the runtime fallback chain), and #1783's fallbackLng:'en' collapsed that to
+  // ['en'] — so the dialog offered ONLY English and no user could switch locale. CTRIB-014 lists
+  // Object.keys(LANGUAGES_MAP) instead. RED on the pre-fix SUT (one row), GREEN once every supported
+  // locale is offered. This is also why the switch cases above (UC-1/UC-2/#1748/#1751) could run.
+  test('the language picker offers every supported locale, not just English (regression PLT-226)', async ({
+    page,
+  }) => {
+    await page.goto('/directory');
+    await page.getByRole('button', { name: 'account of current user' }).click();
+    await page.getByText('Select language', { exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    for (const name of [
+      'English',
+      'Spanish',
+      'Chinese',
+      'French',
+      'Ukrainian',
+      'Armenian',
+      'Brazilian Portuguese',
+    ]) {
+      await expect(
+        dialog.getByText(name, { exact: true }),
+        `the language picker must offer "${name}" (PLT-226: fallbackLng:'en' had collapsed the picker to English-only)`,
+      ).toBeVisible({ timeout: 10_000 });
+    }
+  });
+
+  // REGRESSION #1751 (PLT-215, CTRIB-014): after #1783 completed en.json + set fallbackLng:'en',
+  // each non-English catalog still trailed en by 84 keys — feature-surface strings that rendered
+  // the raw English label under a non-en locale (degraded, not a foreign leak). CTRIB-014 translated
+  // all 84 into es/br/ch/fr/ua/hy. The Data Modelling sub-tabs ('Query Examples', 'Relationships' —
+  // DataModellingTabs.tsx, pure t() labels) are two of those keys and render synchronously, like the
+  // #1748 toolbar tabs. RED on ODD_SUT=ref:main (es falls back to English), GREEN on the fix.
+  test('previously-untranslated feature keys render translated under a non-English locale (regression #1751)', async ({
+    page,
+  }) => {
+    await page.goto('/data-modelling');
+    // baseline English: the Data Modelling sub-tabs read their English labels
+    await expect(
+      page.getByRole('tab', { name: 'Relationships', exact: true }),
+      'baseline: the English "Relationships" sub-tab must render before switching',
+    ).toBeVisible({ timeout: 10_000 });
+
+    await switchLanguageViaUi(page, 'Spanish');
+
+    // the sub-tabs now render their es.json values — the keys #1751 added
+    await expect(
+      page.getByRole('tab', { name: 'Relaciones', exact: true }),
+      'after switching to Spanish, the "Relationships" sub-tab must render es.json "Relaciones" (#1751)',
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByRole('tab', { name: 'Ejemplos de consulta', exact: true }),
+      'the "Query Examples" sub-tab must render es.json "Ejemplos de consulta" (#1751)',
+    ).toBeVisible({ timeout: 10_000 });
+    // and the raw English literal is gone — it was translated, not falling back to en
+    await expect(
+      page.getByRole('tab', { name: 'Relationships', exact: true }),
+      'the raw English "Relationships" must be gone under es (was the #1751 fallback gap)',
+    ).toHaveCount(0);
+  });
+
+  // REGRESSION #1751 / PLT-205 (the maintainer's reported example): the Relationships PAGE BODY was
+  // HARDCODED English (RelationshipsTitle heading + the "... overall" count + the search placeholder) —
+  // no t() at all, so it rendered English under EVERY locale even after the catalog catch-up. CTRIB-014
+  // wrapped the whole unwrapped-string class in t() (+ a no-literal-string lint guard). Drive the real
+  // page under es and assert the body renders translated, not English.
+  test('the Relationships page body renders translated under a non-English locale (#1751 / PLT-205)', async ({
+    page,
+  }) => {
+    await page.goto('/data-modelling/relationships');
+    // baseline English: the page heading + search placeholder are English
+    await expect(
+      page.getByRole('heading', { name: 'Relationships', exact: true }),
+      'baseline: the English "Relationships" page heading must render before switching',
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByPlaceholder('Search relationships'),
+      'baseline: the English "Search relationships" placeholder must render before switching',
+    ).toBeVisible({ timeout: 10_000 });
+
+    await switchLanguageViaUi(page, 'Spanish');
+
+    // the page body now renders its es.json values (these strings were hardcoded before CTRIB-014)
+    await expect(
+      page.getByRole('heading', { name: 'Relaciones', exact: true }),
+      'after switching to es, the page heading must read es.json "Relaciones"',
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByPlaceholder('Buscar relaciones'),
+      'the search placeholder must read es.json "Buscar relaciones"',
+    ).toBeVisible({ timeout: 10_000 });
+    // and the raw English body strings are gone — they were hardcoded, now translated
+    await expect(
+      page.getByRole('heading', { name: 'Relationships', exact: true }),
+      'the raw English "Relationships" heading must be gone under es',
+    ).toHaveCount(0);
+    await expect(
+      page.getByPlaceholder('Search relationships'),
+      'the raw English "Search relationships" placeholder must be gone under es',
+    ).toHaveCount(0);
+  });
 });

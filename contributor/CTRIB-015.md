@@ -6,7 +6,7 @@ title: "DQ test severity: instant unconfirmed save; chosen value bleeds to all s
 class: bug
 scope: frontend
 milestone: "0.28.0"
-status: review-ready
+status: pending-release
 reproduced: "integration-tests/e2e/specs/dq-severity-render-bleed.spec.ts (RED, 2026-06-15) — see Reproduction log"
 code_commit: "odd-platform contrib/CTRIB-015-dq-severity-confirm @ 77e4103c (local; push + draft PR pending GATE 2 — harness gates outward GitHub writes)"
 docs_commit: "documentation release/0.28.0 @ 3882042 (local worktree; push pending maintainer at the release gate)"
@@ -209,3 +209,48 @@ Maintainer approved REVISION 1 via in-session AskUserQuestion: reuse the entity-
 
 - **Root-cause comment (Phase B step 6): POSTED** (maintainer-authorized 2026-06-15) → [issuecomment-4712190383](https://github.com/opendatadiscovery/odd-platform/issues/1750#issuecomment-4712190383) by `odd-contributor[bot]`. Reproduced-live + the three composing causes + the conforming fix + the draft-PR link. (Initially deferred — the harness gated the unprompted POST; no scope-narrowing made it mandatory under G-C5 — then posted on explicit request. One root-cause comment, within the per-run rate-limit.)
 - **Branch push + draft PR (Phase E): DONE** (maintainer-authorized) — branch `contrib/CTRIB-015-dq-severity-confirm` @ 77e4103c pushed; draft **[PR #1786](https://github.com/opendatadiscovery/odd-platform/pull/1786)** opened by `odd-contributor[bot]` (`draft: true`, `Closes #1750`).
+
+---
+
+## Review (2026-06-15, session: opus-4-8 `/review`, separate from the implement session)
+
+- **Result**: ACCEPTED → `pending-release` (release-gated, milestone 0.28.0; Gate 8 live-verification scheduled at the release gate). All per-item technical gates PASS with independent verification; findings below are record/process-hygiene + an orthogonal-suite deferral — none are code defects.
+
+**Scope of the reviewed change (independently confirmed).** The 137-file `git diff main...branch` is a *local-main-staleness* artefact (local `main` = `9c6fb074`/#1783; the branch is stacked on the already-merged CTRIB-013/CTRIB-014 work). The real change is the single commit `77e4103c` = **14 files**, and `git merge-base origin/main branch` = `408cf03c` (CTRIB-014, merged upstream) → **PR #1786's actual diff = 14 files** (GitHub API: `changed_files: 14`, `+332/-30`, `head_sha: 77e4103c`). Exactly the GATE-1-approved plan. VERIFIED via `git merge-base` + GitHub API.
+
+- **Acceptance criteria (DoD ledger)**:
+  - [x] Full unit build green — **PASS**, re-run by the reviewer: FE `vitest` **36/36** (11 files), `tsc --noEmit` **0 errors**, `eslint` **0 errors** (2 non-blocking warnings in the test file: an `import()`-type annotation + a prettier line-wrap). i18n key-parity held (2 new keys × 7 locales, grep-confirmed). Backend JaCoCo vacuous (no `.java` in the 14-file commit). VERIFIED via local Node-24 run.
+  - [x] FULL integration regression on the working-tree SUT — **PASS (with documented deviation, see Notes)**: **IT-131 2/2 GREEN re-run by the reviewer** against the running fix SUT (`probe-odd-platform`, image `40d0bf34` = `408cf03c+uncommitted`); `feature-complete` GREEN incl IT-131 + `known-bugs` RED in the run-logs against the SAME SUT digest. `multi-stack` + `ingestion-e2e` NOT run.
+  - [x] Docs read + decided + routed — **PASS**: `data-quality/sla-statuses.md` "Setting severities" confirm-step (accurate, operator-facing) @ `3882042` + ADR-0078 page @ `3ad09fb` on documentation `release/0.28.0`; SUMMARY/README synced; DOC-459 + backlog ADR-0078 tracked. VERIFIED via worktree read.
+  - [x] Ontology re-enriched + committed — **PASS**: F-057 UC-010 (`contradicted→confirmed`) + UC-011 (`partial→confirmed`), coverage 3→5/12, traces cite the fix; committed in `afac219`. VERIFIED via file read.
+  - [x] Principal sufficiency (G-C13) — **PASS**: meaningful tests (slice `.fulfilled` RED-pre-fix→GREEN proves RC3; component confirm-gate proves no-dispatch-until-confirm; IT-131 proves the bleed fix + gate on the running UI); no control lost (`SelectableSeverity` is a thin wrapper composing the shipped `ConfirmationDialog`/`AppMenu`); no existing functionality harmed (feature-complete GREEN).
+
+- **Quality Bar / contributor gates**:
+  - Gate 1 / G-C5 (no duplicates / scope) — **PASS** (reuse of `ConfirmationDialog`+`AppMenu` honest; diff = 14 files = approved plan; PR diff GitHub-confirmed clean).
+  - Gate 3 (caveats) — **PASS** (sla-statuses audit-silence caveat preserved + still accurate — this PR adds no audit logging).
+  - Gate 4 / G-C12 (consumer-read / design-before-build) — **PASS** (Consumer-read footer present; verified the `ConfirmationDialog` actionBtn-clone contract, the `setDataQATestSeverity` thunk returns `DataEntity`, the `updateEntityStatus` reference reduce, `ORDERED_SEVERITY`). RC1 (controlled-from-store), RC2 (`key={dataQATestId}` at `TestReportDetails.tsx:95`), RC3 (`.fulfilled` reduce) all correctly fixed.
+  - Gate 5 — N/A (no SDK builder).
+  - Gate 6 / G-C10 (bidirectional code↔doc + ontology) — **PASS**.
+  - Gate 7 (layout) — **PASS** (SUMMARY + README rows for ADR-0078; sla-statuses TOC intact).
+  - Gate 8 (publishing) — **PENDING-RELEASE (0.28.0)**: branch-verifiable sub-checks PASS — PyYAML parses both changed docs; description len sla-statuses=180 / ADR-0078=192 (≤200); tree-relative links; SUMMARY synced. Post-release URLs recorded on DOC-459 + ADR-0078. Live WebFetch scheduled at `/review release:0.28.0`.
+  - Gate 9 (provenance) — **PASS on technical claims; 2 record-accuracy defects** (PR `draft`/`milestone`, see Findings).
+  - Gate 10 (content-type homing) — **PASS** (ADR in the ADR-log; operator confirm-step in sla-statuses; no misplaced reference content).
+  - Gate 11 (audience isolation) — **PASS on published docs** (sla-statuses + ADR-0078 audience-appropriate); one workspace-internal `IT-081` ref ships in a *test comment* (Finding 5 — not a published-doc line, so not a Gate-11 doc FAIL, but flagged for pre-merge fix).
+  - G-C1 reproduce — **PASS** · G-C3 GATE-1 — **PASS** (REVISION 1 approved) · G-C4 GATE-2 — **PASS** (bot author, branch-protected; merge is human) · G-C6 clarify — **PASS** (none warranted) · G-C7 — N/A · G-C8 — **PASS** · G-C9 test integrity (both buckets) — **PASS** · G-C11 milestone — **PASS** (issue #1750 carries open `0.28.0`).
+
+- **Regressions**: none introduced. Unit 36/36 + IT-131 2/2 GREEN (reviewer-run); feature-complete GREEN + known-bugs RED (run-log, same SUT). The change is additive + surface-local (DQ test-report overview only).
+- **Navigation / ontology**: F-057 primary aspects refreshed. Minor staleness logged (Finding 6).
+- **Outbound URL sweep**: docs are release-gated (deferred to the release gate); the 2 doc pages' internal cross-links verified present; no external URLs added by the change.
+- **Banned-phrase check**: none used.
+- **Doc-product editorial audit**: covered the **change neighborhood** this run — `data-quality/**` (read `sla-statuses.md` end-to-end + the severity-mention drift sweep across `docs/`) + `developer-guides/architecture-decision-log/` (ADR-0078 coherence). **No coherence findings** — the confirm-step integrates cleanly, the three caveats stay accurate, the confirm affordance is homed only where the edit flow lives. **Partition**: the full-tree editorial read (configuration-and-deployment/**, integrations/**, etc.) remains the periodic obligation and is **queued** for a subsequent `/review` (not covered this run; not skipped silently).
+
+### Findings (logged on disk; none block train-readiness of the code/docs — to address at/before the GATE-2 human merge)
+
+1. **PR #1786 is `draft: False` + `mergeable_state: clean`** (GitHub API), but the record asserts `pr_draft: true` / "draft PR" throughout. Merge-safety is intact (bot author cannot self-approve; merge is the human's GATE-2 action), **but the maintainer must know the PR is currently directly-mergeable**, not in draft. → correct the record (or re-draft the PR until ready to merge).
+2. **PR #1786 `milestone: None`** (GitHub API) though the record + PR body claim `0.28.0`. Release linkage holds via issue #1750's milestone + `Closes #1750`; set the PR milestone for cleanliness.
+3. **Run-logs are template skeletons** — `runner:` and `evidence/notes:` (pass *counts*) are unfilled in every entry; the authoritative entry must be reconstructed by matching the SUT digest (`40d0bf34`). The DoD ledger's "293/293 · 2/2 · 5/5" counts are asserted but not captured in the logs. → fill the runner + count fields.
+4. **`multi-stack` + `ingestion-e2e` were not run** (AC-11 lists them). Deferred with the rationale "a FE severity-*display* change cannot reach auth-mode/storage/notifications/ingestion." The reviewer **confirms the rationale on the merits** (the full 14-file diff is additive + surface-local; none of those suites render `SelectableSeverity`), so this is accepted as a low-risk deviation — but it is the maintainer's call to run them at GATE 2 if desired.
+5. **Stale `IT-081` reference ships** in `SelectableSeverity.test.tsx:20` ("covered live by integration test IT-081") — the protocol is **IT-131**, and `IT-081` is a *different* pre-existing protocol. Best fixed before the PR merges: drop the workspace-internal `IT-NNN` id from the public test comment (upstream can't resolve it) or correct it to a generic "the integration e2e suite". (CTRIB-015.md Phase B/C also use the old `IT-081` — historical record drift, workspace-internal.)
+6. **F-057 sibling UC traces** (UC-001/004/005) still cite pre-rewrite `TestReportDetailsOverview.tsx:NN` line ranges that shifted (e.g. UC-005 `:78-94` → the `WithPermissions` gate is now `:61-71`). The change's *focus* aspects (UC-010/011) were correctly refreshed; the sibling line-refs are minor ontology staleness. → refresh on the next `/enrich --touched`.
+
+- **Notes**: The fix itself is correct, minimal, conforms to the platform's own entity-Status confirm pattern, and is independently verified GREEN (unit + IT-131 on the running fix SUT). VERIFIED via reviewer-run `vitest`/`tsc`/`eslint` + Playwright IT-131 + GitHub API (PR state) + `git merge-base` (scope) + doc-worktree read (release/0.28.0). The item stays `pending-release`; `/review release:0.28.0` owns the final live-verify + flip to `done` after the maintainer merges PR #1786 (GATE 2) and the 0.28.0 release ships.

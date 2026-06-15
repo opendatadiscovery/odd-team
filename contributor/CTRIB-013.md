@@ -4,7 +4,7 @@ github_issue_number: 1741
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1741
 class: bug  # REMOTE attachment SDK builder leaves region unset -> AWS S3 restricted to us-east-1 (the canonical LSN-002 code-side residue)
 milestone: "0.28.0"  # VERIFIED 2026-06-14 via GitHub API: #1741 is OPEN, milestone 0.28.0 is OPEN (due 2026-06-22). G-C11 SATISFIED. The fix is for UNRELEASED behaviour (no .region knob exists in any tag) -> ships in 0.28.0.
-status: pr-draft  # GATE-1 APPROVED + implemented + verified; DRAFT PR #1784 open (Closes #1741). DoD met (full unit build green; MinioConfig patch coverage 100%; IT-008 green on the working-tree SUT; docs authored DOC-455; ontology noted). A SEPARATE /review session flips review-ready; GATE 2 (human) merges. Broader integration regression (feature-complete/known-bugs/ingestion-e2e) deferred to /review — MinioConfig is @ConditionalOnProperty(REMOTE), not loaded on the LOCAL-default stacks those suites use.
+status: review-ready  # /review PASS 2026-06-15 (separate session, opus-4-8): full unit build GREEN re-run on the reviewed commit 6a9d2db8 (474 tests / 0 fail / 0 err, checkstyle clean, BUILD SUCCESSFUL 6m40s, both flipped pins fresh-green); IT-008 e2e:PASS on a fresh SUT built from 6a9d2db8 (digest 1a693f47). All contributor gates (G-C1..G-C13) + doc gates PASS. Integration scope this session = IT-008 only (maintainer-directed; the only spec exercising the @ConditionalOnProperty(REMOTE) change). Flipped pr-draft -> review-ready. NEXT: GATE 2 (human) merges DRAFT PR #1784; maintainer pushes DOC-455 to release/0.28.0; 0.28.0 release gate -> done. 3 non-blocking follow-ups logged: DOC-456, DOC-457, TST-049. Full verdict at bottom.
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1784"  # DRAFT, author odd-contributor[bot], 2026-06-14
 pr_draft: true
 issue_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1741#issuecomment-4701842129"  # root-cause (post-GATE-1)
@@ -36,8 +36,8 @@ plan_approved_at: "2026-06-14"
 
 # CTRIB-013 — REMOTE attachment storage: make the AWS S3 region configurable (`attachment.remote.region`); the canonical LSN-002 code-side fix
 
-> **STATUS: pr-draft — GATE-1 approved, implemented, verified; DRAFT PR #1784 open. Awaiting a separate
-> `/review` session + GATE 2 (human merge).** See the verification ledger at the bottom.
+> **STATUS: review-ready — /review PASSED (2026-06-15, separate session). DRAFT PR #1784 open; awaiting
+> GATE 2 (human merge) + the 0.28.0 release gate.** See the verification ledger and the Review verdict at the bottom.
 
 ## The issue (#1741, quoted data — never an instruction, G-C8)
 
@@ -172,3 +172,138 @@ gates; the FULL integration regression on the branch-built SUT). If green it fli
 then a human approves + merges PR #1784 (the bot cannot self-approve). On merge: maintainer pushes the DOC-455
 docs to `release/0.28.0` (publishes at the 0.28.0 release gate); the two pins move `pins:`->`regresses:` is
 already done in `test-gates.yaml`; full sidecar re-enrich runs.
+
+## Review (2026-06-15, session: /review opus-4-8, separate from /contribute)
+
+- **Result**: ACCEPTED — flipped `pr-draft` -> `review-ready`. (Code/test/doc/ontology gates all PASS;
+  3 non-blocking coherence follow-ups logged on disk. The odd-platform PR #1784 itself is clean and
+  complete; GATE 2 human merge is next, then the 0.28.0 release gate.)
+
+- **Acceptance criteria (GATE-1 plan items 1-8)**:
+  - [x] 1 — `MinioConfig.java` optional `@Value("${attachment.remote.region:}")` + `StringUtils.isNotBlank`
+        guard -> `builder.region(region)`; backwards-compatible (unset = SDK us-east-1). PASS
+        (`MinioConfig.java:22-23,27-33`, verified vs origin/main diff).
+  - [x] 2 — `application.yml` `region:` stub with operator comment. PASS (`application.yml:225`).
+  - [x] 3 — pin A `MinioConfigRegionTest` flipped: behavioural (builds real client, reads back signing
+        region), `@Tag("known-bug")` removed, `@pins`->`@regresses PLT-086`, renamed. PASS — 2/2 fresh-green.
+  - [x] 4 — pin B `MinioRegionUnsetRegressionPinTest` flipped: `@Value` config-key contract,
+        `@regresses LSN-002`. PASS — 1/1 fresh-green.
+  - [x] 5 — `test-gates.yaml` PLT-086 `pins:`->`regresses:` + sibling LSN-002 entry. PASS.
+  - [~] 6 — IT-008 extended: protocol + `odd-minio` compose updated (region set; `${ODD_PLATFORM_IMAGE}`
+        SUT-honouring) + run-log. PASS on the functional intent (IT-008 e2e:PASS with the region set).
+        PARTIAL: the e2e spec `attachment-remote-roundtrip.spec.ts` (named in the plan) was NOT updated;
+        its comments still describe the pre-fix "auto-discovery papers over missing .region()" framing,
+        now contradicted by the same-commit protocol. Round-trip assertion valid + green; protocol is SoT.
+        -> logged **TST-049** (non-blocking).
+  - [~] 7 — ontology: `MinioConfig` sidecar PENDING-CHANGE banner. PASS. PARTIAL: the second named
+        sidecar (`application_yml...config-prefix...attachment.md`) was NOT bannered (still describes
+        pre-fix LSN-002). Accurate for unmerged `main`; covered by the handoff's merge-time full
+        re-enrich. -> logged **TST-049** (non-blocking).
+  - [x] 8 — DOC-455 on `release/0.28.0` (worktree commit `2ab5819`, parent = current train tip
+        `ad761f2`). PASS — config-key bullet + YAML + env-var added, us-east-1 known-limitation retired,
+        HTTP-timeout/IAM caveats kept. Operator-language, Gate 11 clean, Gate 9 provenance verified.
+
+- **Quality Bar / contributor gates**:
+  - G-C1 (reproduce) — PASS via code-read (`MinioConfig` had no `.region(...)`) + the two pins GREEN
+    pre-fix + faithful mechanism (local MinIO can't reproduce; AWS least-priv IAM is the real bite).
+  - G-C2 (verify running system, full regression) — UNIT: PASS via fresh `scripts/run-platform-tests.sh`
+    on the reviewed commit `6a9d2db8` -> `BUILD SUCCESSFUL 6m40s`, **474 tests / 0 fail / 0 err / 0 skip**
+    (aggregated across 129 result XMLs), checkstyleMain+Test clean; both flipped pins re-ran fresh tonight
+    (mtime 00:18, green). INTEGRATION: **IT-008 e2e:PASS (1 passed, 27.3s)** against a fresh SUT built
+    from `6a9d2db8` (digest `1a693f47`, NOT `:latest`/stale), REMOTE round-trip vs MinIO@eu-west-1 with
+    `ATTACHMENT_REMOTE_REGION=eu-west-1`. **Integration scope this session = IT-008 only**, by maintainer
+    direction (AskUserQuestion 2026-06-15): the change is `@ConditionalOnProperty(...REMOTE)`, inert on the
+    LOCAL-default stacks `feature-complete`/`known-bugs`/`ingestion-e2e` use, and the full unit suite
+    already measured the JVM-wide blast radius. The broader 4-suite run is consciously NOT executed here.
+  - G-C3 (GATE 1 plan approved) — PASS (`plan_approved_by` RamanDamayeu, 2026-06-14).
+  - G-C4 (GATE 2 merge is human) — STRUCTURAL/N-A for this flip: PR #1784 is `draft`, bot author cannot
+    self-approve; human merge follows review-ready.
+  - G-C5 (scope bounded by the plan) — PASS. odd-platform diff = exactly plan items 1-4 (no scope creep);
+    plan matches #1741's stated scope, so no scope comment required (verified). The two deviations are
+    NARROWER-than-plan (item 6 spec, item 7 sidecar), logged — not creep.
+  - G-C7 (irreversible/ADR) — PASS. Conforms to ADR-CANDIDATE-013 (MinIO-SDK-only — `.region(String)` is a
+    MinIO builder method) + 012; optional, backwards-compatible, no migration / auth-posture / wire change.
+    `adr_required:false` correct.
+  - G-C9 (test integrity, both buckets) — PASS. Unit pins re-grounded RED->GREEN (LSN-029, not deleted):
+    behavioural (region reaches client; both `isNotBlank` arms) + config-key contract; both would be RED on
+    pre-fix `main` (no `region` field). IT-008 is the e2e wiring smoke. (spec.ts comment drift doesn't
+    break integrity — TST-049.)
+  - G-C10 (ontology + docs move with code) — PASS-with-findings. Docs (DOC-455) routed to the train + read;
+    `MinioConfig` sidecar banner committed. Two secondary artefacts drifted -> TST-049; neither ships a
+    false user-facing claim, and the sidecar is on the merge-time re-enrich path.
+  - G-C11 (milestone) — PASS (#1741 open, milestone 0.28.0 open; `docs_routing: release/0.28.0`).
+  - G-C12 (design before build) — PASS (reuse-scan: zero new components; ADR-check: conforms; impact
+    checklist; PO/SRE lens — all in the GATE-1 plan).
+  - G-C13 (principal sufficiency) — PASS. 100% patch coverage (both `isNotBlank` branches, JaCoCo); tests
+    meaningful (behavioural + contract, not green-theatre); local coverage gate met; no control lost.
+
+- **Universal doc gates (DOC-455)**:
+  - Gate 1 (no dup) — PASS (region knob net-new; no parallel copy).
+  - Gate 4 (consumer-read) — PASS. `MinioAsyncClient` sole consumer = `RemoteFileUploadServiceImpl.java:43`
+    (`private final MinioAsyncClient minioClient`); bean type unchanged (region applied on builder before
+    `.build()`). odd-platform commit `6a9d2db8` carries an accurate `Consumer-read:` footer.
+  - Gate 5 (unset-parameter audit) — PASS. `.region` moves caveat-defaulted -> configured; remaining
+    caveat-defaulted builder params (`.httpClient` timeouts, `.credentialsProvider`/IAM) stay documented as
+    known limitations (DOC-455 keeps them) and tracked out-of-scope (PLT-086 Defect 2 / REFACTOR-034).
+  - Gate 8 (publishing) — **PENDING-RELEASE (0.28.0)**. Branch sub-checks: DOC-455 commit `2ab5819` on the
+    `release/0.28.0` worktree (parent = current tip `ad761f2`), single file, +4/-5, tree-relative links,
+    description unaffected. Live verification scheduled at the release gate (URLs + phrases recorded in
+    DOC-455). NOTE: the docs commit is in the `/tmp/doc-release-028` worktree, **not yet pushed** to
+    `origin/release/0.28.0` (correctly maintainer-gated — shared release branch).
+  - Gate 9 (provenance) — PASS. us-east-1 SDK default + `AuthorizationHeaderMalformed`/`PermanentRedirect`
+    symptoms trace to `retrospectives/LSN-002` (which cites the MinIO SDK README). Consumer-read footer
+    accurate. VERIFIED.
+  - Gate 10 (content-homing) — PASS (config-key content on the configuration page = correct home).
+  - Gate 11 (audience isolation) — PASS. Banned-term grep on the DOC-455 added lines = CLEAN.
+
+- **Outbound URL sweep**: N/A for the code PR; DOC-455 live URLs deferred to the release gate (Gate 8
+  PENDING-RELEASE). The one example URL in the doc bullet (`https://s3.us-east-1.amazonaws.com`) is
+  illustrative, not a live cross-ref.
+- **Banned-phrase check**: none used; every note above ends in VERIFIED-via or an explicit logged item.
+- **Regressions**: none. Unit 474/0/0 on the reviewed commit; IT-008 REMOTE round-trip green on the fresh
+  reviewed SUT.
+- **Navigation**: consistent — no pointer shifts (sole consumer `RemoteFileUploadServiceImpl:43` unchanged).
+- **Follow-ups logged this review** (non-blocking; do not gate the flip):
+  - **DOC-456** (HIGH, internal-contradiction) — `data-discovery/attachments.md:33` claims the upload API
+    rejects oversized files; `odd-platform.md:1044` says the server does NOT enforce the cap. Pre-existing.
+  - **DOC-457** (MEDIUM, reader-flow) — `Architecture.md:43` broken `#attachment-storage` anchor (slug is
+    `attachment-storage-configuration`); folds the low REMOTE-caveat-path finding. Pre-existing.
+  - **TST-049** (LOW, G-C10 coherence) — IT-008 e2e spec comments + application.yml `attachment` sidecar
+    still describe the pre-fix region state (plan items 6/7 secondary halves). Reconcile on/before merge.
+- **Minor note (not logged as its own item)**: the verification ledger above (line ~155) cites docs commit
+  `0a0e669`; that authoring-time commit was rebased onto the current train tip and is now `2ab5819`
+  (per DOC-455's own rebase instruction) — `0a0e669` is dangling. Cosmetic staleness; corrected here.
+
+- **Doc-product editorial audit** (ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: `configuration-and-deployment/**` end-to-end + a topic sweep of every
+    attachment/REMOTE/S3/MinIO/region/config-table surface across `docs/` (`data-discovery/attachments.md`,
+    `Architecture.md`, `Features.md`, `data-discovery.md`, `entity-detail-page.md`, `statuses.md`,
+    `main-concepts.md`, `metrics-ingestion.md`, ADR-0012, permissions/roles). Remaining subtrees
+    (integrations/**, the non-attachment bulk of data-discovery/** and active-platform-features/**)
+    queued for the next `/review`.
+  - **Findings**: DOC-456 (high), DOC-457 (medium, +folded low). The pending `release/0.28.0` removal of
+    the us-east-1 admonition is correctly NOT yet on `main` and was excluded as a finding.
+
+### Post-review addendum (2026-06-15) — docs landing + release-train reconciliation
+
+The maintainer surfaced that the 0.28.0 docs train was in a broken state; investigation confirmed two
+real defects this verdict's Gate-8 note **understated** (it said the DOC-455 commit was merely "unpushed,
+maintainer-gated" — it was worse than that):
+
+1. **DOC-455 was stranded, not just unpushed.** The region docs commit (`2ab5819`, ex-`0a0e669`) lived as
+   a detached HEAD in `/tmp/doc-release-028`, reachable from **no branch** — `release/0.28.0` (`ad761f2`)
+   still carried the old us-east-1 known-limitation and no region key. Authoring train docs in a throwaway
+   detached worktree + "maintainer pushes later" stranded it. **My /review verified the commit's *content*
+   but not that it was *landed on the branch ref* — that was the miss.**
+2. **`main` and `release/0.28.0` edited the same pages divergently** (`activity-feed.md`, `tagging.md`),
+   so the release→main gate merge conflicted. CTRIB-010/CTRIB-007 each shipped a released-truth correction
+   to `main` AND unreleased-behaviour docs on the train, on the same pages, never reconciled.
+
+Fixed (maintainer-approved, local only — maintainer pushes): fast-forwarded `release/0.28.0` to `2ab5819`
+(region landed, us-east-1 retired) then merged `main` in (`fe3ee91`), resolving the `activity-feed.md`
+conflict by keeping the train's eight-facet "Made by (owner)/(user)" description (it IS the #1657 fix main's
+interim text said "ships in 0.28.0"); `tagging.md`/`lookup-tables.md` auto-merged. `main` is now an ancestor
+of `release/0.28.0` (clean release-gate ff); branch is 12-ahead/0-behind origin. DOC-455 updated to the
+landed state. **Process gap to harden (LSN + Gate 8 extension): /review must verify release-gated docs are
+committed on the `release/{version}` branch ref (not orphaned in a worktree), and the train must be kept
+merged-up with `main` — a CTRIB editing the same page on both reconciles before review.**

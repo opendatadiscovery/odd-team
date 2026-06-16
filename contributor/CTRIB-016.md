@@ -3,7 +3,7 @@ id: CTRIB-016
 github_issue_number: 1756
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1756
 class: bug
-status: review-ready
+status: pending-release
 milestone: "0.28.0"
 reproduced: "live 2026-06-16 on local odd-minimal, SUT image odd-platform:odd-team-sut built from the working tree (= origin/main @ 19618ea2; CTRIB-015 merged as #1787 — working tree identical to main, JooqFTSHelper byte-identical), postgres:13.2-alpine. POST /api/terms/search {\"query\":\"foo )(\",\"filters\":{}} -> HTTP 500 (SYS001); same for {\"query\":\"'foo\"} and {\"query\":\"a<b\"}. Control {\"query\":\"glossary\"} -> 200 total:0. The poison string is PERSISTED in search_facets.query_string; reopening that session (GET /api/terms/search/{id}, /results, /facet/OWNERS) -> 500/500/500 (persistent DoS); the control session reopens 200/200. Catalog twin POST /api/search {\"query\":\"foo )(\"} -> 500 (shared sink). Platform log: io.r2dbc.postgresql ... [42601] syntax error in tsquery: \"foo:*&)(:*\" ... to_tsquery('foo:*&)(:*')."
 adr_required: false
@@ -284,3 +284,69 @@ opened as a draft; a maintainer reviews and merges.
 1. **full unit build green** ✓ (BUILD SUCCESSFUL 6m24s). 2. **full integration regression** ✓ — `feature-complete` 295✓ (IT-003 both cases flipped GREEN) + `known-bugs` 3-expected-RED (IT-003 absent) + `multi-stack` 9✓ + `ingestion-e2e` 6✓, all on the branch-built SUT @ 2cb86c29. 3. **docs** read + revised + routed (release/0.28.0 @ 53ee9e3 + DOC-460) ✓. 4. **ontology** re-enriched (sidecar + F-024 + F-017) + re-embedded ✓. 5. **Principal sufficiency** ✓ — unit (full operator set) + Testcontainers (RED→GREEN) + e2e (browser, no 5xx) tests are enough + meaningful; local patch-coverage gate is N/A by design (`repository/**` excluded from jacoco) and verified so locally; no control lost; the FULL regression proves no existing functionality harmed; not a UI change (no new surface/affordance — the e2e is the user-facing proof, so the G-C12-step-5 screenshot does not apply).
 
 Status: **review-ready** (the contributor cannot self-merge — GATE 2 is the maintainer's `/review` + merge).
+
+---
+
+## Review (2026-06-16, session: opus-4-8 `/review` — separate session from the `/implement` that produced `bd6af1d`/`2cb86c29`)
+
+- **Result**: **ACCEPTED** → `pending-release`
+
+GATE-2 review of a contributor-pillar item: a code fix on odd-platform (DRAFT PR #1788) + a paired docs-train change. Every per-item gate PASSES with independently-reproduced evidence; Gate 8 is **PENDING-RELEASE (0.28.0)**. The contributor cannot self-merge — the maintainer marks PR #1788 ready-for-review, approves, and merges; the docs publish at the 0.28.0 release gate. This item reaches `done` only via `/review release:0.28.0` after the train + PR land.
+
+### Acceptance criteria — contributor criteria 1–14 (the item carries no `- [ ]` checklist)
+- [x] 1 Code-after-plan — PASS: scope comment posted `2026-06-15T22:37:52Z` (GitHub API), fix commit `2cb86c29` at `23:04Z` — code after plan approval.
+- [x] 2 Reproduction logged — PASS: live repro table (term `foo )(` / `'foo` / `a<b` → 500; reopen → 500/500/500; control 200) + `reproduced:` field.
+- [x] 3 Diff bounded — PASS: `git show 2cb86c29 --stat` = `JooqFTSHelper.java` + 2 test files only; PLT-090 D1/D2 + PLT-109 explicitly excluded.
+- [x] 4 Unit injects failing condition — PASS: `JooqFTSHelperTest` 14-case incl. the poison set; `ReactiveTermSearchTsQueryPoisonTest` injects the metacharacter on the real repo path.
+- [x] 5 Pins re-grounded not deleted — PASS: IT-003 flipped `known-bugs` → `feature-complete` + `ui-e2e` (the move IS the regression closure), not deleted.
+- [x] 6 Docs decision + routing — PASS: `search.md` revised (page read; warning→info) on `release/0.28.0` @ `53ee9e3`; paired DOC-460.
+- [x] 7 Ontology committed — PASS: F-017 H-007, F-024 H-009, `ReactiveTermRepositoryImpl` sidecar updated in `bd6af1d` (diff verified).
+- [x] 8 Status not self-`done` — PASS (ended `review-ready`; this review flips to `pending-release`).
+- [x] 9 Architectural→ADR — N/A: conforms to ADR-0071 (verified present); `adr_required: false`.
+- [x] 10 Prompt injection discarded — N/A: no injection in #1756; issue framed as quoted data (G-C8).
+- [x] 11 DoD met before draft — PASS: independently re-verified (Regressions, below).
+- [x] 12 Milestone train — PASS: milestone 0.28.0; docs on `release/0.28.0`, never docs `main`.
+- [x] 13 Design before build — PASS: reuse-scan (independently re-run: no pre-existing escaper in `src/main`), ADR-check, full impact-checklist, PO/SRE lens all recorded.
+- [x] 14 Principal sufficiency — PASS: enough + meaningful tests; local patch-coverage gate N/A by design (verified `odd-platform-api/build.gradle:187` excludes `**/repository/**`).
+
+### Quality Bar
+- Gate 1 — **PASS** (reuse-scan `grep -rniE 'websearch_to_tsquery|plainto_tsquery|escapeTsquery|sanitiz' ../odd-platform/.../src/main` → none; fix in the single existing shared method, no duplicate).
+- Gate 2 — **N/A** (no doc alias introduced; "word separators" is descriptive) via read of the `search.md` diff.
+- Gate 3 — **PASS** (caveat updated warning→info; pre-0.28.0 500 retained as a historical note; PLT-090 caveats untouched) via `git show 53ee9e3 -- search.md`.
+- Gate 4 — **PASS** (all **6** FTS-sink callers verified — `ReactiveTermRepositoryImpl`, `…DataEntityRepositoryImpl`, `…LookupTableRepositoryImpl`, `…QueryExampleRepositoryImpl`, `…QueryExampleSearchEntrypointRepositoryImpl`, `…SearchFacetRepositoryImpl` — each guards `isEmpty`/`isNotEmpty`/`isNotBlank`; normal-query output byte-identical; `null`→`""` strictly safer) via grep + read. **Minor (not a fail):** the commit's `Consumer-read:` footer lists 5/6 caller files (omits `ReactiveQueryExampleSearchEntrypointRepositoryImpl`) — no behavior-affecting consumer is missing (identical safe impact); noted for the implementer.
+- Gate 5 — **N/A** (no SDK builder in scope) via diff.
+- Gate 6 — **PASS** (behaviour change documented in `search.md` + tested unit/Testcontainers/e2e + ontology updated; no undocumented user-visible path).
+- Gate 7 — **PASS** (single hint-block edit; no SUMMARY/TOC/IA change needed) via diff.
+- Gate 8 — **PENDING-RELEASE (0.28.0)**. Branch-verifiable sub-checks PASS: `search.md` frontmatter parses (PyYAML), `description` 129 ≤ 200, content-only edit (no new links). Live verification scheduled at the release gate. Recorded URL `https://docs.opendatadiscovery.org/data-discovery/search`; expected post-release: the hint reads "treated as word separators" (info), and the old "Avoid the characters `( ) & | ! * :` … HTTP 500" warning is gone. The **code** change goes live only when the maintainer merges PR #1788.
+- Gate 9 — **PASS**. Breaking-set claim (`! & ' ( ) : < |`) grounded in the live repro (table: `'foo`→500, `a<b`→500) + the post-fix unit assertions; regex `[!&'()*:<>|\\]` covers the set + `* > \`. `Sources:` footer (postgres:13.2 fuzz; ADR-0071) — ADR-0071 verified present + describes Postgres FTS via `to_tsquery`. No banned phrases. Outbound URL sweep: PR #1788 / issue #1756 / the scope comment / the docs URL all resolve.
+- Gate 10 — **PASS** (the doc change is a behaviour caveat on the search feature page — correct home; not API-ref / config-ref content).
+- Gate 11 — **PASS** (banned-term grep on the touched published `search.md` → clean; the hint uses operator-facing language only).
+
+### Contributor gates G-C1..C13
+All PASS (mapped to criteria 1–14). G-C5 public scope comment — verified via GitHub API (`odd-contributor[bot]`, defers owner-binding + cross-owner facet enumeration). G-C13 local patch-coverage — N/A by design (`odd-platform-api/build.gradle:187` `**/repository/**` exclusion verified).
+
+### Regressions — FULL independent measurement on the reviewed SUT @ `2cb86c29` (both buckets)
+- **Unit** (`scripts/run-platform-tests.sh`, full CI replica = test + checkstyleMain + checkstyleTest + assemble): **BUILD SUCCESSFUL in 6m 2s** (reviewer's own run). No failing tests; checkstyle clean. `ReactiveTermSearchTsQueryPoisonTest` booted + passed (4 contexts); `JooqFTSHelperTest` (pure) ran under the green `test` task. **Zero real Postgres 42601** (the 5 log hits are the test's own DisplayName string "…no 42601…").
+- **Integration `feature-complete`** (`ODD_SUT=working`, SUT built from `2cb86c29`): **294 passed, 1 failed** — the failure is `management-chrome.spec.ts:63 page.goto('/management')` 60s timeout (IT-104), **a confirmed flake with no code path to the FTS change**: re-ran IT-104 in isolation → **3 passed (4.5s)**, incl. the exact `swaps the pane (H-006)` test (1.2s). **IT-003 BOTH cases GREEN** (#261 catalog / PLT-090, #262 dictionary / PLT-127 — the persistent-session fix proven e2e on both surfaces).
+- **Integration `multi-stack`**: **9 passed (3.6m), 0 failed** (IT-008 MinIO, IT-009 LOGIN_FORM, IT-010 LDAP, IT-011/012 notifications WAL, IT-123/124).
+- **Integration `ingestion-e2e`**: **6 passed (1.1m), 0 failed** (IT-128 relationships pipeline + the ingestion stands).
+- The change touches only `JooqFTSHelper.tsQuery` (6 search-repository callers); `multi-stack` (auth/storage/notifications) and `ingestion-e2e` (collector pipeline) have no code path to it — run regardless to honour the full-regression directive; all green.
+
+### Navigation / ontology: consistent — sidecar + F-017/F-024 reflections moved with the code; no new bean factory / SDK builder introduced.
+
+### Upstream issues logged: none.
+
+### Follow-ups logged (on disk)
+- **TST-050** (`backlog/tests/TST-050.md`, low, 0.28.0) — IT-003 protocol §1 body + e2e spec header still describe the PRE-fix state (present-tense "known bug" + `JooqFTSHelper.java:164-168`) while the frontmatter/footer say GREEN. Coherence drift; reconcile at flip-on-merge. Same shape as TST-049 (CTRIB-013) — a recurring contributor-flow miss: the flip-on-fix step should sweep the protocol BODY + spec header, not only suite membership + `expected_result`.
+
+### Doc-product editorial audit (per `playbooks/doc-product-editorial-read.md`)
+- **Coverage this run**: `data-discovery/**` (the affected subtree) + the search-adjacent ADR-0071. The rest of the tree was end-to-end audited in the recent CTRIB-013/014/015 reviews; queued for the next `/review` (partition noted — not skipped silently).
+- **Findings**:
+  - Twin-caveat check: **CLEAN** — no stale "avoid these characters" twin on `business-glossary.md` or any other page; the single `search.md` hint correctly covers both the catalog and Dictionary surfaces.
+  - Editorial observation (surfaced, dispositioned **won't-fix**, no tracked item): ADR-0071 cites `JooqFTSHelper.java:103` / `SearchServiceImpl.java:75-81`; the fix shifts `JooqFTSHelper` +7 lines so those citations drift at 0.28.0. ADR line-citations are as-of-authoring pointers; chasing every downstream shift is churn — surfaced for awareness only.
+
+### Notes
+- **Session separation** — VERIFIED: this `/review` runs in a session distinct from the `/implement` that produced `bd6af1d`/`2cb86c29` (both commits pre-existed this session).
+- **PR #1788** — VERIFIED via WebFetch: DRAFT, author `odd-contributor[bot]`, "Closes #1756", `Milestone: 0.28.0`, `Docs: documentation@release/0.28.0`, not merged (GATE 2 pending), head `contrib/CTRIB-016-tsquery-escape`.
+- The fix **incidentally hardens the query-half** of the PLT-109 `ts_headline` `String.formatted` sink (it strips `'` from the `query` argument); PLT-109 (via the un-sanitised `text` param) + PLT-090 D1/D2 remain out of scope and are correctly deferred — VERIFIED via read of `ReactiveDataEntityRepositoryImpl.getHighlightedResult` (`:798-805`).
+- **For the maintainer (GATE 2):** the fix is correct and fully regression-clean on your own SUT; mark PR #1788 ready-for-review, approve, and merge. The item then waits on `/review release:0.28.0` (the train merge + live `search.md` verification) to reach `done`.

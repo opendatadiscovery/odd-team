@@ -132,14 +132,21 @@ If `$ARGUMENTS` starts with `batch:` (e.g., `batch:feature/critical-odd-platform
 - Run the per-item protocol for each.
 - Produce one combined verdict table at the end. Individual items may FAIL while others PASS.
 
-### 8. Release-gate mode
+### 8. Release-gate mode — the full release review
 
-If `$ARGUMENTS` is `release:{version}` (e.g., `release:0.28.0`): run `playbooks/release-train-merge.md` **half 2** — the post-merge publication verification:
-- Preconditions: milestone `{version}` closed; release published with `tag_name == {version}`; the train PR merged to documentation `main` (verify via `git fetch` + `git log origin/main`, never local state).
-- Derive the manifest: `grep -rl 'milestone: "{version}"' backlog/`.
-- Run `playbooks/live-site-verification.md` once across the union of every item's recorded URLs + expected phrases.
-- Flip each fully-verified item `pending-release` → `done`; any failure → `blocked` per the playbook's on-fail.
-- Refresh the doc ground-truth layer (`/ingest-docs` + graph rebuild), append the release record to `state/PROGRESS.md`, and delete the merged train branch.
+If `$ARGUMENTS` is `release:{version}` (e.g., `release:0.28.0`): run **`playbooks/release-review.md`** — the comprehensive review of the *shipped* release. This is broader than the documentation merge: a release is a **code + test + doc + ontology bundle verified against the published artifact** (the tag and the ghcr image), and this mode owns the `pending-release` → `done` flips.
+
+The seven checks (full procedure + commands in the playbook):
+
+1. **Release delta → coverage matrix** — `git -C ../{repo} log {prev-tag}..{version}` mapped to the train's doc commits + the milestone closed-issue cross-check; any user-facing change with no doc = finding.
+2. **Full test suite on the RELEASED version (unit + IT), both buckets, GREEN** — `scripts/run-platform-tests.sh` on the `{version}` checkout (read pass/fail + checkstyle counts, not exit code) **and** `ODD_SUT=published:{version} integration-tests/run-suite.sh {suite}` for every IT bucket (`feature-complete`/`multi-stack`/`ingestion-e2e` green; `known-bugs` expected RED — an unexpected GREEN = an un-flipped fix). The SUT is pinned to the ghcr image via `build-sut.sh published:{version}` (`LSN-032`/`LSN-033`). A red suite on the published tag = CRITICAL → do **not** flip items to `done`.
+3. **Real-instance verification on the released image** — `docker pull ghcr.io/{org}/{repo}:{version}`, confirm migrations apply + health UP, verify headline claims on the running instance. **HTTP 200 ≠ working** — read the body/content-type, not the status (`memory/feedback_verify_absence_by_reading_config`).
+4. **Documentation-publication gate** — `playbooks/release-train-merge.md` (half 1 readiness + half 2 live verification). Preconditions: milestone `{version}` closed; release `tag_name == {version}`; train PR merged to documentation `main` (verify via `git fetch` + `git log origin/main`, never local state). Manifest: `grep -rl 'milestone: "{version}"' backlog/`; run `playbooks/live-site-verification.md` across every item's recorded URLs + phrases (live GitBook slugs differ — `/features/` prefix, lowercased `adr-NNNN`).
+5. **Ontology refresh to the released tag** — `lineage-extractor scan {repo} --full` → `adrs-ingest` → `docs-ingest` → `graph-build` → `alignment` (trust-gate `substrate == HEAD` should flip GREEN); commit as a discrete `chore(lineage):` with explicit paths. Defer the heavy agentic reducers to `/next-batch`.
+6. **Security-fix coordination** — for each security fix in the delta, check advisory **publication** state (`…/security-advisories?state=published` + the advisory page; **"closed" ≠ "published"**). Gate any vuln-*disclosing* caveat on the advisory being public — the `documentation` repo is public, so even a pushed branch discloses; graduating an already-public caveat to "fixed in {version}" is not new disclosure.
+7. **Close-out** — flip each fully-verified `pending-release` → `done`; any failure → `blocked` with cited evidence; re-target still-pending milestone items to the next release; append the **release record** (delta size, unit+IT pass counts, real-instance evidence, ontology-refresh commit, advisory state, items flipped) to `state/PROGRESS.md`; delete the merged train when zero `pending-release` remain.
+
+Case-law: `retrospectives/LSN-037-release-review-generalized.md`.
 
 ## Rules
 

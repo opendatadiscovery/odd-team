@@ -151,3 +151,4 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | Contributor G-C2 — behavior-diff-vs-released for cross-cutting / dependency changes (`git show <tag>:<file>` + drive the UI) | LSN-036 |
 | Gate 9 (`claim-inventory`) — a rejection's load-bearing premise is a claim; verify it vs open siblings before it stands | LSN-036 |
 | Playbook — `follow-up-on-disk.md`: a cross-cutting-invariant defect must PROPOSE an enforced check (CI guard / IT), not only a backlog item ("knowing != preventing") | LSN-036 |
+| Playbook — `release-review.md`: the post-release review is a code+test+doc+ontology bundle verified against the *published* artifact; the full suite (unit + IT, pinned to `published:{version}`) is mandatory, real-instance over codebase, security-doc graduation gated on advisory publication | LSN-037 |

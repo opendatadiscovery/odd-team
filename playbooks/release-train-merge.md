@@ -7,7 +7,7 @@ applies_to: universal
 
 # PROTOCOL release-train-merge
 
-The live manual describes the latest **published release**, never `main`. Documentation for merged-but-unreleased behaviour accumulates on one branch per milestone (`release/{version}` in `../documentation`) and publishes in a single human-merged PR when the matching release ships. This protocol is that release gate — half 1 readies and opens the train PR (`/implement release:{version}`); half 2 verifies publication and closes the items (`/review release:{version}`). Decision + routing classifier + status machine: `adrs/drafts/release-train-doc-gating.md`.
+The live manual describes the latest **published release**, never `main`. Documentation for merged-but-unreleased behaviour accumulates on one branch per milestone (`release/{version}` in `../documentation`) and publishes in a single human-merged PR when the matching release ships. This protocol is the **documentation-publication** gate — half 1 readies and opens the train PR (`/implement release:{version}`); half 2 verifies publication and closes the items. It is **check 4 of the full `playbooks/release-review.md`**: `/review release:{version}` runs the umbrella (release delta → coverage matrix · the full test suite on the released version, unit + IT · real-instance verification on the released image · this doc gate · ontology refresh · security-fix coordination · close-out), not this playbook alone. Decision + routing classifier + status machine: `adrs/drafts/release-train-doc-gating.md`.
 
 ## trigger
 

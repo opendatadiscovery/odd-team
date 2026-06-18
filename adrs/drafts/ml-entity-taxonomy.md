@@ -44,15 +44,22 @@ Adopt a **source-agnostic ML taxonomy isomorphic to the cross-platform consensus
 2. **Deployment ≠ artifact** — every deployment-bearing platform models the running serving instance distinctly from the static trained object. ODD's `ML_MODEL_INSTANCE` is already a `DATA_TRANSFORMER` (request in → prediction out), which fits a serving instance; reading it as "deployment" (not "version") gives all three leaves a clean, distinct, industry-matched meaning **with no new leaf type**.
 3. **Minimum change, maximum alignment** — add ONE type; keep all legacy; every type gets a published per-platform analogy so the taxonomy meets users where MLflow/SageMaker/Vertex/DataHub trained them.
 
-### Backward compatibility (the #1725 resolution, non-breaking)
+### How the fix behaves (1:1, spec-driven — NO platform inference)
 
-Wire `type: ML_MODEL` is resolved by payload **shape** at the ingestion boundary (`IngestionMapperImpl`):
-- `data_consumer` shape (inputs-only — the #1725 reporter's "Chatbot") → **`ML_MODEL_ARTIFACT`** (colloquially "the model object");
-- `data_transformer` shape → `ML_MODEL_TRAINING` (preserves outputs);
-- `data_entity_group` shape → the `ML_MODEL` identity group (once the type ships);
-- any other / `UNKNOWN` / unmappable contract type → a clean **400** (`BadUserRequestException`), never a 500 — closing the whole `valueOf`-drift class.
+The **specification is the contract**; the platform maps the ingestion-contract type to its internal type
+**1:1 by name** (the existing `DataEntityTypeDto.valueOf`) and adds **no payload-shape inference/remapping**
+(an antipattern — a second, hidden source of truth; rejected at the CTRIB-021 draft-PR gate). Consequences:
+- `ML_MODEL` (now an internal `DATA_ENTITY_GROUP` type) ingests as the model-identity **group** when sent with a
+  `data_entity_group` payload (200; reads back `ML_MODEL`) — the `ML_MODEL` 500 is fixed with no inference, since
+  the contract already advertises `ML_MODEL` and the platform just needs the 1:1 internal type.
+- Because `ML_MODEL` is a **group**, a `data_consumer`/`data_transformer`-shaped `ML_MODEL` is a type-vs-class
+  contract violation → a clean **400** (`DataEntityClassTypeValidationException`), never the pre-fix 500.
+- A **consumer-model** is sent as `ML_MODEL_ARTIFACT`, a **training job** as `ML_MODEL_TRAINING` — the precise
+  lifecycle types the platform already understands; the **ingestion spec must expose them** (SPC-004 adds
+  `ML_MODEL_ARTIFACT`/`_INSTANCE`), which is the #1725 reporter's path (send `ML_MODEL_ARTIFACT`).
 
-Legacy senders keep working. No existing enum value is removed or renamed. The `_INSTANCE`/`_ARTIFACT`/`_TRAINING` internal types are unchanged.
+No existing enum value is removed or renamed; the change is additive + backward compatible. Type drift is fixed by
+**aligning the spec with the internal enum**, not by guessing in the mapper.
 
 ### `opendatadiscovery-specification` changes (spec + README)
 
@@ -74,8 +81,11 @@ README — add an **"ML entities"** section: the lifecycle picture (experiment �
 - `DataEntityTypeDto` — add `ML_MODEL(<next id>)`.
 - `DataEntityClassDto` — `DATA_ENTITY_GROUP` set `+= ML_MODEL` (the identity is a group, like `ML_EXPERIMENT`).
 - `odd-platform-specification/components.yaml` — `DataEntityType.name` output enum `+= ML_MODEL` (prevents the read-back 500; regenerates BE+FE clients).
-- `odd-platform-ui` — a `TypeNameEnum.ML_MODEL → 'ML model'` label + the 7 locale catalogs.
-- `IngestionMapperImpl` — the shape-aware resolution above.
+- `odd-platform-ui` — a `TypeNameEnum.ML_MODEL → 'ML model'` label (entity-type labels are English-only in
+  `constants.ts`, not i18n'd) + exclude `ML_MODEL` from the manual group-create dropdown (like `ML_EXPERIMENT`).
+- `IngestionMapperImpl` — **no change** (the existing 1:1 `valueOf` maps the contract type by name).
+- `odd-platform-api-contract/build.gradle` — track `components.yaml` as an `openApiGenerate` input (it tracked
+  only `openapi.yaml`, so a `components.yaml` change regenerated a stale model on incremental builds).
 - Docs — the published **ML-entity-types reference page** (the analogy table + the `ML_MODEL` mapping + caveats), routed on `release/0.29.0`.
 
 ## Consequences
@@ -87,12 +97,13 @@ README — add an **"ML entities"** section: the lifecycle picture (experiment �
 
 1. **`ML_MODEL` as a 4th `DATA_CONSUMER` leaf** (the `claude[bot]`/naive fix). **Rejected** — creates three indistinguishable "model" leaves (`ML_MODEL`/`_ARTIFACT`/`_INSTANCE`), contradicts the 9/10 container consensus, and forecloses lifecycle lineage.
 2. **OpenMetadata's collapsed single `MlModel`** (identity + version + deployment + serving field in one entity). **Rejected** — the minority/legacy choice; forecloses the lifecycle lineage that is ODD's "ML first citizen" differentiator.
-3. **Fix only the 500, no taxonomy** (the bounded shape-aware map alone). **Adopted as the 0.29.0 hotfix** but insufficient as the durable answer — it leaves the vocabulary undocumented and the identity/group gap open (the maintainer's explicit concern).
+3. **Platform-side payload-shape remapping** (infer the internal type from the payload's sub-objects in `IngestionMapperImpl`). **Rejected (the maintainer, CTRIB-021 draft-PR gate)** — it forks the contract into a hidden second source of truth in platform code (an antipattern); the spec is the contract, and the platform maps it 1:1.
+4. **Fix only the 500, no spec change** (add `ML_MODEL` 1:1 as a group, platform-only). Resolves the literal 500 but leaves the reporter's *consumer*-model unservable (the spec must expose `ML_MODEL_ARTIFACT`) — necessary but not sufficient; pairs with the spec change.
 4. **Path B: change the ingestion spec to drop `ML_MODEL`.** **Rejected** — breaking for existing senders; the colloquial "model" vocabulary is exactly what users expect.
 
 ## Phasing / rollout
 
-1. **0.29.0 hotfix (odd-platform, CTRIB-021):** shape-aware `ML_MODEL` ingestion mapping (stops the 500, back-compat) + the published ML-entity-types doc page. Needs **no** cross-repo work. Resolves #1725.
+1. **0.29.0 (odd-platform, CTRIB-021):** add `ML_MODEL` 1:1 as a `DATA_ENTITY_GROUP` type (the platform maps the contract by name — no inference) + the published ML-entity-types doc page. Stops the `ML_MODEL` 500 (a group payload ingests; a mis-shaped one is a clean 4xx). Needs no cross-repo work.
 2. **Taxonomy (this ADR, adopted):** add `ML_MODEL` (group) to the platform (internal DTO + class + `components.yaml` + FE) and to `opendatadiscovery-specification` (`entities.yaml` enum + descriptions + README), keeping legacy. The spec-repo change ships via its own PR (a `/log-issue`-style draft, since the bot's scope is odd-platform). A published ADR-log page (`feedback_adr_means_published_doc_page_too`) rides `release/{version}`.
 3. **Deferred follow-ups (tracked):** a producing-collector path for `_ARTIFACT`/`_INSTANCE`/the group; the feature/feature-table family (`mlFeature`/`mlFeatureTable`); the SageMaker-collector mis-shape fix; reconciling `_INSTANCE`/`_ARTIFACT` fully across all three enums.
 

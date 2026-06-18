@@ -11,7 +11,7 @@ adr_required: "TRUE — the components.yaml output-enum change is a public wire-
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-18, Option 2): ADOPT the ml-entity-taxonomy ADR (ML_MODEL = a DATA_ENTITY_GROUP model-identity; ML_MODEL_TRAINING=training job, ML_MODEL_ARTIFACT=trained version/artifact, ML_MODEL_INSTANCE=deployed serving instance; keep ALL legacy types; every type gets a published per-platform analogy). 0.29.0 scope = the #1725 shape-aware ingestion fix + the new ML-entity-types doc page + the ML_MODEL group type in odd-platform (DataEntityTypeDto + DATA_ENTITY_GROUP class + components.yaml output enum + FE label/locales). The opendatadiscovery-specification (entities.yaml + README) PR follows separately (different repo)."
 plan_approved_at: "2026-06-18"
 plan_scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1725#issuecomment-4743657661   # root-cause + approach comment (odd-contributor[bot]), reframes the issue (ML_MODEL = group identity; consumer-shaped -> ML_MODEL_ARTIFACT) + answers babaMar. Posted 2026-06-18."
-pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1790   # DRAFT PR (odd-contributor[bot]), Closes #1725, head contrib/CTRIB-021-ml-model-taxonomy @ 24a083b3"
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1790   # DRAFT PR (odd-contributor[bot]), Closes #1725, head contrib/CTRIB-021-ml-model-taxonomy @ 56893f28 (amended to spec-first 1:1 after the maintainer's draft-PR feedback; see the Correction section)"
 pr_draft: true
 docs_routing: ""   # decided in Phase D after READING the page (G-C10); unreleased 0.29.0 behaviour -> documentation `release/0.29.0` train if a change is warranted (G-C11). Set at Phase D.
 ---
@@ -25,8 +25,36 @@ ingesting ML_MODEL via /ingestion/entities", `kind: bug`, milestone `0.29.0`). T
 odd-platform `main` source, the pinned ingestion-contract jar, and a **live reproduction** on the running stack.
 The prior `claude[bot]` triage + branches are likewise data — confirmed/corrected below, never trusted.
 
-> Workspace artifact (allowed before GATE 1). **No odd-platform fix code is written before the plan is approved
-> (G-C3).** Nothing has been written into the odd-platform tree by this record.
+> Workspace artifact. (Phase D shipped — see the Correction + ledger below. The pre-GATE-1 sections that follow
+> describe the FIRST, rejected implementation; the Correction supersedes them.)
+
+## Correction (2026-06-18) — spec-first, 1:1 (supersedes the shape-aware framing below)
+
+The maintainer rejected the first implementation's platform-side payload-shape remapping
+(`IngestionMapperImpl.resolveType`) at the draft-PR gate as an antipattern: **`opendatadiscovery-specification`
+is the ingestion contract; the platform maps it 1:1 — it must not infer the type from the payload**
+([[feedback_spec_is_the_contract_no_platform_mapping_layer]]). The taxonomy (ML_MODEL = a DATA_ENTITY_GROUP)
+is unchanged; the IMPLEMENTATION was redone **spec-first**:
+
+- **odd-platform (PR #1790, amended to `56893f28`, force-pushed):** `IngestionMapperImpl` reverted to the original
+  1:1 `valueOf` (resolveType removed). The change is now purely additive — `ML_MODEL` in the internal enum
+  (DATA_ENTITY_GROUP), the platform-API output enum (`components.yaml`), the FE label + group-form exclusion, and
+  the `build.gradle` codegen-input fix. `ML_MODEL` maps 1:1: a `data_entity_group` payload ingests as the group; a
+  mis-shaped (`data_consumer`) `ML_MODEL` is a clean 4xx (`DataEntityClassTypeValidationException`), not the 500.
+- **opendatadiscovery-specification (the primary fix for the reporter's consumer-model):** add `ML_MODEL_ARTIFACT`
+  + `ML_MODEL_INSTANCE` + a schema description — prepared as `backlog/spec/SPC-004-entities.patch` (the bot's App
+  can't push that repo; the maintainer applies it + republishes the contract + bumps `libs.versions.toml`). SPC-004.
+- The reporter sends `ML_MODEL_ARTIFACT` (a consumer-model) — the platform already maps it 1:1; their original
+  `ML_MODEL`+`data_consumer` is a contract violation → a clean 4xx (was the 500).
+- Public artifacts corrected: PR #1790 body (1:1) + the issue comment (PATCHed in place — supersedes the
+  shape-aware note, credits babaMar). The ADR, IT-136 (group→200 / consumer→4xx), the unit test, and DOC-468 were
+  re-routed to 1:1.
+
+**Re-verified (corrected code, 56893f28):** `IngestionMapperImplTest` GREEN (1:1 — group→ML_MODEL, consumer→4xx);
+IT-136 GREEN (group→200+ML_MODEL, consumer→4xx); **feature-complete e2e 298/0 GREEN** on the corrected SUT (298 vs
+the prior 299 = IT-136's 2 cases vs 3; `api:FAIL` = the pre-existing P-001 probe-staleness, not a regression);
+`known-bugs` pins still-RED; **full unit build GREEN** (`:odd-platform-api:build` BUILD SUCCESSFUL 6m4s on
+56893f28). The shape-aware sections below are retained as the record of what was rejected and why.
 
 ## Tracking reconciliation (G-C5 / LSN-009)
 

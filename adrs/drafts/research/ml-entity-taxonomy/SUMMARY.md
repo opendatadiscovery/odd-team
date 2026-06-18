@@ -40,15 +40,20 @@ This is the **minimum-change, maximum-alignment** design: **add ONE type** (`ML_
 ### Why read `ML_MODEL_INSTANCE` as "deployment" (not "version")
 No surveyed platform models a *version* or a *deployment* as the SAME thing, and none models either as a *transformer that produces a version*. ODD's `ML_MODEL_INSTANCE` is already a `DATA_TRANSFORMER` (inputs+outputs) — which fits a **serving instance** (consumes requests/model → produces predictions) far better than a static version. So the honest, no-new-leaf reading is: `ML_MODEL_ARTIFACT` = the version/artifact (consumer), `ML_MODEL_INSTANCE` = the deployment/serving instance (transformer). This avoids inventing `ML_MODEL_VERSION`/`ML_MODEL_DEPLOYMENT` and gives all three leaves a clean, distinct, industry-matched meaning.
 
-## The #1725 resolution (back-compat) — falls out of the taxonomy
+## The #1725 resolution — the platform maps the contract 1:1 (no platform inference)
 
-A wire `type: ML_MODEL` payload is resolved by **shape** at the ingestion boundary (back-compat, non-breaking):
-- shaped as `data_consumer` (inputs-only — the reporter's "Chatbot") → **`ML_MODEL_ARTIFACT`** (it *is* a trained model artifact; colloquially "the model");
-- shaped as `data_transformer` → `ML_MODEL_TRAINING` (avoids dropping outputs);
-- shaped as `data_entity_group` → the `ML_MODEL` identity group (once shipped);
-- anything else / `UNKNOWN` → a clean **400**, never a 500.
+The specification is the contract; the platform maps each ingestion type to its internal type **1:1 by name**
+(`DataEntityTypeDto.valueOf`) and adds **no payload-shape inference** (that antipattern was rejected at the
+draft-PR gate — see PITFALLS #2). Adding `ML_MODEL` to the internal enum (as a `DATA_ENTITY_GROUP` type) fixes
+the 500:
+- `ML_MODEL` + a `data_entity_group` payload → ingests as the model-identity group (the contract already
+  advertises `ML_MODEL`; the platform just needed the 1:1 internal type);
+- because `ML_MODEL` is a group, a `data_consumer`-shaped `ML_MODEL` is a type-vs-class contract violation → a
+  clean **400** (`DataEntityClassTypeValidationException`), never the 500;
+- a consumer-model is sent as **`ML_MODEL_ARTIFACT`** (the reporter's case) — added to the ingestion spec
+  (SPC-004); the platform already maps it 1:1.
 
-So the bounded fix that stops the 500 is the **same** mapping the taxonomy prescribes — not a throwaway hack.
+Type drift is fixed by **aligning the spec with the internal enum**, not by guessing in the mapper.
 
 ## Confidence
 
@@ -65,6 +70,6 @@ So the bounded fix that stops the 500 is the **same** mapping the taxonomy presc
 
 ## Roadmap (phasing — see the ADR + CTRIB-021)
 
-1. **0.29.0 hotfix (odd-platform, CTRIB-021):** the shape-aware `ML_MODEL` mapping (stops the 500) + the **published ML-entity-types reference page** (defines all 5 types + analogies + the mapping — the gap that *no* ODD doc covers today).
+1. **0.29.0 (odd-platform, CTRIB-021):** add `ML_MODEL` 1:1 as a `DATA_ENTITY_GROUP` type (the platform maps the contract by name — no inference) + the **published ML-entity-types reference page** (defines all 5 types + analogies — the gap that *no* ODD doc covers today). Stops the `ML_MODEL` 500.
 2. **The taxonomy (this ADR):** add `ML_MODEL` as a `DATA_ENTITY_GROUP` in the platform + the **`opendatadiscovery-specification`** (`entities.yaml` enum + schema) **and its README**; keep legacy types for back-compat. A spec-repo change (separate from odd-platform) + a producing-collector path are its own tracked items.
 3. **Deferred:** the feature/feature-table family; reconciling `_INSTANCE`/`_ARTIFACT` into the wire spec (currently platform-internal-only).

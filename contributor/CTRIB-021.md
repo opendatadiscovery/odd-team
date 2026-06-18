@@ -56,6 +56,22 @@ the prior 299 = IT-136's 2 cases vs 3; `api:FAIL` = the pre-existing P-001 probe
 `known-bugs` pins still-RED; **full unit build GREEN** (`:odd-platform-api:build` BUILD SUCCESSFUL 6m4s on
 56893f28). The shape-aware sections below are retained as the record of what was rejected and why.
 
+### Spec chain + taxonomy reaffirmed (2026-06-18, later)
+
+The maintainer extended the `odd-contributor[bot]` App to the spec + codegen repos (now all 6: documentation,
+odd-collectors, odd-platform, opendatadiscovery-specification, -contracts, odd-models-package). Spec PR
+**opendatadiscovery-specification#87** (draft) is open: `entities.yaml` (`ML_MODEL_ARTIFACT`/`_INSTANCE` + a schema
+description) + `specification.md` (the ML model brought into one ordered "ML entities" taxonomy — it was stale:
+ML models documented as DataConsumers only, ML experiments as transformers, no `DataEntityGroup`). The downstream
+chain (contracts → odd-models → the odd-platform `libs.versions.toml` + enum bump — the `ff8f4bab`/#1631 delivery
+shape, NOT a new mechanism) opens after #87 merges; tracked in SPC-004.
+
+**Taxonomy reaffirmed:** mid-stream I over-corrected — proposing `ML_MODEL = DataConsumer` off `specification.md`'s
+stale prose — and the maintainer rejected it. The adopted **group** taxonomy stands (`ML_MODEL` = DataEntityGroup
++ the `_TRAINING`/`_ARTIFACT`/`_INSTANCE` lifecycle + `ML_EXPERIMENT`); `specification.md` is the doc to update to
+match, not an authority to follow. PR #1790 (the platform group + 500 fix) is unchanged.
+[[feedback_contributor_open_prs_all_repos_codegen_chain]]
+
 ## Tracking reconciliation (G-C5 / LSN-009)
 
 - **Dedup sweep clean** — no existing `backlog/`, `issues/`, or `contributor/` item references #1725 or `ML_MODEL`.

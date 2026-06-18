@@ -1,12 +1,13 @@
 # ui_shell rollup
 
-Total nodes: 13. Total edges: 4.
+Total nodes: 14. Total edges: 21.
 
 Auto-derived from `lineage/{repo}/nodes.jsonl` by the lineage extractor.
 Hand-written intent + gotchas live in `navigation/notes/ui-shell.md` (when migrated).
 
-## i18n-resource (6)
+## i18n-resource (7)
 
+- `odd-platform-ui/src/locales/translations/br.json` — br — (no `@docs` annotation)
 - `odd-platform-ui/src/locales/translations/ch.json` — ch — (no `@docs` annotation)
 - `odd-platform-ui/src/locales/translations/en.json` — en — (no `@docs` annotation)
 - `odd-platform-ui/src/locales/translations/es.json` — es — (no `@docs` annotation)

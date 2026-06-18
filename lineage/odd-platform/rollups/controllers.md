@@ -1,14 +1,15 @@
 # controllers rollup
 
-Total controllers: 36. Total controller-methods: 203.
+Total controllers: 36. Total controller-methods: 204.
 Auto-derived from `lineage/{repo}/nodes.jsonl`. HTTP method/path metadata lives on each controller-method via the openapi_tags axis join (operationId == method name).
 
 ## ActivityController implements ActivityApi
 
-Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ActivityController.java` (2 methods)
+Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ActivityController.java` (3 methods)
 
-- `getActivity` (line 23) — no `@docs`
-- `getActivityCounts` (line 43) — no `@docs`
+- `getActivity` (line 24) — no `@docs`
+- `getActivityCounts` (line 45) — no `@docs`
+- `getActivityUsers` (line 61) — no `@docs`
 
 ## AlertController implements AlertApi
 
@@ -75,15 +76,15 @@ Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controll
 - `createDataEntityMetadataFieldValue` (line 118) — no `@docs`
 - `createDataEntityTagsRelations` (line 243) — no `@docs`
 - `createOwnership` (line 165) — no `@docs`
-- `createQueryExampleToDatasetRelationshipNew` (line 436) — no `@docs`
+- `createQueryExampleToDatasetRelationshipNew` (line 437) — no `@docs`
 - `deleteDataEntityFromDataEntityGroup` (line 342) — no `@docs`
 - `deleteDataEntityMetadataFieldValue` (line 129) — no `@docs`
 - `deleteOwnership` (line 174) — no `@docs`
-- `deleteQueryExampleToDatasetRelationshipNew` (line 447) — no `@docs`
+- `deleteQueryExampleToDatasetRelationshipNew` (line 448) — no `@docs`
 - `deleteTermFromDataEntity` (line 158) — no `@docs`
-- `getAlertConfig` (line 404) — no `@docs`
-- `getChannels` (line 373) — no `@docs`
-- `getDataEntitiesUsage` (line 367) — no `@docs`
+- `getAlertConfig` (line 405) — no `@docs`
+- `getChannels` (line 374) — no `@docs`
+- `getDataEntitiesUsage` (line 368) — no `@docs`
 - `getDataEntityActivity` (line 351) — no `@docs`
 - `getDataEntityAlerts` (line 315) — no `@docs`
 - `getDataEntityAlertsCounts` (line 323) — no `@docs`
@@ -93,16 +94,16 @@ Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controll
 - `getDataEntityGroupsChildren` (line 100) — no `@docs`
 - `getDataEntityGroupsItems` (line 108) — no `@docs`
 - `getDataEntityGroupsLineage` (line 275) — no `@docs`
-- `getDataEntityMessages` (line 382) — no `@docs`
-- `getDataEntityMetrics` (line 423) — no `@docs`
+- `getDataEntityMessages` (line 383) — no `@docs`
+- `getDataEntityMetrics` (line 424) — no `@docs`
 - `getDataEntityUpstreamLineage` (line 265) — no `@docs`
-- `getDomains` (line 430) — no `@docs`
-- `getMessages` (line 393) — no `@docs`
+- `getDomains` (line 431) — no `@docs`
+- `getMessages` (line 394) — no `@docs`
 - `getMyObjects` (line 283) — no `@docs`
 - `getMyObjectsWithDownstream` (line 291) — no `@docs`
 - `getMyObjectsWithUpstream` (line 299) — no `@docs`
 - `getPopular` (line 307) — no `@docs`
-- `updateAlertConfig` (line 412) — no `@docs`
+- `updateAlertConfig` (line 413) — no `@docs`
 - `updateDataEntityGroup` (line 91) — no `@docs`
 - `updateOwnership` (line 183) — no `@docs`
 - `updateStatus` (line 193) — no `@docs`

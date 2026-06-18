@@ -1,12 +1,13 @@
 # openapi-tags rollup
 
-Total tags: 35. Total tag→method edges: 194.
+Total tags: 35. Total tag→method edges: 195.
 Auto-derived from `lineage/{repo}/nodes.jsonl` + `edges.jsonl`. Edges join on operationId == controller method name (OpenAPI generator convention).
 
-## activity (2 operations, 2 bound to controllers)
+## activity (3 operations, 3 bound to controllers)
 
 - `GET /api/activity` → `getActivity`
 - `GET /api/activity/counts` → `getActivityCounts`
+- `GET /api/activity/users` → `getActivityUsers`
 
 ## alert (5 operations, 5 bound to controllers)
 

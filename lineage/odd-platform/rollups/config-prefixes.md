@@ -1,28 +1,29 @@
 # config_prefixes rollup
 
-Total prefixes: 14. @ConfigurationProperties classes: 9. @Value consumers: 73.
+Total prefixes: 14. @ConfigurationProperties classes: 9. @Value consumers: 75.
 Auto-derived from `lineage/{repo}/nodes.jsonl` + `edges.jsonl`. Each top-level YAML namespace in `application.yml` is one node; consumer classes (config-properties-class) and `@Value` readers (config-key-consumer) edge into their top-level prefix via `configures` edges.
 
 ## attachment
 
-YAML anchor: `odd-platform-api/src/main/resources/application.yml#attachment` — no `@docs`. Classes: 0. Consumers: 11.
+YAML anchor: `odd-platform-api/src/main/resources/application.yml#attachment` — no `@docs`. Classes: 0. Consumers: 12.
 
 **@Value consumers**
 - `LocalFilePathConstructor.basePath` reads `${attachment.local.path}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/attachment/local/LocalFilePathConstructor.java:15`
 - `AttachmentServiceImpl.maxFileSize` reads `${attachment.max-file-size}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/attachment/AttachmentServiceImpl.java:27`
-- `MinioConfig.accessKey` reads `${attachment.remote.access-key}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:14`
+- `MinioConfig.accessKey` reads `${attachment.remote.access-key}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:15`
 - `RemoteFileUploadServiceImpl.bucket` reads `${attachment.remote.bucket}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/attachment/remote/RemoteFileUploadServiceImpl.java:39`
-- `MinioConfig.secretKey` reads `${attachment.remote.secret-key}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:16`
-- `MinioConfig.url` reads `${attachment.remote.url}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:12`
-- `MinioConfig.@ConditionalOnProperty` reads `${attachment.storage}` (default `havingValue=REMOTE`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:10`
+- `MinioConfig.region` reads `${attachment.remote.region}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:22`
+- `MinioConfig.secretKey` reads `${attachment.remote.secret-key}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:17`
+- `MinioConfig.url` reads `${attachment.remote.url}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:13`
 - `RemoteFilePathConstructor.@ConditionalOnProperty` reads `${attachment.storage}` (default `havingValue=REMOTE`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/attachment/remote/RemoteFilePathConstructor.java:10`
+- `MinioConfig.@ConditionalOnProperty` reads `${attachment.storage}` (default `havingValue=REMOTE`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:11`
 - `LocalFilePathConstructor.@ConditionalOnProperty` reads `${attachment.storage}` (default `havingValue=LOCAL`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/attachment/local/LocalFilePathConstructor.java:13`
 - `LocalFileUploadServiceImpl.@ConditionalOnProperty` reads `${attachment.storage}` (default `havingValue=LOCAL`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/attachment/local/LocalFileUploadServiceImpl.java:26`
 - `RemoteFileUploadServiceImpl.@ConditionalOnProperty` reads `${attachment.storage}` (default `havingValue=REMOTE`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/attachment/remote/RemoteFileUploadServiceImpl.java:36`
 
 ## auth
 
-YAML anchor: `odd-platform-api/src/main/resources/application.yml#auth` — no `@docs`. Classes: 2. Consumers: 16.
+YAML anchor: `odd-platform-api/src/main/resources/application.yml#auth` — no `@docs`. Classes: 2. Consumers: 17.
 
 **@ConfigurationProperties classes**
 - `ODDLDAPProperties` (`@ConfigurationProperties("auth.ldap")`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/ODDLDAPProperties.java`
@@ -42,6 +43,7 @@ YAML anchor: `odd-platform-api/src/main/resources/application.yml#auth` — no `
 - `AuthorizationManagerCondition.@ConditionalOnProperty` reads `${auth.type}` (default `havingValue=LDAP`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/condition/AuthorizationManagerCondition.java:15`
 - `OAuthLogoutSuccessHandler.@ConditionalOnProperty` reads `${auth.type}` (default `havingValue=OAUTH2`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/logout/OAuthLogoutSuccessHandler.java:16`
 - `AppInfoController.authType` reads `${auth.type}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/AppInfoController.java:18`
+- `AuthIdentityProviderImpl.authType` reads `${auth.type}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/AuthIdentityProviderImpl.java:24`
 - `LoginFormSecurityConfiguration.@ConditionalOnProperty` reads `${auth.type}` (default `havingValue=LOGIN_FORM`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LoginFormSecurityConfiguration.java:31`
 - `LDAPSecurityConfiguration.@ConditionalOnProperty` reads `${auth.type}` (default `havingValue=LDAP`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LDAPSecurityConfiguration.java:51`
 - `OAuthSecurityConfiguration.@ConditionalOnProperty` reads `${auth.type}` (default `havingValue=OAUTH2`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/OAuthSecurityConfiguration.java:71`

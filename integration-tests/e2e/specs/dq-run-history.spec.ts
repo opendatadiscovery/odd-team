@@ -151,7 +151,7 @@ test.describe('IT-059 F-040 — DQ test run history (paginated)', () => {
     );
   });
 
-  test('CORNER 1 (UC-2): a RUNNING run makes the whole history endpoint 500 [RED-characterization]', async () => {
+  test('CORNER 1 (UC-2 re-grounded): a RUNNING run now loads (200), present with status RUNNING, sorted to the TOP', async () => {
     const dqId = await seedRuns();
     const runningOddrn = `${dqOddrn}/run/RUNNING1`;
 
@@ -164,41 +164,84 @@ test.describe('IT-059 F-040 — DQ test run history (paginated)', () => {
     );
     try {
       const res = await getRuns(dqId, 1, 30);
-      // KNOWN BUG (PLT-needed): wire enum DataEntityRunStatus (6 values, no RUNNING) vs DB
-      // IngestionTaskRunStatus (7, incl RUNNING) — DataEntityRunMapper's MapStruct Enum.valueOf
-      // throws IllegalArgumentException → HTTP 500. The history page is unavailable EXACTLY while
-      // a test is in flight (the moment an operator most wants it). Pin the CURRENT 500 (LSN-029):
-      // RED-flips when the mapper tolerates unknown literals or RUNNING is added to the wire enum.
-      expect(
-        res.status,
-        'a RUNNING run currently 500s the entire runs page (wire/DB enum asymmetry). If this is now ' +
-          '200, the mapper was made tolerant or RUNNING was added to the wire enum — flip this pin.',
-      ).toBe(500);
+      // RE-GROUNDED (#1757 / PLT-021, LSN-029 flip): was a 500 RED-characterization pin. RUNNING is now a
+      // first-class wire value (DataEntityRunStatus), the mapper maps it, and the in-flight run loads.
+      // RED proof on ODD_SUT=ref:main: the same request still 500s (wire/DB enum asymmetry).
+      expect(res.status, 'a RUNNING run now loads (200) instead of 500ing the runs page').toBe(200);
+      const running = res.body.items.find((r: RunItem) => r.oddrn === runningOddrn);
+      expect(running, 'the in-flight run is present in the runs list').toBeTruthy();
+      expect(running?.status, 'the in-flight run carries the RUNNING wire status').toBe('RUNNING');
+      // Product decision (CTRIB-024 Option A): an in-flight run is the freshest, kept at the TOP of the list.
+      expect(res.body.items[0].oddrn, 'the in-flight run sorts to the TOP (freshest activity)').toBe(runningOddrn);
     } finally {
       // never let the poison row leak into other specs / re-runs
       await dbQuery('DELETE FROM data_entity_task_run WHERE oddrn = $1', [runningOddrn]);
     }
   });
 
-  test('CORNER 2 (UC-4): an unmappable status filter is a clean 400; a valid filter returns 200 filtered', async () => {
+  test('CORNER 2 (UC-4 re-grounded): status=RUNNING is now a valid filter (200); an invalid literal stays 400', async () => {
     const dqId = await seedRuns();
+    const runningOddrn = `${dqOddrn}/run/RUNNING_F`;
+    await dbQuery('DELETE FROM data_entity_task_run WHERE oddrn = $1', [runningOddrn]);
+    await dbQuery(
+      `INSERT INTO data_entity_task_run (oddrn, task_oddrn, start_time, end_time, status, type, name)
+       VALUES ($1, $2, NOW(), NULL, 'RUNNING', 'DATA_QUALITY_TEST_RUN', 'it059 in-flight filter')`,
+      [runningOddrn, dqOddrn],
+    );
+    try {
+      // RE-GROUNDED (#1757): RUNNING is now a wire-enum value, so the filter BINDS and returns the in-flight
+      // runs (200) — was a 400 pin. RED proof on ODD_SUT=ref:main: status=RUNNING -> 400 (unknown enum literal).
+      const running = await getRuns(dqId, 1, 10, 'RUNNING');
+      expect(running.status, 'status=RUNNING is now a valid filter (200)').toBe(200);
+      expect(
+        running.body.items.every((r: RunItem) => r.status === 'RUNNING'),
+        'the RUNNING filter returns only in-flight runs',
+      ).toBe(true);
+      expect(running.body.items.length, 'exactly the one seeded in-flight run matches').toBe(1);
 
-    // RUNNING is documented at the DB tier but absent from the wire enum → the generated enum
-    // param binding raises ServerWebInputException(400). FLIPPED 2026-06-11 (was a 500 pin):
-    // the ControllerAdvice ResponseStatusException pass-through (#1760/#1761, CTRIB-005) keeps
-    // the framework's 400 instead of re-branding it 500 SYS001. Same for any invalid literal.
-    const running = await getRuns(dqId, 1, 10, 'RUNNING');
-    expect(running.status, 'status=RUNNING (not a wire enum value) is the client\'s 400, not a 500').toBe(400);
+      // An invalid literal is STILL a clean 400 — we added a real value, not a swallow-everything catch-all.
+      const garbage = await getRuns(dqId, 1, 10, 'BANANA');
+      expect(garbage.status, 'an invalid status literal is still a clean 400, not a 500').toBe(400);
 
-    const garbage = await getRuns(dqId, 1, 10, 'BANANA');
-    expect(garbage.status, 'an invalid status literal is the client\'s 400, not a 500').toBe(400);
+      const failed = await getRuns(dqId, 1, 10, 'FAILED');
+      expect(failed.status, 'a valid status filter returns 200').toBe(200);
+      expect(
+        failed.body.items.every((r: RunItem) => r.status === 'FAILED'),
+        'the FAILED filter returns only FAILED runs',
+      ).toBe(true);
+      expect(failed.body.items.length, 'exactly the one seeded FAILED run matches').toBe(1);
+    } finally {
+      await dbQuery('DELETE FROM data_entity_task_run WHERE oddrn = $1', [runningOddrn]);
+    }
+  });
 
-    const failed = await getRuns(dqId, 1, 10, 'FAILED');
-    expect(failed.status, 'a valid status filter returns 200').toBe(200);
-    expect(
-      failed.body.items.every((r: RunItem) => r.status === 'FAILED'),
-      'the FAILED filter returns only FAILED runs',
-    ).toBe(true);
-    expect(failed.body.items.length, 'exactly the one seeded FAILED run matches').toBe(1);
+  test('UI (UC-2): the run-history page renders an in-flight run with a "running" badge — no FE crash [palette]', async ({
+    page,
+  }) => {
+    const dqId = await seedRuns();
+    const dsId = await idByOddrn(dsOddrn);
+    const runningOddrn = `${dqOddrn}/run/RUNNING_UI`;
+    await dbQuery('DELETE FROM data_entity_task_run WHERE oddrn = $1', [runningOddrn]);
+    await dbQuery(
+      `INSERT INTO data_entity_task_run (oddrn, task_oddrn, start_time, end_time, status, type, name)
+       VALUES ($1, $2, NOW(), NULL, 'RUNNING', 'DATA_QUALITY_TEST_RUN', 'it059 in-flight ui')`,
+      [runningOddrn, dqOddrn],
+    );
+    try {
+      await page.goto(`/dataentities/${dsId}/test-reports/${dqId}/history`);
+
+      // The status badge renders the status lowercased ("running"). The pre-fix FE had NO RUNNING entry in
+      // theme.palette.reportStatus, so TestRunStatusItem would throw reading `.background` of undefined and the
+      // row would not render. A visible "running" badge is therefore the no-render-crash proof (the palette
+      // now knows RUNNING). RED on ODD_SUT=ref:main: the endpoint 500s, the list never populates, no badge.
+      await expect(
+        page.getByText('running', { exact: false }).first(),
+        'the in-flight run renders a "running" status badge — the FE palette knows RUNNING (no render crash)',
+      ).toBeVisible({ timeout: 20_000 });
+
+      await page.screenshot({ path: 'test-results/it059-running-badge.png', fullPage: true });
+    } finally {
+      await dbQuery('DELETE FROM data_entity_task_run WHERE oddrn = $1', [runningOddrn]);
+    }
   });
 });

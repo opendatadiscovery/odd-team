@@ -125,11 +125,16 @@ if { [ "${#PROBES[@]}" -gt 0 ] || [ "${#E2E[@]}" -gt 0 ]; } && [ -z "$dry" ]; th
 fi
 
 # --- API-probe rail (probe-runtime) — runs against the SUT above (inherits the exported $ODD_PLATFORM_IMAGE) ---
+# Probes run LIVE here, so the result is fresh regardless of when the probe was last blessed. Probe-STALENESS is
+# an ONTOLOGY-freshness concern (enforced by /probe-run), NOT a system-regression failure — wiring it into this
+# gate as a FATAL silently killed the api rail for weeks and trained everyone to ignore `api:FAIL` (2026-06-19,
+# the IT-124 lesson). So pass --allow-stale: staleness becomes a visible warning, while a probe that actually
+# MISBEHAVES still fails the rail (api:FAIL is then a REAL signal). Re-bless stale probes via /probe-run, not here.
 api_outcome="n/a"
 if [ "${#PROBES[@]}" -gt 0 ] && [ "$sut_ok" = 1 ]; then
   batch=""; [ "${#PROBES[@]}" -gt 1 ] && batch="--batch"
-  echo "+ (cd $RUNTIME && uv run python probe-runtime/runner.py ${PROBES[*]} $batch $dry)"
-  if ( cd "$RUNTIME" && uv run python probe-runtime/runner.py "${PROBES[@]}" $batch $dry ); then api_outcome="PASS"; else api_outcome="FAIL"; fi
+  echo "+ (cd $RUNTIME && uv run python probe-runtime/runner.py ${PROBES[*]} --allow-stale $batch $dry)"
+  if ( cd "$RUNTIME" && uv run python probe-runtime/runner.py "${PROBES[@]}" --allow-stale $batch $dry ); then api_outcome="PASS"; else api_outcome="FAIL"; fi
 fi
 
 # --- UI-e2e rail (Playwright; integration-tests/e2e) ---

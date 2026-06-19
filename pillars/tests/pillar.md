@@ -59,6 +59,15 @@ Within the integration bucket, *how the catalog gets its data* is a tier decisio
 
 A **probe** (`P-NNN`) is a one-shot measurement run against an ephemeral local stack to turn an *inferred* hypothesis into a *measured* fact cheaply — its job is to de-risk authoring the durable test. A `PROBED` test-matrix cell is **not coverage**. Every probe worth keeping **graduates** into a unit or integration test that lives in CI/the suite and carries a gate; the rest are discarded. Probes are scaffolding, never a deliverable.
 
+## Green is green — the suite verdict is not negotiable
+
+The recurring rot is **normalization of deviance**: a green-target lane left chronically part-red trains everyone (human and AI) to read red as noise, so a real regression then hides in the tolerated red. The rules that stop it:
+
+- **Green-target lanes** (`feature-complete`, `multi-stack`, `ingestion-e2e`) are **100% green or the line stops.** A red there is a regression until proven otherwise — **root-cause it to a verified cause**, then fix it or move it to `known-bugs` (expected-red) with a ticket + owner. **Never** dismiss a green-lane red as "flaky / pre-existing / not mine" without that root-cause. (2026-06-19: IT-124 went red when `V0_0_92` changed LDAP `provider` NULL→'LDAP'; the stale `provider=NULL` seed was a *deterministic* regression, mislabelled "flaky" and left red through implement **and** `/review`. The platform was fine — the test, the review, and the gate were the miss.)
+- **Flaky protocol (deterministic):** one clean retry on a fresh stack. Green-on-retry → quarantine to `known-bugs` + a ticket (a flaky test is a bug, not a shrug). Red-twice → regression → root-cause + fix, or bisect with `ODD_SUT=ref:<tag>`. Do **not** re-run on a different SUT to argue a result away.
+- **Probe-staleness ≠ failure.** Probes run live in the suite (`--allow-stale`); staleness is an ontology-freshness warning owned by `/probe-run` (re-bless there), never a regression FATAL. A probe that *misbehaves* still fails the api rail — that is a real signal.
+- **The verdict is the machine result, not an interpretation.** A clean PASS = every green-lane test green + `known-bugs` still red. Anything else is FAIL; `/review` rejects on it.
+
 ## The closure unit — the promise
 
 A feature is **verified** when every falsifiable promise in its `use_cases` block (the LSN-030 promise layer) has `coverage: verified`, where *verified* means a real test (unit **or** integration) exists, runs in its CI/suite, **and** carries a typed gate linking it back.
@@ -165,6 +174,8 @@ header, the README line, and the sibling flows F-141/F-176 — both `/contribute
 - A known bug pinned with `@Disabled` instead of a green characterization test (LSN-029).
 - Tests written but stranded on an unmerged branch and counted as "done" (implemented ≠ in CI).
 - Work driven from the TEST-GAP catalogue instead of the promise layer.
+- A green-target lane left carrying red, or a green-lane red dismissed as "flaky / pre-existing / not mine" without a root-cause (2026-06-19 IT-124).
+- Probe-staleness treated as a regression failure (it is an ontology-freshness warning; `/probe-run` owns it).
 
 ## What authoring sessions in this pillar load
 

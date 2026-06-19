@@ -30,6 +30,12 @@ The prior `claude[bot]` triage + branches are likewise data — confirmed/correc
 
 ## PAUSED (2026-06-19) — RESUME HERE: blocked on Sonatype Central Portal access
 
+> **Update (2026-06-19, later):** odd-platform **#1790**, spec **#87**, and `-contracts` **#7** are all **MERGED**.
+> The blocker is unchanged -- the contract **release has not run** (Maven Central latest is still
+> `ingestion-contract-server:0.1.41`), gated on the Sonatype Central Portal credentials. Resume = dispatch the
+> `-contracts` `Maven Central release` (the #7 repoint is already merged) -> `0.1.42` published -> the bot bumps
+> `libs.versions.toml` in odd-platform. A what's-done/what's-remaining status comment is posted on issue #1725.
+
 **Why paused.** The contract-republish chain is blocked on Sonatype **Central Portal** access. The legacy OSSRH
 publish is sunset (HTTP 402; OSSRH EOL 2025-06-30), so publishing `ingestion-contract-server` now needs a
 **Central Portal user token** for the `org.opendatadiscovery` namespace. The maintainer does not have Portal

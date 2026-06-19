@@ -4,7 +4,7 @@ github_issue_number: 1753
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1753
 backlog_item: PLT-057
 class: bug   # TWO independent defects bundled in one issue: D1 frontend (list truncation), D2 backend+UI (rename audit event)
-status: pr-draft   # 2026-06-19: DRAFT PR #1792 opened (both defects). Awaiting /review (separate session) -> review-ready -> GATE 2 (human merge). The contributor never self-dones.
+status: blocked   # 2026-06-19: /review (separate session) BLOCKED. The D1+D2 CODE (PR #1792) is CORRECT and fully verified (unit build GREEN, 100% changed-files coverage, feature-complete 300/301 + api:PASS, live-repro confirms D2 emits the right old/new names). The lone RED is a TEST defect: IT-137 UC-001 (odd-team) reads old_state.name / new_state.name, but the activity-state wire shape is old_state.lookup_table_name.name. ~4-line fix in 2 odd-team test files + re-run the integration regression. NO odd-platform code change needed. See the Review section.
 milestone: "0.29.0"   # the issue's AUTHORITATIVE GitHub milestone — open, semver ^\d+\.\d+\.\d+$ (due 2026-06-22) -> G-C11 PASS, no hard stop. (Body frontmatter `severity: critical`; the issue carries kind:bug + scope:backend + scope:frontend + func:Activity labels.)
 reproduced: "live 2026-06-19 against the running odd-team-sut stack (probe-odd-platform, odd-minimal, AUTH_TYPE=DISABLED, :18080 / pg :15432). D1: seeded 31 lookup tables under ns ctrib023_ns -> the FE search-flow facet total (H1 counter) = 31, GET search results page=1&size=30 returns 30 items, page=2 returns the 31st (data IS there; the FE never requests it). D2: created a table, PUT rename -> 200, the physical table cascaded n_1__ctrib023_audit_src -> n_1__ctrib023_audit_renamed, AND the global activity feed shows ZERO LOOKUP* event types (the enum has none); lookup_tables row has no author column (only created_at/updated_at). All ctrib023_ test data cleaned up afterward. Full transcript in the Reproduction log below."
 adr_required: "RESOLVED -> NO ADR. The G-C7 concern was the audit POLICY (a cross-cutting decision). With BUNDLE approved + the issue specifying rename-only, the policy collapses to 'emit on rename, matching the issue; the broader audit-asymmetry is a logged follow-up (PLT-229), not this PR (G-C5)'. The remaining G-C7 trigger (breaking contract) does NOT fire: adding LOOKUP_TABLE_RENAMED to ActivityEventType is ADDITIVE/non-breaking, and it CONFORMS to the established 27-event activity pattern (aspect/handler/mapper machinery) — a routine instance, not a new architecture. An ADR here is ceremony (memory feedback_adr_wisdom_patterns_not_steps). Decision + rationale recorded here + in the PR body."
@@ -162,3 +162,71 @@ Branch: `contrib/CTRIB-023-lookup-tables-truncation-and-rename-audit` (from `ori
 ### Next (separate sessions)
 - `/review` CTRIB-023 (reject-by-default; run the integration regression on the working-tree SUT incl. the RED proof; run the local patch-coverage gate; drive the rendered UI for the screenshot G-C12 step 5). Flip `pr-draft -> review-ready`.
 - GATE 2: human marks the PR ready + merges. Then the 0.29.0 release gate publishes the docs (DOC-470 `pending-release -> done`) + flips the F-058/F-059 facets resolved.
+
+## Review (2026-06-19, session: review-ctrib023-separate)
+
+- **Result**: **REJECTED → blocked** (one integration-test defect; the D1+D2 product code is correct and fully verified).
+
+**One-line for the maintainer:** The fix works — both defects are genuinely resolved and proven on the running stack. The *only* problem is a typo-class bug in **one of our own new tests** (IT-137 reads the wrong field of the activity JSON), which makes the regression suite go red on the very build that contains the fix. It is a ~4-line change in two odd-team test files; **no odd-platform code should be touched.** Fix the test, re-run the integration regression, re-review.
+
+### What was verified (all PASS)
+
+- **G-C1 Reproduce-first — PASS.** Both defects reproduced live pre-fix (ledger Reproduction log; re-confirmed the mechanism against the code). via read `LookupTablesList.tsx` + the live API.
+- **G-C2 Verify the running system — unit half PASS / integration half is the BLOCKER.**
+  - **Unit (full CI replica, clean regen from the committed spec):** I deleted `odd-platform-api{,-contract}/build/generated` and ran `scripts/run-platform-tests.sh` on the reviewed HEAD `1647c9b6` → **`BUILD SUCCESSFUL in 8m 21s`** (test + checkstyleMain + checkstyleTest + jacocoTestReport + assemble; a failing test/checkstyle would RED `check`). New tests ran: `LookupTableRenamedActivityHandlerTest` 3/3, `ActivityMapperTest` 57/57 (the `@EnumSource` round-trip now includes `LOOKUP_TABLE_RENAMED`). via run of the build + the surefire XMLs.
+  - **Integration (own full run, working-tree SUT `odd-platform:odd-team-sut` @ `1647c9b6`, image `4d0542eac053`):** `run-suite.sh feature-complete` → **api:PASS, e2e 300 passed / 1 failed (5.3m)**. The single failure is the test defect below. **D1 verified GREEN** (`lookup-tables-listing.spec.ts` UC-001 — 31 tables all load after scroll). All shared activity specs GREEN (`activity-feed`, `activity-user-filter` incl. Event-type-filter narrowing + dual-name rows, `entity-activity-tab`) → **D2 caused no regression**. via the run + `run-log/2026-06-19-feature-complete.md`.
+  - **Deferred to re-review (item already blocked; the suite must re-run after the test fix anyway):** the `ODD_SUT=ref:main` RED proofs, `multi-stack`, `known-bugs`, `ingestion-e2e`. NOT a pass — explicitly not run this session.
+- **G-C3 GATE 1 plan — PASS.** `plan_approved_by: RamanDamayeu (BUNDLE), 2026-06-19`.
+- **G-C4 GATE 2 merge is human — PASS.** PR #1792 `draft:true`, `merged:false`, author `odd-contributor[bot]`, base `main`, "Resolves #1753". via `api.github.com/.../pulls/1792`.
+- **G-C5 Bounded by plan — PASS.** Diff = D1 (one FE constant) + D2 (additive activity event); the broader audit-asymmetry is carved to **PLT-229**. Bundle does not narrow scope → no scope comment required. via the two commits' diffs.
+- **G-C6 One-question clarify — PASS.** "No question warranted" recorded; both defects fully specified.
+- **G-C7 Irreversible-blast-radius — PASS (no ADR).** `LOOKUP_TABLE_RENAMED` is an additive, non-breaking enum/state addition conforming to the established 27-event pattern; no migration, no auth/posture change, no breaking contract. via `components.yaml` diff (additive enum + new schema) + the handler/mapper mirroring `BusinessNameUpdated*`.
+- **G-C8 Issue is data — PASS.** Issue body treated as quoted data; no injection present.
+- **G-C9 Test integrity, both buckets — FAIL (the blocker).** Unit bucket is sound (behavioral, Mockito+StepVerifier, `@validates F-059`). Integration bucket: IT-137 UC-001 **fails on the fix SUT** (detail below). G-C9 requires PASS-on-fix; it does not.
+- **G-C10 Ontology + docs move with code — PASS (with 2 logged release-gated doc follow-ups).** Ontology facet annotations committed + honest/release-gated (`F-058`/`F-059`); docs routed to `release/0.29.0` (fb03ce3 retires the two now-false caveats, **keeps** the rename-break caveat) tracked by DOC-470. Two completeness gaps found → logged as **DOC-471** (not narrated): see Editorial findings.
+- **G-C11 Milestone — PASS.** Issue #1753 milestone `0.29.0` open, semver, due 2026-06-22. via `api.github.com/.../issues/1753`.
+- **G-C12 Design before build — PASS.** Reuse-scan (matched-pair pattern from `EntitiesList.tsx`; `BusinessNameUpdatedActivityHandler` template), ADR-check (conforms), full impact checklist, PO/SRE lens — all recorded in the plan.
+- **G-C13 Principal sufficiency — PASS.** **Local patch-coverage gate: 100.00% changed-line instruction coverage** (96 covered / 0 missed) across all changed production files — handler 57, mapper-case 21, enum 12, DTO 6; `ReferenceDataServiceImpl`/`ActivityParameterNames` contribute no instrumented changed lines (imports/annotations only). Well above the CI `min-coverage-changed-files: 98`. via local parse of `build/reports/jacoco/test/jacocoTestReport.xml` + the diff (Madrapps-equivalent).
+- **G-C14 Private advisory — N/A** (public issue).
+- **Doc gates:** Gate 1 no-duplicate (retirement complete — no stale copy elsewhere, via tight grep), Gate 7 SUMMARY sync (both pages present), Gate 8 branch sub-checks PASS (frontmatter parses, description 104≤200, fb03ce3 is purely subtractive — no link/frontmatter hazard), Gate 8 live verification **PENDING-RELEASE (0.29.0)** (URLs in DOC-470/DOC-471), Gate 11 audience-isolation PASS (subtractive change, operator language). Gate 6 / Gate 7 doc completeness → 2 findings logged as DOC-471.
+
+### The blocker — IT-137 UC-001 reads the wrong activity-state JSON path (TEST defect, not code)
+
+`integration-tests/e2e/specs/lookup-rename-activity.spec.ts:60` failed on the fix SUT:
+```
+Error: old state carries the pre-rename name
+expect(received).toBe(expected)   Expected: "it137_customer_lookups"   Received: undefined
+> 94 |  expect(renames[0].old_state?.name, 'old state carries the pre-rename name').toBe(...)
+```
+Line 93 `expect(renames).toHaveLength(1)` **passed** → the event *does* emit. I drove a real rename against the running SUT and dumped the raw `/api/dataentities/{id}/activity` event:
+```
+old_state = { ...all-null..., "lookup_table_name": {"name": "review137_src"} }
+new_state = { ...all-null..., "lookup_table_name": {"name": "review137_renamed"} }
+  old_state.name                       = null        <- the path the test reads
+  old_state.lookup_table_name.name      = review137_src       <- correct pre-rename name
+  new_state.lookup_table_name.name      = review137_renamed   <- correct post-rename name
+  LOOKUP_TABLE_RENAMED count            = 1
+```
+So **D2 is correct**: exactly one event, keyed to the backing data entity, carrying the right old→new display names, aspect firing under AUTH_TYPE=DISABLED. The state lives under `lookup_table_name` (the mapper's `ActivityState.lookup_table_name`; the FE reads the camelCased `oldState.lookupTableName.name`). The test/helper flattened it to `.name`.
+
+**The exact fix (odd-team only — DO NOT touch odd-platform):**
+- `integration-tests/e2e/specs/lookup-rename-activity.spec.ts` UC-001 (≈ lines 94–99): `renames[0].old_state?.name` → `renames[0].old_state?.lookup_table_name?.name`; same for `new_state`.
+- `integration-tests/e2e/helpers/lookup.ts` `EntityActivityEvent` (≈ lines 203–207): `old_state?: { name?: string }` → `old_state?: { lookup_table_name?: { name?: string } }`; same for `new_state`.
+
+After the fix: IT-137 UC-001 passes on `working` (names match) and fails on `ODD_SUT=ref:main` (no event → `toHaveLength(1)` fails) — a valid RED→GREEN guard. UC-002 already passes correctly. Then run the **full** integration regression (`feature-complete` green + `multi-stack` + `known-bugs` still-RED + `ingestion-e2e`) and the RED proofs, and re-review.
+
+> Why this is on us and worth the block: the implementation ledger's DoD #2 honestly recorded the integration regression as "NOT RUN this session." Because it was never run, this broken regression guard (and a red PR-CI-equivalent) would have shipped as the contributor's *proof* that D2 works — the exact class `/review` exists to catch (LSN-031: verify the running system, not the diff).
+
+- **Outbound URL sweep**: 2 GitHub API endpoints fetched (PR #1792, issue #1753) — both matched the ledger; 0 mismatches.
+- **Banned-phrase check**: none used.
+- **Regressions**: none — feature-complete 300/301, the 1 failure is the IT-137 test defect, not a product regression (D1 GREEN; all activity specs GREEN). Stray artifact noted: untracked `integration-tests/run-log/2026-06-19-ui-e2e.md` is an orphaned template stub at the CTRIB-022 SUT (`15b82ee4`, omits IT-137) — not evidence for this item; safe to discard.
+- **Navigation**: consistent (suites.yaml wires IT-049 + IT-137 into feature-complete + ui-e2e; F-058/F-059 sidecars annotated).
+- **Upstream issues logged**: none new (PLT-229 already filed by the implementer).
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused on the change-impacted neighborhood — `master-data-management/lookup-tables.md` (touched) + `active-platform-features/activity-feed.md` (D2-relevant) + a cross-tree sweep for stale references to the retired caveats + SUMMARY sync. Full end-to-end sweep of the unrelated subtrees (`data-discovery/**`, `data-lineage/**`, `data-quality/**`, `integrations/**`, `configuration-and-deployment/**`, `developer-guides/**`) queued for a future `/review`.
+  - **Findings** (both logged as **DOC-471**, release/0.29.0, non-blocking for the code PR):
+    - DOC-471 (medium, in-page count drift) — `lookup-tables.md`: the "## Known operator caveats" intro says "**Six** behaviours" but fb03ce3 retired 2 of the 6 gotcha caveats without decrementing → should read "**Four**". Source: `docs/master-data-management/lookup-tables.md` ("Six behaviours … Each item below").
+    - DOC-471 (medium, Gate-6 code↔doc completeness) — `activity-feed.md`: the "## Event types" enumeration (which documents even dead enum values) omits the new `LOOKUP_TABLE_RENAMED` event that D2 renders on the global feed (IT-137 UC-001 asserts it). Source: `docs/active-platform-features/activity-feed.md:43-51`.
+- **Notes**:
+  - Minor, non-blocking observation (NOT a new follow-up — pre-existing whole-class debt): the global `Activity/.../ActivityItem.tsx` passes `activityName='Table name'` as a raw literal (no `t()`), while the per-entity `ActivityItem.tsx` uses `t('Table name')`. The new code **conforms to each file's existing pattern** — the global file hardcodes *every* label (`'ODDRN'`, `'Description'`, `'Business name'`, …), so this is the existing hardcoded-string class (PLT-205 territory), not introduced here. The `'Table name'` key exists in all 7 locales. VERIFIED via reading both files + the locale catalogs.
+  - D2's emission, keying, actor-capture, and old/new-name correctness are all VERIFIED via the live SUT reproduction above.

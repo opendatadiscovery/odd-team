@@ -14,7 +14,11 @@ discovered_from_entry_point: |-
   filter-tier:S2sAuthenticationFilter — composed at
   SecurityWebFiltersOrder.HTTP_BASIC (highest-priority pre-authentication
   slot) inside the OAUTH2 / LDAP / LOGIN_FORM SecurityWebFilterChains.
-  Under DISABLED, the filter is silently ignored (no wiring). For any
+  Under DISABLED there is no addFilterAt wiring, but the filter STILL runs:
+  it is a global @Component WebFilter auto-registered on every request in
+  every mode. Pre-CTRIB-022 a present X-API-Key here hit s2sToken.equals(null)
+  -> NPE -> 500 (PLT-001 / #1765, an unauthenticated DoS on the shipped
+  default); the null-guard makes it a harmless pass-through. For any
   inbound request bearing `X-API-Key: <auth.s2s.token>`, the filter
   forces the SecurityContext to a synthetic `User.withUsername('ADMIN')
   .password('').roles('ADMIN')` principal for the entire request.
@@ -23,7 +27,7 @@ primary_subject:
   - odd-platform-api java config:OAuthSecurityConfiguration (lines 90, 108-110 wires filter at HTTP_BASIC)
   - odd-platform-api java config:LDAPSecurityConfiguration (lines 149-151 wires filter)
   - odd-platform-api java config:LoginFormSecurityConfiguration (lines 61-63 wires filter)
-  - odd-platform-api java config:DisabledAuthSecurityConfiguration (does NOT read auth.s2s.enabled — silent ignore)
+  - odd-platform-api java config:DisabledAuthSecurityConfiguration (no addFilterAt; but S2sAuthenticationFilter still runs globally as a @Component WebFilter — PLT-001 NPE-500 reachable here pre-CTRIB-022, harmless pass-through after)
   - odd-platform-api java service:AuthIdentityProviderImpl (lines 29-33 else-branch → UserDto('ADMIN', null) provider=null)
   - odd-platform-api java repository:ReactiveUserOwnerMappingRepositoryImpl (lines 116-127 case-sensitive eq)
 contributing_nodes:
@@ -204,10 +208,11 @@ use_cases:
     kind: "empty/no-match"
     promise: "An invalid or absent X-API-Key fails CLOSED — degrades to unauthenticated, not to ADMIN and not to a 500."
     actor: odd-api-consumer
-    trace: "S2sAuthenticationFilter.java:27-28 (fall-through on invalid token) + S2sTokenProvider.java:15-21"
+    trace: "S2sAuthenticationFilter.java:27-28 (fall-through on invalid token) + S2sTokenProvider.java:15-21 (null-guard, CTRIB-022 — was an NPE->500 pre-fix for the unconfigured-s2s case, PLT-001)"
     verdict: confirmed
-    coverage: unverified
-    test_demand: "missing-functional"
+    coverage: verified
+    test_demand: functional
+    regression_guard_for: PLT-001
   - uc_id: F-088-UC-4
     hypothesis_id: H-004
     kind: teardown-constraint
@@ -239,12 +244,13 @@ use_cases:
   - uc_id: F-088-UC-7
     hypothesis_id: H-007
     kind: teardown-constraint
-    promise: "auth.s2s.enabled under auth.type=DISABLED is a defined no-op (no filter wired)."
+    promise: "auth.s2s.enabled under auth.type=DISABLED is a defined no-op."
     actor: platform-operator
-    trace: "DisabledAuthSecurityConfiguration.java:10-18 (no s2sEnabled read, no addFilterAt)"
-    verdict: partial
-    coverage: unverified
-    test_demand: "missing-functional"
+    trace: "DisabledAuthSecurityConfiguration.java:10-18 (no s2sEnabled read, no addFilterAt) — BUT S2sAuthenticationFilter is a global @Component WebFilter that still runs; the no-op is BEHAVIOURAL (key ignored, pass-through), not a non-wiring (doc-precision drift DOC-469). Pre-CTRIB-022 it was NOT a no-op: any X-API-Key 500'd (PLT-001)."
+    verdict: confirmed
+    coverage: verified
+    test_demand: functional
+    regression_guard_for: PLT-001
   - uc_id: F-088-UC-8
     hypothesis_id: H-008
     kind: grammar

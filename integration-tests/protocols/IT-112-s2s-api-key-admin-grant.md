@@ -1,6 +1,6 @@
 ---
 id: IT-112
-title: "S2S API key under DISABLED — observable posture + the PLT-001 NPE-on-any-header pin"
+title: "S2S API key under DISABLED — observable posture + the PLT-001 fix (any-header pass-through)"
 gates:
   validates: [F-088]
   enforces: []
@@ -17,28 +17,28 @@ status: ready
 ## 1. What this checks
 
 Characterizes the OBSERVABLE S2S posture on the shipped `odd-minimal` default (AUTH_TYPE=DISABLED; s2s NOT
-configured) and pins a real, previously-mischaracterized bug.
+configured) and guards the PLT-001 fix against regression.
 
 - **Baseline:** under DISABLED, requests WITHOUT `X-API-Key` are served normally (whoami 200 synthetic
   admin; `/api/dataentities/classes` 200) — the S2S filter is a clean pass-through (isValidToken(null) → false).
-- **UC-7 / PLT-001 (KNOWN BUG):** with s2s unconfigured, ANY `X-API-Key` header makes the request **500**.
-  `S2sAuthenticationFilter` is a `@Component implements WebFilter` with NO `@ConditionalOnProperty`, so
-  Spring WebFlux auto-registers it as a GLOBAL filter regardless of auth mode. On a present header it calls
-  `S2sTokenProvider.isValidToken`, whose `s2sToken.equals(token)` dereferences the null (unconfigured)
-  `s2sToken` → NullPointerException → 500.
-- **Blast radius:** the 500 is NOT whoami-specific — a plain reference endpoint (`/api/dataentities/classes`)
-  that is 200 without a key 500s with one. Any unauthenticated caller can turn any endpoint into a 500 by
-  adding one header → a trivial unauthenticated denial-of-service on the shipped default.
+- **UC-7 / PLT-001 (FIXED 2026-06-19, CTRIB-022 / #1765):** with s2s unconfigured, ANY `X-API-Key` header is now
+  **IGNORED** — the request returns its normal response (whoami 200 synthetic admin; classes 200), NOT the pre-fix
+  500. `S2sTokenProvider.isValidToken` null-guards the unconfigured (`s2sToken == null`) token, so it returns
+  `false` for any incoming key and the global `S2sAuthenticationFilter` passes the request through.
+- **Blast radius (closed):** the unauthenticated DoS is gone platform-wide — a plain reference endpoint
+  (`/api/dataentities/classes`) that is 200 without a key is now ALSO 200 with one. Before the fix it 500'd.
 
-**PLT-001 correction:** the existing PLT-001 draft calls this NPE "unreachable in production" / severity
-low, assuming the filter is registered only when `auth.s2s.enabled=true`. That assumption is FALSE (the
-filter is an unconditional global WebFilter). The NPE is reachable on the default config; severity should
-be raised and the "unreachable" framing removed.
+**PLT-001 history (the bug this guards):** `S2sAuthenticationFilter` is a `@Component implements WebFilter` with
+NO `@ConditionalOnProperty`, so Spring WebFlux auto-registers it as a GLOBAL filter regardless of auth mode. On a
+present header it called `S2sTokenProvider.isValidToken`, whose `s2sToken.equals(token)` dereferenced the null
+(unconfigured) `s2sToken` → NullPointerException → 500. Any unauthenticated caller could turn any endpoint into a
+500 by adding one header → a trivial unauthenticated denial-of-service on the shipped default. The fix
+(CTRIB-022) is the defensive null-guard; the optional filter-registration gating is tracked separately as PLT-228.
 
-Characterization pin (LSN-029): the 500 is the CURRENT (buggy) behaviour. A correct fix (defensive null
-guard) makes an unconfigured-s2s request pass through to 200; this pin then goes RED → re-ground IT-112.
-SECURITY-class, responsible disclosure: only junk header values are sent; only status + the generic error
-wrapper shape are asserted; no secret is transmitted or read.
+Regression guard (LSN-029): re-grounded from a characterization pin (which asserted the buggy 500) to assert the
+CORRECT post-fix pass-through (200). It goes RED the instant the NPE/DoS returns. SECURITY-class, responsible
+disclosure: only junk header values are sent; only status + the non-sensitive identity marker are asserted; no
+secret is transmitted or read.
 
 ## 2. Preparation
 
@@ -54,25 +54,28 @@ wrapper shape are asserted; no secret is transmitted or read.
 ## 4. Run protocol
 
 1. `GET /api/identity/whoami` no header → 200 (synthetic admin); `GET /api/dataentities/classes` no header → 200.
-2. `GET /api/identity/whoami -H "X-API-Key: <junk>"` → **500** + error wrapper (`status:500`, path echoed).
-3. `GET /api/dataentities/classes -H "X-API-Key: <junk>"` → **500** (platform-wide, not endpoint-local).
+2. `GET /api/identity/whoami -H "X-API-Key: <junk>"` → **200** (key ignored; identity still synthetic "admin").
+3. `GET /api/dataentities/classes -H "X-API-Key: <junk>"` → **200** (key ignored; platform-wide, not endpoint-local).
 
 **Automated rail:** `ODD_STACK_EXTERNAL=1 integration-tests/run-suite.sh IT-112`.
+**RED proof (pre-fix):** `ODD_SUT=published:0.28.0 integration-tests/run-suite.sh IT-112` → the X-API-Key requests 500.
 
 ## 5. Assertions
 
-- **PASS (current buggy state)** when: no-header requests are 200; any-header requests are 500 on both whoami
-  and a plain reference endpoint.
-- **FLIPS (fix landed)** when: an any-header request on an s2s-unconfigured stack returns 200 (pass-through)
-  instead of 500 — the NPE was fixed; re-ground this protocol to the post-fix pass-through contract.
+- **PASS (post-fix, current contract)** when: no-header requests are 200; any-header requests are ALSO 200 (the key
+  is ignored — clean pass-through) on both whoami (identity `admin`) and a plain reference endpoint.
+- **RED (regression)** when: an any-header request returns 500 — the `s2sToken` NPE / unauthenticated DoS has
+  returned. Expected RED on a pre-fix SUT (`published:0.28.0` / `ref:main`) — that is the PLT-001 RED proof.
 
 ## 6. Result log
 
 Appends to `integration-tests/run-log/{YYYY-MM-DD}-IT-112.md`.
 
 ## Cross-references
-- Source: F-088 UC-7 (DISABLED+S2S no-op posture, partial); S2sAuthenticationFilter.java:17-29; S2sTokenProvider.java:10-21;
+- Source: F-088 UC-7 (DISABLED+S2S no-op posture); S2sAuthenticationFilter.java:26-29; S2sTokenProvider.java:15-21 (post-fix null-guard);
   odd-minimal.docker-compose.yml:54.
-- Bug: `issues/odd-platform/PLT-001.md` (NPE — draft mischaracterizes reachability/severity; this run corrects it).
+- Fix: `contributor/CTRIB-022.md` (issue #1765 / PLT-001) — null-guard `isValidToken`; unit `S2sTokenProviderTest`.
+- Bug: `issues/odd-platform/PLT-001.md` (NPE — reachable on the default; fixed by CTRIB-022).
+- Follow-up: PLT-228 (optional gating of the filter's registration on `auth.s2s.enabled`).
 - Plan: `lineage/odd-platform/test-plan.md` batch I1 (auth-mode posture)
 - Related: IT-111 (the no-header whoami 200 baseline), F-008/IT-046 (DISABLED open ingestion posture).

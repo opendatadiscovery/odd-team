@@ -28,7 +28,9 @@ OAuth2, LDAP, login form, session management (in-memory/PostgreSQL/Redis), RBAC.
 ### S2S (Server-to-Server) Authentication
 - Config: `auth.s2s.enabled` (default: false), `auth.s2s.token`
 - Header: `X-API-Key: {token}`
-- **UNDOCUMENTED** — users needing programmatic API access can't discover this
+- Code: `auth/S2sTokenProvider.java` (the `@Value`-injected token + `isValidToken`), `auth/filter/S2sAuthenticationFilter.java` (`@Component implements WebFilter`)
+- **GOTCHA:** `S2sAuthenticationFilter` is a GLOBAL WebFilter (no `@ConditionalOnProperty`) — it runs on EVERY request under EVERY auth mode, including DISABLED (not only the 3 real modes' `.addFilterAt`). Was the PLT-001 NPE/DoS surface (#1765, fixed CTRIB-022 — null-guard); PLT-228 = optional registration-gating follow-up.
+- Docs: `docs/configuration-and-deployment/enable-security/authentication/s2s.md` (s2s IS documented; doc-precision drift on the DISABLED mechanism → DOC-469)
 
 ### Ingestion Auth Filter
 - Config: `auth.ingestion.filter.enabled` (default: false)

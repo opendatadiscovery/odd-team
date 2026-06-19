@@ -110,6 +110,23 @@ export async function createLookupTable(
   return (await res.json()) as LookupTable;
 }
 
+/**
+ * Rename / update a lookup table via the REAL API (PUT .../table/{id}). Drives the same path the UI
+ * edit form does — and, post-fix, the one that emits the LOOKUP_TABLE_RENAMED activity event. The
+ * running platform returns 200 (the OpenAPI spec documents 201; verified live 2026-06-07, IT-048).
+ */
+export async function updateLookupTable(
+  request: APIRequestContext,
+  tableId: number,
+  body: { name: string; description?: string },
+): Promise<number> {
+  const res = await request.put(`/api/referencedata/table/${tableId}`, {
+    headers: { 'content-type': 'application/json' },
+    data: body,
+  });
+  return res.status();
+}
+
 /** Add columns to a lookup table via the REAL API (POST .../columns, array body). */
 export async function addColumns(
   request: APIRequestContext,
@@ -162,6 +179,50 @@ export async function catalogRow(
       data_entity_id: r.rows[0].data_entity_id == null ? null : Number(r.rows[0].data_entity_id),
     };
   });
+}
+
+/**
+ * Create a reference-data search SESSION scoped to `query` and return its id + facet total — exactly
+ * the POST the page makes on load. Deep-linking `/master-data/lookup-tables?searchId=<id>` then drives
+ * the list scoped to the query WITHOUT wiping the shared stack or depending on FE search-box state —
+ * the deterministic way to exercise the >30-row listing on a shared stack (IT-049 deferred it for this).
+ */
+export async function createReferenceDataSearch(
+  request: APIRequestContext,
+  query: string,
+): Promise<{ searchId: string; total: number }> {
+  const s = await request.post('/api/referencedata/search', {
+    headers: { 'content-type': 'application/json' },
+    data: { query },
+  });
+  expect(s.status(), 'create reference-data search session -> 200').toBe(200);
+  const body = (await s.json()) as { search_id: string; total: number };
+  return { searchId: body.search_id, total: body.total };
+}
+
+export interface EntityActivityEvent {
+  event_type: string;
+  old_state?: { name?: string } | null;
+  new_state?: { name?: string } | null;
+}
+
+/**
+ * Read a data entity's activity feed via the REAL API (GET /api/dataentities/{id}/activity). The
+ * endpoint requires ISO-8601 date-time begin/end plus size (verified live 2026-06-19). Used to assert
+ * a rename emitted a LOOKUP_TABLE_RENAMED event keyed to the lookup table's backing data entity.
+ */
+export async function getEntityActivity(
+  request: APIRequestContext,
+  dataEntityId: number,
+): Promise<EntityActivityEvent[]> {
+  const begin = new Date(Date.now() - 86_400_000).toISOString();
+  const end = new Date(Date.now() + 86_400_000).toISOString();
+  const r = await request.get(
+    `/api/dataentities/${dataEntityId}/activity?begin_date=${begin}&end_date=${end}&size=50`,
+  );
+  expect(r.status(), 'entity activity feed -> 200').toBe(200);
+  const body = (await r.json()) as EntityActivityEvent[] | { items?: EntityActivityEvent[] };
+  return Array.isArray(body) ? body : body.items ?? [];
 }
 
 /** Escape-hatch: run a read query against the ground-truth Postgres and return the rows. */

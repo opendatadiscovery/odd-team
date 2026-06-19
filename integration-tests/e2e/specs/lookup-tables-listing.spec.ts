@@ -3,6 +3,7 @@ import {
   ensureNamespace,
   cleanupLookupTablesByPrefix,
   createLookupTable,
+  createReferenceDataSearch,
   searchLookupTables,
 } from '../helpers/lookup';
 
@@ -93,5 +94,59 @@ test.describe('F-058 Lookup Tables Listing — the catalog renders created table
       ghost.items.map((i) => i.name),
       'a name belonging to no lookup table must not be listed (negative)',
     ).not.toContain(name);
+  });
+
+  // F-058-UC-001 (the silent 30-row cap — PLT-057 / #1753 Defect 1): a tenant with >30 lookup tables
+  // must see ALL of them; the list is NOT capped at the first page. On main the InfiniteScroll's
+  // scrollableTarget points at 'directory-entities-list' (a DOM id absent on this page), so scrolling
+  // the overflow:auto #lookup-tables-list container never fires fetchNextPage and the list silently
+  // stops at 30. The fix sources the container id and the scroll target through one constant.
+  //
+  // Deterministic on the SHARED stack (this is why IT-049 originally deferred it): seed 31 tables under
+  // a UNIQUE sub-prefix, build a search session scoped to that prefix via the API, and deep-link to it
+  // (?searchId=) so both the H1 counter and the list are scoped to exactly our 31 — no global-counter
+  // pollution assertion, no FE search-box timing, no wiping the stack. Cleaned up in afterAll.
+  test('UC-001: >30 lookup tables all load via infinite scroll — not capped at 30 (PLT-057 D1)', async ({
+    page,
+    request,
+  }) => {
+    const BULK = 'it049bulk_';
+    const COUNT = 31;
+
+    // ---- arrange: 31 tables + a search session scoped to exactly them ----
+    for (let i = 1; i <= COUNT; i += 1) {
+      await createLookupTable(request, {
+        name: `${BULK}${String(i).padStart(2, '0')}`,
+        namespace_name: NS,
+      });
+    }
+    const { searchId, total } = await createReferenceDataSearch(request, 'it049bulk');
+    expect(total, 'the scoped search session must match all 31 seeded tables (FTS prefix)').toBe(COUNT);
+
+    // ---- act: deep-link the page to that session; scroll the real overflow:auto container to the bottom ----
+    const fetched = waitForResults(page);
+    await page.goto(`${LIST_URL}?searchId=${searchId}`);
+    await fetched;
+
+    const rowLocator = page.getByText(new RegExp(`^${BULK}\\d+$`));
+    const rowCount = () => rowLocator.count();
+    for (let s = 0; s < 6 && (await rowCount()) < COUNT; s += 1) {
+      // scrolling the window (the broken fallback) does nothing; scroll the container that actually scrolls.
+      await page.evaluate(() => {
+        const el = document.getElementById('lookup-tables-list');
+        if (el) el.scrollTo(0, el.scrollHeight);
+      });
+      await page.waitForTimeout(500);
+    }
+
+    // ---- assert: the H1 counts 31 AND all 31 rows render (page 2 was fetched). On main: stuck at 30. ----
+    await expect(
+      page.getByText(/lookup tables overall/),
+      'the H1 counter reflects the 31 scoped tables',
+    ).toContainText('31');
+    expect(
+      await rowCount(),
+      'all 31 lookup tables must render after scrolling; capped at 30 => the scrollableTarget DOM-id bug',
+    ).toBe(COUNT);
   });
 });

@@ -91,10 +91,10 @@ test.describe('F-059 Lookup Table Rename Audit Trail — the rename emits a LOOK
     const after = await getEntityActivity(request, dataEntityId as number);
     const renames = after.filter(e => e.event_type === RENAMED);
     expect(renames, 'the rename must emit exactly one LOOKUP_TABLE_RENAMED event').toHaveLength(1);
-    expect(renames[0].old_state?.name, 'old state carries the pre-rename name').toBe(
+    expect(renames[0].old_state?.lookup_table_name?.name, 'old state carries the pre-rename name').toBe(
       'it137_customer_lookups'
     );
-    expect(renames[0].new_state?.name, 'new state carries the post-rename name').toBe(
+    expect(renames[0].new_state?.lookup_table_name?.name, 'new state carries the post-rename name').toBe(
       'it137_customer_lookup_codes'
     );
 

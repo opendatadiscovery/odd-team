@@ -202,8 +202,13 @@ export async function createReferenceDataSearch(
 
 export interface EntityActivityEvent {
   event_type: string;
-  old_state?: { name?: string } | null;
-  new_state?: { name?: string } | null;
+  // The activity-state wire shape is the full ActivityState with ONE sub-field populated per event type;
+  // a LOOKUP_TABLE_RENAMED event carries the name under `lookup_table_name` (spec
+  // ActivityState.lookup_table_name -> LookupTableNameActivityState{name}; snake_case on the wire). The FE
+  // reads the camelCased `oldState.lookupTableName.name`. Verified live 2026-06-19 (CTRIB-023/IT-137):
+  // old_state = { ..., "lookup_table_name": { "name": "<pre-rename>" } }.
+  old_state?: { lookup_table_name?: { name?: string } } | null;
+  new_state?: { lookup_table_name?: { name?: string } } | null;
 }
 
 /**

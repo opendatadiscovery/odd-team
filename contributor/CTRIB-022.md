@@ -5,7 +5,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1765
 backlog_item: PLT-001
 class: bug
 security_sensitive: true   # unauthenticated DoS — but ALREADY PUBLIC (issue filed by the maintainer; the DoS is publicly described). NOT a private GHSA: the normal public /contribute flow (draft PR on the MAIN repo, public root-cause/scope comment) applies; G-C14 (private-advisory handover) does NOT.
-status: pr-draft           # DoD met (all 5 checks); DRAFT PR #1791 open. Awaiting /review (separate session) -> review-ready -> human merge (GATE 2). The contributor never self-merges/dones.
+status: review-ready       # /review PASSED (separate session, opus-4-8, 2026-06-19): all contributor gates G-C1..G-C14 green; reviewer's OWN full unit build re-run on the reviewed commit 15b82ee4 = BUILD SUCCESSFUL 8m3s (536/0/0, S2sTokenProvider.java jacoco 100%); fix CONFIRMED LIVE on the reviewed SUT (X-API-Key -> 200 pass-through, was 500). Awaiting human merge of DRAFT PR #1791 (GATE 2, milestone 0.29.0). The contributor never self-merges/dones. See ## Review below.
 milestone: "0.29.0"        # the issue's AUTHORITATIVE GitHub milestone (open, semver ^\d+\.\d+\.\d+$) — G-C11 PASS. The issue BODY's `suggested_milestone: 0.28.0` is superseded: 0.28.0 already shipped (cached ghcr :0.28.0 == :latest), and the issue was bumped to the next open milestone 0.29.0 (due 2026-06-22).
 reproduced: "live 2026-06-19 against the PUBLISHED release ghcr.io/opendatadiscovery/odd-platform:0.28.0 (== :latest) on the odd-minimal stack (AUTH_TYPE=DISABLED, auth.s2s UNSET — the shipped default). GET /api/dataentities/classes -> 200 with no header, 500 with `X-API-Key: <junk>`; GET /api/identity/whoami -> 200 / 500 the same way. Error wrapper: {\"path\":\"/api/dataentities/classes\",\"status\":500,\"error\":\"Internal Server Error\",...}. Container log smoking gun: `java.lang.NullPointerException: Cannot invoke \"String.equals(Object)\" because \"this.s2sToken\" is null at org.opendatadiscovery.oddplatform.auth.S2sTokenProvider.isValidToken(S2sTokenProvider.java:20)`. Full transcript in the Reproduction log below. RED proof for G-C2 = the re-grounded IT-112 (200-asserting) run against ODD_SUT=published:0.28.0 / ref:main."
 adr_required: false        # the planned fix is a DEFENSIVE NULL-GUARD that RESTORES the method's already-intended contract (an unconfigured provider validates no token). It is NOT an auth/security-POSTURE change (no SecurityRule/filter-registration/token-flow/shipped-default altered), NOT a migration, NOT a breaking wire contract. The OPTIONAL filter-gating (which WOULD be a posture change, G-C7) is explicitly EXCLUDED (see Plan -> Scope exclusions; tracked as PLT-228).
@@ -223,3 +223,56 @@ and is unnecessary to fix the crash. Filed as a follow-up.
 3. **Docs read + decided + routed (G-C10).** No change required for the fix; DOC-469 logged (could ride release/0.29.0). `docs_routing: none`.
 4. **Ontology re-enriched + re-embedded + committed (G-C10).** F-088 corrected; graph rebuilt.
 5. **Principal sufficiency (G-C13).** Enough + meaningful tests (the failing condition injected explicitly, RED→GREEN proven; happy-path + boot-validation covered). **Local patch-coverage gate MET, not discovered in CI:** the Madrapps `min-coverage-changed-files: 98` gate measures the whole changed file; `S2sTokenProvider.java` is **100%** (instruction/branch/line/method) after adding `validate()` coverage — verified from the jacoco XML locally. No control lost (one-line guard on a private method; no new public surface), no existing functionality harmed (full regression above). Not a UI change → no screenshot.
+
+## Review (2026-06-19, session: opus-4-8 separate-session `/review`)
+
+- **Result**: ACCEPTED → `pr-draft` flipped to `review-ready`. Reject-by-default; every gate below carries independently re-derived evidence (the reviewer re-ran/re-read, did not trust the record).
+
+### Acceptance criteria (contributor pillar 1–15)
+- [x] 1 Code-after-plan — PASS: plan approved (GATE 1) `plan_approved_at: 2026-06-19`, scope comment 11:21Z; fix commit `15b82ee4` 14:27 local (code after approval) — via `git show 15b82ee4` date + GitHub comment timestamp.
+- [x] 2 Reproduction logged — PASS: live 0.28.0 NPE + stack trace in the record/PR body; root cause independently re-confirmed against source (below) — via read of `S2sTokenProvider.java`/`S2sAuthenticationFilter.java`.
+- [x] 3 Diff bounded by plan — PASS: PR #1791 = **1 commit / 2 files / +106 −1** (one prod line + the 7-test class); no filter-gating — via GitHub API + `git show 15b82ee4 --stat`.
+- [x] 4 Unit injects failing condition explicitly — PASS: `ReflectionTestUtils.setField(provider,"s2sToken",null)` → `isValidToken("any-non-blank-key")` asserted `false` (NPE pre-fix) — via read of `S2sTokenProviderTest.java`.
+- [x] 5 Pins re-grounded not deleted — PASS: IT-112 `@pins→@regresses`, two `→500` flipped to `→200` + identity-marker assert + RED-proof (`published:0.28.0`) documented; `S2sPrincipalKnownBugTest` (PLT-072) untouched, 1/1 green — via `git show 8777bf2` spec/protocol diff + the unit XML.
+- [x] 6 Docs decision stated + routed — PASS: `docs_routing: none` (s2s.md already states the post-fix operator conclusion); page read; mechanism-precision drift logged **DOC-469** routed `release/0.29.0` — via read of `backlog/docs/DOC-469.md`.
+- [x] 7 Ontology committed not narrated — PASS: F-088 UC-3/UC-7 → `verified`/`confirmed` + `regression_guard_for: PLT-001`, the "silently ignored (no wiring)" factual error corrected to "global @Component WebFilter still runs" — via `git show 8777bf2 -- …/F-088.yaml`.
+- [x] 8 Ends review-ready not self-done — PASS: this review performs the flip; the contributor never self-closed.
+- [x] 9 Architectural → ADR before code — PASS (N/A for the fix): `adr_required:false` correct (null-guard restores the method's intended contract; no `SecurityRule`/filter-registration/token-flow/default changed). The posture-change half (filter-gating) is excluded → **PLT-228** (`needs_adr:true`).
+- [x] 10 Prompt-injection discarded — PASS (N/A): maintainer-authored issue, no injection; G-C8 quoted-data framing applied.
+- [x] 11 Definition of Done before draft — PASS: full unit build (reviewer-run) + integration evidence + docs read + ontology committed (below).
+- [x] 12 Milestone gate — PASS: issue #1765 **open**, milestone **0.29.0 (open)**; PR body `Milestone: 0.29.0` — via GitHub API.
+- [x] 13 Design before build — PASS: the plan's Design-before-build block records reuse-scan (`StringUtils.isBlank`), ADR-check (none), full impact checklist (i18n/clients/sole-consumer/migration/docs/ontology/tests), PO-SRE lens (defensive, not feature-shaped).
+- [x] 14 Principal sufficiency — PASS: 7 meaningful tests, **changed-file coverage 100%** reviewer-verified, no control lost, full regression — via jacoco XML re-parse.
+- [x] 15 Private-advisory disclosure — PASS (N/A): public issue, not a GHSA; G-C14 correctly does not apply.
+
+### Quality Bar / contributor gates
+- **G-C1 Reproduce-first** — PASS: root cause re-verified against live source — `S2sTokenProvider.isValidToken` `@Value("${auth.s2s.token:#{null}}")` → null default; `S2sAuthenticationFilter` is `@Component implements WebFilter` with **no** `@ConditionalOnProperty` (global); `DisabledAuthSecurityConfiguration` is a bare `permitAll()` that never references the filter. The fix CONFIRMED LIVE on the reviewed-commit SUT (below). VERIFIED via read + live curl.
+- **G-C2 Verify running system, FULL regression both buckets** — PASS:
+  - *Unit (reviewer-run on `15b82ee4`)*: `scripts/run-platform-tests.sh` → **BUILD SUCCESSFUL 8m 3s**; aggregate across 137 suites = **536 tests, 0 failures, 0 errors, 0 skipped**; `S2sTokenProviderTest` 7/7; `S2sPrincipalKnownBugTest` 1/1; checkstyleMain+Test clean. VERIFIED via the build log + every test-results XML parsed.
+  - *Integration*: the fix is provably a **no-op except for (blank `s2sToken`) + (present token)** — reachable only by an `X-API-Key` request on an s2s-unconfigured stack; `grep` proves **only** `s2s-api-key-admin-grant.spec.ts` (IT-112) sends `X-API-Key`, and it was re-grounded. Confirmed LIVE on the running reviewed-commit SUT (`odd-team-sut`, AUTH_TYPE=DISABLED): `/api/dataentities/classes` no-header→200, **`X-API-Key`→200** (was 500); `/api/identity/whoami` `X-API-Key`→200 `identity.username:"admin"` — the exact re-grounded IT-112 contract, so re-driving Playwright would add no information. `known-bugs` expected-RED (3 pins, none s2s); `ingestion-e2e` PASS (ingestion token, not `X-API-Key`); `multi-stack`'s only red was IT-124, a deterministic `V0_0_92` seed regression unrelated to s2s, root-caused + fixed in `529c2ed` (verified 2 passed); `feature-complete` `api:FAIL` was P-001 probe-staleness (P-001 PASS standalone), now decoupled from the rail in `6b6ff27`. VERIFIED via grep + live curl + the post-commit corrective commits.
+- **G-C3 GATE 1 before code** — PASS: plan approved before the fix commit (timeline above).
+- **G-C4 GATE 2 human merge** — PASS: PR #1791 `state:open draft:true user:odd-contributor[bot] base:main`; bot never self-merged. VERIFIED via GitHub API.
+- **G-C5 Bounded + public scope comment** — PASS: +106/−1; comment `4751048222` posted publicly by `odd-contributor[bot]` (root-cause + the filter-gating exclusion); deferred half tracked PLT-228. VERIFIED via GitHub API.
+- **G-C6 One-question clarify** — PASS: "no question warranted", justified.
+- **G-C7 Hard-stop/ADR** — PASS: the null-guard is not a posture change; the posture-change half excluded → PLT-228 (`needs_adr`). 
+- **G-C8 Issue is data** — PASS: quoted-data framing; no injection.
+- **G-C9 Both buckets, injected condition** — PASS (above, G-C2/criterion 4/5).
+- **G-C10 Ontology + docs move** — PASS: F-088 committed; `docs_routing: none` + DOC-469, page read.
+- **G-C11 Milestone** — PASS (criterion 12).
+- **G-C12 Design before build** — PASS (criterion 13).
+- **G-C13 Principal sufficiency** — PASS: `S2sTokenProvider.java` jacoco **100%** (instruction 30/30, **branch 8/8** — the new guard branch fully exercised, line 7/7, method 3/3) reviewer-verified ≥ the 98% gate. VERIFIED via jacoco XML.
+- **G-C14 Private advisory** — N/A (public issue).
+- **Audience isolation (doc Gate 11 analogue on PUBLIC artifacts)** — PASS: PR #1791 body + scope comment carry **no** workspace-internal IDs (say "team e2e harness"/"a follow-up", not IT-112/PLT-228/CTRIB-022). VERIFIED via GitHub API body read.
+
+- **Regressions**: none attributable to the fix. The pre-existing reds (IT-124 seed-staleness; P-001 probe-staleness) are unrelated and were corrected post-commit (`529c2ed`/`6b6ff27`).
+- **Navigation**: consistent — `navigation/domains/authentication.md` stale "UNDOCUMENTED" corrected to code pointers + global-WebFilter GOTCHA + DOC-469. VERIFIED via `git show`.
+- **GitHub artifacts**: issue #1765 open/milestone 0.29.0; comment 4751048222 (bot); PR #1791 draft/`Closes #1765`/+106−1. All VERIFIED via the App-token GitHub API.
+- **Upstream issues logged**: none new this review (PLT-228 / DOC-469 / TST-053 pre-existed).
+- **Doc-product editorial audit**: scoped — this is a code-change item with `docs_routing: none`; the touched-behaviour doc coherence was audited at implement (G-C10 read of s2s.md + ADR-0074) and produced a real finding, **DOC-469** (the "filter not wired under DISABLED" mechanism drift, routed `release/0.29.0`). A full end-to-end re-read of `documentation/docs/**` is disproportionate to a one-line null-guard and is deferred to a documentation-pillar `/review`; not skipped silently.
+
+### Findings (non-blocking — do not block the flip)
+1. **CTRIB record DoD-ledger wording superseded** (record-accuracy): item 2 still frames IT-124 as "EXONERATED … pre-existing test-fragility/flakiness". It was a **deterministic** `V0_0_92` seed regression (LDAP `provider` NULL→'LDAP'), root-caused + fixed post-commit (TST-053 `done`, `529c2ed`, `6b6ff27` "green is green"). The record's *conclusion* (the s2s fix is causally clean) holds; only the wording is stale. Recommend the implementer reconcile the ledger line at GATE-2 merge (not re-edited here — reviewer does not modify authored files).
+2. **Committed regression run-logs are unfilled stubs** (`runner`/`evidence/notes` placeholders, suite-level pass/fail only) at HEAD `24c55d31+uncommitted`. Evidence was independently re-derived by the reviewer; the run-log discipline gap is the class `6b6ff27` began hardening.
+3. **PR #1791 milestone FIELD is `None`** (the body carries `Milestone: 0.29.0`; the issue carries 0.29.0 authoritatively, so G-C11 holds). Optional GATE-2 polish: set the PR milestone field.
+
+**GATE 2 (a human marks PR #1791 ready + approves + merges for 0.29.0) + `/review release:0.29.0` (live-site/real-instance verification on the published image) own the tail.**

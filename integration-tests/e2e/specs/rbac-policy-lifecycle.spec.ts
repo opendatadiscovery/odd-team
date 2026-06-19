@@ -19,7 +19,7 @@ import { upLdapStack, downLdapStack, LDAP_BASE_URL, LDAP_USER } from '../helpers
  *
  * THE GRANT CHAIN (read from source — RoleServiceImpl.getCurrentUserRoles →
  * ReactiveUserOwnerMappingRepositoryImpl.getUserRolesByOwner, :99-114):
- *   user_owner_mapping(alice, provider=NULL)  →  owner_to_role(owner)  →  role_to_policy(role)  →  policy
+ *   user_owner_mapping(alice, provider='LDAP')  →  owner_to_role(owner)  →  role_to_policy(role)  →  policy
  * Permissions are resolved PER REQUEST from this chain (ReactiveNonContextPermissionAuthorizationManager
  * → ManagementPermissionExtractor → PolicyServiceImpl.getCurrentUserPolicies), so a DB grant change
  * takes effect on the very next request with NO re-login (verified live 2026-06-07).
@@ -93,8 +93,8 @@ async function cleanGrant(): Promise<void> {
   });
 }
 
-// Build alice → owner → role → policy(OWNER_DELETE). provider IS NULL for an LDAP principal
-// (AuthIdentityProviderImpl: only OAuth2 sets a provider; LDAP/form users get null).
+// Build alice → owner → role → policy(OWNER_DELETE). provider = 'LDAP' for an LDAP principal
+// (AuthIdentityProviderImpl persists the auth.type literal post-V0_0_92 / PLT-120; pre-V0_0_92 it was null).
 async function seedGrantChain(): Promise<void> {
   await withLdapDb(async (c) => {
     const ownerId = Number((await c.query(`INSERT INTO owner (name) VALUES ($1) RETURNING id`, [OWNER_NAME])).rows[0].id);
@@ -103,7 +103,10 @@ async function seedGrantChain(): Promise<void> {
       (await c.query(`INSERT INTO policy (name, policy) VALUES ($1, $2) RETURNING id`, [POLICY_NAME, POLICY_JSON]))
         .rows[0].id,
     );
-    await c.query(`INSERT INTO user_owner_mapping (owner_id, oidc_username, provider) VALUES ($1, $2, NULL)`, [
+    // provider = 'LDAP': post-V0_0_92 (GHSA-8wf2-7c5g-h59v / PLT-120) AuthIdentityProviderImpl persists the
+    // auth.type literal as the provider for non-OAUTH2 logins, and getUserRolesByOwner matches PROVIDER.eq('LDAP').
+    // A NULL here (the pre-V0_0_92 assumption) no longer resolves alice -> owner -> role, so the grant 403s.
+    await c.query(`INSERT INTO user_owner_mapping (owner_id, oidc_username, provider) VALUES ($1, $2, 'LDAP')`, [
       ownerId,
       LDAP_USER.username,
     ]);
@@ -178,7 +181,7 @@ test.describe('IT-124 F-006 — RBAC policy-grant lifecycle (soft-delete grant p
       `F-006: once a policy granting OWNER_DELETE is bound through alice's owner→role, the gated DELETE ` +
         `must be ALLOWED — authz passes and the controller runs (the id does not exist, so the idempotent ` +
         `soft-delete is a no-op → 204). Got ${granted.status()}. A 403 means the grant chain did not ` +
-        `resolve (check user_owner_mapping.provider IS NULL for LDAP, and the owner_to_role/role_to_policy edges).`,
+        `resolve (check user_owner_mapping.provider = 'LDAP' for LDAP, and the owner_to_role/role_to_policy edges).`,
     ).toBe(204);
 
     // ---- Phase C: SOFT-DELETE the policy (set deleted_at), leave the role_to_policy edge intact ----

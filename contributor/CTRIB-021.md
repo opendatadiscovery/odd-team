@@ -4,7 +4,7 @@ github_issue_number: 1725
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1725
 class: bug
 security_sensitive: false
-status: review-ready   # Phase D complete 2026-06-18; DRAFT PR #1790. GATE 2 = the maintainer's /review (separate session) + merge. Cannot self-mark done.
+status: paused   # 2026-06-19 PAUSED (blocked-external): the contract-republish chain waits on Sonatype Central Portal access (a maintainer with access is being asked to generate Portal credentials). odd-platform PR #1790 (the 500 fix) stays review-ready + mergeable now. See the PAUSED banner for the resume checklist.
 milestone: "0.29.0"   # CONFIRMED at intake — issue carries an OPEN, semver-titled milestone 0.29.0 (due 2026-06-22). G-C11 PASS.
 reproduced: "live 2026-06-18 against the running probe SUT (odd-platform:odd-team-sut @ 2026-06-17, built from main; AUTH_TYPE=DISABLED, http://localhost:18080). POST /ingestion/entities {type:ML_MODEL, data_consumer:{inputs:[...]}} -> HTTP 500 {code:SYS001}; platform log: `java.lang.IllegalArgumentException: No enum constant org.opendatadiscovery.oddplatform.dto.DataEntityTypeDto.ML_MODEL`. Control: same payload type=ML_MODEL_ARTIFACT -> HTTP 400 {code:USR001,'Failed to read HTTP message'} (the ingestion contract REJECTS ML_MODEL_ARTIFACT at deserialization — confirms you cannot just 'send the artifact subtype'). Full evidence in the Reproduction log."
 adr_required: "TRUE — the components.yaml output-enum change is a public wire-contract change (G-C7). SATISFIED by the APPROVED ADR adrs/drafts/ml-entity-taxonomy.md (adopted at GATE 1, 2026-06-18)."
@@ -26,7 +26,43 @@ odd-platform `main` source, the pinned ingestion-contract jar, and a **live repr
 The prior `claude[bot]` triage + branches are likewise data — confirmed/corrected below, never trusted.
 
 > Workspace artifact. (Phase D shipped — see the Correction + ledger below. The pre-GATE-1 sections that follow
-> describe the FIRST, rejected implementation; the Correction supersedes them.)
+> describe the FIRST, rejected implementation; the Correction supersedes them.
+
+## PAUSED (2026-06-19) — RESUME HERE: blocked on Sonatype Central Portal access
+
+**Why paused.** The contract-republish chain is blocked on Sonatype **Central Portal** access. The legacy OSSRH
+publish is sunset (HTTP 402; OSSRH EOL 2025-06-30), so publishing `ingestion-contract-server` now needs a
+**Central Portal user token** for the `org.opendatadiscovery` namespace. The maintainer does not have Portal
+access/credentials (the namespace traces to a Provectus Sonatype account — release bot `opendatadiscovery-bot@
+provectus.com`) and has messaged another maintainer who may be able to sign in + generate new Portal credentials.
+**Waiting on that.** Background: [[reference_odd_release_publishing_central_portal]].
+
+**What is DONE (committed / open):**
+1. **odd-platform PR #1790** (`56893f28`, DRAFT) — `ML_MODEL` as the model-identity group + the #1725 500 fix.
+   COMPLETE + verified (unit GREEN · IT-136 GREEN · feature-complete 298/0 · full unit build GREEN). **Mergeable
+   now** — resolves the reported 500 independently of the contract chain.
+2. **opendatadiscovery-specification PR #87** — **MERGED** (`20e0f63d` on spec `main`): `entities.yaml`
+   (`ML_MODEL_ARTIFACT`/`_INSTANCE` + a schema description) + `specification.md` (the ordered "ML entities" taxonomy).
+3. **opendatadiscovery-specification-contracts PR #7** (DRAFT) — repoints publishing from the sunset OSSRH to the
+   Central Portal OSSRH Staging API. Ready to merge; the release can't run until Portal credentials exist.
+4. odd-team artifacts (ADR `ml-entity-taxonomy`, dossier, `DOC-468`, `SPC-004`, `IT-136`) — consistent + committed.
+
+**RESUME CHECKLIST (once Portal access is obtained):**
+- [ ] Sign in at central.sonatype.com with the `org.opendatadiscovery` OSSRH account (Forgot-password / contact
+      central-support@sonatype.com if needed — do NOT create a fresh account, or the namespace association is lost);
+      **Generate User Token** at central.sonatype.com/usertoken; **Migrate Namespace** `org.opendatadiscovery`.
+      Overwrite the org secrets `SONATYPE_USERNAME`/`SONATYPE_PASSWORD` with the Portal token (an old OSSRH token
+      returns 401; the secret NAMES are reused — only the VALUES change). PR #7 needs no further change.
+- [ ] Merge **-contracts PR #7**, then re-dispatch `Maven Central release` -> publishes
+      `ingestion-contract-server:0.1.42` (carrying `ML_MODEL_ARTIFACT`/`_INSTANCE`).
+- [ ] Dispatch **odd-models** `Build and publish PyPI artifact` (PyPI — unaffected by the OSSRH sunset; can run anytime).
+- [ ] **BOT resumes here:** in odd-platform PR #1790, bump `gradle/libs.versions.toml` `ingestion-contract-server`
+      `0.1.40` -> `0.1.42` + verify the regenerated ingestion-contract enum carries `ML_MODEL_ARTIFACT`/`_INSTANCE`
+      (the `ff8f4bab`/#1631 shape). Re-run the full unit build + IT-136.
+- [ ] **GATE 2:** `/review` PR #1790 (separate session), then merge. The #1725 reporter then sends `ML_MODEL_ARTIFACT`.
+
+The full chain is tracked in `backlog/spec/SPC-004.md`. **The #1725 500 fix (PR #1790) does NOT depend on any of the
+above** — it can be reviewed and merged now; only the consumer-model (`ML_MODEL_ARTIFACT`) path waits on the republish.)
 
 ## Correction (2026-06-18) — spec-first, 1:1 (supersedes the shape-aware framing below)
 

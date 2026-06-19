@@ -11,7 +11,7 @@ adr_required: "TRUE — the components.yaml output-enum change is a public wire-
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-18, Option 2): ADOPT the ml-entity-taxonomy ADR (ML_MODEL = a DATA_ENTITY_GROUP model-identity; ML_MODEL_TRAINING=training job, ML_MODEL_ARTIFACT=trained version/artifact, ML_MODEL_INSTANCE=deployed serving instance; keep ALL legacy types; every type gets a published per-platform analogy). 0.29.0 scope = the #1725 shape-aware ingestion fix + the new ML-entity-types doc page + the ML_MODEL group type in odd-platform (DataEntityTypeDto + DATA_ENTITY_GROUP class + components.yaml output enum + FE label/locales). The opendatadiscovery-specification (entities.yaml + README) PR follows separately (different repo)."
 plan_approved_at: "2026-06-18"
 plan_scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1725#issuecomment-4743657661   # root-cause + approach comment (odd-contributor[bot]), reframes the issue (ML_MODEL = group identity; consumer-shaped -> ML_MODEL_ARTIFACT) + answers babaMar. Posted 2026-06-18."
-pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1790   # DRAFT PR (odd-contributor[bot]), Closes #1725, head contrib/CTRIB-021-ml-model-taxonomy @ 56893f28 (amended to spec-first 1:1 after the maintainer's draft-PR feedback; see the Correction section)"
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1790   # DRAFT PR (odd-contributor[bot]), Closes #1725, head contrib/CTRIB-021-ml-model-taxonomy @ f137dcae (spec-first 1:1; the out-of-scope build.gradle inputs.dir was dropped 2026-06-19 per maintainer feedback; see Correction + the 2026-06-19 note)"
 pr_draft: true
 docs_routing: ""   # decided in Phase D after READING the page (G-C10); unreleased 0.29.0 behaviour -> documentation `release/0.29.0` train if a change is warranted (G-C11). Set at Phase D.
 ---
@@ -38,9 +38,14 @@ provectus.com`) and has messaged another maintainer who may be able to sign in +
 **Waiting on that.** Background: [[reference_odd_release_publishing_central_portal]].
 
 **What is DONE (committed / open):**
-1. **odd-platform PR #1790** (`56893f28`, DRAFT) — `ML_MODEL` as the model-identity group + the #1725 500 fix.
+1. **odd-platform PR #1790** (`f137dcae`, DRAFT) — `ML_MODEL` as the model-identity group + the #1725 500 fix.
    COMPLETE + verified (unit GREEN · IT-136 GREEN · feature-complete 298/0 · full unit build GREEN). **Mergeable
-   now** — resolves the reported 500 independently of the contract chain.
+   now** — resolves the reported 500 independently of the contract chain. **2026-06-19 (maintainer review):**
+   dropped the out-of-scope `build.gradle` `inputs.dir` (CI clean-builds regenerate `components.yaml` regardless —
+   it only affected local incremental builds); the CI "Test Results" red was the **pre-existing flaky**
+   `PrometheusMetricsIngestionTest.testGaugeAndCount` (an async metrics integration test — **unrelated to this
+   change**: zero metrics/Prometheus diff; passes locally, BUILD SUCCESSFUL 1m22s) — re-pushed (`f137dcae`) to
+   clear it on a fresh CI run.
 2. **opendatadiscovery-specification PR #87** — **MERGED** (`20e0f63d` on spec `main`): `entities.yaml`
    (`ML_MODEL_ARTIFACT`/`_INSTANCE` + a schema description) + `specification.md` (the ordered "ML entities" taxonomy).
 3. **opendatadiscovery-specification-contracts PR #7** (DRAFT) — repoints publishing from the sunset OSSRH to the

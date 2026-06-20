@@ -17,6 +17,22 @@ session_id: session-2026-05-10-01
 
 `getAllAlerts` is the reactive `GET /api/alerts` handler — three lines of WebFlux delegation that calls `alertService.listAll(page, size)` and lifts the result into `200 OK`. It backs the platform's "All" alert tab — every open alert across the entire platform, returned to the caller without owner, role, or permission filtering. The method itself does no validation, no authorisation, no error handling; pagination parameters are passed straight through to the service. The downstream chain `AlertService.listAll` → `ReactiveAlertRepository.listAllWithStatusOpen` is a single `WHERE STATUS = OPEN` jOOQ query with no owner join and no principal context (`AlertServiceImpl.java:77-80`, `ReactiveAlertRepositoryImpl.java:142-157`).
 
+> **[UPDATE — CTRIB-025 / odd-platform #1763, branch `contrib/CTRIB-025-alerts-view-hardening`]**
+> This endpoint is now **deprecated** but **retained byte-identical** (the
+> handler body, the `WHERE STATUS = OPEN` query, and the cross-owner /
+> no-permission behaviour described below are all unchanged for `GET /api/alerts`).
+> The shipped Alerts UI no longer calls it: the global list is served by the
+> new `getAlertsList` (`GET /api/alerts/list`, `AlertController.java:69-84`) →
+> `AlertServiceImpl.getAlertList` (line 253), which dispatches on
+> `AlertViewType` and accepts an optional **status** filter (default Open,
+> overridable) so resolved alerts are reachable (F-007 H-006 RESOLVED). The
+> OpenAPI `getAllAlerts` operation description marks it superseded by
+> `getAlertsList`. The security / cross-owner / pagination findings below
+> remain accurate **for this legacy endpoint** and continue to be the live
+> behaviour at `/api/alerts`; the new endpoint has its own (so-far un-enriched)
+> shape — REFACTOR-024 cross-owner read still applies to both global paths
+> (neither the legacy nor the new `listAllAlerts` adds an owner predicate).
+
 ## concepts
 
 - entities: [`AlertList` (response payload), `Page` (pagination wrapper)]

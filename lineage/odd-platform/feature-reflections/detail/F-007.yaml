@@ -119,11 +119,11 @@ AlertManager Integration is one of the two halves of P-07's Alerting sub-feature
 
 How a user interacts with it splits into two surfaces that the feature-flow stitches together. The **write surface** is machine-facing: there is no screen, no form — AlertManager POSTs a JSON body (`{alerts:[{labels, generatorURL, startsAt}]}`) to `POST /ingestion/alert/alertmanager`, the 4-line `alertManagerWebhook` handler delegates to `AlertServiceImpl.handleExternalAlerts`, and the platform returns `204 No Content` unconditionally (per `postAlerts` sidecar understanding + AlertManagerController.java:21-26). The **read surface** is human-facing: the global Alerts page mounted at `/alerts/*` (the `Alerts` React component), with three tabs — All / My Objects / Dependents — each an infinite-scroll list, plus per-row Resolve/Reopen buttons and three count badges (per `Alerts.md` understanding). So an inbound forged or real alert becomes a row a steward reads on `/alerts/all`; that is the feature's observable end-to-end loop.
 
-The working parts, described as the operator experiences them. On the write side: every inbound alert is hard-typed `DISTRIBUTION_ANOMALY` regardless of AlertManager's `alertname`/`severity` labels (AlertServiceImpl.java:177); the `entity_oddrn` label routes the alert to a data entity by writing it verbatim to `alert.data_entity_oddrn` (line 178); the Prometheus `generatorURL` is embedded in the alert's chunk description as clickable text (line 185); and the whole batch is one `@ReactiveTransactional` INSERT with no de-duplication (the path deliberately SKIPS `AlertActionResolver`, which the in-platform ingestion path DOES use — AlertServiceImpl.java:222-227 vs 151-191). On the read side: the three global tabs all hard-filter `status = OPEN` (ReactiveAlertRepositoryImpl.java:143-145 + the My/Dependents siblings) and share one Redux slot cleared on every tab switch; the list pages 30 at a time with `LAST_CREATED_AT DESC, ID DESC` ordering; and each row exposes a Resolve/Reopen button whose permission (`DATA_ENTITY_ALERT_RESOLVE`) is only checked AFTER the click (`Alerts.md` stress_findings + bugs[1]).
+The working parts, described as the operator experiences them. On the write side: every inbound alert is hard-typed `DISTRIBUTION_ANOMALY` regardless of AlertManager's `alertname`/`severity` labels (AlertServiceImpl.java:177); the `entity_oddrn` label routes the alert to a data entity by writing it verbatim to `alert.data_entity_oddrn` (line 178); the Prometheus `generatorURL` is embedded in the alert's chunk description as clickable text (line 185); and the whole batch is one `@ReactiveTransactional` INSERT with no de-duplication (the path deliberately SKIPS `AlertActionResolver`, which the in-platform ingestion path DOES use — AlertServiceImpl.java:222-227 vs 151-191). On the read side: the three global tabs all hard-filter `status = OPEN` (ReactiveAlertRepositoryImpl.java:143-145 + the My/Dependents siblings) and share one Redux slot cleared on every tab switch; the list pages 30 at a time with `LAST_CREATED_AT DESC, ID DESC` ordering; and each row exposes a Resolve/Reopen button whose permission (`DATA_ENTITY_ALERT_RESOLVE`) is only checked AFTER the click (`Alerts.md` stress_findings + bugs[1]). **[UPDATE — CTRIB-025 / #1763: the read side is reshaped — 4 tabs (All / My Objects / Downstream / Upstream) backed by the new filterable `getAlertsList` (GET /api/alerts/list) with an OPTIONAL status filter (default Open, overridable), so the OPEN-only hard-filter is no longer the only path and resolved alerts are reachable. Legacy endpoints retained deprecated. H-006 RESOLVED.]**
 
 The integration story is where F-007 is load-bearing for the whole "Active Platform" pitch. The OPEN alert this feature writes is the START of a chain: the INSERT on the `ALERT` table is captured by Postgres logical replication and drives **F-009** (WAL-driven outbound notification fan-out to Slack / webhook / email), which is where a forged alert reaches every operator-configured channel and where the F-004 Slack mrkdwn-injection surface lives (per F-007 feature-flow batch Y + related_features F-009/F-004). The same alert displays at **F-014** (per-entity Alert view) and surfaces on **F-022** (per-dataset DQ Test reports tab). And the alert-state transitions (OPEN_ALERT_RECEIVED / RESOLVED_ALERT_RECEIVED / ALERT_STATUS_UPDATED) are written to the Activity feed (**F-021**) via the `save(List<ActivityPojo>)` batch path with `is_system_event=true` (per AlertServiceImpl downstream_side_effects + ReactiveActivityRepositoryImpl batch R). So one POST to one unauthenticated URL fans out to: a DB row, a global-tab display, a per-entity display, a per-dataset display, an Activity-feed audit row, AND an outbound Slack/webhook/email message — the compound the feature-flow's headline drift_class names.
 
-Edge cases a product owner would call out in a demo. (1) The endpoint is unauthenticated by design — the docs now say so verbatim and recommend network-perimeter controls — which means in any deployment whose network edge does not gate `/ingestion/alert/alertmanager`, anyone who can reach it can forge alerts on any team's entities. (2) The "All" tab is named "All" but shows only OPEN alerts; a steward looking for a recently-resolved alert on the global page cannot find it and may assume it was purged (the data still exists, reachable only from a single entity's Alerts tab). (3) The Resolve button is shown to everyone, but the permission check fires on click — a viewer who cannot resolve sees the button, clicks, and only then gets "No access!". (4) The tab badges fetch once on mount and never refresh, so after resolving an alert the count stays stale. (5) An alert POSTed without `entity_oddrn` is persisted with a NULL FK — orphaned, invisible everywhere, but counted in the platform-wide totals. The feature has NEAR-ZERO automated test coverage: the only F-007 unit test (`AlertServiceImplTest.handleExternalAlerts_emptyBatch_isNoOpTouchingNoRepository`) pins the degenerate empty-batch no-op, and there is ZERO e2e coverage of the Alerts page (verified by Grep across both the platform-api test tree and the Playwright `tests/` tree) — so the webhook HAPPY PATH and every behaviour below is traced from primary source, not from a passing test.
+Edge cases a product owner would call out in a demo. (1) The endpoint is unauthenticated by design — the docs now say so verbatim and recommend network-perimeter controls — which means in any deployment whose network edge does not gate `/ingestion/alert/alertmanager`, anyone who can reach it can forge alerts on any team's entities. (2) The "All" tab was named "All" but showed only OPEN alerts; a steward looking for a recently-resolved alert on the global page could not find it and may assume it was purged (the data still exists, reachable only from a single entity's Alerts tab). **[RESOLVED — CTRIB-025 / #1763: the global page now has a Status filter (default Open, overridable) so resolved alerts are reachable directly.]** (3) The Resolve button is shown to everyone, but the permission check fires on click — a viewer who cannot resolve sees the button, clicks, and only then gets "No access!". (4) The tab badges fetch once on mount and never refresh, so after resolving an alert the count stays stale. (5) An alert POSTed without `entity_oddrn` is persisted with a NULL FK — orphaned, invisible everywhere, but counted in the platform-wide totals. The feature has NEAR-ZERO automated test coverage: the only F-007 unit test (`AlertServiceImplTest.handleExternalAlerts_emptyBatch_isNoOpTouchingNoRepository`) pins the degenerate empty-batch no-op, and there is ZERO e2e coverage of the Alerts page (verified by Grep across both the platform-api test tree and the Playwright `tests/` tree) — so the webhook HAPPY PATH and every behaviour below is traced from primary source, not from a passing test.
 
 ## hypotheses
 
@@ -337,17 +337,34 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
   derivation: "UI-label seed: the tab is literally labelled 'All', and the live doc historically described it as 'Every open and resolved alert across the whole platform'; a senior PO reads 'All' as the complete population."
   seed_source: ui-label
   validation:
-    verdict: contradicted
+    verdict: resolved
+    resolved_by: "CTRIB-025 / odd-platform PR #1795 (branch contrib/CTRIB-025-alerts-view-hardening, commits 1317fe1c+9ee32505+657b12cf, #1763)"
+    resolved_at: "2026-06-20"
+    resolution_note: |
+      RESOLVED by CTRIB-025. The hard-coded-OPEN drift is no longer the only path. The legacy
+      getAllAlerts -> listAll -> listAllWithStatusOpen (still WHERE STATUS = OPEN) is retained
+      byte-identical and DEPRECATED, but the shipped Alerts page now calls the new filterable
+      getAlertsList (GET /api/alerts/list) -> AlertServiceImpl.getAlertList (line 253) ->
+      ReactiveAlertRepositoryImpl.listAllAlerts (line 535), whose status filter is OPTIONAL
+      (commonAlertConditions line 631: `if (status != null) ALERT.STATUS.eq(...)`; null = all
+      statuses). The FE Status filter defaults to Open but is user-overridable, so RESOLVED /
+      RESOLVED_AUTOMATICALLY alerts are now reachable from the global page. The tab set is also
+      reshaped to mirror Activity (All / My Objects / Downstream / Upstream). The Category-B
+      name-vs-behaviour drift ('All' shows only OPEN, resolved unreachable) is closed. Kept as a
+      record per the convergence discipline (don't delete a resolved hypothesis). NOTE: this resolves
+      ONLY the resolved-alert reachability; the REFACTOR-024 cross-owner read on the ALL path is NOT
+      fixed (listAllAlerts applies no owner predicate either) and remains open.
     actual_behavior: |
-      The "All" tab shows only OPEN alerts. ReactiveAlertRepositoryImpl.listAllWithStatusOpen hard-
+      [PRE-CTRIB-025 RECORD] The "All" tab showed only OPEN alerts. ReactiveAlertRepositoryImpl.listAllWithStatusOpen hard-
       filters ALERT.STATUS.eq(OPEN.getCode()) (line 143-145), and the My Objects and Dependents
       sibling queries carry the identical hard-coded STATUS=OPEN filter. RESOLVED and
-      RESOLVED_AUTOMATICALLY alerts NEVER appear on ANY of the three global tabs. The data is not
+      RESOLVED_AUTOMATICALLY alerts NEVER appeared on ANY of the three global tabs. The data is not
       gone — a single entity's Alerts tab uses getAlertsByDataEntityId which has NO status filter
-      (line 182-199) — but the global page cannot surface it. There is NO status query parameter on
+      (line 182-199) — but the global page could not surface it. There was NO status query parameter on
       getAllAlerts/getAssociatedUserAlerts/getDependentEntitiesAlerts (AlertController.java:36-57),
-      and ALERT.STATUS is the available-but-unused column the list-API ignores. Same Category-B
-      name-vs-behaviour class as LSN-019 (TagController.listMostPopular).
+      and ALERT.STATUS was the available-but-unused column the list-API ignored. Same Category-B
+      name-vs-behaviour class as LSN-019 (TagController.listMostPopular). [Addressed by CTRIB-025 —
+      see resolution_note.]
     evidence:
       - sidecar: odd-platform__ts__react-component__component__Alerts.md
         section: stress_findings.name_behavior_pairs[All-tab] + bugs_limitations_corner_cases[0]
@@ -358,21 +375,22 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
         cite: "ReactiveAlertRepositoryImpl.java:143-145 vs 182-199"
         note: "global tabs OPEN-only; per-entity tab unfiltered — the data exists, the global UI hides it"
     operator_visible_failure: |
-      A steward searching the global Alerts page for an alert they resolved an hour ago cannot find
-      it and reasonably concludes it was purged — potentially re-investigating the underlying issue
-      or filing a support ticket about "lost alerts". The only way to view a resolved alert is to
-      navigate to the specific entity's Alerts tab (if they know which entity). The live doc NOW
-      documents the OPEN-only behaviour, so the doc-side is corrected; the UI label and the absence
-      of any status filter remain the code-side gap.
+      [PRE-CTRIB-025] A steward searching the global Alerts page for an alert they resolved an hour ago could not find
+      it and reasonably concluded it was purged — potentially re-investigating the underlying issue
+      or filing a support ticket about "lost alerts". The only way to view a resolved alert was to
+      navigate to the specific entity's Alerts tab (if they knew which entity). [POST-CTRIB-025 / #1763]
+      The global Alerts page now exposes a Status filter (default Open, overridable) so a steward can
+      switch to Resolved / Resolved Automatically and find the alert directly. Failure resolved.
     severity: HIGH
     confidence: HIGH
     probe_id: P-194
-    routes_to_finding: bug-candidate
+    routes_to_finding: resolved
+    resolved_by: "CTRIB-025 / PR #1795 (#1763)"
     use_case_kind: grammar
     coverage: unverified
     test_demand: functional
-    test_demand_note: "missing-functional: an e2e (Playwright) test on /alerts/all that creates an OPEN + a RESOLVED alert and asserts the RESOLVED one is absent from All (pins the Category-B drift); the regression guard if the tab is relabelled 'Open' or gains a status filter. P-194 pins the same behaviour at the probe layer."
-    dedup_note: "net_new (code-side). The DOC side is closed (live page documents OPEN-only); PLT-050 covers the Alerts UX cluster (redirect / hidden tabs / size-30 / no filter / no bulk) but does NOT cover the 'All'-label-lies name-vs-behaviour drift or a status filter. P-194 already pins the resolved-visibility behaviour."
+    test_demand_note: "missing-functional (regression guard, now flipped intent): an e2e (Playwright) test on /alerts/list that creates an OPEN + a RESOLVED alert, sets the Status filter to Resolved, and asserts the RESOLVED one IS now reachable (and absent under the default Open filter) — pins the CTRIB-025 fix and would flip RED if the status filter regressed. P-194's hypothesis is superseded (see probe header update)."
+    dedup_note: "RESOLVED (code-side) by CTRIB-025. The DOC side was already closed (live page documented OPEN-only) and now needs a follow-up to describe the 4-tab + Status-filter surface. PLT-050 covers the Alerts UX cluster (redirect / hidden tabs / size-30 / no filter / no bulk) — CTRIB-025's filter panel addresses the 'no filter' part of that cluster too; re-check PLT-050 residual scope at the release gate. P-194 pinned the now-superseded OPEN-only behaviour."
 
 - id: H-007
   hypothesis: "When a viewer who lacks resolve permission looks at an alert row, they do NOT see a Resolve/Reopen action they cannot use (the UI hides actions the user is not entitled to)."
@@ -687,11 +705,13 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
   proposed_fix_anchor: "AlertServiceImpl.java:178 — validate entity_oddrn exists + caller-permission gate; AlertManagerController.java:21-26 — shared-secret / S2S gate (PLT-014 Defect 1)."
 - hypothesis_id: H-006
   severity: HIGH
-  one_line: "The global 'All' tab is labelled 'All' but the backend hard-filters STATUS=OPEN (all three global tabs) — resolved alerts are invisible on the global page; no status query param exists; ALERT.STATUS is the available-but-unused column (Category-B name-vs-behaviour, LSN-019 class)."
-  dedup_status: net_new
+  status: resolved
+  resolved_by: "CTRIB-025 / odd-platform PR #1795 (#1763)"
+  one_line: "[RESOLVED CTRIB-025/#1763] The global 'All' tab was labelled 'All' but the backend hard-filtered STATUS=OPEN (all three global tabs) — resolved alerts were invisible on the global page; no status query param existed. CTRIB-025 adds the new filterable getAlertsList (GET /api/alerts/list) with an OPTIONAL status filter (default Open, overridable) so resolved alerts are now reachable; legacy endpoints retained deprecated. (REFACTOR-024 cross-owner read on the ALL path remains OPEN — not fixed here.)"
+  dedup_status: resolved
   distinct_from: PLT-050
-  recommended_log_as: BUG-NNN (or upstream-issue opendatadiscovery/odd-platform)
-  proposed_fix_anchor: "Add an optional status query param on getAllAlerts/getAssociatedUserAlerts/getDependentEntitiesAlerts (AlertController.java:36-57) + plumb it to ReactiveAlertRepositoryImpl.listAllWithStatusOpen (drop the hard-coded eq OPEN, default to OPEN); OR relabel the tab from 'All' to 'Open' to match behaviour. DOC side already corrected. Distinct from PLT-050 which covers redirect/hidden-tabs/size-30/no-filter/no-bulk but not the 'All'-label name-drift / status filter."
+  recommended_log_as: "RESOLVED — no longer needs a BUG item; the fix shipped in CTRIB-025 / PR #1795. Follow-up: update the live alerting doc page to the 4-tab + Status-filter surface (release-gate DOC item)."
+  proposed_fix_anchor: "SHIPPED: getAlertsList (AlertController.java:69-84) -> AlertServiceImpl.getAlertList (line 253) -> ReactiveAlertRepositoryImpl.listAllAlerts (535) + commonAlertConditions (631) optional status; FE Status filter (Alerts/Filters/Filters.tsx). The chosen approach = add the optional status param + filterable API (not the relabel-to-'Open' alternative). DOC side still needs the 4-tab+filter update."
 - hypothesis_id: H-003
   severity: MEDIUM
   one_line: "AlertManager webhook path is non-idempotent (skips AlertActionResolver; createAlerts INSERT has no ON CONFLICT) — Prometheus retries / repeat_interval re-sends duplicate alert rows."
@@ -780,11 +800,12 @@ Edge cases a product owner would call out in a demo. (1) The endpoint is unauthe
 - use_case_id: F-007-UC-06
   hypothesis_id: H-006
   kind: grammar
-  promise: "The 'All' tab population (what a steward sees vs the 'All' label) — current behaviour is OPEN-only; a resolved alert is absent from every global tab."
-  verdict: contradicted
+  promise: "The 'All' tab population (what a steward sees vs the 'All' label) — a steward can review all alerts including resolved ones from the global page."
+  verdict: resolved
+  resolved_by: "CTRIB-025 / PR #1795 (#1763)"
   coverage: unverified
-  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-06)"
-  proposed_test: "Playwright e2e on /alerts/all: create an OPEN + a RESOLVED alert; assert the RESOLVED one is absent from All (characterization pin of the Category-B drift; flips RED if relabelled 'Open' or given a status filter). P-194 pins the same at probe layer."
+  recommended_log_as: "TEST-GAP-NNN (pending mint) (category: missing-functional, use_case_id: F-007-UC-06) — now a fix-regression-guard, not a drift-pin."
+  proposed_test: "Playwright e2e on /alerts/list: create an OPEN + a RESOLVED alert; with the Status filter set to Resolved assert the RESOLVED one IS reachable, and under the default Open filter assert it is absent — pins the CTRIB-025 fix (flips RED if the status filter regresses). Supersedes the old characterization pin (which asserted resolved was unreachable). P-194's old assertion is superseded — see probe header update."
   priority: MEDIUM
 - use_case_id: F-007-UC-03
   hypothesis_id: H-003

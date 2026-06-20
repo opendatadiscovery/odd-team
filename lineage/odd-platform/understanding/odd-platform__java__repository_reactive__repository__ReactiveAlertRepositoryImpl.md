@@ -17,6 +17,33 @@ session_id: session-2026-05-19-batch-H-reactive-alert-repository
 
 `ReactiveAlertRepositoryImpl` is the jOOQ-on-R2DBC reactive repository that owns every read and write against the `ALERT` and `ALERT_CHUNK` tables — the single primary-source landing site for the alert SQL surface of the platform. It implements the 19-method `ReactiveAlertRepository` interface: a paginated/cross-owner platform-wide listing (`listAllWithStatusOpen`, the canonical query behind `AlertController.getAllAlerts`), an owner-scoped variant (`listByOwner`), a lineage-CTE-driven dependent-objects listing (`listDependentObjectsAlerts`), per-data-entity listings, a batched bulk-insert path (`createAlerts` → `executeInPartitionReturning` 1000-row batches), the mutation path (`updateAlertStatus`, `resolveAutomatically`), the reopen-guard probe (`openAlertWithTheSameTypeExistsForDataEntity`), chunk + last-created-at side-write helpers, and the data-entity lookup for the authorization extractor (`getDataEntityIdByAlertId`). The class carries NO `@ReactiveTransactional` — transactions are declared on the calling `AlertServiceImpl` methods (`handleExternalAlerts`, `applyAlertActions`). The repository does not emit activity events directly; activity emission is the service layer's responsibility (`AlertServiceImpl` registers `OPEN_ALERT_RECEIVED` / `RESOLVED_ALERT_RECEIVED` / `ALERT_STATUS_UPDATED` via `ActivityService.createActivityEvents`).
 
+> **[UPDATE — CTRIB-025 / odd-platform #1763, branch `contrib/CTRIB-025-alerts-view-hardening`]**
+> The interface is no longer 19 methods: CTRIB-025 **adds, additively**, a
+> filterable listing/count family behind the new Activity-style Alerts view —
+> `listAllAlerts` (line 535), `listMyAlerts` (549), `listDependentAlerts` (566),
+> `countAllAlerts` (583), `countMyAlerts`, `countDependentAlerts`, plus an
+> overload `getAlertsByDataEntityId(dataEntityId, beginDate, endDate, status,
+> page, size)` (line 206). The legacy `listAllWithStatusOpen` (146) /
+> `listByOwner` (164) / `listDependentObjectsAlerts` (237) / the old
+> `getAlertsByDataEntityId` and the count methods are kept **byte-identical**
+> (deprecated). The new methods share a private `commonAlertConditions(...)`
+> (line 631) that builds the filter list: `status` / period
+> (`ALERT.LAST_CREATED_AT`) applied on the ALERT row, and datasource /
+> namespace / tag / owner facets as **EXISTS semi-joins keyed on
+> `ALERT.DATA_ENTITY_ODDRN`** (no row fan-out — PLT-176 lesson), plus
+> `ownerExistsCondition` (helper) and `findAlerts` / `countAlerts` runners
+> (682 / 690). **The `status` param is optional** — `if (status != null)`
+> means a null status filters nothing (all statuses), so the global list no
+> longer hard-filters OPEN with no escape (the #1763 fix; F-007 H-006 RESOLVED;
+> probe P-194's drift addressed). **REFACTOR-024 note:** `listAllAlerts` (the
+> new ALL path) still applies NO owner predicate when `ownerIds` is empty — the
+> cross-owner-read finding below carries over to the new path; only
+> resolved-alert reachability was fixed, not owner scoping. The
+> `listByOwner`-shares-`countAlertsWithStatusOpen` empty-result bug below is on
+> the LEGACY path; the new `countMyAlerts` uses its own owner-scoped condition.
+> Sections below are the pre-CTRIB-025 record (legacy methods); a full
+> re-enrich at the new shape is the proper follow-up.
+
 ## concepts
 
 - entities: [`AlertPojo`, `AlertChunkPojo`, `AlertDto` (POJO + chunks + DataEntityPojo + OwnerPojo composite), `AlertRecord` (jOOQ record), `Page<AlertDto>`, `AlertStatusEnum` (OPEN / RESOLVED / RESOLVED_AUTOMATICALLY), `DataEntityStatusDto.DELETED` (filter exclusion), `LINEAGE` (CTE for dependent-objects), `USER_OWNER_MAPPING` (for status-updated-by → owner resolution), `OWNER`, `OWNERSHIP`, `DATA_ENTITY`]

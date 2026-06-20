@@ -15,16 +15,35 @@ session_id: session-2026-05-08-01
 
 ## understanding
 
-`AlertController` is a thin Spring WebFlux REST controller that implements the OpenAPI-generated `AlertApi` interface and exposes five reactive endpoints under `/api/alerts*` for the platform's alerting feature. Each method delegates a single call to `AlertService` and lifts the result into a `200 OK` `ResponseEntity`; no request validation, authorisation, exception translation, or visibility filtering happens at the controller layer. Visibility scoping ("my alerts" vs "dependent-entity alerts" vs "all alerts") is therefore a service-and-database concern (`AlertService.listAll` / `listByOwner` / `listDependentObjectsAlerts`), not a controller concern. This pattern — a near-empty controller class whose HTTP method/path/produces/consumes annotations live on the generated `*Api` interface, not on the controller — is repository-wide convention.
+`AlertController` is a thin Spring WebFlux REST controller that implements the OpenAPI-generated `AlertApi` interface and exposes reactive endpoints under `/api/alerts*` for the platform's alerting feature. Each method delegates a single call to `AlertService` and lifts the result into a `200 OK` `ResponseEntity`; no request validation, authorisation, exception translation, or visibility filtering happens at the controller layer. Visibility scoping is therefore a service-and-database concern, not a controller concern. This pattern — a near-empty controller class whose HTTP method/path/produces/consumes annotations live on the generated `*Api` interface, not on the controller — is repository-wide convention.
+
+> **[UPDATE — CTRIB-025 / odd-platform #1763, branch `contrib/CTRIB-025-alerts-view-hardening`]**
+> This sidecar was enriched at the 0.28.0 shape (five endpoints, three list
+> tabs). CTRIB-025 is **additive**: the five legacy endpoints are kept
+> byte-identical and marked deprecated, and **three new endpoints** are added —
+> `getAlertsList` (`GET /api/alerts/list`) and `getAlertCounts`
+> (`GET /api/alerts/counts`) on this controller (`AlertController.java:69-97`),
+> plus `getDataEntityAlertsList` (`GET /api/dataentities/{id}/alerts/list`) on
+> `DataEntityController`. The new list endpoint dispatches on a 4-value
+> `AlertViewType` (`ALL` / `MY_OBJECTS` / `DOWNSTREAM` / `UPSTREAM`) and accepts
+> optional period / datasource / namespace / tag / owner / **status** filters;
+> `getAlertCounts` returns the new `AlertCountInfo` (per-view counts). The
+> global list no longer hard-filters `STATUS=OPEN` with no escape — the status
+> filter is optional (default Open at the FE, overridable), so resolved alerts
+> are reachable (the #1763 fix; F-007 H-006 RESOLVED). The sections below are
+> the pre-CTRIB-025 record; the new endpoints are summarised here pending a full
+> re-enrich at the new shape.
 
 ## concepts
 
-- entities: [`Alert`, `AlertList`, `AlertStatusFormData`, `AlertTotals`]
+- entities: [`Alert`, `AlertList`, `AlertStatusFormData`, `AlertTotals`, `AlertViewType` (new, CTRIB-025), `AlertCountInfo` (new, CTRIB-025), `AlertStatus`]
 - operations: [
-    `list-all-alerts` (paged),
-    `list-current-user's-owned-alerts` (paged),
-    `list-current-user's-dependent-entity-alerts` (paged),
-    `get-alert-totals` (counts across the three tab scopes),
+    `list-all-alerts` (paged) — **legacy, deprecated (CTRIB-025)**,
+    `list-current-user's-owned-alerts` (paged) — **legacy, deprecated**,
+    `list-current-user's-dependent-entity-alerts` (paged) — **legacy, deprecated**,
+    `get-alert-totals` (counts across the three tab scopes) — **legacy, deprecated**,
+    `list-alerts-filtered` (new, CTRIB-025 — `getAlertsList`, `GET /api/alerts/list`; dispatches on `AlertViewType` ALL/MY_OBJECTS/DOWNSTREAM/UPSTREAM with optional period/datasource/namespace/tag/owner/status filters; returns `Flux<Alert>`),
+    `get-alert-counts-filtered` (new, CTRIB-025 — `getAlertCounts`, `GET /api/alerts/counts`; returns `AlertCountInfo` per-view counts under the same filters),
     `change-alert-status` (resolve/reopen via `AlertStatusFormData`)
   ]
 - invariants: [
@@ -71,7 +90,7 @@ session_id: session-2026-05-08-01
 - inferred_docs:
   - url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting.md"
     anchor: "" (whole page)
-    rationale: "Single live page describing the alerting feature this controller serves; the page describes the three tab scopes (`All` / `My Objects` / `Dependents`) that map 1:1 onto the controller's `getAllAlerts` / `getAssociatedUserAlerts` / `getDependentEntitiesAlerts` methods, plus alert status transitions handled by `changeAlertStatus`"
+    rationale: "Single live page describing the alerting feature this controller serves; the page (pre-CTRIB-025) describes three tab scopes (`All` / `My Objects` / `Dependents`) that mapped 1:1 onto the legacy `getAllAlerts` / `getAssociatedUserAlerts` / `getDependentEntitiesAlerts` methods, plus alert status transitions handled by `changeAlertStatus`. [UPDATE CTRIB-025 / #1763] The shipped UI now has 4 tabs (All / My Objects / Downstream / Upstream) + a filter panel backed by the new `getAlertsList` / `getAlertCounts` endpoints; the legacy methods remain (deprecated). The live doc page should be updated to describe the 4-tab + filters surface — track as a DOC follow-up at the release gate."
     last_verified_at: "2026-05-08T00:00:00Z"
     last_verified_status: 200
     confidence: MEDIUM

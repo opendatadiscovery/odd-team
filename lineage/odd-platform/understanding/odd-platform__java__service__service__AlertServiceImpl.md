@@ -32,6 +32,34 @@ neighbour_sidecars:
 
 `AlertServiceImpl` is the Spring `@Service` hop between the controller layer (`AlertController` for the UI/API surface, `AlertManagerController` for the Prometheus AlertManager webhook, `DataEntityController` for per-entity tabs) and the data layer (`ReactiveAlertRepository`, `ReactiveDataEntityRepository`). The class owns three orthogonal concerns whose composition determines the F-007 (`P-07:F-001 AlertManager Integration`) drift surface: (1) **principal context** — `AuthIdentityProvider` is consulted at lines 84, 93, 117, 235 ONLY on the UI-driven read / mutate paths; the AlertManager-webhook write path (`handleExternalAlerts`, lines 151-191) does NOT consult any auth identity, making the cross_tenant_alert_creation facet observable at this tier. (2) **Transaction boundaries** — `handleExternalAlerts` (line 152) and `applyAlertActions` (line 201) carry `@ReactiveTransactional`; the user-driven `updateStatus` (line 111) does NOT and depends entirely on `ActivityAspect`'s AOP-synthetic transaction (`ActivityAspect.java:42`) to wrap the read-then-write reopen-guard composition (lines 124-131) — that composition is unfenced at every layer (no `FOR UPDATE`, no DB unique-partial-index, no advisory lock). (3) **Activity-feed emission** — `@ActivityLog` AOP for `updateStatus` (line 112) plus three manual `activityService.createActivityEvents(...)` call sites for the bulk-mutation paths (lines 258, 324). This class is also the **de-duplication boundary** between the two ingestion paths: `applyAlertActions` (line 222-227) consumes `AlertAction` discriminators already keyed by `AlertUniqueConstraint` from `AlertActionResolver`; `handleExternalAlerts` deliberately SKIPS the resolver and forwards every webhook element to the shared `createAlerts` private helper (line 261-300) which issues bulk `INSERT … RETURNING` with NO `.onConflict(...)` — confirming the F-007 `no_idempotency_no_audit` facet at the service tier. All THREE named F-007 drift facets are anchored to file:line evidence in `security.known_security_gaps` and `bugs_limitations_corner_cases` below; this batch S refresh strengthens them at the service tier with batch P's PRIMARY-SOURCE controller-method-tier confirmation already in the chain (F-007 chain hops 1, 1-method-tier, 2).
 
+> **[UPDATE — CTRIB-025 / odd-platform #1763, branch `contrib/CTRIB-025-alerts-view-hardening`]**
+> This sidecar was enriched at the 0.28.0 shape. CTRIB-025 adds a **new capable
+> read API** to this service, **additively** — the legacy `listAll` /
+> `listByOwner` / `getTotals` / `getDataEntityAlerts` / `listDependentObjectsAlerts`
+> methods are kept byte-identical (deprecated). The new methods are:
+> `getAlertList(AlertViewType, beginDate, endDate, datasourceId, namespaceId,
+> tagIds, ownerIds, status, page, size)` (line 253) — a `switch` over the
+> 4-value `AlertViewType` (ALL → `listAllAlerts`; MY_OBJECTS →
+> `fetchAssociatedOwner` + `listMyAlerts`; DOWNSTREAM / UPSTREAM →
+> `dataEntityRelationsService.getDependentDataEntityOddrns(streamKind)` +
+> `listDependentAlerts`), each mapping `AlertDto` → `Alert`;
+> `getAlertCounts(...)` (line 283) — `Mono.zip` of `countAllAlerts` /
+> `countMyAlerts` / `countDependentAlerts(DOWNSTREAM)` /
+> `countDependentAlerts(UPSTREAM)` into the new `AlertCountInfo`;
+> `getDataEntityAlertsList(dataEntityId, beginDate, endDate, status, page, size)`
+> (line 311) — `checkDataEntityExistence` + the filtered
+> `getAlertsByDataEntityId(...)`. New collaborator: `DataEntityRelationsService`
+> (constructor-injected) for the downstream/upstream lineage scoping. New
+> private helpers: `listDependentAlerts` (325), `dependentCount`, `mapStatus`
+> (355, `AlertStatus` → `AlertStatusEnum`, null-tolerant). The status filter is
+> **optional** on every new path (null = all statuses), which is the #1763 fix —
+> the global list no longer hard-filters OPEN with no escape (F-007 H-006
+> RESOLVED). **REFACTOR-024 note:** `listAllAlerts` (the new ALL path) still
+> applies NO owner predicate — the cross-owner-read finding on the legacy
+> `listAll` carries over to the new path; the owner-scoping annotations below
+> remain accurate for the legacy methods they cite. Full re-enrich at the new
+> shape is the proper follow-up.
+
 ## concepts
 
 - entities: [
@@ -336,7 +364,7 @@ The forcing question — *"Does this finding name any entity, operation, table, 
   - "The other 9 methods (read paths + AlertManager webhook + ingestion) have NO equivalent security rule. The read endpoints (`listAll`, `listByOwner`, `getTotals`, `listDependentObjectsAlerts`, `getDataEntityAlerts`, `getDataEntityAlertsCounts`) require authentication only (per `AlertController.getAllAlerts` neighbour sidecar's `AuthorizationCustomizer.java:29-30` catch-all `.authenticated()`); the AlertManager webhook is on the `/ingestion/**` whitelist (unauthenticated)." — evidence: cross-reference to neighbour sidecars
 
 - **owner_scoping**:
-  - "`listAll` (lines 76-80): **BYPASSES — returns alerts across owners.** The service is a three-line pass-through to `alertRepository.listAllWithStatusOpen(page, size)` which has no owner predicate (per batch H). The All-tab is platform-wide for any authenticated user." — evidence: `AlertServiceImpl.java:76-80` + batch H sidecar
+  - "`listAll` (lines 76-80): **BYPASSES — returns alerts across owners.** The service is a three-line pass-through to `alertRepository.listAllWithStatusOpen(page, size)` which has no owner predicate (per batch H). The All-tab is platform-wide for any authenticated user." — evidence: `AlertServiceImpl.java:76-80` + batch H sidecar — **[STILL APPLIES after CTRIB-025 / #1763]** `listAll` is retained (deprecated); the new `getAlertList` ALL path → `listAllAlerts` (line 253 → repo 535) ALSO applies no owner predicate, so the cross-owner read is unchanged on the new path too. (CTRIB-025 fixed resolved-alert *reachability* via the status filter, NOT owner scoping — REFACTOR-024 remains open.)
   - "`listByOwner` (lines 82-87): **RESPECTS — filters by the calling user's owner via `authIdentityProvider.fetchAssociatedOwner()`.** The owner id is resolved server-side (not caller-supplied), so a caller cannot impersonate another owner via this path." — evidence: `AlertServiceImpl.java:82-87`
   - "`getTotals` (lines 89-109): **MIXED.** `total` is platform-wide (BYPASSES); `myTotal` and `dependentTotal` are owner-scoped (RESPECTS). The badge counter exposes the platform-wide count to every authenticated user." — evidence: `AlertServiceImpl.java:89-109`
   - "`listDependentObjectsAlerts` (lines 233-239): **RESPECTS — filters by lineage-of-current-user's-owned-entities via `authIdentityProvider.fetchAssociatedOwner()` + `getObjectsOddrnsByOwner`.**" — evidence: `AlertServiceImpl.java:233-239`

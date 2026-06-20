@@ -27,6 +27,24 @@ CLEARS `state.alerts.items` in the slice — the three tabs share ONE Redux
 state slot, so a tab switch resets the infinite-scroll cursor and visually
 restarts the list.
 
+> **[UPDATE — CTRIB-025 / odd-platform #1763, branch `contrib/CTRIB-025-alerts-view-hardening`]**
+> This sidecar was enriched at the 0.28.0 shape (three tabs, three OPEN-only
+> `fetch*` thunks, no filter UI). CTRIB-025 reshapes the page to mirror the
+> Activity view: a **4-tab** layout (All / My Objects / **Downstream** /
+> **Upstream**) plus a Period / Datasource / Namespace / Status / Tag / Owner
+> filter panel (`Alerts/Filters/Filters.tsx`, `Alerts/common.ts`), status
+> defaulting to Open but **user-overridable** — so resolved alerts are now
+> reachable from the global page via the Status filter. The legacy
+> `getAllAlerts` / `getAssociatedUserAlerts` / `getDependentEntitiesAlerts`
+> endpoints are kept (deprecated); the FE now calls the new capable
+> `getAlertsList` (`GET /api/alerts/list`) + `getAlertCounts`
+> (`GET /api/alerts/counts`) API. The per-entity tab gains Period + Status
+> filters (`DataEntityDetails/DataEntityAlerts/Filters/Filters.tsx`). The
+> sections below are preserved as the pre-CTRIB-025 record; the `doc_drift`,
+> `name_behavior_pairs[All-tab]` and `bugs_limitations_corner_cases[0]`
+> entries are annotated inline where the SHIPPED behaviour now differs. A full
+> re-enrich at the new FE shape is the proper follow-up.
+
 ## concepts
 
 - entities: [Alert, AlertTotals, OwnerAssociation, DataEntity]
@@ -102,7 +120,7 @@ restarts the list.
       "Alerts raised on data entities that are downstream of entities the signed-in user owns (via lineage)." (Dependents tab)
       "The `My Objects` and `Dependents` tabs are hidden unless the signed-in user is linked to an Owner — without the association, the platform cannot evaluate 'mine' or 'downstream of mine'."
 - doc_drift_findings:
-  - "DRIFT: docs says All tab shows 'Every open and resolved alert across the whole platform' but ReactiveAlertRepositoryImpl.java:142-145 hard-filters `ALERT.STATUS.eq(OPEN.getCode())`. The list NEVER shows RESOLVED or RESOLVED_AUTOMATICALLY alerts in the global tabs — only on a single data entity's Alerts tab via getAlertsByDataEntityId (no status filter, line 182-199). Operator who follows the docs expects to see resolved alerts and cannot find them; mistakes them for purged."
+  - "DRIFT: docs says All tab shows 'Every open and resolved alert across the whole platform' but ReactiveAlertRepositoryImpl.java:142-145 hard-filters `ALERT.STATUS.eq(OPEN.getCode())`. The list NEVER shows RESOLVED or RESOLVED_AUTOMATICALLY alerts in the global tabs — only on a single data entity's Alerts tab via getAlertsByDataEntityId (no status filter, line 182-199). Operator who follows the docs expects to see resolved alerts and cannot find them; mistakes them for purged. — **[RESOLVED by CTRIB-025 / #1763]** The hard-coded-OPEN drift is no longer the only path: the legacy `listAllWithStatusOpen` (still `WHERE STATUS = OPEN`) is retained deprecated, but the new filterable `AlertServiceImpl.getAlertList` (AlertServiceImpl.java:253) → `ReactiveAlertRepositoryImpl.listAllAlerts(...)` (ReactiveAlertRepositoryImpl.java:535) takes an optional `AlertStatus status` param (null = all statuses; see `commonAlertConditions` line 631 — `if (status != null) conditions.add(ALERT.STATUS.eq(...))`) and the FE Status filter exposes it, so RESOLVED / RESOLVED_AUTOMATICALLY alerts are reachable from the global page. F-007 H-006 marked RESOLVED."
   - "GAP: live doc page does NOT document (a) the sort order (LAST_CREATED_AT DESC, ID DESC tiebreak), (b) the permission needed to Resolve / Reopen (DATA_ENTITY_ALERT_RESOLVE), or (c) the page size (30). All three are operator-visible behaviours."
   - "GAP: doc states the Dependents tab uses 'lineage' but does not explain that it uses a recursive CTE walking LINEAGE.IS_DELETED=false from owned-entity oddrns (ReactiveAlertRepositoryImpl.java:429-454). Operators with broken/missing lineage edges see empty Dependents — no signal that lineage is the join."
 
@@ -114,7 +132,7 @@ restarts the list.
 
 ## bugs_limitations_corner_cases
 
-- "All-tab name vs behaviour mismatch: docs say 'open and resolved'; backend SQL filters STATUS=OPEN only (ReactiveAlertRepositoryImpl.java:145, 166, 230). RESOLVED and RESOLVED_AUTOMATICALLY alerts are invisible in every global tab." — evidence: ReactiveAlertRepositoryImpl.java:142-145 (listAllWithStatusOpen), 160-179 (listByOwner), 217-243 (listDependentObjectsAlerts) — severity: HIGH
+- "All-tab name vs behaviour mismatch: docs say 'open and resolved'; backend SQL filters STATUS=OPEN only (ReactiveAlertRepositoryImpl.java:145, 166, 230). RESOLVED and RESOLVED_AUTOMATICALLY alerts are invisible in every global tab." — evidence: ReactiveAlertRepositoryImpl.java:142-145 (listAllWithStatusOpen), 160-179 (listByOwner), 217-243 (listDependentObjectsAlerts) — severity: HIGH — **[RESOLVED — CTRIB-025 / #1763]** This held for the legacy `listAllWithStatusOpen` path (retained, deprecated). The shipped Alerts page now calls the new filterable `getAlertList` → `listAllAlerts(...)` (ReactiveAlertRepositoryImpl.java:535) whose `status` param is optional (null = all statuses), with the FE Status filter defaulting to Open but overridable — resolved alerts are now reachable. F-007 H-006 RESOLVED."
 - "Resolve / Reopen button is rendered for every alert without first checking permission — the permission probe (fetchResourcePermissions) only fires AFTER click (AlertItem.tsx:48-70). UX leak: the action is visible to users who cannot perform it; users only learn they have no access by trying." — evidence: AlertItem.tsx:159-166 (Button text='Resolve'/'Reopen' rendered unconditionally) + AlertItem.tsx:55-67 (permission check on click) — severity: MEDIUM
 - "Tab badge totals (totals, myTotal, dependentTotal) are fetched ONCE on mount (Alerts.tsx:15-17, `useEffect([])` no deps) — they do not refresh after a Resolve action, after navigating tabs, or after the backend creates new alerts. An operator who resolves alerts watches the badge stay stale until full reload." — evidence: Alerts.tsx:15-17 — severity: MEDIUM
 - "Frontend route /alerts/* has NO WithPermissionsProvider wrapper (unlike LookupTables route at App.tsx:75-87). Any authenticated user can reach /alerts/all and trigger getAllAlerts; access enforcement lives entirely in Spring Security backend config (none visible on the controller — see batch H AlertController sidecar) plus the per-action DATA_ENTITY_ALERT_RESOLVE check at click time. There is no UI route guard." — evidence: App.tsx:64 (no wrapper) vs App.tsx:75-87 (wrapper used for LookupTables) — severity: LOW
@@ -157,11 +175,11 @@ stress_findings:
       evidence: "Alerts.tsx:1-33"
     - name: "AlertsTabs labels — 'All', 'My Objects', 'Dependents'"
       promise: "'All' tab shows the full alert population across the platform (per live docs: 'Every open and resolved alert')."
-      implementation: "Backend getAllAlerts → listAll → listAllWithStatusOpen filters STATUS=OPEN only. Resolved alerts are absent. UI label promises 'All'; UI shows OPEN-only subset."
-      drift: DRIFT_NAME_VS_BEHAVIOR
-      operator_visible_consequence: "An operator searching for a resolved alert on the global page cannot find it. They may assume the alert was purged. This is the same Category B failure class as LSN-019 (TagController.listMostPopular)."
+      implementation: "Backend getAllAlerts → listAll → listAllWithStatusOpen filters STATUS=OPEN only. Resolved alerts are absent. UI label promises 'All'; UI shows OPEN-only subset. — [UPDATE CTRIB-025 / #1763] The legacy getAllAlerts path is retained (deprecated); the shipped page now calls getAlertList → listAllAlerts(...) with an optional status filter (default Open, overridable) and the tab set is now All / My Objects / Downstream / Upstream (4 tabs). 'All' = all OPEN by default but resolved is reachable via the Status filter — the DRIFT_NAME_VS_BEHAVIOR is resolved."
+      drift: RESOLVED_BY_CTRIB-025
+      operator_visible_consequence: "An operator searching for a resolved alert on the global page cannot find it. They may assume the alert was purged. This is the same Category B failure class as LSN-019 (TagController.listMostPopular). — [RESOLVED CTRIB-025 / #1763] resolved alerts are now reachable via the Status filter on the global page."
       confidence: STATIC-INFERRED
-      evidence: "AlertsTabs.tsx:22 (label 'All') + ReactiveAlertRepositoryImpl.java:142-145 (status filter)"
+      evidence: "AlertsTabs.tsx:22 (label 'All') + ReactiveAlertRepositoryImpl.java:142-145 (legacy status filter) + ReactiveAlertRepositoryImpl.java:535/631 (new filterable listAllAlerts + commonAlertConditions optional status)"
     - name: "changeAlertsFilterAction (slice reducer name)"
       promise: "Name implies a filter-change action (apply a filter, change criteria). The slice has no filter UI."
       implementation: "Reducer only clears `state.alerts.items = []`. There is no filter state — the name describes a semantic that does not exist."
@@ -273,10 +291,10 @@ stress_findings:
           confidence: STATIC-INFERRED
           evidence: "ReactiveAlertRepositoryImpl.java:182-199 (no status filter) vs 142-145 (status=OPEN)"
         - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
-          a: "YES — ALERT.STATUS is a column with three values (OPEN, RESOLVED, RESOLVED_AUTOMATICALLY); the list-API ignores all values except OPEN. There is NO `status` query parameter on getAllAlerts / getAssociatedUserAlerts / getDependentEntitiesAlerts (AlertController.java:36-57). If the UI offered a status filter, the implementation would have to be added. The available-but-unused column IS ALERT.STATUS."
+          a: "YES — ALERT.STATUS is a column with three values (OPEN, RESOLVED, RESOLVED_AUTOMATICALLY); the list-API ignores all values except OPEN. There is NO `status` query parameter on getAllAlerts / getAssociatedUserAlerts / getDependentEntitiesAlerts (AlertController.java:36-57). If the UI offered a status filter, the implementation would have to be added. The available-but-unused column IS ALERT.STATUS. — [RESOLVED CTRIB-025 / #1763] The status filter was added: the new `getAlertsList` endpoint (GET /api/alerts/list, AlertController.java:69-84) takes an `AlertStatus status` query param, plumbed through `AlertServiceImpl.getAlertList` (line 253) → `listAllAlerts(...)` → `commonAlertConditions` (line 631) `if (status != null) ALERT.STATUS.eq(...)`. ALERT.STATUS is no longer available-but-unused; resolved alerts are reachable via the FE Status filter."
           confidence: STATIC-INFERRED
-          evidence: "AlertController.java:36-57 (no status param) + ReactiveAlertRepositoryImpl.java:145 (hard-coded eq OPEN)"
-      routes_to_finding: "bugs_limitations_corner_cases.[0] (all-tab name vs behaviour) + docs_link_semantic.doc_drift_findings.[0]"
+          evidence: "AlertController.java:36-57 (legacy: no status param) + AlertController.java:69-97 (new getAlertsList/getAlertCounts with status) + ReactiveAlertRepositoryImpl.java:535,631 (listAllAlerts + optional status)"
+      routes_to_finding: "bugs_limitations_corner_cases.[0] (all-tab name vs behaviour) + docs_link_semantic.doc_drift_findings.[0] — both RESOLVED by CTRIB-025 / #1763"
   probes_emitted:
     - probe_id: P-194
       question: "What does an operator see on the All tab when both OPEN and RESOLVED alerts exist for the same data entity? Does the resolved alert appear anywhere reachable from the /alerts page tree, or only from /dataentities/{id}/alerts?"

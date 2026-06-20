@@ -10,7 +10,7 @@ adr_required: false
 plan_approved_by: "maintainer (GATE 1, 2026-06-20 — 'Approve, one feature PR'; expanded scope to full Activity-mirrored Alerts hardening; backward-compat directive same day)"
 plan_approved_at: "2026-06-20"
 branch: "contrib/CTRIB-025-alerts-view-hardening (from origin/main 80f00bde)"
-commits: "1317fe1c (BE) · 9ee32505 (FE) · 657b12cf (FE deep-link fix) · bd5a9049 (repo IT) · cd634666 (controller tests)"
+commits: "1317fe1c (BE) · 9ee32505 (FE) · 657b12cf (FE deep-link fix) · bd5a9049 (repo IT) · cd634666 (controller tests) · e6c1c6ec (service unit coverage — review fix)"
 scope_comment: "https://github.com/opendatadiscovery/odd-platform/issues/1763#issuecomment-4757038949"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1795"
 pr_draft: true
@@ -230,3 +230,28 @@ One feature branch `contrib/CTRIB-025-alerts-view-hardening`, logical per-area c
 
 ## Public scope comment (post after GATE 1, before code — G-C5)
 One ASCII comment on #1763: the PR hardens the global + per-entity Alerts views to match Activity (All/My Objects/Downstream/Upstream tabs; Period/Datasource/Namespace/Tag/Owner/Status filters, Status default Open; ordered newest-first; resolved alerts now reachable), and notes bulk-resolve/export remain out of scope.
+
+---
+
+## Review (2026-06-20, session: /review CTRIB-025 — separate session, maintainer-driven)
+
+**Result: ACCEPTED — with an in-session coverage fix (`e6c1c6ec`, pushed to PR #1795).** Contributor item (draft PR) → stays `review-ready` for the human GATE-2 merge.
+
+### G-C13 (patch coverage) — the finding the review caught, then fixed
+Maintainer flagged `AlertServiceImpl.java 68.69% ❌` — a real CI `min-coverage-changed-files: 98` failure the implement-phase DoD missed. DoD gate 1 claimed "patch-coverage closed with the repo integration test", but jacoco **excludes `**/repository/**`** (`odd-platform-api/build.gradle:181`) so the repo IT (`bd5a9049`) contributes **zero** to the gate. The capable-API commit (`1317fe1c`) added `getAlertList`/`getAlertCounts`/`getDataEntityAlertsList` to a service with **no prior unit test**, so its whole legacy surface (`handleExternalAlerts`/`getTotals`/`updateStatus`/`listAll`/`listByOwner`/`listDependentObjectsAlerts`) fell under the 98% changed-files gate uncovered → **68.69% instruction (770/1121)**.
+- **Fixed in-session** per the maintainer directive ("improve test coverage and not degrade it"): 12 behavioural Mockito + StepVerifier tests (the service's first unit tests) → **98.39% instruction (1103/1121), 99.51% line (203/204)**, `via` the full-build jacoco XML. Residual ~1.6% = a compiler-synthetic exhaustive-switch default (uncoverable) + two unreachable defensive guards (`L391` empty-chunks, `L414` dup-key merge). Commit `e6c1c6ec`, pushed → re-triggers the CI coverage gate.
+
+### Quality Bar / contributor gates
+- **G-C2 unit bucket** — PASS. Reviewer re-ran the full CI replica at the coverage head: `scripts/run-platform-tests.sh` BUILD SUCCESSFUL 7m42s (whole unit suite + checkstyle + jacoco + assemble). 23/23 in `AlertServiceImplTest`.
+- **G-C2 integration bucket** — implementer's full regression recorded green (`feature-complete` 303/303 · `multi-stack` 9/9 · `known-bugs` 3/3 RED · `ingestion-e2e` 6/6) at `657b12cf`, whose **runtime is byte-identical** to the reviewed head — `cd634666`→`e6c1c6ec` add only `src/test/**` (not in the SUT image). NOT re-run: a test-only delta cannot change integration runtime. `via git diff --stat 657b12cf..e6c1c6ec` (test files only).
+- **G-C9 / G-C15 test integrity** — PASS. IT-030 e2e asserts the #1763 fix (resolved reachable via `?status=RESOLVED`), strengthened to two isolated seed entities; RED-on-`main@80f00bde` survives (`integration-tests/run-log/2026-06-20-IT-030.md` RUN 4). BE commit only updated `AlertServiceImplTest`'s ctor arg + Javadoc (no weakened assertion); my tests are pure additions.
+- **Gate 9 spec provenance** — PASS. `AlertViewType`/`AlertCountInfo` + the 3 new operationIds map 1:1 to the service; legacy ops `deprecated: true` (additive). `via git show 1317fe1c -- components.yaml openapi.yaml`.
+- **Gate 11 audience isolation** — PASS. Banned-term grep on the release-train docs (`documentation@release/0.29.0 d8758e2d`) clean (only product terms). `via git show d8758e2d`.
+- **Gate 8 live-site** — PENDING-RELEASE (`0.29.0`); docs on the train (unpushed), DOC-474 tracks the release-gate verification.
+- **G-C10 docs+ontology** — docs authored/routed (`d8758e2d`); ontology committed (`b303ba1d`).
+
+### Not run this session
+- Full doc-product editorial audit (non-blocking per the skill) — deferred; this session was scoped to the coverage finding the maintainer raised.
+
+### Verdict
+Stays **`review-ready`** for the human GATE-2 merge. The single blocking gate (G-C13 coverage) is fixed + pushed; the human reviews the added tests at merge.

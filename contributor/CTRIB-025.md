@@ -4,7 +4,7 @@ github_issue_number: 1763
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1763"
 class: bug
 milestone: "0.29.0"
-status: review-ready
+status: pending-release
 reproduced: "live — see Reproduction log (running odd-minimal stack, 2026-06-20)"
 adr_required: false
 plan_approved_by: "maintainer (GATE 1, 2026-06-20 — 'Approve, one feature PR'; expanded scope to full Activity-mirrored Alerts hardening; backward-compat directive same day)"
@@ -13,7 +13,8 @@ branch: "contrib/CTRIB-025-alerts-view-hardening (from origin/main 80f00bde)"
 commits: "1317fe1c (BE) · 9ee32505 (FE) · 657b12cf (FE deep-link fix) · bd5a9049 (repo IT) · cd634666 (controller tests) · e6c1c6ec (service unit coverage — review fix)"
 scope_comment: "https://github.com/opendatadiscovery/odd-platform/issues/1763#issuecomment-4757038949"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1795"
-pr_draft: true
+pr_merged: "37d5dad6 (squash) — merged 2026-06-20T21:55:20Z by RamanDamayeu; #1763 closed/completed (GATE 2 done)"
+pr_draft: false
 docs_commit: "documentation@release/0.29.0 d8758e2d (not pushed — maintainer pushes the train)"
 ontology_commit: "b303ba1d (odd-team)"
 docs_routing: "release/0.29.0 (DOC-474)"
@@ -303,3 +304,13 @@ The prior review fixed `AlertServiceImpl` (68.69%→98.39%) but checked only tha
 
 ### Verdict
 **ACCEPTED** — stays **`review-ready`** for the human GATE-2 merge. Every contributor gate + the relevant universal/doc gates pass with cited evidence; Gate 8 is PENDING-RELEASE (tracked by DOC-474, owed at the 0.29.0 release gate). One low-priority follow-up logged (PLT-231). No blocking finding.
+
+---
+
+## GATE 2 — MERGED → `pending-release` (2026-06-20)
+
+The maintainer (RamanDamayeu) merged **PR #1795** — squash **`37d5dad6`** on odd-platform `origin/main`, merged_at 2026-06-20T21:55:20Z; **issue #1763 closed/completed**. `via` GitHub PR/issue API.
+
+**Released == verified:** `git diff e6c1c6ec 37d5dad6` over the full alert surface (`AlertServiceImpl`/`AlertController`/`ReactiveAlertRepositoryImpl`/`openapi.yaml`/`components.yaml`/`AlertsList.tsx`) is **EMPTY** — the merged code is byte-identical to the independently-reviewed commit.
+
+**Flip: `review-ready` → `pending-release`** (NOT `done`). This is a milestone item (`0.29.0`); a maintainer-driven merge records `pending-release`, and the `done` flip is owed at the release gate. **OWED at `/review release:0.29.0`** (per `playbooks/release-review.md`): full-suite GREEN on the published 0.29.0 image (both buckets), real-instance verification on the released image, and the documentation-train live-verify of **DOC-474** (`alerting.md` + `api-reference/alerts.md`) once the `release/0.29.0` train merges to docs `main`. Maintainer is keeping the 0.29.0 release **in progress** (other tasks first). PLT-121 (the source draft, #1763) closed. PLT-231 (the shared-hook follow-up) remains open for separate triage.

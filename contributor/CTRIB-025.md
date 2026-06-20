@@ -4,16 +4,18 @@ github_issue_number: 1763
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1763"
 class: bug
 milestone: "0.29.0"
-status: pr-draft
+status: review-ready
 reproduced: "live — see Reproduction log (running odd-minimal stack, 2026-06-20)"
 adr_required: false
 plan_approved_by: "maintainer (GATE 1, 2026-06-20 — 'Approve, one feature PR'; expanded scope to full Activity-mirrored Alerts hardening; backward-compat directive same day)"
 plan_approved_at: "2026-06-20"
 branch: "contrib/CTRIB-025-alerts-view-hardening (from origin/main 80f00bde)"
-commits: "1317fe1c (BE) · 9ee32505 (FE) · 657b12cf (FE deep-link fix)"
+commits: "1317fe1c (BE) · 9ee32505 (FE) · 657b12cf (FE deep-link fix) · bd5a9049 (repo IT) · cd634666 (controller tests)"
 scope_comment: "https://github.com/opendatadiscovery/odd-platform/issues/1763#issuecomment-4757038949"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1795"
 pr_draft: true
+docs_commit: "documentation@release/0.29.0 d8758e2d (not pushed — maintainer pushes the train)"
+ontology_commit: "b303ba1d (odd-team)"
 docs_routing: "release/0.29.0 (DOC-474)"
 pr_url:
 pr_draft:
@@ -140,7 +142,18 @@ Three repository list methods hard-code the status filter; the three controller 
 - **Docs: AUTHORED on `documentation@release/0.29.0`** (commit `d8758e2d`, not pushed; maintainer pushes the train). alerting.md (4 tabs + filters + resolved-reachable; retired the moot caveats) + api-reference/alerts.md (new ops primary; legacy in Deprecated tables + migration) + fixed 2 inbound cross-refs broken by the tab rename (catalog-overview.md, owners.md). Tracked by DOC-474 (live-URL verify at the 0.29.0 release gate).
 - **Integration (IT-030): RED→GREEN PROVEN.** GREEN at the committed SHA (657b12cf) via `feature-complete` 303/303; **RED on `main`@80f00bde** (`ODD_SUT=ref:main` — all 3 IT-030 specs FAIL: no `/api/alerts/list`, resolved unreachable). Full RED/GREEN trail + digests in `run-log/2026-06-20-IT-030.md`.
 - **Ontology: DONE + committed `b303ba1d`** (8 sidecars; F-007 H-006 + P-194 marked resolved; the still-open REFACTOR-024 cross-owner-read finding preserved — the new `listAllAlerts` ALL path applies no owner predicate either). odd-team bookkeeping committed `a6c95dd`.
-- **Full-regression suites (G-C2):** `feature-complete` **303/303 GREEN** · `known-bugs` **3/3 still-RED** (IT-004/006/007 — no unexpected GREEN; alerts change touched none) · `multi-stack` (green-target) _running_ · `ingestion-e2e` (green-target) _pending_.
+- **Full-regression suites (G-C2):** `feature-complete` **303/303 GREEN** · `known-bugs` **3/3 still-RED** (IT-004/006/007 — no unexpected GREEN; alerts change touched none) · `multi-stack` **9/9 GREEN** (auth/storage/notifications/RBAC — no regression) · `ingestion-e2e` (green-target) _pending_.
+- **G-C13 patch-coverage:** CI gate = `min-coverage-changed-files: 98`. The new repo filter methods are mocked in the service test → uncovered. Added **`ReactiveAlertRepositoryFilterTest`** (Testcontainers `BaseIntegrationTest`, the established repo-test pattern — modeled on `ReactiveActivityRepositoryFanOutTest`; commit `bd5a9049`): asserts the status filter (#1763 core, RESOLVED reachable), datasource/namespace/period facets, the tag+owner EXISTS-no-fan-out guard (list AND count), newest-first ordering, and the per-entity/my-objects/dependent scopes. **Build GREEN** (compile + checkstyle both sets + 4/4 methods on Testcontainers Postgres).
+- **G-C12 step 5 — visual review DONE (looked at the rendered pixels, not just the green test):** captured + reviewed screenshots of the running page. (a) Default `/alerts`: filter panel (Period/Datasource/Namespace/**Status=Open**/Tag/Owner) + the 4 tabs (All/My Objects/Downstream/Upstream with count badges) + open alerts with entity link, type label, timestamp, red "Open" badge, Resolve button — clean contrast/spacing, mirrors Activity. (b) `?status=RESOLVED`: the Status dropdown reflects "Resolved" (URL→query→UI sync), counts update, and the **empty state** renders gracefully ("No information to display"). No legibility/wrapping/contrast issues.
+- **`ingestion-e2e` 6/6 GREEN** (IT-128 neo4j relationships pipeline — GRAPH+ERD+UI; no regression). **FULL integration regression (G-C2) COMPLETE.**
+- **Final gate:** the canonical no-arg unit build (`:odd-platform-api:build` = all tests + checkstyle + jacoco + assemble) _running_ — then push + `review-ready`.
+
+## Definition of Done (G-C13) — 5 gates, all actually-run at the committed SHA
+1. **Full unit build** (test + checkstyle + assemble) — **BUILD SUCCESSFUL (6m32s)**, whole unit suite green. **Patch-coverage discovered locally (G-C13 working as intended):** jacoco excludes `**/repository/**` (so the repo impl + its integration test don't count for the gate — the IT is still kept for correctness), but **controllers are NOT excluded** and `AlertController` was 0% (the new endpoints had no unit test → would FAIL the 98% changed-files gate in CI). Added the established controller-test pattern (plain Mockito `@InjectMocks` + delegation-verify, mirroring `ActivityControllerTest`): **`AlertControllerTest`** (all 7 endpoints — new list/counts + legacy passthroughs + status flip) + **`DataEntityControllerAlertsTest`** (`getDataEntityAlertsList`) + a happy-path `getDataEntityAlertsList` case on `AlertServiceImplTest`. First full-build run RED on 3 of my own new tests (test bugs, not production: `any()` on a primitive-`long` arg → NPE + a Mockito matcher-leak cascade; a `verifyComplete()` that ignored the always-emitted `ResponseEntity`) — fixed, targeted re-run GREEN (1m7s). Commit `cd634666`. A subsequent full build flaked on **`PrometheusMetricsIngestionTest`** (a metrics-ingestion test, 0 alert references, 500 under parallel/Docker pressure) — **proven environmental: passes in isolation**, unrelated to this change (the integration regression built from this exact code was already 303/303 green). Clean full build re-running for the green + jacoco number. assemble proven (the SUT jib-built for every integration run).
+2. **FULL integration regression** on the working-tree SUT — `feature-complete` 303/303 ✓ · `multi-stack` 9/9 ✓ · `known-bugs` 3/3 still-RED ✓ · `ingestion-e2e` 6/6 ✓. RED proof on `main` ✓.
+3. **Docs** read + authored + routed on `release/0.29.0` (`d8758e2d`) + 2 inbound xref fixes; DOC-474 tracks the release gate.
+4. **Ontology** re-enriched + committed (`b303ba1d`); F-007/P-194 resolved; REFACTOR-024 caveat preserved.
+5. **Principal sufficiency** — backward-compatible (legacy byte-identical + deprecated); the running-system check caught + fixed a real deep-link crash; patch-coverage closed with the repo integration test; the rendered UI visually reviewed (default + empty state).
 
 ---
 

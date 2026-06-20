@@ -17,8 +17,6 @@ pr_draft: true
 docs_commit: "documentation@release/0.29.0 d8758e2d (not pushed — maintainer pushes the train)"
 ontology_commit: "b303ba1d (odd-team)"
 docs_routing: "release/0.29.0 (DOC-474)"
-pr_url:
-pr_draft:
 backlog_item: PLT-121
 found_date: "2026-06-01"
 filed_date: "2026-06-11"
@@ -255,3 +253,53 @@ Maintainer flagged `AlertServiceImpl.java 68.69% ❌` — a real CI `min-coverag
 
 ### Verdict
 Stays **`review-ready`** for the human GATE-2 merge. The single blocking gate (G-C13 coverage) is fixed + pushed; the human reviews the added tests at merge.
+
+---
+
+## Review (2026-06-20, session: independent re-review — max effort, separate session)
+
+**Result: ACCEPTED.** Contributor draft-PR item → stays **`review-ready`** for the human GATE-2 merge (the human owns `done`/merge). This is a full, independent re-review (the prior review was maintainer-driven and self-scoped to the coverage finding, and it *authored* the coverage fix `e6c1c6ec` — so no independent session had verified that fix or the rest of the change). Re-derived every gate from the branch source + a fresh full build + the actual CI result. No blocking finding.
+
+### The crux the prior (narrow) review did not check — DataEntityController coverage
+The prior review fixed `AlertServiceImpl` (68.69%→98.39%) but checked only that one changed file. I checked **all** changed `.java` files against the JaCoCo XML and CI:
+- `AlertController.java` **100.00%** (82/82 instr) · `AlertServiceImpl.java` **98.39%** (1103/1121 instr, 99.51% line) — `via` my full-build `jacocoTestReport.xml` parse.
+- `DataEntityController.java` is **31.56% whole-file** (154/488) — which would FAIL a *whole-file* 98% gate. Resolved against ground truth: **all 6 CI check-runs on `e6c1c6ec` are `success`, incl. `run_tests`** (the job that enforces the Madrapps `min-coverage-changed-files: 98` gate) — `via` GitHub check-runs API. So the gate measures **changed lines**, not the whole legacy file; the only changed line-set in `DataEntityController` is the new `getDataEntityAlertsList`, covered by `DataEntityControllerAlertsTest`. **G-C13 coverage PASSES** (CI-confirmed + my local build). (Memory `reference_odd_platform_coverage_gate_mechanics` said "whole touched file" — imprecise; it is changed-lines. Corrected in memory.)
+
+### Contributor gates
+- **G-C1 reproduce-first** — PASS. Live repro recorded (Phase B); IT-030 RED proof on `main@80f00bde` (digest `5e85e132`), all 3 specs fail (no `/api/alerts/list`). `via integration-tests/run-log/2026-06-20-IT-030.md` RUN 4.
+- **G-C2 verify running system, FULL regression both buckets** — PASS. **Unit:** my own fresh full CI replica `scripts/run-platform-tests.sh` at `e6c1c6ec` → **BUILD SUCCESSFUL 7m13s** (whole suite + checkstyle + jacoco + assemble), no flake; CI `run_tests` also `success`. **Integration:** `feature-complete` 303/303 · `multi-stack` 9/9 · `known-bugs` 3/3 still-RED · `ingestion-e2e` 6/6, recorded at `657b12cf`; runtime is byte-identical to the reviewed head — `git diff --stat 657b12cf..e6c1c6ec` = **4 files, all under `src/test/`** (no `src/main` delta → SUT image unchanged), so a re-run would re-measure the identical system. RED proof on `main`. `via` build log + `git diff` + run-log + CI API.
+- **G-C3 GATE 1** — PASS. `plan_approved_by: maintainer (2026-06-20)`, scope expanded to the full Activity-mirror + the backward-compat directive, all recorded in-record.
+- **G-C4 GATE 2** — N/A (human-owned). PR #1795 `draft, mergeable_state: blocked` = branch protection requires a human approving review; the bot cannot self-approve. Correct. `via` GitHub PR API.
+- **G-C5 bounded + public scope comment** — PASS. `scope_comment` recorded (`#issuecomment-4757038949`). The diff matches the REVISED PLAN (additive API + Activity-mirror FE); excluded items (bulk-resolve, export, alert-type filter, the housekeeping purge bug) are absent from the diff. `via git diff 80f00bde..e6c1c6ec`.
+- **G-C7 irreversible blast-radius** — PASS. The breaking D4 consolidation was REVERSED to **additive**: legacy `getAllAlerts`/`getAssociatedUserAlerts`/`getDependentEntitiesAlerts`/`getAlertTotals`/`getDataEntityAlerts` + their service & repo methods are **byte-identical & `deprecated: true`** (controller/service/repo diffs are append-only; both `getAlertsByDataEntityId` overloads coexist). No destructive migration, no auth-posture change (the new ALL path applies no owner predicate — *consistent with the legacy ALL path* and ODD's by-design read-collaborative posture; REFACTOR-024 caveat preserved). `adr_required: false` justified. `via` the three BE source diffs.
+- **G-C9 test integrity, both buckets** — PASS. Unit (`AlertServiceImplTest` 23 behavioral cases + `AlertControllerTest` 8 + `DataEntityControllerAlertsTest` + `ReactiveAlertRepositoryFilterTest`) + integration (IT-030 e2e). The repo IT directly proves the #1763 status filter at the SQL level (OPEN excludes resolved, RESOLVED surfaces only resolved, null=all), newest-first order, period/datasource/namespace facets, and the EXISTS no-fan-out (2 tags × 2 owners → 3 rows not 12, list AND count). Expected values trace to the seeded fixture, not system output.
+- **G-C10 ontology + docs move (committed)** — PASS. Ontology `b303ba1d` (8 nodes: F-007, P-194, the 5 alert sidecars, FE Alerts) with REFACTOR-024 cross-owner caveat preserved + extended to `listAllAlerts` (`AlertServiceImpl` sidecar :57-58). Docs `d8758e2d` on `release/0.29.0` (alerting.md + api-reference/alerts.md + 2 inbound xref fixes). `via git show`.
+- **G-C11 milestone** — PASS. `0.29.0` open semver; docs routed `release/0.29.0`; DOC-474 is the release-gate tracker.
+- **G-C12 design-before-build** — PASS. Reuse-scan (Activity→Alerts mirror), ADR-check (conform to the Activity list/filter pattern; no new ADR), impact checklist (i18n ×7, generated BE+FE clients, every consumer), PO/SRE lens (SME consultation `2026-06-20-global-alerts-status-filter.md`) all recorded in Phase C.
+- **G-C13 principal sufficiency** — PASS. Coverage gate met (above); tests are meaningful/behavioral (Mockito+StepVerifier, real Testcontainers SQL), not green-for-green; visual review of the rendered page recorded (default + empty state). The `AlertStatusEnum.valueOf(status.name())` mapping is safe — contract `AlertStatus` and dto `AlertStatusEnum` value names are identical (OPEN/RESOLVED/RESOLVED_AUTOMATICALLY); the `AlertViewType` switch is exhaustive. `via` source + enum grep.
+- **G-C15 test-change integrity** — PASS. Only `AlertServiceImplTest` was a *changed* file (existed on `main`, 70 lines); its 3 original tests survive **byte-identical** (`getDataEntityAlerts…NotFound`, `getDataEntityAlertsCounts…NotFound`, `handleExternalAlerts_emptyBatch…`); the one non-additive edit is the mechanically-required constructor arg (`dataEntityRelationsService`); everything else is pure addition. The IT-030 spec change strengthened isolation (two uniquely-named seed entities) and the RED-on-`main` survives (run-log RUN 4). No weakened oracle, no `@Disabled`/`.skip`, no bug pinned-as-correct. `via git show 1317fe1c` + the test file + run-log.
+- **G-C16 change-request product analysis** — PASS. Phase C restates the user problem independent of the issue's fix, consults SME, enumerates A/B/C incl. rescope, recommends A; GATE-1 decision recorded.
+
+### Quality Bar (universal / documentation gates)
+- **Gate 1 (no duplicates)** — PASS. Reuses the Activity architecture; legacy endpoints retained+deprecated, not parallel-copied. `via` BE diffs.
+- **Gate 4/9 (consumer-read / provenance)** — PASS. Every runtime claim traces to source I read (controller→service→repo→spec); the 3 new spec ops map 1:1 to the implemented service methods; legacy ops `deprecated: true`. `via git show … components.yaml openapi.yaml` + the source.
+- **Gate 8 (publishing / live-site)** — PENDING-RELEASE (`0.29.0`). Docs are on the unpushed `release/0.29.0` train (maintainer pushes); DOC-474 records `expected_live_urls` (alerting + api-reference/alerts) for the release-gate live verification. Branch-verifiable now: Gate 11 grep clean (below).
+- **Gate 10 (content homing)** — PASS. Feature behaviour on `alerting.md`; endpoint deprecation/migration table on `api-reference/alerts.md` (API content correctly homed off the feature page).
+- **Gate 11 (audience isolation)** — PASS. Mechanical banned-term grep on all 4 train doc files (`alerting.md`, `api-reference/alerts.md`, `owners.md`, `catalog-overview.md`) — clean; operator language only. `via git show d8758e2d:<file>`.
+
+### Behavioural observations (non-blocking)
+- **`listMyAlerts` does not exclude soft-deleted entities** whereas legacy `listByOwner` filtered `DATA_ENTITY.STATUS != DELETED`. NOT a regression of any legacy endpoint (those are byte-identical) and the new code is internally consistent (legacy *global* ALL never filtered DELETED either; cross-owner read is by-design). Minor, untested, arguably-fine nuance — not worth a separate item; noted here for the record. `via` repo diff (`ownerExistsCondition` vs `listByOwner` :170-171).
+- **Offset pagination + bare `Alert[]`** (FE infers `hasNext` from length) was chosen over the REVISED PLAN's keyset; recorded in the ledger; satisfies "order by event datetime desc" (the `createAlertJoinQuery` CTE orders `LAST_CREATED_AT DESC, ID DESC`). Acceptable Principal call. `via` `ReactiveAlertRepositoryImpl:493-525`.
+
+- **Outbound URL sweep**: live URLs are pre-release (Gate 8 PENDING-RELEASE) — not fetched this session; recorded on DOC-474 for the release gate. Published pages read on `origin/main` are accurate for 0.28.0 (no in-scope mismatch).
+- **Banned-phrase check**: none used.
+- **Regressions**: none — fresh full unit build green; integration runtime byte-identical to the green `657b12cf` run (test-only delta).
+- **Navigation**: consistent (no navigation pointer shifts; ontology sidecars refreshed under `b303ba1d`).
+- **Upstream issues logged**: `issues/odd-platform/PLT-231.md` — the shared-hook root cause behind the alerts deep-link crash (`useQueryParams` returns URL params with no default-merge; verified at `useQueryParams.ts:41-46`). The implementer narrated it as a follow-up but did not log it; logged now (low; the alerts bite is already fixed; this tracks the latent class + the class-level fix). Also fixed the item frontmatter's duplicate empty `pr_url:`/`pr_draft:` keys (YAML last-key-wins was nulling the real values).
+- **Doc-product editorial findings** (audit per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: the alerting subtree on `main` (`active-platform-features/alerting.md` + the 2 train-touched cross-ref pages `owners.md`, `data-discovery/catalog-overview.md`) — the change's blast radius. Queued for a future `/review`: the remainder of the tree (`configuration-and-deployment/**`, `integrations/**`, `developer-guides/**`).
+  - **Findings**: none surfaced this run. The published `alerting.md` is internally coherent and accurate for 0.28.0 (the OPEN-only tabs + per-entity workaround); the 0.29.0 rewrite is correctly gated on the unpushed train, so `main` carries no premature/contradictory claim.
+- **Notes**: the prior in-session coverage fix `e6c1c6ec` is now independently verified — its added tests are behavioral and meaningful, the 3 pre-existing tests are un-weakened, and the full build + CI both pass at that SHA. VERIFIED via the test files, `git diff`, my full build, and the GitHub check-runs API.
+
+### Verdict
+**ACCEPTED** — stays **`review-ready`** for the human GATE-2 merge. Every contributor gate + the relevant universal/doc gates pass with cited evidence; Gate 8 is PENDING-RELEASE (tracked by DOC-474, owed at the 0.29.0 release gate). One low-priority follow-up logged (PLT-231). No blocking finding.

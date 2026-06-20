@@ -529,6 +529,70 @@ export async function clearEntityAlerts(): Promise<void> {
   });
 }
 
+// CTRIB-025 / #1763 (global alerts view hardening): seed an OPEN alert on one DEDICATED entity and a RESOLVED
+// alert on a SECOND dedicated entity, each with a unique external_name, so the global Alerts test can assert on
+// those names in isolation. The global "All" tab is cross-platform, so other specs' open alerts pollute a
+// bare type-label assertion (an open "Failed DQ test" from another entity would make a "resolved not visible"
+// check flaky) — dedicated unique entity names sidestep that. The alerts use NOW() so they sort to the top
+// (newest-first) and land on page 1. Status codes per AlertStatusEnum (OPEN=1 / RESOLVED=2); type codes per
+// AlertTypeEnum (BACKWARDS_INCOMPATIBLE_SCHEMA=1 / FAILED_DQ_TEST=2). On origin/main the global list hard-filters
+// status=OPEN with no status param, so the resolved entity is unreachable on the global page -> the RED proof.
+export const IT030_OPEN_ALERT_ENTITY = 'ctrib025_open_alert_entity';
+export const IT030_RESOLVED_ALERT_ENTITY = 'ctrib025_resolved_alert_entity';
+const IT030_ALERT_SOURCE_ID = 9301;
+
+export async function seedOpenAndResolvedAlerts(): Promise<void> {
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO data_source (id, oddrn, name) VALUES ($1, '//ctrib025/alerts-src', 'ctrib025-alerts-src')
+       ON CONFLICT (id) DO NOTHING`,
+      [IT030_ALERT_SOURCE_ID],
+    );
+    const seedEntityAndAlert = async (
+      entityId: number,
+      oddrn: string,
+      externalName: string,
+      status: number,
+      type: number,
+      description: string,
+    ): Promise<void> => {
+      await c.query(
+        `INSERT INTO data_entity
+           (id, oddrn, external_name, data_source_id, type_id, view_count, source_created_at, source_updated_at)
+         VALUES ($1, $2, $3, $4, 1, 0, NOW(), NOW())
+         ON CONFLICT (id) DO UPDATE SET external_name = EXCLUDED.external_name, oddrn = EXCLUDED.oddrn`,
+        [entityId, oddrn, externalName, IT030_ALERT_SOURCE_ID],
+      );
+      await c.query('DELETE FROM alert_chunk ac USING alert a WHERE ac.alert_id = a.id AND a.data_entity_oddrn = $1', [
+        oddrn,
+      ]);
+      await c.query('DELETE FROM alert WHERE data_entity_oddrn = $1', [oddrn]);
+      const alertId = Number(
+        (
+          await c.query(
+            `INSERT INTO alert (data_entity_oddrn, last_created_at, status_updated_at, status, type)
+             VALUES ($1, NOW(), NOW(), $2, $3) RETURNING id`,
+            [oddrn, status, type],
+          )
+        ).rows[0].id,
+      );
+      await c.query('INSERT INTO alert_chunk (alert_id, created_at, description) VALUES ($1, NOW(), $2)', [
+        alertId,
+        description,
+      ]);
+    };
+    await seedEntityAndAlert(9301, '//ctrib025/open-entity', IT030_OPEN_ALERT_ENTITY, 1, 1, 'CTRIB025 open alert');
+    await seedEntityAndAlert(
+      9302,
+      '//ctrib025/resolved-entity',
+      IT030_RESOLVED_ALERT_ENTITY,
+      2,
+      2,
+      'CTRIB025 resolved alert',
+    );
+  });
+}
+
 // IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
 // Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
 // external). The tag NAME renders verbatim on the Overview (no transform — verified live).

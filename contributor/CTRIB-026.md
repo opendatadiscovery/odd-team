@@ -5,7 +5,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1768
 backlog_item: PLT-096
 class: bug
 security_sensitive: false   # public issue, maintainer-authored (RamanDamayeu); FRONTEND-only (React/TS). No auth/security posture, no migration, no wire contract. Defect 1 = list mis-ordering UX; Defect 2 = dead code; Defect 3 = truncation-hint UX.
-status: pr-draft           # DRAFT PR #1796 opened (Closes #1768). All 5 DoD gates met. /review (separate session) owns review-ready; GATE 2 (human) owns the merge. NEVER self-merge/done.
+status: pr-draft           # /review 2026-06-21 → blocked (IT-020 helper polluted entity 2001 → feature-complete RED on a pinned/reused stack); REWORK 2026-06-21 (see ## Rework) added a hermetic `beforeEach(clearEntityTags)` to entity-tags-display.spec.ts → verified: test#105 PASSES on the pinned/reused stack, feature-complete 303/304 (the lone fail = the confirmed unrelated owner-association flake #59 direct-bind-create, passes isolated 1.2s → TST-054). Blocker resolved; back to pr-draft. A SEPARATE /review owns review-ready; GATE 2 (human) owns the merge. NEVER self-merge/done.
 milestone: "0.29.0"        # the issue's AUTHORITATIVE GitHub milestone (open, semver ^\d+\.\d+\.\d+$) -> G-C11 PASS. The issue BODY's YAML `suggested_milestone: 0.28.0` is superseded (0.28.0 already shipped 2026-06-17; the open milestone is 0.29.0) — same CTRIB-022/024 precedent.
 reproduced: "live runnable demonstration 2026-06-21 of the EXACT defect mechanism using the real comparator (OverviewTags tagsCompare:26-32) and the real expression order. node script: 21 tags = 20 unimportant (a00..a19, wire order) + 1 important (zzz-critical-pii) at wire index 20. CURRENT `tags.slice(0,20).sort(tagsCompare)` -> visible top-20 contains the important tag? FALSE (first 3: a00,a01,a02). FIXED `[...tags].sort(tagsCompare).slice(0,20)` -> TRUE (first 3: zzz-critical-pii,a00,a01). Defect 2: `[...[{gamma},{alpha},{beta}]].sort()` -> [gamma,alpha,beta] UNCHANGED = no-op confirmed. The gold-standard UI-level RED proof (seed >20 tags, drive the Overview, important tag absent on ref:main / present on the fix) is the Phase-D IT-020 extension on ODD_SUT=ref:main."
 adr_required: false        # client-side list-ordering correctness + a small UX hint. No migration, no auth/security-posture, no breaking wire/public-API contract. No governing ADR exists for these components (implicit-adrs lists none for the Overview sidebar lists). G-C7 does NOT fire.
@@ -307,3 +307,103 @@ All three recommended options chosen:
 
 Next: post the combined root-cause + scope comment (b1 reshape + DatasetFieldTags extension), record the URL, branch
 `contrib/CTRIB-026-overview-truncation-ordering`, implement.
+
+## Review (2026-06-21, session: independent /review — max effort, separate from implement)
+
+- **Result**: **REJECTED → `blocked`**. The **production fix is CORRECT and fully proven** (diff read line-by-line; IT-020 #1768 case GREEN on a reviewer-built branch SUT and RED on pre-fix `published:0.28.0`; **feature-complete 304/304 GREEN on a clean stack**). It is blocked on a **single, in-scope, test-harness-only defect**: the new IT-020 helper `seedEntityImportantTagPastCap` pollutes shared entity 2001 and REDs feature-complete under the recommended pinned/reused-stack run pattern. Production code (odd-platform PR #1796) is unaffected and ready; the rework is small and touches only the odd-team integration suite.
+
+### Reviewer's own runtime evidence (SUT built from the reviewed commit)
+- **SUT**: `build-sut.sh ref:contrib/CTRIB-026-overview-truncation-ordering` → `built from source: …@ c54b9c61`, image `odd-platform:odd-team-sut` (my build digest `sha256:352d8b80…`). No OOM (`-Xmx3g`).
+- **IT-020 #1768 GREEN proof** (branch SUT): `3 passed` incl. `…:58 › an important tag past the truncation cap is visible while collapsed (#1768)`. VERIFIED via `run-suite.sh IT-020`.
+- **IT-020 #1768 RED proof** (pre-fix `published:0.28.0`, digest `sha256:0b0391b0…`): test#3 (#1768) **FAILS** — `getByText('zzz-it020-important-pii')` element-not-found (10s); test#1/#2 pass. The test is a valid RED→GREEN discriminator (G-C9). VERIFIED via `ODD_SUT=published:0.28.0 run-suite.sh IT-020`.
+- **Full regression on a CLEAN stack** (pinned branch SUT, fresh DB): **feature-complete 304/304 PASS** · **multi-stack 9/9 PASS** · **known-bugs 3 expected-RED (no unexpected GREEN)** · **ingestion-e2e 6/6 PASS**. Matches the implementer's claim on a clean run. VERIFIED via `run-suite.sh` per suite.
+- **The defect (feature-complete on a PINNED/REUSED stack): 2 failed / 302 passed.**
+  - **#105** `entity-tags-display.spec.ts:27 › a tagged entity renders the tag` (✘ 11.4s): `getByText('IT020GoldTag')` not found. **Root cause = test pollution**: the new `seedEntityImportantTagPastCap` leaves **26 tags** on shared entity 2001 (DB-confirmed: `SELECT count(*) FROM tag_to_data_entity WHERE data_entity_id=2001` → `26`, incl. `zzz-it020-important-pii`+25 `it020-wire-*`). On a reused stack, test#1 (`seedEntityTag`, no pre-clear) adds a 27th tag that the (correct) importance-sort pushes past the 20-cap → not visible → timeout. **The production behaviour is correct** (a non-important tag past the cap *should* stay hidden); the TEST's assumption is what breaks. PASSES on a clean stack (✓ 1.4s) — confirming pollution, not regression.
+  - **#251** `remove-user-owner-mapping.spec.ts:123 › F-173` (✘ 60s `waitForResponse` timeout): an **owner-mapping** flake, zero relationship to the tag/Overview change. PASSES on the clean re-run (✓ 2.0s) → transient flake, not change-related, not reproducible.
+
+### Acceptance criteria (contributor DoD, G-C2/G-C9/G-C10 + the 5-gate DoD)
+- [x] Reproduce-first (G-C1) — PASS: runnable demonstration logged; mechanism re-verified against `37d5dad6`. VERIFIED via the diff base.
+- [x] Fix shape matches the approved plan (Defect 1 sort-before-slice on the 3 tag lists; Defect 2 b1 no-op removal; Defect 3 hint on entity Overview Tags/Terms/Groups) — PASS. VERIFIED via `git diff 37d5dad6 c54b9c61` over all 5 components.
+- [x] Unit test injects the failing condition (G-C9) — PASS: `OverviewTags.test.tsx` (21 tags, important last; RED-on-base by the `unmountOnExit` collapse). VERIFIED via read + the i18n-parity check below.
+- [~] Integration test both buckets (G-C9) — **PARTIAL/FAIL**: the #1768 case itself is a valid RED→GREEN proof, BUT the helper it adds is not isolation-safe (see #105). The integration deliverable must be order-independent before this passes.
+- [x] Docs decision routed (G-C10/G-C11) — PASS: `entity-detail-page.md` Section 5 revised on `release/0.29.0` (DOC-475, pending-release). VERIFIED via the docs-branch diff.
+- [x] Ontology committed (G-C10) — PASS: F-179 flow + reflection `resolution` blocks. VERIFIED via `git show dd78ad6`.
+
+### Quality Bar / contributor gates
+- **G-C1 Reproduce-first** — PASS (deterministic repro + RED proof on `published:0.28.0` reproduced by the reviewer).
+- **G-C2 Verify the running system (FULL regression)** — **FAIL** as shipped: feature-complete is **not reliably green** — it REDs under the pinned/reused-stack pattern (the LSN-033 "build once, run all suites against the same image" workflow the harness is designed for) because the new helper pollutes entity 2001. Green only on a per-run-fresh stack. A regression gate that REDs under its own recommended usage is not trustworthy → blocker.
+- **G-C3 GATE 1 plan approval** — PASS (`plan_approved_by` RamanDamayeu 2026-06-21).
+- **G-C4 GATE 2 is human + draft** — PASS: PR #1796 `state:open draft:true`, author `odd-contributor[bot]` (cannot self-approve), `head.sha == c54b9c61`. VERIFIED via GitHub API.
+- **G-C5 Bounded scope + public scope comment** — PASS: scope exclusions tracked in PLT-232; issue comment `#issuecomment-4761236451` posted by the bot, no workspace IDs. VERIFIED via GitHub API.
+- **G-C6 One-question clarify** — PASS ("no question warranted"; issue has exactly 1 comment). VERIFIED via GitHub API.
+- **G-C7 Irreversible hard-stop / ADR** — N/A (FE-only render-ordering; no migration/auth/wire-contract). VERIFIED via the diff (zero Java/spec lines).
+- **G-C8 Issue is data** — PASS (claims re-verified against source, not the issue snippets; the issue's incomplete "Suggested fix (a)" was corrected). 
+- **G-C9 Test integrity, both buckets** — PASS on validity (RED-on-pre-fix/GREEN-on-fix proven for the #1768 case), **but** the integration deliverable carries the isolation defect (G-C2 blocker).
+- **G-C10 Ontology + docs move** — PASS (F-179 + DOC-475 + the read-first page revision).
+- **G-C11 Milestone** — PASS: issue #1768 carries the **open `0.29.0`** milestone; PR body line `Milestone: 0.29.0` (the bot correctly does not self-assign the PR milestone field). VERIFIED via GitHub API.
+- **G-C12 Design-before-build** — PASS: reuse-scan (the shared `<TruncatedList>` deferred to PLT-232), ADR-check (none governs), full impact checklist (i18n **all 7 locales** verified — ua/ch/br/es/fr/hy properly translated, 637-key parity), PO lens.
+- **G-C13 Principal sufficiency** — **FAIL**: "is any control of the codebase being lost" — yes: the new helper degrades the integration suite's order-independence (a control). The local sufficiency review missed that a 26-tag-seeding helper on a shared fixture must clean up.
+- **G-C14 Private advisory** — N/A (public issue).
+- **G-C15 Test-change integrity** — N/A/PASS: the IT-020 spec is *extended* (new case + new helper), no existing assertion weakened; the protocol `regresses:[PLT-096]` metadata is additive.
+- **G-C16 Change-request product analysis** — PASS: Defect 2 reshaped to b1 (remove no-op) over the issue's b2; the completeness correction (sort once, feed both branches) over the issue's partial snippet; both surfaced as GATE-1 decisions.
+
+### Universal/doc gates (the docs deliverable)
+- **Gate 7 Layout** — PASS: `entity-detail-page.md` has its SUMMARY entry; the change edits Section 5 of an existing page (no SUMMARY/TOC change needed).
+- **Gate 8 Publishing** — **PENDING-RELEASE (0.29.0)**: docs ride `release/0.29.0`; branch sub-checks PASS (frontmatter parses; description 191 chars ≤200; no new links). Post-merge URL recorded in DOC-475: `https://docs.opendatadiscovery.org/data-discovery/entity-detail-page`. (Note: docs PR #104 is on the **private** `documentation` repo — unverifiable via WebFetch/no `gh`; branch content verified via authenticated git; PR draft-state defers to the release gate.)
+- **Gate 9 Provenance** — PASS: every claim re-verified against source (`texts.secondary` is a real theme key — `palette.ts:82`, 17× precedent; the docs reframe is accurate to the fix).
+- **Gate 11 Audience isolation** — PASS: the published page uses operator language; the fix *removed* prior impl-jargon ("stringification defect", "DataEntityRef[]"). Mechanical grep clean.
+
+- **Outbound URL sweep**: GitHub API — PR #1796, issue #1768, comment #4761236451 all VERIFIED; `documentation` repo confirmed **private** (404 unauth) so docs PR #104 NOT VERIFIABLE here → defers to the release gate.
+- **Banned-phrase check**: none.
+- **Regressions**: none in production. feature-complete green-on-clean (304/304); the 2 pinned-run failures are the helper-pollution (#105, this change) + an unrelated owner-mapping flake (#251).
+- **Navigation**: consistent (no pointer shifts).
+- **Upstream issues logged**: none new (the issue thread already carries the scope comment).
+- **Doc-product editorial findings** (audit per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: change blast-radius — whole-tree term-sweep for `importance|important tag|View All|truncat|slice|Showing 20 of` (clean: `tagging.md:63` = the *separate* 0.28.0 Top-tags catalog bug; `business-glossary.md:181`/`query-examples.md:75`/`alerting.md` = unrelated truncation surfaces) + `entity-detail-page.md` (internally coherent) + `tagging.md`/`groups-domains.md` siblings. **Queued for a dedicated editorial pass**: the remaining doc tree (`data-quality/**`, `integrations/**`, `configuration-and-deployment/**`, `developer-guides/**`) — not read end-to-end this run.
+  - **Findings**:
+    - **DOC-476** (low, parallel-surfaces-with-drift) — `groups-domains.md:98` calls the entity-detail page's Groups note a "visible-window truncation **caveat**", but #1768 downgraded that `warning` to an `info` (server-order) note; "caveat" mildly lags. Same release train. Logged.
+    - Sub-threshold (NOT logged): `entity-detail-page.md` hint-intro uses "Showing 20 of N" as the generic example while Groups caps at 10 — the exact caps (10/20) are stated twice in the same section, so it's a representative-example nit, not a contradiction. Noted in DOC-476 as a secondary line.
+
+### Rework fix-list (small, in-scope — re-submit after)
+1. **Make the IT-020 #1768 deliverable order-independent.** `seedEntityImportantTagPastCap` (or `entity-tags-display.spec.ts`) must restore entity 2001 to a clean tag state so it does not pollute sibling tag-display specs on a reused stack. Cleanest: add `test.afterEach(async () => { await clearEntityTags(); })` to the describe block (`clearEntityTags()` already exists — `helpers/db.ts:613`, deletes all `tag_to_data_entity` for entity 2001); or have test#1 (`seedEntityTag`, line 27) `clearEntityTags()` first, matching test#2's discipline.
+2. **Re-measure with the run order that exposed it**: build the branch SUT once, `ODD_PLATFORM_IMAGE`-pin it, run `IT-020` then `feature-complete` against the same image → confirm **feature-complete 304/304 GREEN** (no pollution). That is the gate.
+
+### Separate follow-up (genuinely separable — NOT touched by the rework)
+- **#251 owner-mapping flake** — `remove-user-owner-mapping.spec.ts:123` (F-173) can hard-timeout (60s `waitForResponse` for `/api/owner_association_request`) under a long single-worker run; passed in 2.0s on the clean re-run. Pre-existing, unrelated to #1768. Logged as a low-priority test-hygiene watch item (`backlog/tests/TST-054.md`).
+
+**Status flip**: `pr-draft` → `blocked`. The implementer applies the one-line cleanup, re-runs feature-complete pinned, and re-submits to `/review`. The production diff (PR #1796), the docs train, and the ontology stay as-is — all verified correct.
+
+### Ontology impact analysis (added 2026-06-21, on maintainer request — `/code-walk`)
+Ran the `feature-advisor` over the full ontology (F-179 flow+reflection, concepts, implicit-adrs, refactoring-scopes, doc-gaps, test-map, live docs) → `lineage/odd-platform/feature-walks/2026-06-21-overview-truncation-impact.md` (HIGH confidence). It **corroborates the bounded blast radius** and adds precision:
+- **No wider correctness blast radius.** F-176 (the parent Overview composer) passes the arrays down as props and imposes **no shared ordering contract** (`F-176.yaml:173-197,296-322`), so the fix is contained to the leaf panels; no dependent is structurally affected (no signature change). Bounded to the entity-Overview / term-detail-Overview / dataset-field surfaces.
+- **Untouched siblings classified (the "what else shares the pattern" question), source-grounded + reviewer-spot-checked:** `AttachmentsList.tsx:42-63` = structural pattern-twin (slice+Collapse+toggle) but **NO `.sort()` → never had the importance bug**; `OverviewMetrics`/`OverviewMetadata` = height-collapse (no slice); `OverviewEntityGroupItems` = server-paginated. **NO untouched sibling carries the slice-then-sort importance bug** — the only divergence the bounded fix creates is the **(b) truncation-hint UX gap** (3 fixed panels gain "Showing N of M"; AttachmentsList/OverviewMetrics + the term-detail & dataset-field tag lists don't). Already captured by **PLT-232** — the walk recommends naming these specific siblings in PLT-232's acceptance criteria so the divergence is consolidated, not left as permanent drift.
+- **Confirmed the two highest-value reviewer checks (independently already done in this review):** (UC-2) the fix must compute **ONE** sorted array feeding both the collapsed slice AND the View-All remainder (else the H-002 "two-independently-sorted-halves" merge defect reopens) — verified in the diff (`const sortedTags = [...tags].sort(...)` once); (UC-1) the ordering assertion — the unit test's important-tag-present-in-the-capped-view + the IT-020 #1768 case both assert the ordering property, not mere presence.
+- **Reinforces the test concern:** `test-map.yaml` has **no F-179 coverage**; the pre-existing e2e tests (IT-016/020/024) assert chip *presence*, never *ordering* — i.e. this feature's test layer is thin, consistent with the review's test-deliverable blocker. The rework should pin UC-1/UC-2 (the walk proposes shapes).
+- **No governing ADR** (verified absent via Glob + implicit-adrs grep). The fix aligns with the already-shipped backend LSN-019 "rank-then-truncate" stance (the 0.28.0 Top-Tags fix); the walk flags a *future* implicit-ADR seed ("truncated read-surface lists rank the full set before the visible cut") to consider alongside PLT-232 — strategic, non-blocking.
+- **Docs**: corroborates DOC-475 — the live `entity-detail-page` still describes pre-fix behaviour, correctly release-gated to 0.29.0 (not currently wrong — it describes the live 0.28.0). No new doc action.
+- **One trivial net-new pre-existing smell surfaced (NOT #1768):** `OverviewMetrics.tsx:50-51` is a **duplicated identical early-return** (dead line). Upstream, harmless, out of scope — candidate for a `/log-issue` draft if the maintainer wants it tracked.
+- **Honest coverage gap the walk flags:** the 5 changed leaf `.tsx` have **no enriched sidecars** (FE enrichment is thin; substrate last scanned `e67461de`), so the walk asserts *blast radius*, not *diff-line correctness* — the latter is covered by this review's own `git diff` read against `c54b9c61`. A follow-up `/enrich` on these components would close the gap.
+
+**Net:** the ontology analysis does not change the verdict (the test-isolation blocker stands) — it independently confirms the change is correctly bounded with no hidden dependents, and sharpens PLT-232's scope with the named siblings.
+
+## Rework (2026-06-21, maintainer-directed — resolve the `/review` blocker)
+
+**The blocker is fixed.** Per the maintainer's instruction to implement the test change needed to close the item, the single test-isolation defect from the `/review` was fixed and re-verified against the exact scenario that exposed it.
+
+### The fix (one file, test-harness only — no production code)
+`integration-tests/e2e/specs/entity-tags-display.spec.ts` — added a hermetic reset to the describe block so every test owns its precondition:
+```ts
+test.beforeEach(async () => {
+  await clearEntityTags();
+});
+```
+Rationale: the `#1768` case seeds >20 tags via `seedEntityImportantTagPastCap`; without a per-test reset, a reused/pinned stack (the LSN-033 "build once, run IT-020 then feature-complete on one image" pattern) carried that 26-tag residue into the positive test (`a tagged entity renders the tag`, line 27), pushing its single seeded tag past the importance-ordered 20-cap. `clearEntityTags()` (`helpers/db.ts:613`) already existed; this just makes the spec order-independent. **No assertion changed; the `#1768` RED-proof test is untouched** (G-C15 safe — it still seeds 26 + asserts the important tag visible).
+
+### Verification — re-ran the EXACT blocker scenario (reviewer's own SUT, rebuilt from the reviewed commit)
+- **SUT** rebuilt from `contrib/CTRIB-026-overview-truncation-ordering @ c54b9c61` (the OOM that hit the first rebuild was cleared by raising the gradle daemon heap to 3g via `~/.gradle/gradle.properties` — an env config, not a repo change).
+- **IT-020 (with the fix): 3 passed** (incl. the `#1768` case) — `e2e:PASS`.
+- **feature-complete PINNED on the reused stack (the scenario that previously RED'd): test#105 `entity-tags-display:27` now PASSES** — the blocker is gone. Suite = **303 passed / 1 failed**.
+- **The lone failure is NOT the blocker and NOT a `#1768` regression:** `direct-bind-create.spec.ts:60` (F-172 admin owner-binding modal) — the "Create association" button missed its 10s render window (11.0s). **Re-ran it isolated → 3 passed (1.2s)** = a confirmed transient flake, same owner-association admin-UI class as the earlier `#251 remove-user-owner-mapping`. Tracked in **TST-054** (now 2 observed instances).
+
+### Status
+`blocked` → **`pr-draft`** (the rework is done; the change's test deliverable is now order-independent and the `#1768`-relevant suite is green). The production diff (PR #1796), docs train, and ontology are unchanged — all still verified correct. **A SEPARATE `/review` session owns the `pr-draft` → `review-ready` flip** (this session implemented the rework, so it cannot self-advance past the gate); GATE 2 (human) owns the merge.

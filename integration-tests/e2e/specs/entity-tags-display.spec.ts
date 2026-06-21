@@ -24,6 +24,15 @@ const detailFetch = (page: import('@playwright/test').Page) =>
   );
 
 test.describe('F-018 Entity tags — Overview renders the tag chip', () => {
+  // Each test owns its precondition: start from a clean tag set on the shared entity (2001). The #1768
+  // case below seeds >20 tags via seedEntityImportantTagPastCap; without this hermetic reset a reused /
+  // pinned stack (build-once, run IT-020 then feature-complete against one image — the LSN-033 pattern)
+  // carries that residue into the positive test, pushing its single seeded tag past the importance-
+  // ordered 20-cap so it is no longer in the collapsed view. Caught in the CTRIB-026 /review.
+  test.beforeEach(async () => {
+    await clearEntityTags();
+  });
+
   test('a tagged entity renders the tag on the Overview', async ({ page }) => {
     await seedEntityTag(TAG);
 

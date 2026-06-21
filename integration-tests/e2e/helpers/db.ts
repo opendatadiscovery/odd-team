@@ -617,6 +617,49 @@ export async function clearEntityTags(): Promise<void> {
   });
 }
 
+// IT-020 / odd-platform#1768 — seed MORE than the Overview tag cap (20) on entity 2001 with ONE
+// important tag placed LAST in wire order: it is named `zzz-…` (sorts last alphabetically) AND
+// created after the filler tags (highest id), so it sits PAST index 19 however the backend orders an
+// entity's tags. Pre-fix `tags.slice(0,20).sort(...)` slices the filler-only first 20 and never shows
+// it; the fix sorts by importance first, then slices, so it ranks first and is visible while collapsed.
+// Returns the important tag's name + the total tag count (for the "Showing 20 of N" hint assertion).
+export async function seedEntityImportantTagPastCap(
+  fillerCount = 25,
+  importantName = 'zzz-it020-important-pii',
+): Promise<{ importantName: string; total: number }> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM tag_to_data_entity WHERE data_entity_id = $1', [ENTITY_ID]);
+    const link = async (name: string, important: boolean) => {
+      const sel = await c.query('SELECT id FROM tag WHERE name = $1 LIMIT 1', [name]);
+      const id = sel.rows[0]
+        ? Number(sel.rows[0].id)
+        : Number(
+            (
+              await c.query('INSERT INTO tag (name, important) VALUES ($1, $2) RETURNING id', [
+                name,
+                important,
+              ])
+            ).rows[0].id,
+          );
+      // keep the important flag correct even if the tag pre-existed from an earlier run
+      await c.query('UPDATE tag SET important = $2 WHERE id = $1', [id, important]);
+      await c.query(
+        'INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external) VALUES ($1, $2, false) ON CONFLICT DO NOTHING',
+        [id, ENTITY_ID],
+      );
+    };
+    // filler (unimportant) tags first — lower ids, earlier in wire order
+    for (let i = 0; i < fillerCount; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await link(`it020-wire-${String(i).padStart(3, '0')}`, false);
+    }
+    // the important tag LAST — created after the filler (highest id) and `zzz-` sorts last by name
+    await link(importantName, true);
+  });
+  return { importantName, total: fillerCount + 1 };
+}
+
 // IT-019 — F-024 term search (Dictionary /termsearch): seed a term that is FINDABLE by the
 // catalog-wide term search. Term search matches `term_search_entrypoint.term_vector` (an FTS
 // tsvector), NOT the `term` table directly — a raw term INSERT is INVISIBLE to search. So we

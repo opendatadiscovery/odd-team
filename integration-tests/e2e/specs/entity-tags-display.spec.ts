@@ -1,5 +1,10 @@
 import { test, expect } from '@playwright/test';
-import { seedEntityTag, clearEntityTags, ENTITY_ID } from '../helpers/db';
+import {
+  seedEntityTag,
+  clearEntityTags,
+  seedEntityImportantTagPastCap,
+  ENTITY_ID,
+} from '../helpers/db';
 
 /**
  * IT-020 — F-018 Manual Object Tagging: the Overview renders an entity's assigned tag chips.
@@ -44,5 +49,32 @@ test.describe('F-018 Entity tags — Overview renders the tag chip', () => {
       page.getByText(TAG),
       'with no tag assignment the tag name must not render',
     ).toHaveCount(0);
+  });
+
+  // #1768 Defect 1 + 3 — the Overview tag list truncates to 20. An important tag past that cap must
+  // still surface (importance-ordered) WITHOUT expanding "View All", and an inline hint must show the
+  // visible/total counts. Pre-fix `tags.slice(0,20).sort(...)` sorted only the already-truncated
+  // window, hiding the important tag; this is the user-facing regression guard for the fix.
+  test('an important tag past the truncation cap is visible while collapsed (#1768)', async ({
+    page,
+  }) => {
+    const { importantName, total } = await seedEntityImportantTagPastCap();
+
+    const detail = detailFetch(page);
+    await page.goto(`/dataentities/${ENTITY_ID}/overview`);
+    await detail;
+
+    // Defect 1: the important tag (seeded last in wire order) ranks first after sort-before-slice,
+    // so it is in the collapsed top-20 without clicking "View All". RED on the pre-fix slice-then-sort.
+    await expect(
+      page.getByText(importantName).first(),
+      'the important tag must appear in the collapsed top-20 (sort before slice)',
+    ).toBeVisible({ timeout: 10_000 });
+
+    // Defect 3: the inline truncation hint shows visible/total without expanding.
+    await expect(
+      page.getByText(`Showing 20 of ${total}`),
+      'the truncation hint must show the visible/total counts',
+    ).toBeVisible();
   });
 });

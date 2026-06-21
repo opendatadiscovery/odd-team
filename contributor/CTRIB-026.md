@@ -237,7 +237,8 @@ on the entity-detail Overview Tags / Terms / Groups. Key added to all 7 locales.
 
 ### Scope exclusions (G-C5 — deliberately NOT in this PR)
 - **A shared `<TruncatedList>` component** to de-duplicate the ~7 hand-rolled slice/View-All blocks — the real
-  subtraction, but a refactor well beyond this bug. Logged as a follow-up (`playbooks/follow-up-on-disk.md`).
+  subtraction, but a refactor well beyond this bug. **Logged as `issues/odd-platform/PLT-232.md`** (carries the
+  cross-cutting class, the un-applied-hint inconsistency, and the still-open scroll-position facet).
 - **`OverviewMetrics` / `OverviewAttachments` truncation** — different list shapes, not tag/group/term importance
   ordering; no reported defect. Not touched.
 - **Defect 3 on the term-detail / dataset-field lists** — kept to the entity-detail Overview for a bounded change

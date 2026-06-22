@@ -1,6 +1,8 @@
 # Term Detail page hardening (#1754 — defects 1, 2, 4, 5, 6, 7)
 
-Closes #1754 (partially — see Scope below; defects 3 & 8 are tracked separately).
+Part of #1754 (defects 1, 2, 4, 5, 6, 7). Defects 3 & 8 are deferred to their own follow-ups (see Scope), so
+this PR intentionally does **not** auto-close the epic — `Closes #1754` would orphan the remaining two defects.
+(Once defects 3 & 8 are filed as their own issues, the maintainer can close #1754 with a reference to them.)
 
 Resolves six defects on the Term Detail page (`/terms/{id}`). Each fix conforms to an existing sibling/pattern
 on the page (no new components introduced). Reproduced live and verified on a running stack before/after.

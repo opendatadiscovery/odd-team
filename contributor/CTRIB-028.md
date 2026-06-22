@@ -409,3 +409,60 @@ release-gate live-verify.
 2. **Handover (GitHub App unconfigured):** post the scope comment + open the DRAFT PR
    (`Closes #1754`, body = `CTRIB-028-pr-body.md`) after pushing the branch.
 3. Then **GATE 2:** `/review` (separate session) → human merge.
+
+## Review-precondition decline (2026-06-22, session: review-ctrib028 / parallel-aware)
+
+- **Result: NOT REVIEWED — precondition decline.** This is **not** an ACCEPT and **not** a defect-REJECT.
+  The item is not yet at the review-ready-equivalent state, so the full ACCEPT/REJECT gate run (regression
+  confirmation + editorial audit) is deliberately **not** opened — that is exactly what the 2-minute-bounce
+  precondition exists to prevent. **Status left at `docs-done`** (not flipped to `blocked`: there is no
+  rejected-review and no code defect; the implementer correctly + deliberately deferred the last DoD gate and
+  documented it — flipping to `blocked` would mislabel correct in-progress work).
+
+- **Why declined (each cited):**
+  1. **Status is `docs-done`, not `pr-draft`** (the contributor review-ready-equivalent — `pillars/contributor`
+     review-skill prerequisite). The item has not been submitted for the GATE-2 review.
+  2. **2-minute bounce fires (G-C10 DoD gate NOT RUN):** the ledger explicitly flags ontology `/enrich` as
+     **DEFERRED** at the reviewed SHA. Ontology-moves-with-the-code is a Definition-of-Done gate, not a trailing
+     optional. `/review` is **read-only on `lineage/**`** and `/enrich` is `/implement`'s job — the reviewer
+     structurally cannot close this gap (re-enrichment as a review side-effect is forbidden).
+  3. **No draft PR exists to hand off.** GitHub App unconfigured → the scope comment + draft PR are on-disk
+     handovers (`CTRIB-028-pr-body.md`), un-posted. GATE-2 review presupposes a draft PR (or an explicit
+     on-disk-PR review decision); neither has been initiated.
+
+- **Record drift caught (verify-live-state, not the record — O4):** the ledger cites odd-platform
+  **`9d3de146`**, but the live branch head is **`75fc06cd`** — `9d3de146` was **reverted** (`b5930a75`, a manual
+  maintainer action on the shared checkout, 15:20) then **re-applied** as `75fc06cd`. `git diff 9d3de146
+  75fc06cd` is **empty** → content-identical, so the code + the regression evidence stand, but **the recorded
+  reviewed-SHA is stale and must be reconciled to `75fc06cd`** before the GATE-2 review.
+
+- **Mis-attribution caught (the lineage lock is NOT CTRIB-029's):** REMAINING-step 1 says the enrich is deferred
+  because "CTRIB-029 has uncommitted edits to `lineage/**`." **Verified false.** The dirty `lineage/**` is a
+  **`/probe-run` (P-001)** measured-value merge — `feature-flows.yaml` shows `probe_run_id
+  R-20260622T123548Z-P-001`, `ran_at 2026-06-22T12:35:48Z`, artefact `probe-runs/2026-06-22-P-001.yaml`
+  (untracked) — touching run-status / `DataEntityController`/`DataEntityRunController` nodes. CTRIB-029's own
+  enrich is still **pending** (its DoD ledger), and its uncommitted code lives in the `../odd-platform-ctrib029`
+  worktree (`auth/filter/**`), **not** in `lineage/**`. The **deferral decision was correct** (do not `/enrich`
+  into a dirty lineage), but the **stated owner was wrong** — a second stream trusting this record would
+  mis-model who holds the lineage lock. This is the precise failure the coordination registry below closes.
+
+- **Verified solid (so the implementer knows what stands):** code committed, working tree clean (1 unrelated
+  untracked `docker/demo.override.yaml`); commit footer present (`Consumer-read:` + `Sources:`); 3-repo commits
+  present (odd-platform `75fc06cd`, documentation `980c88e` on `release/0.29.0`, odd-team `436b695`); CTRIB-029
+  code fully isolated in its own worktree (zero source overlap, confirmed).
+
+- **Path to review-ready (precise, ordered):**
+  1. **Reconcile the SHA** in the frontmatter/ledger → `75fc06cd` (note the revert+reapply, content-identical).
+  2. **Clear the lineage lock, then enrich (`/implement`, not `/review`):** the probe-run P-001 residue (6
+     `lineage/**` files + the untracked `probe-runs/2026-06-22-P-001.yaml`) must be committed-or-reverted by its
+     owner so `lineage/**` is clean + unclaimed; **then** run CTRIB-028's deferred `/enrich --touched` +
+     re-embed + commit. Coordinate via `state/active-streams.yaml` (the lineage tree is a single-writer
+     serialized resource).
+  3. **Handover:** open the draft PR + post the scope comment, or record that the GitHub App is still
+     unconfigured and the GATE-2 review will be of the on-disk PR body + the pushed branch.
+  4. **Flip `docs-done → pr-draft`** and re-invoke `/review` (separate session) for the full ACCEPT/REJECT.
+
+- **Coordination mechanism (the maintainer's parallel-aware directive):** `state/active-streams.yaml` created
+  this session — registers CTRIB-028, CTRIB-029, **and this reviewer** so all parallel parties are mutually
+  visible, and records the true holder of every shared resource (incl. the probe-run lineage lock). See that
+  file's header for the protocol + the design source (`adrs/drafts/parallel-contribution-infra.md` §5.4).

@@ -4405,3 +4405,29 @@ probe for the lineage case). Result: **91 verified, 8 imprecise, 5 wrong**. Repo
 - DOC-341: verified core, but a live probe shows the bad URL returns 500/SYS001 not 404 (corrected note added).
 - 4 verified items rest on odd-collectors facts not checkable locally (DOC-354/376/434/435 — re-check upstream).
 - PLT-151..213 + TST-005..040 are NOT yet verified (same provenance) — same adversarial pass recommended.
+
+
+## CTRIB-028 (#1754) /review — precondition decline + parallel-stream coordination lock (2026-06-22)
+
+`/review CTRIB-028` (parallel-aware session). **Verdict: NOT REVIEWED — precondition decline** (not ACCEPT,
+not defect-REJECT). The full ACCEPT/REJECT gate run was deliberately NOT opened (2-minute bounce). **Status
+left at `docs-done`** (no flip — there is no rejected review and no code defect).
+
+Why declined (all evidence-cited; see `contributor/CTRIB-028.md` "Review-precondition decline"):
+- Status is `docs-done`, not `pr-draft` (the contributor review-ready-equivalent) — not submitted for GATE-2.
+- 2-minute bounce: ontology `/enrich` (a G-C10 DoD gate) is DEFERRED/NOT RUN; `/review` is read-only on
+  `lineage/**` and cannot close it (enrich is `/implement`'s job).
+- No draft PR exists (GitHub App unconfigured → on-disk handover un-posted).
+
+Live-state findings (verify the tree, not the record — O4):
+- Record cites odd-platform `9d3de146`; live head is `75fc06cd` (reverted `b5930a75`, reapplied — `git diff`
+  empty, content-identical). Recorded SHA is stale → reconcile before GATE-2.
+- The `lineage/**` lock is held by a **`/probe-run` (P-001)**, NOT CTRIB-029 (whose enrich is still pending;
+  its uncommitted code is auth-filter, in the `../odd-platform-ctrib029` worktree). CTRIB-028's deferral
+  decision was right; its stated reason was mis-attributed.
+
+Maintainer parallel-aware directive → **created `state/active-streams.yaml`** (the findings doc
+`adrs/drafts/parallel-contribution-infra.md` §5.4 recommendation, made real): registers CTRIB-028, CTRIB-029,
+and the reviewer so all parallel parties are mutually visible, with every shared resource attributed to its
+true current holder (resolving the awareness asymmetry the maintainer named). Skill-wiring of read/register/
+clear into `/contribute` + `/review` is the proposed next step (not yet done).

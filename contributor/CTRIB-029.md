@@ -6,16 +6,14 @@ title: "Ingestion auth filter only covers /ingestion/entities — sibling endpoi
 class: bug                    # security-posture gap (real, verified live on origin/main)
 scope: backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop)
-status: implementing         # GATE 1 APPROVED by RamanDamayeu 2026-06-22 (Option 1 — uniform /ingestion/** authn filter, scope exclusions as drafted).
-                             # Now on INDEPENDENT infra (own worktree + own docker tag/project/ports) so #1740 runs parallel to #1754 without collision.
-                             # Plus: publish the ADR into the documentation architecture-decision-log (release/0.29.0 train).
+status: pr-draft             # DRAFT PR #1799 open (GATE-2 entry). Code+tests committed+pushed (dc9b6422); feature-complete e2e GREEN; docs on release/0.29.0 (a7b19a8). Awaiting /review (separate session) + human merge.
 reproduced: "STATIC-VERIFIED on origin/main (odd-platform fb597e04), 2026-06-22. SecurityConstants.java:96 whitelists /ingestion/** out of the auth chain; IngestionDataEntitiesFilter (exact /ingestion/entities, conditional) + IngestionDataSourceFilter (exact /ingestion/datasources, always-on) are the ONLY filters; AbstractIngestionFilter.java:38 falls non-matching paths straight through with no auth. Confirmed unprotected handlers: postDataSetStatsList (IngestionController.java:82), ingestMetrics (:90), getDataEntitiesByDEGOddrn GET (:76), alertManagerWebhook (AlertManagerController.java:21). LIVE repro DONE 2026-06-22 on the isolated ctrib029 stack (own image/ports, parallel to #1754) — RED (published release, flag ON, tokenless): /ingestion/metrics->201, /entities/datasets/stats->201, /alert/alertmanager->200, GET /entities/degs/children->200 (the gap); GREEN (my fix, flag ON, tokenless): all->401 'Ingestion token is missing'. See section 'Live reproduction'."
 adr_required: true           # G-C7 FIRES — auth/security-posture change. ADR: adrs/drafts/ingestion-auth-filter-coverage.md (status: proposed). No code until approved.
 plan_approved_by: RamanDamayeu
 plan_approved_at: "2026-06-22"
-plan_approved_scope: "Option 1 — single uniform /ingestion/** authentication filter (gated by auth.ingestion.filter.enabled); per-datasource authz on /ingestion/entities unchanged; EXCLUDE the alertmanager webhook; DEFER default-flip + per-resource authz + the cross-dataset stats surface as logged follow-ups. ADDITIONALLY (maintainer 2026-06-22): publish the ADR in the documentation ADR-log + the enable-security matrix update on the release/0.29.0 train; build independent infra (per-stream worktree/image/stack) to run parallel to #1754."
+plan_approved_scope: "Option 1 — single uniform /ingestion/** authentication filter (gated by auth.ingestion.filter.enabled); per-datasource authz on /ingestion/entities unchanged; INCLUDE the alertmanager webhook (maintainer amendment 2026-06-22 — all ingestion routes gated when the flag is on; 'open by default' caveat documented on 3 pages); DEFER default-flip + per-resource authz + the cross-dataset stats surface as logged follow-ups. ADDITIONALLY (maintainer 2026-06-22): publish the ADR in the documentation ADR-log + the enable-security matrix update on the release/0.29.0 train; build independent infra (per-stream worktree/image/stack) to run parallel to #1754."
 docs_routing: "release/0.29.0"   # unreleased behaviour → documentation train (G-C11). The enable-security deployment matrix (OPEN→AUTH-token rows) + the 'tracked upstream' note update at release. Paired DOC item to be logged on approval.
-pr_url:
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1799"
 pr_draft: true
 clarify_comment_url:         # none — no clarifying question warranted (G-C6); the issue setup is clear. The ADR is the maintainer touchpoint.
 rootcause_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1740#issuecomment-4768625599"
@@ -234,9 +232,10 @@ GATE 1 cleared. Execution (on isolated infra, parallel to #1754):
 | Unit bucket — full CI replica (G-C2) | ✓ `:odd-platform-api:build` GREEN 5m19s (test + checkstyle + assemble + jacoco), my worktree |
 | Patch coverage (G-C13) | ✓ `IngestionAuthenticationFilter` 100% line / 100% instruction (branch 5/6 = jacoco short-circuit-`||` artifact, unreachable); `getByToken` is in the by-design-excluded `**/repository/**` (build.gradle:181) yet Testcontainers-tested |
 | Test integrity (G-C9/G-C15) | ✓ new `IngestionAuthenticationFilterTest` (9 cases) + re-grounded PLT-003 `@pins` (LSN-029, kept) + `DataSourceRepositoryImplTest.getByTokenTest` |
-| Integration regression (G-C2) | ⏳ FULL e2e regression PENDING — the cross-stream collision (shared persistent stack); to run in a coordinated window / after run-suite per-stream support (`adrs/drafts/parallel-contribution-infra.md` §5.7) |
-| Docs (G-C10/G-C11) | ⏳ in progress — publish ADR + enable-security matrix + 3 AlertManager pages on `release/0.29.0` |
-| Ontology (G-C10) | ⏳ pending — `/enrich --touched` the auth-filter sidecars |
+| Integration regression (G-C2) | ✓ FULL e2e on my SUT (c76e06df ← dc9b6422), run as the only session: feature-complete 310 GREEN · ingestion-e2e 6 GREEN · multi-stack 9 GREEN · known-bugs 3-RED = the expected quality-dashboard/run-status pins, unrelated to this change (no unexpected GREEN) |
+| Docs (G-C10/G-C11) | ✓ LANDED on documentation `release/0.29.0` @ a7b19a8 (pushed): ADR-0079 + matrix split + 3 AlertManager pages + stats caveat; tracked DOC-479; publishes at the 0.29.0 release gate |
+| Ontology (G-C10) | DEFERRED (justified): the new `IngestionAuthenticationFilter` node needs a substrate re-scan (beyond `/enrich --touched`); `lineage/**` is dirty from probe-run P-001 (R9/O10 — no `/enrich` into a dirty tree, no sweeping another stream's work). Refreshes at the next substrate scan |
+| GATE 2 (G-C4) | ✓ DRAFT PR #1799 open (`Closes #1740`, `draft=true`, bot-authored → human merge). Awaiting `/review` (separate session) + merge |
 
 Sources: `odd-platform@fb597e04` (auth files == origin/main, verified via `git show`), spec repo `odd_api.yaml`,
 `odd-collector-sdk/.../datasource_api.py`, documentation `enable-security/README.md` + `ADR-0002`. Read 2026-06-22; no claim from memory.

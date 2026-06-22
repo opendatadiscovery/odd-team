@@ -466,3 +466,30 @@ release-gate live-verify.
   this session — registers CTRIB-028, CTRIB-029, **and this reviewer** so all parallel parties are mutually
   visible, and records the true holder of every shared resource (incl. the probe-run lineage lock). See that
   file's header for the protocol + the design source (`adrs/drafts/parallel-contribution-infra.md` §5.4).
+
+## Second review pass — precondition decline re-confirmed (2026-06-22T18:17, session: review-ctrib028 #2 / parallel-aware)
+
+- **Result: STILL NOT REVIEWED — precondition decline re-confirmed** (not ACCEPT, not defect-REJECT). Status
+  remains **`docs-done`**, which is ≠ the contributor review-ready-equivalent **`pr-draft`**. The contributor
+  loop runs `docs → ontology refresh → draft PR [GATE 2]` (`pillars/contributor/pillar.md:36-40`), so
+  `docs-done` is **two phases short** of GATE-2. The 2-minute bounce still fires: the `/enrich` DoD gate is
+  **NOT RUN** at the reviewed SHA, and `/enrich` is `/implement`'s job (the reviewer is read-only on
+  `lineage/**`). **Status left at `docs-done`** — no flip: this is correct deferred in-progress work, with no
+  code defect and no rejected review, so `blocked` would mislabel it (same reasoning as the first decline).
+- **Two deltas verified-live since the first decline (`33fed88`) — both NARROW the remaining work:**
+  1. **Lineage lock CLEARED.** Probe-run P-001's residue is committed (`212b214`); `git status --short
+     lineage/` is empty (clean + unclaimed). CTRIB-028's deferred `/enrich --touched` is now **UNBLOCKED** —
+     the first decline's path-step-2 blocker is gone; it simply has not been run yet.
+  2. **Branch PUSHED.** `contrib/CTRIB-028-term-detail-hardening` is on origin at **`75fc06cd`** (it was an
+     on-disk-only handover at the first decline). The draft-PR handoff is now feasible; `pr_url` still unrecorded.
+- **Still stale in this ledger (unchanged):** the Implementation-ledger "Commits — DONE" line cites odd-platform
+  **`9d3de146`**; the live branch head is **`75fc06cd`**. `git diff 9d3de146 75fc06cd` is **empty**
+  (content-identical — the revert `b5930a75` + reapply `75fc06cd`), so the code + the regression evidence stand,
+  but the recorded reviewed-SHA must be reconciled.
+- **Narrowed path to review-ready — every step is `/implement`/`/contribute`'s job, NOT the reviewer's:**
+  1. Run the now-unblocked `/enrich --touched` (F-151/F-152/F-153 + the changed FE/BE nodes) + re-embed + commit.
+  2. Reconcile the ledger SHA `9d3de146 → 75fc06cd` (note the revert+reapply; content-identical).
+  3. Record the draft-PR handoff: the branch is pushed — open the DRAFT PR (`Closes`-free body per
+     `CTRIB-028-pr-body.md`) + set `pr_url`, or record the explicit on-disk-PR review decision.
+  4. Flip **`docs-done → pr-draft`** (the `/contribute` transition), then re-invoke `/review` for the full
+     ACCEPT/REJECT (regression confirmation + editorial audit).

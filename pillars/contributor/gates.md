@@ -35,7 +35,8 @@ No code is written until a human approves the implementation plan — *even for 
 
 The agent NEVER merges. The guarantee is structural, not a prompt: `main` branch protection requires **≥1 approving review** with no bypass, and GitHub blocks a PR author from approving its own PR — the bot is the author (a distinct identity), so a human maintainer must approve before any merge. **Any** maintainer can review (no CODEOWNERS, no hardcoded owner). The bot also opens PRs as `draft` (a signal); the required approval is the enforcement.
 - **Enforced at:** GitHub branch protection (require ≥1 approval, no bypass) + the author-cannot-self-approve rule; the bot's GitHub App has only Issues/PR/Contents (write) + Metadata (read) — no Administration, so it cannot weaken the rule.
-- **Case-law:** `GITHUB-MECHANICS.md` §3; `PITFALLS.md` #10.
+- **Human-path complement (necessary, because the structural guarantee is not sufficient — LSN-038):** the bot-only guarantee covers the BOT (it cannot self-approve; no Administration scope). It does NOT cover a **human maintainer-admin** doing a direct fast-forward push to `main` from a mis-tracked local branch — admins bypass branch protection. The complement is **local git hygiene in every contributor checkout/worktree** (`playbooks/github-write.md` step 5): the branch is never `origin/main`-tracked, `push.default = current`, publish only with a same-name refspec, and assert `@{u} != origin/main` before every push. Also verify `opendatadiscovery/odd-platform` `main` actually requires a PR + review with no admin-bypass for direct pushes (a successful direct push means it does not).
+- **Case-law:** `GITHUB-MECHANICS.md` §3; `PITFALLS.md` #10; `retrospectives/LSN-038` (contributor branch tracked `main` → bare push published unreviewed code to public `main`), sequel to `LSN-034` (docs-repo instance).
 
 ## G-C5 — The change is bounded by the approved plan
 

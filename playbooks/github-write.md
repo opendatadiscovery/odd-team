@@ -30,7 +30,22 @@ A `/contribute` run that must: read an issue + its comments; post a clarifying o
 
 4. **Comment** (clarify / root-cause / scope): `POST /repos/.../issues/{n}/comments` with the one-question, root-cause, or GATE-1-approved scope body. **Rate-limit: at most one clarify comment and one root-cause/scope comment per issue per run** (G-C6; comment-spam is a documented OSS-maintainer burden, `PITFALLS.md` #5). The scope comment is mandatory when the approved plan narrows the issue's scope (G-C5) — it posts immediately after GATE 1, before any code; fold root-cause and scope into ONE comment when both apply. Record the returned comment URL in the CTRIB record.
 
-5. **Branch + push** (after GATE 1): `GET /git/ref/heads/main` → `POST /git/refs` (create `contrib/CTRIB-NNN-slug`) → `PUT /repos/.../contents/{path}` (or push a commit) on that branch only. Never push to `main`.
+5. **Branch + push** (after GATE 1) — **the branch must NEVER track or target `main` (LSN-038)**:
+   - **Preferred — create the remote branch via the API** (no local upstream → no trap): `GET /git/ref/heads/main`
+     → `POST /git/refs` (create `contrib/CTRIB-NNN-slug`) → `PUT /repos/.../contents/{path}` (or push a commit)
+     on that branch only.
+   - **Local-git fallback (App unconfigured):** the branch MUST be **same-name-tracked, never main-tracked**.
+     (1) `git config push.default current` in the checkout/worktree (a bare push can then only update the
+     same-named remote branch). (2) Create the branch WITHOUT a remote start-point that sets the upstream —
+     `git switch -c contrib/CTRIB-NNN-slug` on the already-fetched base; **NEVER** `git checkout -b <branch>
+     origin/main`, which silently sets `branch.<name>.merge=refs/heads/main`. (3) Publish with an explicit
+     same-name refspec: `git push -u origin contrib/CTRIB-NNN-slug`.
+   - **Pre-push assertion (run before EVERY push):**
+     `test "$(git rev-parse --abbrev-ref @{u} 2>/dev/null)" != origin/main` — if the upstream is `origin/main`,
+     STOP and `git branch --unset-upstream` first. Treat any refspec whose right-hand side names `main`
+     (`HEAD:main`, a git push hint) as a stop-and-read, not a command to run.
+   - **Never push to `main`.** A bare push that follows a main-tracking upstream publishes unreviewed code to
+     `main` (LSN-038 — it bypasses G-C4's bot-only merge gate when the pusher is a human admin).
 
 6. **Open a DRAFT PR** (GATE 2 entry): `POST /repos/.../pulls` with `"draft": true`, `head=contrib/CTRIB-NNN-slug`, `base=main`, a descriptive body containing `Closes #N`. Then `POST .../pulls/{n}/requested_reviewers` for a configured reviewer or maintainers team (`$GH_REVIEWERS` — a list/team, never a hardcoded person). The required approval (from ANY maintainer) is the merge gate; the bot is the PR author and cannot self-approve (G-C4).
 
@@ -47,6 +62,7 @@ A `/contribute` run that must: read an issue + its comments; post a clarifying o
 
 - A 403 on a write the design expects (comment / branch / draft-PR) → the App is under-scoped; surface to the maintainer (do NOT broaden scope to work around it).
 - A 403/405 on merge or on `main` → expected; the merge gate is working. Do not retry.
+- A push updated `main` (or any refspec named `main` on the RHS) from a contributor checkout → **STOP, this is the LSN-038 failure**: the branch was main-tracked and a bare push fast-forwarded `main` with unreviewed code. Recover (`git revert` the pushed commit + push, or `git push --force-with-lease` reset `main` to its prior SHA if force-push is allowed and nothing else pulled), then recreate the branch **same-name-tracked** and re-apply the change as a **fresh commit** (cherry-pick — a branch whose tip is the already-reverted commit diffs as EMPTY in the re-PR). Unset the bad upstream on every sibling worktree branch.
 - Token mint fails → the install key/IDs are wrong or the App is uninstalled (the kill-switch); stop and report — do not fall back to a PAT (that loses the bot identity, `GITHUB-MECHANICS.md` §1).
 
 ## kill-switch + audit (for the maintainer)
@@ -59,3 +75,4 @@ A `/contribute` run that must: read an issue + its comments; post a clarifying o
 - `adrs/drafts/research/contributor/GITHUB-MECHANICS.md` — the full curl shapes, the App-vs-PAT decision, the 3-layer merge gate, the JWT script.
 - `adrs/drafts/research/contributor/PITFALLS.md` #8-10 — prompt injection via issue content; token blast radius (hackerbot-claw RCE via overprivileged `GITHUB_TOKEN`); merge-gate bypass.
 - `issues/README.md:121,148` — the human-only rule this protocol scopes (comments + draft PRs only; never new issues, never merge).
+- `retrospectives/LSN-038` — a contributor branch created with `checkout -b <branch> origin/main` tracked `main`; a bare push published unreviewed CODE to public odd-platform `main`, bypassing G-C4's bot-only merge gate (human-admin push). The branch-creation + pre-push rules in step 5 are the forcing function. Sequel to `LSN-034` (same class, docs repo).

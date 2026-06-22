@@ -6,7 +6,7 @@ title: "Term Detail page UI hardening epic (8 defects; FE+BE; labeled 'to decomp
 class: bug
 scope: frontend+backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop)
-status: docs-done            # GATE 1 APPROVED (maintainer, this session). Implemented + unit-gate green + impacted ITs GREEN/RED + docs routed. PENDING before review-ready: full integration regression (feature-complete running; multi-stack/known-bugs/ingestion-e2e) + ontology /enrich + commits + draft PR (GitHub App unconfigured → on-disk handover). See ## Implementation ledger.
+status: docs-done            # GATE 1 APPROVED (maintainer). Implemented + committed (3 repos) + unit-gate green + FULL integration regression green-as-expected (feature-complete 310 + multi-stack 9 + known-bugs 3-RED-expected + ingestion-e2e 6) + docs routed. ONE DoD gate remains before review-ready: ontology /enrich (DEFERRED — the concurrent CTRIB-029 session has uncommitted lineage/* edits; an /enrich now would collide). Then GATE 2 /review. GitHub App unconfigured → scope comment + draft PR are on-disk handovers. See ## Implementation ledger.
 reproduced: "LIVE 2026-06-22 on the running odd-minimal SUT (odd-platform:odd-team-sut 65c9b3ad, Term-Detail files == origin/main). Seeded term ctrib028_PiiTerm (id 21) with 60 linked columns. API (curl): badge GET /api/terms/21 → columns_using_count=60; GET /api/terms/21/linked_columns?page=1&size=50 → 50 items, page_info{total:50,hasNext:false} (the lie); ?page=2 → the remaining 10 (reachable, never advertised). UI (Playwright specs/ctrib028-repro.spec.ts, 6/6 pass = 6 defects confirmed): D1 GET /api/terms/21 fired 2× per Overview open; D2 zero-count term hides all 3 reverse-lookup tabs; D4 list rendered 50 rows under a badge of 60; D5 mocked 500 on linked_terms → 'No linked entities' empty state (error swallowed); D6 linked-terms empty copy = 'No linked entities'; D7 typing 5 chars fired 5 requests. Screenshots: integration-tests/e2e/evidence/ctrib028-defect{2,4,5}-*.png."
 adr_required: false          # in-scope work (Defects 1,2,4,5,6,7) needs no ADR. Defect 8 (state ADR) is DEFERRED out of this PR; Defect 1's de-dup must not pre-empt that ADR's redux↔tanstack direction.
 plan_approved_by: "maintainer (GATE 1, this session — AskUserQuestion 'Approve as planned')"
@@ -390,9 +390,22 @@ release-gate live-verify.
 **Deferred drafts created:** `issues/odd-platform/PLT-235.md` (D3), `PLT-236.md` (D8) + `adrs/drafts/ui-state-management.md`,
 `PLT-237.md` (orphan-NPE); `PLT-058.md` annotated; `backlog/docs/DOC-478.md`.
 
-**PENDING before `review-ready` (honestly NOT yet run — DoD not complete):**
-1. **FULL integration regression** — `feature-complete` (running this session); `multi-stack` + `known-bugs`
-   (expect still-RED) + `ingestion-e2e` NOT yet run.
-2. **Ontology** `/enrich --touched` on F-151/F-152/F-153 + the changed nodes + re-embed + commit — NOT done.
-3. **Commits** — odd-platform fix / documentation caveat-removal / odd-team records+ITs NOT yet committed.
-4. Then GATE 2: `/review` (separate session) → human merge.
+**FULL integration regression — RUN, green-as-expected (2026-06-22, working-tree SUT):**
+- `feature-complete` → **310 passed** (run-log `2026-06-22-feature-complete.md`, api:PASS e2e:PASS).
+- `multi-stack` → **9 passed** (`2026-06-22-multi-stack.md`, e2e:PASS).
+- `known-bugs` → **3 failed = the expected quarantine pins** IT-004 (PLT-052) / IT-006 (TEST-GAP-1013) /
+  IT-007 (LSN-001/PLT-086); **no unexpected GREEN** (no un-flipped fix) — the expected-RED outcome.
+- `ingestion-e2e` → **6 passed** (`2026-06-22-ingestion-e2e.md`, e2e:PASS).
+
+**Commits — DONE (3 repos; parallel CTRIB-029 work untouched):** odd-platform `9d3de146`
+(`contrib/CTRIB-028-term-detail-hardening`) · documentation `980c88e` (`release/0.29.0`) · odd-team `436b695`
+(`main`).
+
+**REMAINING before `review-ready`:**
+1. **Ontology** `/enrich --touched` (F-151/F-152/F-153 + the changed FE/BE nodes) + re-embed + commit —
+   **DEFERRED**: the concurrent CTRIB-029 session has uncommitted edits to `lineage/feature-flows.yaml` +
+   `lineage/understanding/*`; running `/enrich` now (which rewrites those files + re-embeds) would collide.
+   Run it once the lineage is not being concurrently edited. (G-C10 — the one open DoD gate.)
+2. **Handover (GitHub App unconfigured):** post the scope comment + open the DRAFT PR
+   (`Closes #1754`, body = `CTRIB-028-pr-body.md`) after pushing the branch.
+3. Then **GATE 2:** `/review` (separate session) → human merge.

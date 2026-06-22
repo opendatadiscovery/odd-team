@@ -8,3 +8,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-22 — suite/protocol: ingestion-e2e
+- runner: (fill: AI-assisted <model> | human <name>)
+- odd-platform working-tree HEAD: 9d3de146 (the SUT only when ODD_SUT=working)
+- e2e SUT: built from source: the odd-platform WORKING TREE @ 9d3de146  (image odd-platform:odd-team-sut, digest sha256:c76e06df90dc3d60c93e712046403a1d4f0d1df2a867099ce1f75ae55d569d34)
+- protocols: IT-128
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

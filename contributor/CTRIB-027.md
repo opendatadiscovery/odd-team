@@ -6,7 +6,7 @@ title: "Shared ConfirmationDialog swallows rejection → stuck spinner (mutateAs
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver → G-C11 PASSES (no hard stop)
-status: pr-draft             # all 5 DoD gates met locally on branch contrib/CTRIB-027-... (commit 0df69b9d). GitHub-write (scope comment / branch push / draft PR) BLOCKED — the odd-contributor App is not configured in this env. Handover → maintainer posts the scope comment + opens the PR (or configures the App), then /review (separate session) → review-ready → GATE 2 human merge.
+status: review-ready         # /review 2026-06-22 (opus-4-8, separate session) → ACCEPTED. Reviewer independently re-ran unit 49/49 + feature-complete 305/305 + IT-138 GREEN on the reviewed SUT 0df69b9d; all 17 criteria + G-C1..G-C16 + universal gates PASS (see ## Review). REMAINING HANDOVER (maintainer; odd-contributor App unconfigured): branch is already on origin — post the drafted scope comment to #1766 + open the DRAFT PR (Closes #1766; body = CTRIB-027-pr-body.md). GATE 2 human approve+merge owns merged/done; at merge flip F-031 H-005 mutateAsync facet to resolved.
 reproduced: "LIVE 2026-06-22 on odd-minimal SUT (odd-platform:odd-team-sut, current main): ARM1 lookup-table delete forced-500 → modal WEDGED (spinner + pointer-events:none) + error toast shown; ARM2 datasource delete forced-500 → modal CLOSES silently + row remains + error toast shown. Screenshots integration-tests/e2e/evidence/ctrib027-arm{1,2}-*.png. The ARM1 repro spec became IT-138 (e2e/specs/confirmation-dialog-failed-action.spec.ts, RED on ref:main → GREEN on the fix)."
 adr_required: false          # G-C7 does NOT fire — no migration, no auth-posture, no wire-contract change
 plan_approved_by: "maintainer (GATE 1, this session)"
@@ -380,3 +380,95 @@ stuck-spinner is mutateAsync-only (matches #1766's 2026-06-10 correction + the l
 (noted; flips with the same release). No graph re-embed needed for a YAML annotation (batch-refresh model,
 per CTRIB-023). **Merge-time action:** at #1766 merge, flip the F-031 H-005 mutateAsync facet + the harvest
 row to resolved.
+
+## Review (2026-06-22, session: opus-4-8 · max effort · separate `/review` session · reject-by-default)
+
+- **Result**: **ACCEPTED** → `pr-draft` → `review-ready`. The human GATE-2 merge owns `merged`/`done`.
+- **Reviewed SHA**: odd-platform `0df69b9d` (parent `298f2f4c` = current `origin/main`, verified); diff = exactly
+  `ConfirmationDialog.tsx` (+22) + its new `__tests__/ConfirmationDialog.test.tsx` (+84) — 2 files, bounded.
+  Branch is on `origin` (push half of the handover already done); local tree clean (== reviewed SHA).
+- **Footer**: present — `Consumer-read:` (12 files) + `Sources:` (origin/main 298f2f4c; #1771; live repro; IT-138).
+  The "missing Sources footer" precondition does not fire. 2-minute bounce did not fire — the ledger marks
+  every DoD gate RUN, none "NOT RUN".
+
+### Acceptance criteria (the 17 contributor criteria)
+- 1 plan-before-code — PASS (`plan_approved_by` maintainer GATE-1 2026-06-22; the `## Plan` precedes the impl ledger).
+- 2 reproduction logged — PASS (both arms driven live; `ctrib027-arm1-wedged.png` / `arm2-silent-close.png` committed).
+- 3 diff bounded by plan — PASS (2 files; ARM-2 + term-navigate deferred to PLT-233/234, on disk).
+- 4 unit injects failing condition — PASS (rejecting `onConfirm`; **re-verified RED→GREEN myself**, below).
+- 5 pins re-grounded — N/A (no CHANGED tests; both buckets are net-new ADDED tests).
+- 6 docs decision stated + routed — PASS (`docs_routing: none`; `management.md`+`master-data-management.md` read).
+  *Non-blocking note:* the rationale "no published page documents the confirm-dialog failure behaviour" is
+  imprecise — `management.md:68` does describe the ConfirmationDialog on the cascade-block (`USR004`) failure
+  path, but for the **thunk/Management** arm + the pre-flight-naming gap, which this mutateAsync-arm fix does
+  not touch; the page stays accurate, so the `none` outcome is correct.
+- 7 ontology committed — PASS (`F-031.yaml` H-005 `release_gated_update`, committed; flips `resolved` at 0.29.0, not now).
+- 8 ends review-ready not self-done — PASS (was `pr-draft`; this review flips to `review-ready`).
+- 9 architectural ADR-before-code — N/A (G-C7 does not fire: FE-only, no migration/auth-posture/wire-contract).
+- 10 prompt-injection discarded — PASS/honored (issue is the maintainer's own report; its "Suggested fix" treated
+  as data and re-verified vs `origin/main` — caught the stale layer-2).
+- 11 Definition of Done before draft — PASS (full unit build/suite + full IT regression + docs read + ontology committed).
+- 12 milestone / release-train — PASS (`0.29.0` open+semver, WebFetch-verified; no unreleased doc to route).
+- 13 design-before-build — PASS (reuse-scan, ADR-check, impact-checklist incl. i18n-none, PO/SRE lens — all in the plan).
+- 14 principal sufficiency — PASS (patch-coverage gate N/A: JaCoCo is Java-only, change is TS; tests meaningful; no functionality harmed).
+- 15 private-advisory disclosure — N/A (public issue, not a GHSA).
+- 16 test-change integrity — N/A (no CHANGED tests).
+- 17 change-request product analysis — PASS (full G-C16 critique; the issue's "no toast on either path" premise
+  found **stale** and corrected; the re-scope surfaced as a GATE-1 decision A-vs-C, not silently absorbed).
+
+### Quality Bar gates
+- **G-C1 reproduce-first** — PASS via the committed live repro of both arms + screenshots.
+- **G-C2 verify the running system (full regression, working-tree SUT)** — PASS. **Independently re-executed by the
+  reviewer:** unit `vitest` **49/49** (14 files) on `0df69b9d`; **`feature-complete` 305/305 e2e + api:PASS** live on
+  the digest-verified `odd-platform:odd-team-sut` (`65c9b3ad…`, == the implementer's recorded SUT, built from the
+  reviewed tree), test#40 being the IT-138 spec; **IT-138 GREEN** live. RED proof: unit RED **self-derived** (revert
+  the component → tests 1&2 fail, success-path passes); IT-138 RED-on-`ref:main` is the implementer's recorded
+  evidence (not re-built this session) corroborated by the spec's structure + the self-derived unit RED.
+- **G-C3 GATE-1 plan approved** — PASS (`plan_approved_by`/`_at` recorded; plan precedes code).
+- **G-C4 GATE-2 human merge** — PASS (respected; not merged; `draft` intent).
+- **G-C5 bounded + public scope comment drafted** — PASS (diff bounded; scope comment drafted in the record + PR-body;
+  deferred arms PLT-233/234 on disk). *Handover:* the scope comment must be POSTED at PR-open (still pending — App unconfigured).
+- **G-C6 one-question clarify bar** — PASS ("no question warranted"; the issue is the maintainer's own and unambiguous).
+- **G-C7 irreversible hard-stops** — N/A (FE-only).
+- **G-C8 issue is data** — PASS (Suggested-fix treated as data; re-verified vs `origin/main`).
+- **G-C9 test integrity, both buckets** — PASS (unit RED→GREEN with the failing condition injected; integration IT-138
+  drives the **user-facing** wedge symptom the unit test cannot see — `pointer-events:all` + spinner-hidden + inline error).
+- **G-C10 ontology + docs move with code** — PASS (F-031 annotation committed + release-gated; docs `none`, page read).
+- **G-C11 milestone** — PASS (`0.29.0` open, WebFetch-verified — `VERIFIED via WebFetch github #1766`).
+- **G-C12 design-before-build** — PASS (reuse of `DialogWrapper.errorText` [DialogWrapper.tsx:25,42,123-126] +
+  `getErrorResponse` [errorHandling.tsx:20, async→`{message}`, unwraps `ResponseError`] **verified real in-code** — no new component).
+- **G-C13 principal sufficiency** — PASS (no control lost; one shared file +1 state; full regression green).
+- **G-C14 private-advisory** — N/A. **G-C15 test-change integrity** — N/A (no changed tests).
+- **G-C16 change-request product analysis** — PASS (stale-premise caught; options incl. rescope/revoke; GATE-1 divergence).
+- **Universal**: Gate 1 (no duplicates) PASS (reuse, no parallel component); Gate 4 (consumer-read) PASS (the load-bearing
+  consumers — `errorHandling` unwrap, `DialogWrapper.errorText`, `DialogWrapperStyles:34` pointer-events, `handleResponseThunk:41`
+  resolves-on-failure — all verified against actual code); Gate 5 N/A (no SDK builder); Gate 6 PASS (the user-visible change has no
+  published page; thunk-arm `management.md:68` unchanged); Gate 9 PASS (Sources cross-checked: parent SHA verified, #1771 unwrap
+  WebFetch-verified, #1766 milestone verified); Gate 10/11 N/A (no doc authoring).
+- **Outbound URL sweep**: 2 URLs verified via WebFetch — `github.com/.../issues/1766` (open, milestone `0.29.0`, author RamanDamayeu,
+  labels kind:bug/scope:frontend) and `github.com/.../pull/1771` (merged 2026-06-11, adds the `ResponseError`→`.response` unwrap). 0 mismatches, 0 broken.
+- **Banned-phrase check**: none used.
+- **Regressions**: none. Unit 49/49 (self-run) · feature-complete 305/305 + api:PASS (self-run, live) · IT-138 GREEN (self-run, live).
+  `multi-stack` 9/9 + `known-bugs` 3-expected-RED + `ingestion-e2e` 6/6 accepted from the implementer's committed run-logs on the
+  digest-verified SUT (topically orthogonal to a FE ConfirmationDialog change; not re-executed this session).
+- **Navigation**: consistent — no bean-factory/SDK-builder discovered; FE-only change, no `navigation/domains` update needed.
+- **Upstream issues logged**: none (the deferred arms PLT-233/PLT-234 were already filed by `/implement`).
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused partition on the destructive-confirm / Management surface (`management.md`,
+    `master-data-management.md`) — the subtree conceptually nearest the reviewed change. Full-tree baseline = the
+    2026-06-08 comprehensive editorial audit (`DOC-336..439`, 104 items pending at the Backlog Review Gate). Other
+    subtrees deferred to the next `/review` (not skipped silently — see partition note).
+  - **Findings**: none new surfaced. *Observation (not a finding, no DOC item — already tracked):* `management.md:68`'s
+    general "the UI's ConfirmationDialog … does not name the conditional outcome" will become arm-specific once the
+    destructive-confirm bug class fully resolves (CTRIB-027 mutateAsync arm at 0.29.0 + PLT-233 thunk arm + PLT-128
+    pre-flight); it is accurate today and the revisit is owned by PLT-233/PLT-128 — no new item (LSN-009 grep-first; over-log avoided).
+- **GitHub-write handover (still the maintainer's action — `odd-contributor` App unconfigured)**: the upstream branch
+  `contrib/CTRIB-027-confirmationdialog-rejection` @ `0df69b9d` is already on `origin`; remaining: **post the drafted
+  scope comment to issue #1766** (G-C5 public-bounding) and **open the DRAFT PR** (`Closes #1766`, body =
+  `contributor/CTRIB-027-pr-body.md`). Then GATE-2 (human approve + merge) owns `merged`/`done`; at merge, flip the
+  F-031 H-005 mutateAsync facet + the harvest row to `resolved`.
+- **Notes**: review left the repo read-only — the two live runs appended run-logs + the api-rail merged values into
+  `lineage/**`; all reverted (`git checkout`), only the pre-existing untracked `probe-runs/2026-06-22-P-001.yaml`
+  remains, exactly as at session start. VERIFIED via `git status` clean post-revert. The api-rail PyYAML/requests dep
+  fold-in (`lineage/_extractor/pyproject.toml`) is a legitimate "fix the broken tool you had to run" — confirmed working
+  (my feature-complete run got api:PASS) — VERIFIED via the live run, not scope-creep into the odd-platform PR.

@@ -24,10 +24,13 @@
 #   SUT_IMAGE_ID=sha256:...
 #
 # Portable: no absolute paths. Overrides: ODD_PLATFORM_DIR=<path>  JAVA_HOME_17=<jdk17 path>
+#   ODD_SUT_TAG=<image:tag>   per-stream SUT image tag (default the stable shared tag). For N parallel
+#                            streams, each builds into odd-platform:odd-team-sut-<stream-id> so the streams
+#                            do not clobber each other's image (findings §5.1 / parallel-contribution model).
 set -euo pipefail
 
 SUT="${1:-${ODD_SUT:-working}}"
-TAG="odd-platform:odd-team-sut"
+TAG="${ODD_SUT_TAG:-odd-platform:odd-team-sut}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "$HERE/.." && pwd)"
 PLATFORM="${ODD_PLATFORM_DIR:-$(cd "$WORKSPACE/../odd-platform" 2>/dev/null && pwd || true)}"

@@ -1,0 +1,398 @@
+---
+ctrib: CTRIB-028
+github_issue_number: 1754
+github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1754
+title: "Term Detail page UI hardening epic (8 defects; FE+BE; labeled 'to decompose')"
+class: bug
+scope: frontend+backend
+milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop)
+status: docs-done            # GATE 1 APPROVED (maintainer, this session). Implemented + unit-gate green + impacted ITs GREEN/RED + docs routed. PENDING before review-ready: full integration regression (feature-complete running; multi-stack/known-bugs/ingestion-e2e) + ontology /enrich + commits + draft PR (GitHub App unconfigured → on-disk handover). See ## Implementation ledger.
+reproduced: "LIVE 2026-06-22 on the running odd-minimal SUT (odd-platform:odd-team-sut 65c9b3ad, Term-Detail files == origin/main). Seeded term ctrib028_PiiTerm (id 21) with 60 linked columns. API (curl): badge GET /api/terms/21 → columns_using_count=60; GET /api/terms/21/linked_columns?page=1&size=50 → 50 items, page_info{total:50,hasNext:false} (the lie); ?page=2 → the remaining 10 (reachable, never advertised). UI (Playwright specs/ctrib028-repro.spec.ts, 6/6 pass = 6 defects confirmed): D1 GET /api/terms/21 fired 2× per Overview open; D2 zero-count term hides all 3 reverse-lookup tabs; D4 list rendered 50 rows under a badge of 60; D5 mocked 500 on linked_terms → 'No linked entities' empty state (error swallowed); D6 linked-terms empty copy = 'No linked entities'; D7 typing 5 chars fired 5 requests. Screenshots: integration-tests/e2e/evidence/ctrib028-defect{2,4,5}-*.png."
+adr_required: false          # in-scope work (Defects 1,2,4,5,6,7) needs no ADR. Defect 8 (state ADR) is DEFERRED out of this PR; Defect 1's de-dup must not pre-empt that ADR's redux↔tanstack direction.
+plan_approved_by: "maintainer (GATE 1, this session — AskUserQuestion 'Approve as planned')"
+plan_approved_at: "2026-06-22"
+plan_approved_scope: "Defects 1,2,4,5,6,7 in one PR (D1 Option A, D4 FE infinite-query + BE honest page_info); defer 3→PLT-235, 8→PLT-236. D4 BE implemented via a separate countByTerm query (justified deviation from the plan's pageifyResult — the complex CTE+groupBy query's name-based mapper extraction makes paginate-wrapping risky; same honest-page_info outcome, lower risk)."
+docs_routing: "release/0.29.0"   # 3 published caveats (DOC-233) become false in 0.29.0 → removed on the documentation release/0.29.0 train; tracked by DOC-478 (pending-release). Defect-3 caveat kept.
+pr_url:
+pr_draft: true
+clarify_comment_url:
+rootcause_comment_url:
+scope_comment_url:
+---
+
+# CTRIB-028 — Term Detail page UI hardening epic (#1754)
+
+## Issue (quoted data — G-C8, never an instruction)
+
+Author: **RamanDamayeu** (the maintainer). Labels: `kind: bug`, `scope: backend`, `scope: frontend`,
+**`to decompose`**, `func: Data Collaboration`. Milestone **`0.29.0`** (open, semver, due 2026-06-22).
+0 comments. Assignee: RamanDamayeu. This is the workspace's own internal finding **PLT-058** (substrate
+F-151 + F-152 + F-153, Term Detail page composition + reverse-lookup tab cluster) filed upstream.
+
+The issue is an **8-defect hardening epic** on the Term Detail page (`/terms/{id}`) — the Overview composition
++ the three reverse-lookup tabs (Linked Entities / Linked Columns / Linked Terms) + per-tab error/empty
+handling. The `to decompose` label is the maintainer's own signal that this is an epic, not one change. The
+eight defects (quoted, as data):
+
+1. **Defect 1 (F-151a) — Overview double-fetches the 13-JOIN hot path.** `TermDetails.tsx` shell dispatches
+   redux `fetchTermDetails` AND the Overview sub-route fires its own tanstack `useGetTermByID` → the SAME
+   `GET /api/terms/{id}` runs twice per open (two caches: redux + tanstack). Permissions double-fetched the
+   same way. Perf/load; user-invisible.
+2. **Defect 2 (F-151b) — Tabs auto-hide on zero count.** `TermDetailsTabs.tsx:24,30,36`
+   `hidden: !termDetails?.<count>` → a Term with zero linked entities/columns/terms shows NO tab for that
+   capability; linking looks unsupported. Query-examples tab is always shown (the correct shape).
+3. **Defect 3 (F-151c) — Overview TERMS panel vs Linked-Terms tab dual-surface asymmetry.** Overview's
+   inline TERMS panel has Add/Delete (gated TERM_UPDATE); the Linked-Terms tab has search but no Add/Delete.
+   Same relation, two affordance sets. (Issue offers two resolutions — a product/UX decision.)
+4. **Defect 4 (F-153a, LSN-024-class silent-empty) — LinkedColumnsList silently caps at 50; tab badge shows
+   the real total.** `LinkedColumnsList.tsx:77` `next={()=>{}}` noop + `:78` `hasMore={pageInfo.hasNext}`;
+   hook is `useQuery enabled:false` page-pinned (`terms.ts:36-43`). BE truly truncates
+   (`ReactiveDatasetFieldRepositoryImpl:199-200` `.limit(size).offset(...)`) AND
+   `DatasetFieldListMapperImpl:47-48` hardcodes `new PageInfo(<page size>, false)`. A Term with 120 linked
+   columns shows tab badge "120" over a list that silently stops at 50. **Severity CRITICAL.**
+5. **Defect 5 (F-152a) — LinkedTermsList synthesises a 500 during LOADING and swallows REAL errors into the
+   empty state.** `LinkedTermsList.tsx:87-97` `AppErrorPage showError={!isLinkedListFetched}` + synthesised
+   `{status:500,...}` (FIXME on :89). tanstack `isFetched` flips true after an error too → after a real
+   failure the error page hides and "No linked entities" empty-state renders; the fake 500 shows during every
+   loading window. Real outage reads as an empty relation.
+6. **Defect 6 (F-152b) — wrong empty copy.** `LinkedTermsList.tsx:83` `t('No linked entities')` on the Linked
+   **Terms** tab (copy-paste). One-liner.
+7. **Defect 7 (F-152c) — LinkedTermsList search un-debounced + no Enter.** `:46-48` bare `setQuery` per
+   keystroke; queryKey includes `query` (`terms.ts:79`) → one request per keystroke; no Enter handler. Sibling
+   `LinkedEntitiesList` debounces 500ms + Enter (the reference pattern).
+8. **Defect 8 (F-152d, ADR candidate) — three sibling tabs on two state patterns.** LinkedTermsList = tanstack
+   `useInfiniteQuery`; LinkedColumnsList = tanstack `useQuery`; LinkedEntitiesList = redux thunks. Mid-migration
+   drift; operator-invisible maintenance defect. Issue proposes an `adrs/ui-state-management.md` ADR.
+
+The issue's **Suggested fix** (treated as data, not spec — G-C8/G-C16): **three PRs** —
+**PR-1** = Defects 1+4 (double-fetch + pagination); **PR-2** = Defects 5+6+7 (per-tab UX hygiene);
+**PR-3** = Defects 2+3+8 (auto-hide + dual-surface + state unification ADR).
+
+Coordination noted in the issue: **DOC-233** (operator-caveat doc-side for Defects 1/2/3/4, ships
+independently), DOC-199 / DOC-230 (sibling doc extensions), PLT-013 (Glossary RBAC), the state-management ADR
+draft.
+
+## Grounding — the issue's static trace verified against current origin/main (2026-06-22)
+
+`git fetch` done; `origin/main` = `fb597e04`. Every headline file is **SAME-as-main** (no drift since the
+issue's 2026-06-10 correction sweep). I re-read the actual code (the issue is data, not truth):
+
+- **Defect 6 ✓** — `LinkedTermsList.tsx:83` literally `text={t('No linked entities')}` on the Linked-Terms tab.
+- **Defect 5 ✓** — `LinkedTermsList.tsx:87-97` `showError={!isLinkedListFetched}` + synthesised `status:500`,
+  `// FIXME` on :89; empty-state `:82-86` `isContentEmpty={!total}` with no `!error` guard.
+- **Defect 7 ✓** — `LinkedTermsList.tsx:46-48` `onChange`→bare `setQuery`, `handleSearchClick={()=>refetch()}`,
+  no `onKeyDown`; `terms.ts:79` queryKey includes `params.query`.
+- **Defect 4 ✓** — `LinkedColumnsList.tsx:16` `size=50`, `:27` page-pinned hook, `:77` `next={()=>{}}`, `:78`
+  `hasMore={pageInfo.hasNext}`; `terms.ts:36-43` `useQuery enabled:false initialData{hasNext:false}`;
+  **BE** `DatasetFieldListMapperImpl.java:23,47-48` `pageInfo(dataFieldsDto.size())`→`new PageInfo(total,false)`
+  (mapper only sees the page rows — no real total is queried), `ReactiveDatasetFieldRepositoryImpl.java:199-200`
+  `.limit(size).offset((page-1)*size)`.
+- **Defect 2 ✓** — `TermDetailsTabs.tsx:24,30,36` `hidden: !termDetails?.<count>`; `:29` `hint: columnsUsingCount`
+  is the badge that contradicts the Defect-4 capped list.
+
+Reference sibling for the fix patterns: `LinkedEntitiesList.tsx` (debounced search + Enter + real error to
+`AppErrorPage`) and the linked-terms infinite-query (`terms.ts:75-93` `useGetTermLinkedTerms` +
+`addNextPage` client-side `hasNext = items.length === size` heuristic — the FE's existing workaround for this
+BE's untrustworthy pageInfo).
+
+## Scope analysis
+
+- **Classification:** bug epic (FE + BE). Confirmed real on current `origin/main`.
+- **Mission relevance (`lineage/odd-platform/system-mission.md`):** Term Detail is the Business Glossary /
+  Data Collaboration surface. Highest-value defect is **Defect 4** — silent truncation of a governance list
+  (compliance auditor: "which columns reference PII?" sees badge "120" over a 50-row list). Silent
+  data-truncation on a documented public surface is exactly the operator-trust failure this workspace exists
+  to prevent (LSN-024 class). Defect 5 is the next trust hazard (a real outage rendered as "empty").
+- **G-C7 architectural-significance check (per defect):**
+  - Defects 1, 2, 5, 6, 7 → do NOT fire (pure FE; no migration / auth / wire-contract change).
+  - **Defect 4** → the BE side changes the *values* returned in `PageInfo` (`hasNext`/`total`) for the
+    linked-columns endpoint from wrong→correct; the response *shape* (the `PageInfo` schema) is unchanged.
+    This is a bug fix making an existing contract honest, NOT a breaking schema/auth/migration change → G-C7
+    does **not** fire. (Noted in the plan as a wire-behaviour change to verify end-to-end.)
+  - **Defect 3** → a product/UX design decision (the issue offers two resolutions) — not a clean bug fix;
+    needs a product call before it is plan-ready.
+  - **Defect 8** → explicit ADR candidate (state-management unification) → **G-C7 fires** → ADR-first, deferred;
+    not a single-run bounded fix.
+
+## Decomposition + change-request product critique (G-C16) — the issue's 3-PR split is *data*
+
+The `to decompose` label makes the decomposition the maintainer's decision; the issue's own 3-PR split is a
+suggestion, not a spec. Critiquing it as a Principal:
+
+- **PR-1 (Defects 1+4) bundles two loosely-related changes with very different risk.** Defect 4 is a clean,
+  self-contained CRITICAL fix on the linked-columns endpoint+component; Defect 1 is a cross-cutting redux→
+  tanstack **shell** migration (touches the whole `TermDetails` shell + permissions). Bundling widens the
+  blast radius for no cohesion gain. **Split them.**
+- **PR-2 (Defects 5+6+7) is genuinely cohesive** — all three live in `LinkedTermsList.tsx`, all FE-only,
+  all per-tab UX correctness. An excellent bounded PR as-is.
+- **PR-3 (Defects 2+3+8) bundles a ready FE fix (2) with a product decision (3) and an ADR+refactor (8).**
+  Defects 3 and 8 are not plan-ready (need a product call / an ADR — G-C7). **Defect 2 can stand alone.**
+
+**Principal re-decomposition (the candidate first slices):**
+
+| Slice | Defects | Surface | Risk | Operator value |
+|---|---|---|---|---|
+| **A** | 5 + 6 + 7 | FE-only, single file `LinkedTermsList.tsx` | Low | Med (real-outage-as-empty fix + copy + search parity) |
+| **B** | 4 | FE (`LinkedColumnsList` + hook) **+ BE** (mapper+repo count) | Medium | **High — CRITICAL** silent-truncation (LSN-024 class) |
+| **C** | 2 | FE-only `TermDetailsTabs` + the 3 list empty-states | Low–Med | Med (capability discoverability) |
+| **D** | 1 | FE cross-cutting shell (redux→tanstack) | Med–High | Low–Med (perf; user-invisible) |
+| defer | 3 | needs a product/UX decision | — | — |
+| defer | 8 | needs an ADR (G-C7) + redux→tanstack refactor of `LinkedEntitiesList` | — | — |
+
+**GATE-1 scope decision (pending the maintainer):** which slice this `/contribute` run takes. Recommendation
+**Slice B (Defect 4)** — the CRITICAL, highest-operator-value, self-contained silent-truncation fix; cleanly
+exercises both test buckets (unit: BE mapper/repo returns honest `total`/`hasNext`; integration: badge-vs-list
+count via Playwright). Lowest-risk alternative is **Slice A (Defects 5+6+7)**. After the slice is chosen:
+reproduce-first (Phase B) → root-cause → design-before-build plan (Phase C) → GATE 1.
+
+## Clarify (G-C6)
+
+No public issue-thread question warranted — the issue is fully specified and the trace is verified. The one
+open decision is the **decomposition/first-slice**, which is a *session* scoping decision for the maintainer
+(asked via AskUserQuestion), not a public clarification (posting "which of 8 first?" to the thread would be
+comment-spam). The public **scope comment** (G-C5) — stating what the approved PR covers and what is deferred
+where — is drafted and posted *after* GATE 1, before any code.
+
+## Scope decision (maintainer — GATE-1 scope, 2026-06-22)
+
+The maintainer chose a **single PR covering Defects 1, 2, 4, 5, 6, 7** ("Term Detail page hardening"), wider
+than the recommended Slice B. **Deferred: Defects 3 and 8** — to be tracked as PLT backlog items + paste-ready
+GitHub issue drafts on disk (the maintainer files them; agents never create GH issues — `issues/README.md`):
+
+- **Defect 3** (Overview TERMS panel vs Linked-Terms tab dual-surface asymmetry) → needs a product/UX decision
+  (the issue offers two resolutions). PLT draft + GH issue draft.
+- **Defect 8** (three sibling tabs on two state patterns) → needs an ADR (state-management unification,
+  `adrs/drafts/ui-state-management.md`) + a redux→tanstack refactor of `LinkedEntitiesList`. PLT draft + GH
+  issue draft + ADR draft pointer.
+
+**Cross-defect constraint:** Defect 1's de-dup of the double-fetch must be **state-pattern-neutral** — it must
+NOT pre-empt Defect 8's deferred ADR (which will decide the redux↔tanstack direction). Favour the fix that
+removes the redundant fetch with the least state-pattern commitment (the issue's "Option A" — Overview consumes
+the shell's already-loaded data — over "Option B" — migrate the shell to tanstack).
+
+Phase B now reproduces all six in-scope defects on the running system before any plan/code.
+
+## Reproduction (Phase B — LIVE, 2026-06-22)
+
+Stack: the already-running odd-minimal SUT on :18080 (`odd-platform:odd-team-sut` 65c9b3ad; Term-Detail
+files verified == origin/main). Seed: `/tmp/ctrib028_seed.sql` — term `ctrib028_PiiTerm` (id **21**) with
+**60** linked columns (one dataset `ctrib028_pii_table` → version → 60 fields → 60 `dataset_field_to_term`).
+
+**API (curl) — Defect 4, hard evidence:**
+| Probe | Result |
+|---|---|
+| `GET /api/terms/21` | `columns_using_count: 60` (the tab badge) |
+| `GET /api/terms/21/linked_columns?page=1&size=50` | 50 items · `page_info {total:50, hasNext:false}` — **the lie** (total = returned page size, not 60) |
+| `GET /api/terms/21/linked_columns?page=2&size=50` | 10 items — rows 51-60 ARE reachable; BE never advertises them |
+
+**UI (Playwright `integration-tests/e2e/specs/ctrib028-repro.spec.ts` — 6/6 PASS, asserting the buggy state):**
+| Defect | Live observation |
+|---|---|
+| 1 | `GET /api/terms/21` fired **2×** on one `/terms/21/overview` open (redux shell + tanstack Overview) |
+| 2 | empty term `ctrib028_EmptyTerm` → only Overview + Query-examples tabs; all 3 reverse-lookup tabs **absent** |
+| 4 (UI) | linked-columns list rendered **50** rows under a tab badge of **60** (screenshot shows badge "60" over col_060…col_011) |
+| 5 | `page.route(linked_terms→500)` → tab renders **"No linked entities"** empty state, no error page (real error swallowed) |
+| 6 | linked-terms empty copy literal = **"No linked entities"** (matches existing IT-082 characterization pin) |
+| 7 | typing "abcde" fired **5** `linked_terms` requests (one per keystroke; a debounce would fire ~1) |
+
+Screenshots: `integration-tests/e2e/evidence/ctrib028-defect{2,4,5}-*.png`. (The repro spec is a throwaway Phase-B
+artifact — it asserts buggy behaviour and is DELETED before the Phase-D regression; the real ITs replace it.)
+
+## Root-cause (per defect)
+
+- **D1** — `TermDetails.tsx` shell dispatches redux `fetchTermDetails` (feeds `TermDetailsTabs` via the
+  `getTermDetails` selector) AND `Overview.tsx` independently calls tanstack `useGetTermByID` (`['term',id]`).
+  Two separate caches over the same `GET /api/terms/{id}` → 2 executions of the 13-JOIN query.
+- **D2** — `TermDetailsTabs.tsx:24,30,36` `hidden: !termDetails?.<count>` removes the tab entirely at count 0.
+- **D4** — FE: `LinkedColumnsList.tsx` uses page-pinned `useGetTermLinkedColumns` (`useQuery enabled:false`),
+  `next={()=>{}}` noop, `hasMore={pageInfo.hasNext}`; **BE**: `DatasetFieldListMapperImpl.pageInfo(total)` =
+  `new PageInfo(dataFieldsDto.size(), false)` — reports the returned **page size** as total and hardcodes
+  `hasNext=false`; the real total is never queried in `ReactiveDatasetFieldRepositoryImpl.listByTerm`.
+- **D5** — `LinkedTermsList.tsx:87` `AppErrorPage showError={!isLinkedListFetched}` + synthesised `status:500`.
+  tanstack `isFetched` flips true after an error too → real failure hides the error page; empty-state
+  (`:82-86`, no `!error` guard) renders. Fake 500 also shows during every loading window.
+- **D6** — `LinkedTermsList.tsx:83` `t('No linked entities')` on the Linked-**Terms** tab (copy-paste).
+- **D7** — `LinkedTermsList.tsx:46-48` `onChange`→bare `setQuery`; `terms.ts:79` queryKey includes `query`
+  → re-key + refetch per keystroke; no debounce, no Enter handler (sibling `LinkedEntitiesList` has both).
+
+## Adjacent finding (out of scope — follow-up candidate, NOT fixed here)
+
+**Orphan-column NPE 500:** `DatasetFieldTermsDtoMapper.java:51-52` dereferences `dataEntityPojo`
+unconditionally; a term-linked `dataset_field` with no resolvable `data_entity` (orphaned column) 500s the
+whole linked-columns page (observed during seeding before I added `dataset_structure`). Reachability depends
+on delete-cascade behaviour for term-linked columns. LSN-024/LSN-001 class. → log as a PLT/REFACTOR
+follow-up at GATE 1 (`playbooks/follow-up-on-disk.md`); deliberately excluded from this PR (G-C5).
+
+## Plan (GATE-1 artifact — design-before-build, per defect)
+
+### Design-before-build (G-C12)
+
+- **Reuse-scan (no new components):** D1 reuses the existing redux `getTermDetails`/`getResourcePermissions`
+  selectors already populated by the shell. D2 reuses `AppTabs` `hint` + the per-tab empty states that already
+  exist. D4-FE reuses `useInfiniteQuery` + the generic `addNextPage` helper + `InfiniteScroll` (mirror
+  `LinkedTermsList`). D4-BE reuses `JooqQueryHelper.paginate` + `pageifyResult` + `Page`→`PageInfo`
+  (the pattern in `ReactiveTagRepositoryImpl`/`ReactiveActivityRepositoryImpl` + `TermMapper`). D5 reuses
+  `LinkedEntitiesList`'s real-error→`AppErrorPage` shape + `errorHandling.getErrorResponse`. D7 reuses
+  `use-debounce` `useDebouncedCallback` + the Enter handler (both already in `LinkedEntitiesList`). Nothing new
+  is invented — every fix conforms to an existing sibling/pattern.
+- **ADR-check:** no ADR governs these areas; all are bug fixes conforming to existing patterns. The one ADR
+  candidate (D8, state-pattern unification) is **deferred** (see scope exclusions) — a draft pointer is created,
+  not decided here. No reverse-engineered ADR needed.
+- **Impact checklist:** **i18n** — only ONE new string, `'No linked terms'` (D6), added to all 7 locales
+  (`en/br/es/fr/ch/ua/hy`; machine-translated best-effort, en authoritative); D2/D5/D7 reuse existing keys.
+  **generated clients** — D4-BE changes pageInfo *values*, not the `DatasetFieldList`/`PageInfo` OpenAPI schema
+  → **no client regen**. **consumers** — D4 changes `ReactiveDatasetFieldRepository.listByTerm` (sole caller:
+  `DatasetFieldServiceImpl`) + `DatasetFieldListMapper.mapPojos` (sole caller: same service) → bounded.
+  **migration** — none (no DB change). **docs** — DOC-233 caveats partly obsoleted (truncation removed) →
+  read Business Glossary page, route any update to the `release/0.29.0` train (G-C11). **ontology** —
+  `/enrich --touched` F-151/F-152/F-153 + the changed BE nodes; re-embed; commit. **tests** — both buckets
+  (below).
+- **Product-Owner/SRE lens:** these are corrections to established surfaces (not new feature shapes), so the
+  lens is reasoned explicitly rather than via a separate `odd-sme` spawn: each fix restores operator legibility
+  on the Business-Glossary governance surface — a compliance auditor now sees all linked columns (not a silent
+  50-cap), capability tabs are discoverable at zero count, a real backend failure is surfaced (not shown as
+  "empty"), and live search behaves like its siblings. All align with ODD's data-discovery mission.
+
+### Per-defect changes
+
+- **D1 (double-fetch) — recommended Option A (lowest blast radius):** `Overview.tsx` consumes the shell's
+  already-loaded redux `getTermDetails(termId)` + `getResourcePermissions(TERM, termId)` instead of firing its
+  own tanstack `useGetTermByID` + `useResourcePermissions`. Preserve the Overview linked-term Add/Delete live
+  refresh by dispatching redux `fetchTermDetails({termId})` on those two mutations' success (they currently only
+  invalidate the tanstack `['term',termId]` key, which Option A no longer reads). Net: one term-details fetch +
+  one permissions fetch per page open. Does **not** touch the list-tab state patterns (= D8, deferred).
+  *Alternative (Option B): migrate the shell term-details+permissions to tanstack so shell+Overview share
+  `['term',termId]` (tanstack dedup). Cleaner re mutation-refresh but higher blast radius on the shell — noted
+  for GATE-1; A is recommended.*
+- **D2 (auto-hide):** `TermDetailsTabs.tsx` — drop the three `hidden: !termDetails?.<count>` lines; the three
+  reverse-lookup tabs always render (the count `hint` shows when > 0). Each tab's existing empty state
+  communicates "no linked X yet" (terms copy fixed by D6). Capability becomes discoverable at zero count.
+- **D4 (silent 50-cap) — FE + BE:**
+  - **FE:** add an infinite `useGetTermLinkedColumns` (mirror `useGetTermLinkedTerms`: `useInfiniteQuery`,
+    `getNextPageParam` from the now-honest `page_info`); `LinkedColumnsList.tsx` consumes it — `next={fetchNextPage}`,
+    `hasMore={hasNextPage}`, flat-map pages — removing the page-pin + the `next={()=>{}}` noop.
+  - **BE (the clean fix — makes `page_info` honest):** `ReactiveDatasetFieldRepositoryImpl.listByTerm` →
+    `paginate(...)` + `pageifyResult(records, datasetFieldTermsDtoMapper::mapRecordToDto, fetchCount(termId,query))`
+    returning `Mono<Page<DatasetFieldTermsDto>>`; add the term-scoped count; `DatasetFieldListMapper.mapPojos`
+    takes the `Page` and emits `PageInfo` from `page.getTotal()`/`isHasNext()`. Touches: repo impl + interface,
+    service, mapper interface + impl (5 files, mechanical, established pattern).
+- **D5 (error swallowed):** `LinkedTermsList.tsx` — replace the `showError={!isLinkedListFetched}` + synthesised
+  `{status:500}` with `AppErrorPage showError={isError}` carrying the **real** mapped error (via
+  `errorHandling.getErrorResponse`), and gate the empty state on `!isError` (mirror `LinkedEntitiesList`). No
+  fake 500 during loading; a real failure shows an error, not "empty".
+- **D6 (wrong copy):** `LinkedTermsList.tsx:83` `t('No linked entities')` → `t('No linked terms')`; add the
+  `'No linked terms'` key to all 7 locale JSONs.
+- **D7 (un-debounced search):** `LinkedTermsList.tsx` — wrap the query-state update in `useDebouncedCallback(…, 500)`
+  + add an `onKeyDown` Enter handler (mirror `LinkedEntitiesList:62-68`). One request per ~500ms, Enter for parity.
+
+### Scope EXCLUSIONS (G-C5 — deliberately NOT touched)
+
+- **Defect 3** (Overview/Linked-Terms dual-surface) — product/UX decision → deferred (PLT + ISS draft below).
+- **Defect 8** (three-tab state-pattern unification) — needs an ADR → deferred (PLT + ISS + ADR draft below).
+- **Orphan-column NPE 500** (adjacent finding) — deferred (PLT/REFACTOR draft below).
+- No DB migration, no OpenAPI/client regen, no auth/posture change. The redux term-details thunk/slice is **not
+  deleted** even if Option A leaves it shell-unused (a grep-gated follow-up cleanup, to bound this diff).
+- The three list tabs' state patterns are not unified (that is D8).
+
+### Test plan (both buckets — G-C9)
+
+- **Unit (odd-platform CI, `:odd-platform-api:build`):** a repository/Testcontainers test for
+  `ReactiveDatasetFieldRepositoryImpl.listByTerm` — seed a term with > size linked columns, assert the returned
+  `Page` has `total == N` and `hasNext == true` on page 1, `hasNext == false` on the last page (RED on main:
+  total == page size, hasNext == false). Optionally a `DatasetFieldListMapperImpl` unit test (Page→PageInfo).
+- **Integration (odd-team `integration-tests/IT-NNN`, e2e):**
+  - **NEW IT — term linked-columns pagination (D4):** badge == 60 and all 60 rows reachable by scroll
+    (RED on main: 50). (No existing linked-columns IT.)
+  - **Extend IT-032 (term detail page):** D1 — one `GET /api/terms/{id}` per Overview open (RED on main: 2);
+    D2 — a zero-count term shows the three reverse-lookup tabs (RED on main: absent).
+  - **Extend IT-082 (linked-terms tab):** D5 — a forced 500 renders an error, not the empty state; D7 — typing
+    fires ~1 request (debounced); **D6 — RE-GROUND the existing characterization pin** (`:116-119`, currently
+    asserts "No linked entities") to assert **"No linked terms"** (RED→GREEN per LSN-029/G-C15, never deleted).
+  - **Delete** the throwaway `specs/ctrib028-repro.spec.ts` once the real ITs exist.
+  - Each authored/changed test RUN RED on `ODD_SUT=ref:main` and GREEN on the working tree before commit (G-C2).
+
+### Docs (G-C10 / G-C11)
+
+Read the Business Glossary published page; DOC-233 already tracks the operator caveats and "ships independently."
+Since this PR removes the truncation + auto-hide behaviours (unreleased until 0.29.0), route any doc delta to the
+documentation **`release/0.29.0`** train (never docs `main`), paired with a backlog DOC item (`milestone: 0.29.0`
++ post-merge URLs). If no page documents the behaviour, record "no doc change + why" after reading. Decided in
+Phase D after reading the page.
+
+### Ontology (G-C10)
+
+`/enrich --touched` on the changed nodes (F-151/F-152/F-153 feature flows + `LinkedColumnsList`/`LinkedTermsList`/
+`TermDetailsTabs`/`Overview` + `DatasetFieldListMapperImpl`/`ReactiveDatasetFieldRepositoryImpl`); re-embed the
+graph; commit (not narrated).
+
+### Deferred-item drafts (created on disk before the scope comment)
+
+- `backlog/.../PLT-…` + `issues/odd-platform/ISS-…` for **Defect 3** and **Defect 8**; `adrs/drafts/ui-state-management.md`
+  pointer for D8; a PLT/REFACTOR note for the **orphan-NPE**. (Agents never file GH issues — the maintainer files
+  the ISS drafts.)
+
+### Scope comment (drafted — posts to #1754 immediately after GATE-1 approval, before any code)
+
+> This PR (`contrib/CTRIB-028-term-detail-hardening`) covers the Term Detail hardening epic's defects **1, 2, 4,
+> 5, 6, 7**:
+> - **1** Overview no longer double-fetches the term-details query; **2** the Linked entities/columns/terms tabs
+>   stay visible at zero count (capability discoverable); **4** the Linked columns list paginates past 50 and the
+>   backend `page_info` reports the real total/hasNext (badge no longer disagrees); **5** a real backend failure on
+>   Linked terms shows an error instead of the empty state (no fake 500 while loading); **6** the Linked terms
+>   empty copy reads "No linked terms"; **7** Linked terms search is debounced + Enter-submittable.
+>
+> **Deferred (tracked separately):** **Defect 3** (Overview vs Linked-Terms dual-surface — needs a product/UX
+> decision) and **Defect 8** (unify the three tabs' state-management — needs an ADR). A latent orphan-column NPE on
+> the linked-columns endpoint (a term-linked column whose dataset is missing) is also tracked separately. Each
+> ships in its own follow-up.
+
+## Implementation ledger (Phase D — 2026-06-22)
+
+**Branch:** `contrib/CTRIB-028-term-detail-hardening` (off `origin/main` fb597e04). GitHub App unconfigured →
+the scope comment + draft PR are **on-disk handovers** (PR body: `contributor/CTRIB-028-pr-body.md`).
+
+**Code changed (odd-platform, +133/−85 across 17 files):**
+- FE — `Overview.tsx` (D1: read redux), `lib/hooks/api/terms.ts` (D1 mutation refresh + D4 infinite columns hook,
+  removed orphaned `useGetTermByID`), `TermDetailsTabs.tsx` (D2: drop `hidden`), `LinkedColumnsList.tsx`
+  (D4: infinite + on-demand search), `LinkedTermsList.tsx` (D5 real error / D6 copy / D7 debounce+Enter),
+  7 locale JSONs (`No linked terms`).
+- BE — `ReactiveDatasetFieldRepository[Impl]` (new `countByTerm`), `DatasetFieldServiceImpl.listByTerm`
+  (zip page+count), `DatasetFieldListMapper[Impl]` (honest `PageInfo` via builder).
+
+**Static checks:** FE `tsc --noEmit` ✅ · FE eslint (changed files) ✅ · BE `:odd-platform-api:compileJava` ✅.
+
+**Reproduce→verify on the running system (the bar — G-C2):** pre-fix SUT (= main for Term-Detail): all 6 buggy
+(curl `page_info{total:50,hasNext:false}`; Playwright 6/6 buggy). Fix SUT (`odd-platform:odd-team-sut` 1aa660cb,
+working tree): all 6 fixed (curl `{total:60,hasNext:true}`; Playwright 6/6 + screenshots
+`e2e/evidence/ctrib028-fixed-d{2,4,5}-*.png` — D2 tabs+`0` badges, D4 all 60 rows, D5 a real "500 Internal
+Server Error" page not the empty state).
+
+**Test ledger — BOTH buckets (G-C9):**
+| Bucket | Test | Fix SUT | `ref:main` (RED proof) |
+|---|---|---|---|
+| unit | `:odd-platform-api:build` FULL (test+checkstyle+assemble) | GREEN (6m16s) | n/a (full suite) |
+| unit | `DatasetFieldServiceImplTest.listByTerm` (new, Mockito) | GREEN | covers the gated changed lines |
+| unit | `DatasetFieldListMapperImplTest` (new — page_info math) | GREEN | new code (mapper jacoco-excluded) |
+| integ | `IT-139` term-linked-columns-pagination (new — D4) | GREEN | RED (list 50 vs badge 60) |
+| integ | `IT-032` +D1 (single-fetch) +D2 (tabs shown) | GREEN | RED (2 fetches / tabs hidden) |
+| integ | `IT-082` re-grounded D6 + D5 (error≠empty) + D7 (debounce) | GREEN | RED (all 3) |
+
+RED proof run on `ODD_SUT=main` (a0d448b2): the 6 defect tests FAILED, the 3 bug-independent originals PASSED —
+the discriminator (incl. the re-grounded D6 pin still RED on base, G-C15 #3). **Patch-coverage (G-C13):** CI gate
+`min-coverage-changed-files: 98`; only `DatasetFieldServiceImpl` is gated (repo `**/repository/**` + mapper
+`**/*MapperImpl*` are jacoco-excluded) and its changed `listByTerm` lines are covered by the new Mockito test.
+
+**Docs (G-C10/G-C11):** READ live `…/features/data-glossary/business-glossary` (HTTP 200) — it publishes the
+D1/D2/D4 caveats (DOC-233, done). My fix makes them false in 0.29.0 → removed the 3 `{% hint %}` blocks on the
+documentation **`release/0.29.0`** train (Defect-3 caveat kept); paired **DOC-478** (pending-release) tracks the
+release-gate live-verify.
+
+**Deferred drafts created:** `issues/odd-platform/PLT-235.md` (D3), `PLT-236.md` (D8) + `adrs/drafts/ui-state-management.md`,
+`PLT-237.md` (orphan-NPE); `PLT-058.md` annotated; `backlog/docs/DOC-478.md`.
+
+**PENDING before `review-ready` (honestly NOT yet run — DoD not complete):**
+1. **FULL integration regression** — `feature-complete` (running this session); `multi-stack` + `known-bugs`
+   (expect still-RED) + `ingestion-e2e` NOT yet run.
+2. **Ontology** `/enrich --touched` on F-151/F-152/F-153 + the changed nodes + re-embed + commit — NOT done.
+3. **Commits** — odd-platform fix / documentation caveat-removal / odd-team records+ITs NOT yet committed.
+4. Then GATE 2: `/review` (separate session) → human merge.

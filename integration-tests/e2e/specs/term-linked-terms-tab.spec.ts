@@ -109,13 +109,52 @@ test.describe('F-152 Term Linked-Terms tab — reverse-lookup of linked terms', 
       'a term with no links must list no linked term',
     ).toHaveCount(0);
 
-    // KNOWN BUG (F-152 facet copy_paste_empty_state_no_linked_entities_in_linked_terms_view,
-    // LinkedTermsList.tsx:81): the empty state on the LINKED TERMS tab renders the copy-pasted
-    // "No linked entities" label. Pin the CURRENT (incorrect) copy so this goes RED when fixed
-    // to "No linked terms".
+    // CTRIB-028 (#1754 Defect 6): the empty-state copy on the LINKED-TERMS tab now reads
+    // "No linked terms" (was the copy-pasted "No linked entities"). Re-grounded RED→GREEN per LSN-029 —
+    // this guards the corrected copy; it goes RED on ref:main (which still renders "No linked entities").
     await expect(
-      page.getByText('No linked entities').first(),
-      'KNOWN BUG: empty-state copy on the Linked-Terms tab is the copy-pasted "No linked entities"',
+      page.getByText('No linked terms').first(),
+      'empty-state copy on the Linked-Terms tab reads "No linked terms"',
     ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByText('No linked entities'),
+      'the copy-pasted "No linked entities" no longer appears on the Linked-Terms tab',
+    ).toHaveCount(0);
+  });
+
+  // CTRIB-028 (#1754 Defect 5): a REAL backend failure on the linked-terms endpoint must render an
+  // error, NOT the empty state. Pre-fix, isFetched flips true after the error so the error page hid
+  // and "No linked entities" rendered (a real outage read as an empty relation). RED on ref:main.
+  test('D5: a real 500 on linked_terms renders an error, not the empty state', async ({ page }) => {
+    const nsId = await getOrCreateNamespace(NS);
+    const hostId = await getOrCreateTerm(HOST_NAME, nsId, 'it082 host term');
+    await page.route(`**/api/terms/${hostId}/linked_terms**`, route =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"boom"}' }),
+    );
+    await page.goto(`/terms/${hostId}/linked-terms`);
+    await page.waitForTimeout(2000);
+    await expect(
+      page.getByText('Return to the'),
+      'the AppErrorPage (not the empty state) renders on a real failure',
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('No linked terms')).toHaveCount(0);
+    await expect(page.getByText('No linked entities')).toHaveCount(0);
+  });
+
+  // CTRIB-028 (#1754 Defect 7): the linked-terms search is debounced — typing N chars must NOT fire
+  // one request per keystroke. RED on ref:main (un-debounced → one request per keystroke).
+  test('D7: linked-terms search is debounced (≤2 requests for 5 keystrokes)', async ({ page }) => {
+    const nsId = await getOrCreateNamespace(NS);
+    const hostId = await getOrCreateTerm(HOST_NAME, nsId, 'it082 host term');
+    await page.goto(`/terms/${hostId}/linked-terms`);
+    await page.waitForResponse(r => r.url().includes('/linked_terms') && r.ok());
+    await page.waitForTimeout(600);
+    let requests = 0;
+    page.on('request', r => {
+      if (r.method() === 'GET' && r.url().includes(`/api/terms/${hostId}/linked_terms`)) requests += 1;
+    });
+    await page.getByPlaceholder('Search').first().pressSequentially('abcde', { delay: 120 });
+    await page.waitForTimeout(1500);
+    expect(requests, 'debounced: not one request per keystroke').toBeLessThanOrEqual(2);
   });
 });

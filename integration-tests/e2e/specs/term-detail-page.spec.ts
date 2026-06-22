@@ -49,4 +49,32 @@ test.describe('F-151 Term detail page — renders the term name + definition', (
       "another term's definition must not appear on this term page",
     ).toHaveCount(0);
   });
+
+  // CTRIB-028 (#1754 Defect 1): the Overview must fetch the 13-JOIN GET /api/terms/{id} exactly ONCE
+  // (the shell loads it into redux; Overview reads that store instead of a second tanstack fetch).
+  // RED on ref:main (fires twice — redux shell + tanstack Overview, separate caches).
+  test('D1: Overview fetches GET /api/terms/{id} exactly once', async ({ page }) => {
+    const id = await seedPair();
+    let detailFetches = 0;
+    page.on('request', r => {
+      if (r.method() === 'GET' && new RegExp(`/api/terms/${id}(\\?|$)`).test(r.url())) detailFetches += 1;
+    });
+    await page.goto(`/terms/${id}/overview`);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1500);
+    expect(detailFetches, 'the term-details endpoint is fetched once per Overview open').toBe(1);
+  });
+
+  // CTRIB-028 (#1754 Defect 2): a term with zero linked entities/columns/terms still shows all three
+  // reverse-lookup tabs (capability discoverable). RED on ref:main (hidden:!count removed the tabs).
+  test('D2: a zero-count term shows the three reverse-lookup tabs', async ({ page }) => {
+    const id = await seedTermWithDefinition('IT032TermNoLinks', 'IT032 term with zero links');
+    const detail = termFetch(page, id);
+    await page.goto(`/terms/${id}/overview`);
+    await detail;
+    await page.waitForTimeout(1000);
+    await expect(page.getByRole('tab', { name: 'Linked entities' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Linked columns' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Linked terms' })).toBeVisible();
+  });
 });

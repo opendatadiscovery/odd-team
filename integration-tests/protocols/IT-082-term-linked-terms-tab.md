@@ -4,7 +4,7 @@ title: "Term Linked-Terms tab lists every term linked to this term (term↔term 
 gates:
   validates: [F-152]
   enforces: []
-  regresses: []
+  regresses: [PLT-058]
 test_class: integration
 stack: odd-minimal
 automation: "e2e:term-linked-terms-tab.spec.ts"
@@ -60,10 +60,12 @@ Source: F-152 UC-001 / UC-005 (`LinkedTermsList.tsx`, `LinkedTerm.tsx:27-36`,
 - **PASS** when: the host term's tab renders `it082_LinkedTerm` + its namespace `it082_ns`; the empty
   term's tab renders no linked-term row.
 - **FAIL** when: the linked term/namespace is missing on the host tab, OR the endpoint 4xx/5xx.
-- **KNOWN BUG pinned** (F-152 facet `copy_paste_empty_state_no_linked_entities_in_linked_terms_view`,
-  `LinkedTermsList.tsx:81`): the empty state on the LINKED TERMS tab renders the copy-pasted
-  "No linked entities" label. The empty test asserts that CURRENT (incorrect) copy — it goes RED when
-  the label is fixed to "No linked terms" (flip-on-fix signal).
+- **CTRIB-028 (#1754) regressions** — RE-GROUNDED from the former known-bug pin to guard the fixes (RED on `ref:main`):
+  - **D6** — the LINKED-TERMS empty state now reads **"No linked terms"** (was the copy-pasted "No linked
+    entities", `LinkedTermsList.tsx`). UC-005 asserts the corrected copy (flip-on-fix per LSN-029).
+  - **D5** — a real 500 on `/api/terms/{id}/linked_terms` renders the AppErrorPage (not the empty state); the
+    pre-fix synthesised-500-during-loading + error-swallowed-into-empty inversion is gone.
+  - **D7** — the search is debounced (≤2 requests for 5 keystrokes; pre-fix fired one request per keystroke).
 
 ## 6. Result log
 Append a dated entry to `integration-tests/run-log/{YYYY-MM-DD}-IT-082.md`.

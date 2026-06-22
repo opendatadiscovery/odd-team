@@ -6,15 +6,15 @@ title: "Term Detail page UI hardening epic (8 defects; FE+BE; labeled 'to decomp
 class: bug
 scope: frontend+backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop)
-status: review-ready         # /review session #3 ACCEPTED (2026-06-22). Static gates CLEAN; own unit CI-replica GREEN @75fc06cd (4m55s); own FULL integration confirmation GREEN-as-expected on a FRESH 75fc06cd build (digest cecd88db) — feature-complete 310/310 + multi-stack 9/9 + known-bugs 3-RED-expected-0-unexpected-green + ingestion-e2e 6/6. The human GATE-2 merge owns `done`. G-C10 /enrich remains SCHEDULED at the 0.29.0 release scan (justified-as-scheduled, like CTRIB-029); Gate 8 live-site PENDING-RELEASE @ 0.29.0 (DOC-478). Draft PR is the on-disk-pr-body + pushed branch (compare URL in ## Implementation finish). See ## Review (session #3).
+status: pending-release      # GATE-2 MERGED 2026-06-22 (PR #1798, squash fd71eb3d on odd-platform origin/main; verified via git fetch — content-identical to the reviewed 75fc06cd, git diff empty over the changed files). /review #3 ACCEPTED. Milestone 0.29.0 → pending-release (NOT done): /review release:0.29.0 owns the done flip — documentation release/0.29.0 train publishes (DOC-478 live-site verify) + G-C10 /enrich at the release substrate scan + real-instance verify on ghcr…:0.29.0. See ## Merge (GATE-2) + ## Review (session #3).
 reproduced: "LIVE 2026-06-22 on the running odd-minimal SUT (odd-platform:odd-team-sut 65c9b3ad, Term-Detail files == origin/main). Seeded term ctrib028_PiiTerm (id 21) with 60 linked columns. API (curl): badge GET /api/terms/21 → columns_using_count=60; GET /api/terms/21/linked_columns?page=1&size=50 → 50 items, page_info{total:50,hasNext:false} (the lie); ?page=2 → the remaining 10 (reachable, never advertised). UI (Playwright specs/ctrib028-repro.spec.ts, 6/6 pass = 6 defects confirmed): D1 GET /api/terms/21 fired 2× per Overview open; D2 zero-count term hides all 3 reverse-lookup tabs; D4 list rendered 50 rows under a badge of 60; D5 mocked 500 on linked_terms → 'No linked entities' empty state (error swallowed); D6 linked-terms empty copy = 'No linked entities'; D7 typing 5 chars fired 5 requests. Screenshots: integration-tests/e2e/evidence/ctrib028-defect{2,4,5}-*.png."
 adr_required: false          # in-scope work (Defects 1,2,4,5,6,7) needs no ADR. Defect 8 (state ADR) is DEFERRED out of this PR; Defect 1's de-dup must not pre-empt that ADR's redux↔tanstack direction.
 plan_approved_by: "maintainer (GATE 1, this session — AskUserQuestion 'Approve as planned')"
 plan_approved_at: "2026-06-22"
 plan_approved_scope: "Defects 1,2,4,5,6,7 in one PR (D1 Option A, D4 FE infinite-query + BE honest page_info); defer 3→PLT-235, 8→PLT-236. D4 BE implemented via a separate countByTerm query (justified deviation from the plan's pageifyResult — the complex CTE+groupBy query's name-based mapper extraction makes paginate-wrapping risky; same honest-page_info outcome, lower risk)."
 docs_routing: "release/0.29.0"   # 3 published caveats (DOC-233) become false in 0.29.0 → removed on the documentation release/0.29.0 train; tracked by DOC-478 (pending-release). Defect-3 caveat kept.
-pr_url:                      # branch pushed @75fc06cd; real draft PR pending (App secrets unavailable this session) — open from the compare URL in ## Implementation finish (maintainer / /contribute Phase E); /review runs on the pushed branch + contributor/CTRIB-028-pr-body.md
-pr_draft: true
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1798"   # MERGED (squash fd71eb3d on origin/main, 2026-06-22); content-identical to reviewed 75fc06cd
+pr_draft: false              # merged at GATE-2 (human)
 clarify_comment_url:
 rootcause_comment_url:
 scope_comment_url:
@@ -629,3 +629,21 @@ Affected live URL (release-gated — verify at the 0.29.0 gate, DOC-478): the Bu
   - Ledger nit (non-blocking): the Implementation-ledger "Code changed" line says "+133/−85 across 17 files"; the
     actual commit is **+214/−85 across 19 files** (the 2 new BE unit-test files = the +81 delta). The code is
     correct; only the ledger count is stale. NOT VERIFIED-as-defect → cosmetic, noted not logged.
+
+## Merge (GATE-2, 2026-06-22)
+
+- **MERGED by the maintainer → `review-ready` → `pending-release`.** GATE-2 is human; the agent never merges.
+- **Verified against the remote ref (not the report — `git fetch` + `git log origin/main`, per LSN-034/038):**
+  the merge is **`fd71eb3d` (squash, PR #1798)** — `contrib(CTRIB-028): #1754 Term Detail page hardening
+  (defects 1,2,4,5,6,7)` — on odd-platform `origin/main` (sitting on top of CTRIB-029's `4028b4a6`/#1799).
+- **Content-identical to the reviewed code:** `git diff origin/main 75fc06cd` over the changed files is **empty**;
+  spot-verified the D4 core is present on `origin/main` (`DatasetFieldListMapperImpl` `hasNext=(long)page*size<total`
+  + `new PageInfo().total(total)`; `ReactiveDatasetFieldRepository.countByTerm`). The released fix == the reviewed fix.
+- **Why `pending-release`, not `done`:** milestone `0.29.0` is open. The done flip is owned by **`/review
+  release:0.29.0`**, which still owes: (1) the documentation `release/0.29.0` train publishes → Gate-8 live-site
+  verify of the Business-Glossary caveat retirement (DOC-478); (2) G-C10 `/enrich` at the release full-substrate
+  scan (the deferred ontology refresh — now mergeable, runs at the release scan); (3) real-instance verification
+  on the published `ghcr…:0.29.0` image. Consistent with CTRIB-029's GATE-2 → pending-release path.
+- **Post-merge cleanup:** the shared `../odd-platform` checkout was reset to `main` and the merged local branch
+  `contrib/CTRIB-028-term-detail-hardening` deleted (content preserved in `origin/main` via the squash) — the
+  shared-checkout resource is freed. `state/active-streams.yaml` ctrib028 entry → terminal (merged/pending-release).

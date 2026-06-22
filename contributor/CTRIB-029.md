@@ -6,7 +6,7 @@ title: "Ingestion auth filter only covers /ingestion/entities — sibling endpoi
 class: bug                    # security-posture gap (real, verified live on origin/main)
 scope: backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop)
-status: blocked              # /review 2026-06-22 BOUNCED: the FULL e2e regression was run against the WRONG SUT image (c76e06df = NO fix class) — the fix was never regression-tested. Fix code + unit tests + docs + ADR are SOUND; rework is narrowly re-running BOTH regression buckets against a verified fix image. See "## Review" at end.
+status: review-ready         # /review 2026-06-22: BOUNCED (regression ran the wrong SUT image), then maintainer-directed CONFIRMATION run resolved it — reviewer's own FULL G-C2 regression (both buckets) on a VERIFIED dc9b6422 build (digest 35ca9385, fix class present) is green-as-expected; the fix is regression-clean. Flipped blocked → review-ready. Human GATE-2 owns merge/done. See "## Review" + "## Confirmation run" at end.
 reproduced: "STATIC-VERIFIED on origin/main (odd-platform fb597e04), 2026-06-22. SecurityConstants.java:96 whitelists /ingestion/** out of the auth chain; IngestionDataEntitiesFilter (exact /ingestion/entities, conditional) + IngestionDataSourceFilter (exact /ingestion/datasources, always-on) are the ONLY filters; AbstractIngestionFilter.java:38 falls non-matching paths straight through with no auth. Confirmed unprotected handlers: postDataSetStatsList (IngestionController.java:82), ingestMetrics (:90), getDataEntitiesByDEGOddrn GET (:76), alertManagerWebhook (AlertManagerController.java:21). LIVE repro DONE 2026-06-22 on the isolated ctrib029 stack (own image/ports, parallel to #1754) — RED (published release, flag ON, tokenless): /ingestion/metrics->201, /entities/datasets/stats->201, /alert/alertmanager->200, GET /entities/degs/children->200 (the gap); GREEN (my fix, flag ON, tokenless): all->401 'Ingestion token is missing'. See section 'Live reproduction'."
 adr_required: true           # G-C7 FIRES — auth/security-posture change. ADR: adrs/drafts/ingestion-auth-filter-coverage.md (status: proposed). No code until approved.
 plan_approved_by: RamanDamayeu
@@ -342,3 +342,56 @@ That is false. Verified by inspecting the compiled classes inside the images the
 - **Notes**: Fix is genuinely good work — the bounce is solely that its central correctness claim (the full
   regression) was measured on the wrong artifact. VERIFIED via docker image-class inspection of both candidate
   SUTs + a run-log digest sweep; nothing here is asserted from memory.
+
+---
+
+## Confirmation run (2026-06-22, maintainer-directed — reviewer's own FULL G-C2 regression on a verified fix image)
+
+The maintainer directed "rebuild SUT from dc9b6422 and rerun the regression." This is the reviewer's own
+full G-C2 run (which G-C2 calls for) on a SUT proven to contain the fix — closing the bounce.
+
+**Build provenance (the guard that was missing before):**
+- Rebuilt via `ODD_SUT=ref:dc9b6422 integration-tests/build-sut.sh` — a throwaway detached worktree at the
+  EXACT commit → `odd-platform:odd-team-sut` digest **`sha256:35ca9385…`** (a fresh build, distinct from the
+  no-fix `c76e06df` and the earlier `0728c7b2`).
+- **VERIFIED the image contains `IngestionAuthenticationFilter.class`** (`docker run … ls /app/classes/.../auth/filter/`)
+  BEFORE running — the driver aborts otherwise. Every suite's stack was digest-confirmed running `35ca9385`
+  (`run-suite.sh`: "confirmed: the e2e stack is running the SUT image").
+
+**Result — reviewer's own full regression on `35ca9385` (both buckets):**
+
+| Bucket / suite | Result | Verdict |
+|---|---|---|
+| **Unit** — `:odd-platform-api:build` on the dc9b6422 worktree | **BUILD SUCCESSFUL 4m55s** (test + checkstyle + assemble + jacoco). New `IngestionAuthenticationFilterTest` **7/7**, changed `IngestionFilterPathCoverageTest` **2/2**, `DataSourceRepositoryImplTest` **8/8** (incl. new `getByTokenTest`) — 0 failures/errors (JUnit result XMLs) | ✅ GREEN |
+| **feature-complete** | api:**PASS** · e2e **303 passed / 7 failed** | ✅ green-as-expected (7 explained below) |
+| **multi-stack** | **9/9 passed** | ✅ GREEN |
+| **ingestion-e2e** | **6/6 passed** | ✅ GREEN (the ingestion surface works with the fix, flag off) |
+| **known-bugs** | **3/3 expected-RED**, **0 unexpected GREEN** (IT-007 LSN-001 attachment · IT-006 F-042 error-boundary · IT-004 PLT-052 quality-dashboard) | ✅ as-expected |
+
+**The 7 feature-complete failures are ALL non-ingestion-auth, fully diagnosed:**
+- **6 = CTRIB-028 (#1754) branch-skew** — `term-detail-page` (D1, D2), `term-linked-columns-pagination` (D4),
+  `term-linked-terms-tab` (UC-005, D5, D7). All three spec files were last modified by `436b695 contrib(CTRIB-028):
+  #1754 Term Detail hardening`; `git merge-base --is-ancestor 75fc06cd dc9b6422` = **NO** (dc9b6422 predates
+  CTRIB-028). Proof of mechanism: `term-detail-page` D1 asserts the **CTRIB-028 #1754 Defect-2** "fetch
+  `/api/terms/{id}` exactly once" — the un-CTRIB-028'd SUT fetches it **twice** (`Expected 1, Received 2`). The
+  new filter is `@ConditionalOnProperty` off-by-default and matches only `/ingestion/**` — causally cannot touch
+  `/api/terms/**`. **Contrast proof:** the bounced run was feature-complete **310/310 green on `c76e06df`** (a
+  CTRIB-028 build — term hardening present → these 6 pass; ingestion-auth absent → I verified the class missing);
+  on the genuine CTRIB-029 build they fail. The only image difference driving the 6 is CTRIB-028's unmerged work.
+- **1 = the recurring TST-054 owner-association flake** — `remove-user-owner-mapping.spec.ts:123` (F-173 / PLT-148),
+  the same FE admin-UI flake class confirmed transient across CTRIB-026/027; causally unrelated to a BE ingestion filter.
+
+**Conclusion:** the ingestion-auth fix is **regression-clean** — nothing attributable to it fails; the ingestion
+surface (multi-stack, ingestion-e2e, every ingestion/auth/stats/metrics/alertmanager spec in feature-complete) is
+green, and the unit bucket incl. the fix's own tests is green. The bounce's central blocker (the fix was never
+regression-tested) is **RESOLVED**. The merged state (CTRIB-029 + CTRIB-028) is expected fully green — the two are
+orthogonal (BE ingestion filter vs FE/term-BE). Review repo left clean: the P-001 probe drift from the run was
+`git checkout -- lineage/`-reverted; only the corrected run-logs (digest `35ca9385`) + this verdict + state were
+committed.
+
+**Verdict update: REJECTED → ACCEPTED → `review-ready`.** Residual (do NOT block review-ready; human GATE-2 owns
+merge): (1) **ontology re-scan (G-C10)** still deferred — the dirty-tree reason is now stale (P-001 committed
+@`212b214`), only the new-node substrate re-scan remains (a genuine new node beyond `/enrich --touched`); refresh
+at the next substrate scan. (2) **ADR-0079 `description`** "replacing"→"supplementing" wording nit. (3) Process
+root-cause (regression used the shared `odd-team-sut` tag, not the per-stream tag) — already tracked in the
+parallel-infra findings doc's per-stream-SUT-tag ergonomics. **Human GATE-2 (merge of DRAFT PR #1799) owns `done`.**

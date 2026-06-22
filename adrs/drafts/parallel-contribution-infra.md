@@ -3,7 +3,7 @@ adr_slug: parallel-contribution-infra
 title: "Running multiple /contribute streams in parallel — isolation model + the script/skill/agent changes it needs"
 status: findings-in-progress
 date: "2026-06-22"
-author: odd-team (CTRIB-029 session, in parallel with the CTRIB-028/#1754 session)
+author: odd-team (CTRIB-029 #1740 session + the CTRIB-028 #1754 /review session — §8)
 trigger: "maintainer directive 2026-06-22 — raise velocity by closing issues in parallel without the streams interfering"
 ---
 
@@ -13,6 +13,8 @@ trigger: "maintainer directive 2026-06-22 — raise velocity by closing issues i
 > #1754) was actively implementing. The maintainer asked: collect everything learned about running parallel
 > streams — obstacles, workarounds, and what the scripts / skills / agents must change to support N
 > change-requests at once. Section 4 (runtime obstacles) grows as the CTRIB-029 stream proceeds.
+> **Section 8** adds the CTRIB-028 `/review` session's perspective — a reviewer is *also* a parallel stream,
+> and reviewing surfaced obstacles (O7-O10) + a resource (R9) the contributor-only model could not see.
 
 ## 1. The goal and the core problem
 
@@ -126,6 +128,10 @@ step 5; `pillars/contributor/gates.md` G-C4 human-path clause.)
    `${ODD_API_PORT:-18080}:8080`, …) so one file serves every stream. (R3)
 4. **`state/active-streams.yaml`** — a new coordination lock the `/contribute` skill writes at intake (id, issue,
    branch, worktree, image tag, ports, owned-files) and clears at GATE 2 / blocked. (O4/O5)
+   **✓ Built 2026-06-22** (the CTRIB-028 `/review` session): the file exists + is committed, carrying a `role`
+   enum (`contributor` / `reviewer` / `probe-run` / `reducer`), a `shared_resources` block (incl. the
+   `lineage/**` single-writer row R9), and an `unowned_dirty_state` block. §8 records the obstacles (O7-O10)
+   that shaped it; #9-11 below are the remaining skill/protocol wiring that keeps it populated automatically.
 5. **The `/contribute` skill (Phase A + Phase B/D)** — read `active-streams.yaml`, reserve a stream id + a free
    port pair, create a worktree by default when another stream is active, and verify live working-tree state
    over the record. (O3/O4)
@@ -190,3 +196,92 @@ Standing up the #1740 stream beside the live #1754 stream, in practice:
 Sources: `integration-tests/build-sut.sh`, `integration-tests/run-suite.sh`,
 `scripts/run-platform-tests.sh`, `lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml`,
 `docker ps` (#1754's live stack on 18080/15432), and the live CTRIB-029 parallel run, all 2026-06-22.
+
+## 8. Reviewer-session findings (2026-06-22) — the second perspective + what the contributor model missed
+
+> Added by the **CTRIB-028 `/review` session** running parallel-aware beside the CTRIB-029 (#1740) stream.
+> §1-7 are the contributor's view (two `/contribute` streams sharing a machine). A `/review` is *also* a parallel
+> stream, with a different resource profile — and reviewing CTRIB-028 surfaced obstacles the contributor-only
+> model structurally could not see. The committed `state/active-streams.yaml` (§5 #4, now built) already encodes
+> these; this section is the WHY, and the recommendations (#9-11) are the wiring that keeps it true automatically.
+
+### New shared resource
+
+| # | Resource | Where it is fixed | Shared by | Collision effect |
+|---|---|---|---|---|
+| R9 | **the `lineage/**` ontology tree + the graph embedding** | `lineage/{repo}/**` + the embedded index | every `/enrich`, every `/probe-run`, every reducer / `/next-batch` loop | two writers rewriting sidecars / `feature-flows.yaml` + re-embedding concurrently corrupt the tree + the index — it is **single-writer-serialized**, broader than R7's per-run output dirs |
+
+### Obstacles (continuing the O-series)
+
+**O7 — the reviewer is an unmodelled stream role.** §1-7 model contributor↔contributor only. A `/review` session
+has a distinct profile: (a) it reads the target repos (`../odd-platform`, `../documentation`) **read-only** — no
+worktree, no SUT build, no docker, no stack (so it does NOT touch R1/R2/R3/R4); (b) it **must NOT write
+`lineage/**` (R9)** — review is read-only on the ontology and `/enrich` is `/implement`'s job (re-enrich as a
+review side-effect is forbidden, `.claude/skills/review`); but (c) it **does** contend for **R5** — it commits
+the verdict + the `PROGRESS.md` record to the shared odd-team index. And it creates the **awareness asymmetry the
+maintainer named explicitly**: the contributor streams do not know a review is in flight against one of them
+("you know about CTRIB-029 … it does not know about you"). *Workaround (this session):* the reviewer registered a
+read-only entry in `active-streams.yaml` so 029 — and any later run — can see it. *Better fix:* the `/review`
+skill reads + registers a `role: reviewer` entry at intake and clears it at the verdict (§5 #10).
+
+**O8 — `lineage/**` is multi-writer, and the lock holder is often NOT a `/contribute` stream.** The model
+implicitly assumes the parallel actors are contribute streams; the actual holder of the `lineage/**` lock this
+session was a **`/probe-run` (P-001)** — its measured-value merge left 6 `lineage/**` files dirty + an untracked
+`probe-runs/2026-06-22-P-001.yaml`. **CTRIB-028's ledger mis-attributed this dirt to "CTRIB-029's lineage
+edits"**, but 029's enrich was still *pending* and its uncommitted work is auth-filter code in its worktree —
+nowhere near `lineage/**`. The deferral *decision* (don't `/enrich` into a dirty tree) was correct; the *named
+owner was wrong*, and a stream trusting that record would mis-model who holds the lock. *Workaround:* attribute
+the lock to whatever is actually dirty (`git status lineage/` + read the `probe_run_id` in `feature-flows.yaml`),
+never to a guessed stream. *Better fix:* the registry tracks R9 with its **true current holder** and a `role`
+enum including `probe-run` / `reducer` / `enrich`; the rule is "no `/enrich` while `lineage/**` is dirty **or**
+claimed, whoever holds it" (§5 #9). **The deepest implication:** the registry is not "active *contribute*
+streams" — it is "active **writers of any shared resource**." A `/probe-run`, a reducer batch, or a `/next-batch`
+loop must register too, or the single most common lineage-lock holder stays invisible — which is exactly the O8
+miss.
+
+**O9 — shared-checkout manual churn → a stale recorded SHA (sharpens O4).** O4's example is a lagging *status*;
+a sharper case this session is a lagging *commit*. The shared `../odd-platform` checkout had a **manual
+revert+reapply** by the maintainer (`9d3de146` → revert `b5930a75` → reapply `75fc06cd`), yet CTRIB-028's record
+still cited `9d3de146`. `git diff 9d3de146 75fc06cd` was empty (content-identical, so the code itself stood), but
+a stream or reviewer that checked out the *recorded* SHA would land on a commit that is no longer the branch head
+— and on a busy shared checkout the next churn may not be content-identical. *Better fix:* O4's "verify the live
+tree" explicitly includes `git -C ../odd-platform rev-parse HEAD` + the branch name, compared against the
+record's cited SHA; the registry records the **live head + a `verified-at` timestamp**, never the record's claim
+(§5 #11).
+
+**O10 — orphaned unowned dirty state in the shared tree.** Beyond the probe-run residue (O8), the working tree
+also carried an uncommitted `integration-tests/e2e/specs/dq-run-history.spec.ts` (run-status / DQ class — the
+CTRIB-024 / #1757 area) that **no registered stream's record claims**. A starting stream must therefore **not
+assume a clean tree**, and must **never `git checkout --` / `git add` files it does not own** — reverting another
+activity's in-flight work is the destructive sibling of the O3 index race. *Better fix:* the registry carries an
+`unowned_dirty_state` block (built this session); the read-at-intake protocol adds "reconcile or route around
+unowned dirt; sweep nothing you don't own" (§5 #11).
+
+### Added recommendations (continuing §5)
+
+9. **Broaden the registry from "active /contribute streams" to "active writers of any shared resource."** A
+   `/probe-run`, a reducer batch, a `/next-batch` autonomous loop, and an `/enrich` all write R9 and must
+   register, under a `role` enum (`contributor` / `reviewer` / `probe-run` / `reducer` / `enrich` /
+   `maintainer`). Without this, the most common `lineage/**` lock-holder (a probe-run) is invisible to a
+   contributor planning its own enrich — the O8 miss. (O8 / R9)
+10. **The `/review` skill reads + registers a read-only `reviewer` entry** at intake, and clears it at the
+    verdict — so contributor streams can see a review in flight (O7). It must NOT run `/enrich` (read-only on
+    `lineage/**`); a review writes only its verdict + `PROGRESS.md` (+ the registry). This is the §5 #5 analogue
+    for the reviewer role. (O7)
+11. **The registry records live-verified state, not record claims, and flags unowned dirt.** Each entry carries
+    the **live** branch head + a `verified-at` timestamp (O9); a top-level `unowned_dirty_state` block lists
+    uncommitted residue no stream owns (O10). The read-at-intake protocol gains two rules: *verify the live
+    tree over any record*, and *sweep nothing you don't own*. (O9 / O10)
+
+> §5 #4 is now **built**; the committed `state/active-streams.yaml` already implements the #9-11 schema (the
+> `role` enum, R9 as a `shared_resources` single-writer row with its true holder, the `unowned_dirty_state`
+> block). #9-11 are the skill/protocol wiring that keeps it populated without hand-maintenance.
+
+Sources (reviewer session, all 2026-06-22, verified live): `git -C ../odd-platform log/diff/rev-parse`
+(head `75fc06cd` vs recorded `9d3de146`; revert `b5930a75`; `git diff` empty); `git -C ../odd-team status`
+(probe-run `lineage/**` residue + `integration-tests/e2e/specs/dq-run-history.spec.ts`);
+`lineage/odd-platform/feature-flows.yaml` (`probe_run_id R-20260622T123548Z-P-001`, `ran_at 2026-06-22T12:35:48Z`);
+`docker ps` (only #1754's 18080/15432 + ryuk — no ctrib029 stack up); `git worktree list`
+(`../odd-platform-ctrib029` on its own branch); `.claude/skills/review` (review is read-only on the repo;
+re-enrich is `/implement`'s job); `pillars/contributor/gates.md` G-C10 (ontology refresh is a DoD gate);
+`state/active-streams.yaml` (built + committed this session).

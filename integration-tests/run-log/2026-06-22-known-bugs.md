@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-22 — suite/protocol: known-bugs
+- runner: (fill: AI-assisted <model> | human <name>)
+- odd-platform working-tree HEAD: 75fc06cd (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut  (image odd-platform:odd-team-sut, digest sha256:c76e06df90dc3d60c93e712046403a1d4f0d1df2a867099ce1f75ae55d569d34)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

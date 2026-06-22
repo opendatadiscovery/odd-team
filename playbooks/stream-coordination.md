@@ -63,8 +63,13 @@ builds on: `adrs/drafts/parallel-contribution-infra.md`, R1-R9 / O1-O10).
    - **The odd-team git index + `PROGRESS.md` (R5)** take explicit-path atomic commits only; keep new files
      untracked until the commit moment (a stray `git add -A` sweeps another stream's staged files — O3).
    - **The `documentation` `release/{version}` train (R6)** — per-stream docs worktree; same-name pushes only.
-   - **Never `git checkout --` / `git add` / revert a path you do not own** (O10). Unowned dirt is reconciled by
-     its owner; you route around it.
+   - **Never `git checkout --` / revert / weaken a path you do not own** (O10) — *while its owner can still
+     return*: route around it, the owner reconciles it. **O10 forbids _sweeping/reverting_ another stream's work,
+     not _losing_ it.** **If no session will return** — you are the **only/last active session**, or `/streams`
+     is GC-ing a **confirmed-abandoned** stream — unowned dirt must be **CAPTURED, not abandoned**: commit it with
+     honest attribution ("orphaned from {activity}; preserved by the only/last session; not authored here"), or
+     park it to `state/abandoned/<id>.patch`. Leaving it uncommitted then silently LOSES it. (Route-around is the
+     in-flight rule; capture-before-finish is the last-session rule.)
 
 7. **UPDATE** `phase`/`status`/`updated` per phase — the heartbeat the abandonment GC (`/streams`) reads.
 
@@ -92,6 +97,8 @@ branch all streams share. CTRIB-028's stream actually did this (`retrospectives/
   hold is missing a named holder.
 - Every push used a same-name refspec; none touched `main`.
 - No `lineage/**` write happened against a dirty/claimed tree; no unowned path was swept.
+- **If this is the only/last active session:** no orphaned working-tree change was left uncommitted — each was
+  captured (committed with honest attribution) or parked to `state/abandoned/`. Nothing was lost.
 
 ## on-fail
 
@@ -100,6 +107,10 @@ branch all streams share. CTRIB-028's stream actually did this (`retrospectives/
 - `lineage/**` is dirty and you need `/enrich` → defer with a justification (G-C10 "no refresh now + why");
   never sweep the owner's work.
 - A push's upstream resolves to `origin/main` → STOP; fix the tracking (step push-safety) before any push.
+- You are the only/last session and the tree carries unowned dirt → do **NOT** leave it (it will be lost);
+  capture it (commit with honest attribution, or park to `state/abandoned/`). Route-around only applies while an
+  owner can return. (Case-law 2026-06-22: the #1740 only-session almost lost a probe-run merge + a run-status IT
+  + a sibling PR-body by treating them as route-around-able O10 dirt.)
 
 ## case-law
 

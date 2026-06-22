@@ -94,9 +94,17 @@ A new `/streams` command (and a fold into `/orient`) is the janitor the model la
   **reclaim** (free the worktree/ports/registry slot — **only after the work is captured**: the contrib
   branch is pushed *or* the uncommitted diff is saved to `state/abandoned/<id>.patch` + surfaced), or
   **discard** (maintainer-confirmed; never silent).
-- **The invariant**: *no stream's resources are reclaimed until its work is captured or the maintainer
-  explicitly discards.* Abandoned work is never silently lost and never silently blocks — it is surfaced,
-  parked, and the resource is freed.
+- **The invariant (capture-before-reclaim — and capture-before-finish):** *no stream's resources are reclaimed
+  until its work is captured or the maintainer explicitly discards.* Abandoned work is never silently lost and
+  never silently blocks — it is surfaced, parked, and the resource is freed. **The same invariant binds the
+  only/last active session at finish.** O10 ("never sweep what you don't own") forbids _reverting/sweeping_
+  another stream's work *while its owner can return* — it does **not** license _losing_ it. When no session will
+  return (the only/last session ending, or a confirmed-abandoned stream), any orphaned working-tree change must
+  be **captured** — committed with honest attribution, or parked to `state/abandoned/<id>.patch` — never left
+  uncommitted. **Case-law (2026-06-22):** the #1740 only-session initially left a probe-run's `lineage/**` merge,
+  a run-status IT, and a sibling PR-body uncommitted under O10; with no other session returning they would have
+  been lost (the maintainer caught it). Route-around is the in-flight rule; **capture-before-finish** is the
+  last-session rule.
 
 ### 5. The serialized resources are the real constraints on N (everything else parallelises)
 

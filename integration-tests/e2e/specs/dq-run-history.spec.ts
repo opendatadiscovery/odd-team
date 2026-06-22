@@ -5,22 +5,26 @@ import { dbQuery } from '../helpers/db';
  * IT-059 — F-040 DQ Test Run History (paginated /runs).
  *
  * Protocol: integration-tests/protocols/IT-059-dq-run-history.md
- * Gates: validates F-040 (per-DQ-test run history; pagination + ordering; RUNNING 500).
+ * Gates: validates F-040 (per-DQ-test run history; pagination + ordering; in-flight RUNNING row),
+ *        regresses PLT-021 (the RUNNING-row 500). RE-GROUNDED 2026-06-19 (#1757 / PLT-021 / CTRIB-024,
+ *        LSN-029 RED→GREEN flip): CORNER 1/2 were 500/400 RED-pins pre-fix; they now assert 200.
  *
  * SUCCESS (F-040-UC-1, confirmed promise): a DQ test with several ingested runs returns a
  *   most-recent-first (end_time DESC), correctly paginated timeline; the union across pages
  *   is every run, once each, globally ordered.
- * CORNER 1 (F-040-UC-2, contradicted promise → RED-characterization pin, LSN-029): a run with
- *   status RUNNING makes the endpoint 500 — the DB enum has 7 values (incl. RUNNING), the wire
- *   enum DataEntityRunStatus has 6 (no RUNNING), and DataEntityRunMapper's MapStruct Enum.valueOf
- *   throws. The page is unavailable exactly while a test is in flight. KNOWN BUG (PLT-needed).
- * CORNER 2 (F-040-UC-4, contradicted promise): filtering by an unmappable status (RUNNING, or any
- *   invalid literal) 500s at param-binding, not 400; a valid filter (FAILED) returns 200.
+ * CORNER 1 (F-040-UC-2, RE-GROUNDED): a run with status RUNNING now LOADS — the endpoint returns
+ *   200, the in-flight run is present with status RUNNING and sorts to the TOP. RUNNING is now a
+ *   value of the wire enum DataEntityRunStatus (== the 7-value DB IngestionTaskRunStatus), and
+ *   DataEntityRunMapper degrades any unmapped/future status to UNKNOWN instead of throwing.
+ *   RED proof on ODD_SUT=ref:main: the same request still 500s (the pre-fix wire/DB enum asymmetry).
+ * CORNER 2 (F-040-UC-4, RE-GROUNDED): status=RUNNING is now a VALID filter (200, only in-flight rows);
+ *   an invalid literal (BANANA) still returns a clean 400; a valid filter (FAILED) returns 200.
+ *   RED proof on ref:main: status=RUNNING ⇒ 400 there.
  *
- * GROUND-BEFORE-ASSERT (curl-probed live 2026-06-07): runs shape =
+ * GROUND-BEFORE-ASSERT (curl-probed live 2026-06-07; corners re-grounded post-#1757): runs shape =
  *   {items:[{id,oddrn,name,...,start_time,end_time,status_reason,status}], page_info:{total,hasNext}};
  *   5 runs at size 2 → page1=2 newest hasNext=true total=5, page3=1 oldest hasNext=false;
- *   a RUNNING DB row ⇒ 500; status=RUNNING/BANANA ⇒ 500; status=FAILED ⇒ 200 filtered.
+ *   a RUNNING DB row ⇒ 200 (in-flight at top); status=RUNNING ⇒ 200, status=BANANA ⇒ 400, status=FAILED ⇒ 200 filtered.
  */
 
 const BASE = process.env.ODD_BASE_URL ?? 'http://localhost:18080';

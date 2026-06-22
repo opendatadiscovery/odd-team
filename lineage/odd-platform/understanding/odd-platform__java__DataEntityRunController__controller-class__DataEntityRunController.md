@@ -100,7 +100,7 @@ related_concepts:
   - behaviour: "RUNNING status row in result set — DB column accepts `RUNNING` (`IngestionTaskRunStatus.java:34`); wire enum `DataEntityRunStatus` does NOT contain RUNNING. The mapper at `DataEntityRunMapper.java:13-14` flat-maps the String `status` field into the wire enum target; MapStruct's `Enum.valueOf()` strategy throws `IllegalArgumentException` on unknown literals — but there's no integration test asserting whether the operator sees 500 or some softer fallback"
     test_class: integration
     criticality: HIGH
-    note: "see P-151 (probe-skeleton emitted); this is the silent-availability-bug-during-in-flight-runs hypothesis"
+    note: "RESOLVED 2026-06-19 (PR #1793 / PLT-021 / CTRIB-024) — NOW COVERED. RUNNING is a wire-enum value and the mapper degrades unmapped statuses to UNKNOWN; the endpoint returns 200 (was 500). Covered by DataEntityRunMapperImplTest.mapDataEntityRuns_runningStatus_mapsToRunning + ...unmappableStatus_degradesToUnknownNotThrow (unit), DataEntityRunRepositoryImplTest in-flight ordering (Testcontainers), and odd-team IT-059 dq-run-history (API 200 + RUNNING-at-top + status filter + browser badge; RED on ref:main). P-151 retired (superseded by IT-059). [maintainer-annotated 2026-06-22; full /enrich re-derivation pending]"
   - behaviour: "NULL end_time ordering — what does the operator see when a RUNNING task (end_time=null) co-exists with completed runs? Postgres default for `ORDER BY end_time DESC` is NULLS FIRST; the UI labels each row by `startTime` (`TestRunItem.tsx:30`). No test asserts the head-of-list behaviour"
     test_class: integration
     criticality: MEDIUM
@@ -521,4 +521,18 @@ stress_findings:
 
 ## Maintainer notes
 
-(empty — first enrichment pass on this node)
+- 2026-06-22 (maintainer-annotated, NOT a full re-enrich): the highest-severity finding on this node —
+  `bugs_limitations_corner_cases.[1]`, the RUNNING wire/DB enum asymmetry that 500'd the runs-history page
+  during an in-flight test — was FIXED upstream by PR #1793 / PLT-021 / CTRIB-024. RUNNING is now a value of
+  the wire enum `DataEntityRunStatus` (== the 7-value DB `IngestionTaskRunStatus`) and `DataEntityRunMapper`
+  degrades any unmapped/future status to `UNKNOWN` instead of throwing; the endpoint returns 200 with the
+  in-flight run at the top. NOW TEST-COVERED at both buckets: `DataEntityRunMapperImplTest` (RUNNING→RUNNING,
+  unknown→UNKNOWN) + `DataEntityRunRepositoryImplTest` (in-flight ordering) [unit/CI], and odd-team
+  `IT-059 dq-run-history` (API + browser, RED on `ref:main`) [integration]. The companion invariant
+  (`concepts/detail/invariants/wire-enum-running-asymmetry-data-entity-run-status.yaml`) and probe `P-151`
+  are flipped to RESOLVED; `feature-flows/detail/F-040.yaml` already recorded the resolution (2026-06-19).
+  This sidecar was enriched at commit `4ec2b20` (pre-fix); a full `/enrich` against current HEAD is the
+  deeper refresh — it will re-derive `bugs[1]` severity, the docs six-value-enum finding (now seven), the
+  `status` filter request-input drift, and `confidence`. Reducer rollups that still cite the open bug
+  (`test-map.yaml`, `implicit-adrs.md`, `refactoring-scopes.md`, operation `list-runs-for-data-entity.yaml`)
+  refresh on the next reducer pass.

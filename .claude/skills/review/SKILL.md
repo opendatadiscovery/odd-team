@@ -28,6 +28,7 @@ Refuse to run if any of these are true:
 3. `backlog/README.md` — status transitions.
 4. The work item file — status, acceptance criteria, Context, Implementation Record. A `milestone:` field marks the item **release-gated** (`adrs/drafts/release-train-doc-gating.md`): its commits live on the documentation train `release/{version}` — fetch that branch; the diff under review is the item's commits there.
 5. The commit(s) that implemented it — `git log --format=full <branch>` in the target repo. Extract the `Sources:` footer; you will verify every cited source.
+6. `playbooks/stream-coordination.md` + `state/active-streams.yaml` — **register a read-only `reviewer` entry at intake and clear it at the verdict.** A reviewer is a parallel stream too (O7): it reads the target repos read-only (no worktree / SUT / stack), but it DOES contend for the odd-team git index + `PROGRESS.md` (explicit-path atomic commits only), must **NOT** run `/enrich` (review is read-only on `lineage/**`; `git checkout -- lineage/` any probe-runtime drift before committing), and registering it makes the contributor streams aware a review is in flight. The model: `adrs/drafts/parallel-contribution-operating-model.md`.
 
 ## Protocol
 

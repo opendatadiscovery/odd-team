@@ -6,7 +6,7 @@ title: "Ingestion auth filter only covers /ingestion/entities — sibling endpoi
 class: bug                    # security-posture gap (real, verified live on origin/main)
 scope: backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop)
-status: review-ready         # /review 2026-06-22: BOUNCED (regression ran the wrong SUT image), then maintainer-directed CONFIRMATION run resolved it — reviewer's own FULL G-C2 regression (both buckets) on a VERIFIED dc9b6422 build (digest 35ca9385, fix class present) is green-as-expected; the fix is regression-clean. Flipped blocked → review-ready. Human GATE-2 owns merge/done. See "## Review" + "## Confirmation run" at end.
+status: pending-release      # GATE-2 DONE 2026-06-22: maintainer MERGED PR #1799 (squash 4028b4a6 on origin/main, Closes #1740); released fix byte-identical to the reviewed dc9b6422. Milestone (0.29.0) → pending-release (NOT done): docs publish on the release/0.29.0 train + ontology re-scan + real-instance verify are owed at /review release:0.29.0. See "## Review" + "## Confirmation run" + "## GATE 2" at end.
 reproduced: "STATIC-VERIFIED on origin/main (odd-platform fb597e04), 2026-06-22. SecurityConstants.java:96 whitelists /ingestion/** out of the auth chain; IngestionDataEntitiesFilter (exact /ingestion/entities, conditional) + IngestionDataSourceFilter (exact /ingestion/datasources, always-on) are the ONLY filters; AbstractIngestionFilter.java:38 falls non-matching paths straight through with no auth. Confirmed unprotected handlers: postDataSetStatsList (IngestionController.java:82), ingestMetrics (:90), getDataEntitiesByDEGOddrn GET (:76), alertManagerWebhook (AlertManagerController.java:21). LIVE repro DONE 2026-06-22 on the isolated ctrib029 stack (own image/ports, parallel to #1754) — RED (published release, flag ON, tokenless): /ingestion/metrics->201, /entities/datasets/stats->201, /alert/alertmanager->200, GET /entities/degs/children->200 (the gap); GREEN (my fix, flag ON, tokenless): all->401 'Ingestion token is missing'. See section 'Live reproduction'."
 adr_required: true           # G-C7 FIRES — auth/security-posture change. ADR: adrs/drafts/ingestion-auth-filter-coverage.md (status: proposed). No code until approved.
 plan_approved_by: RamanDamayeu
@@ -14,7 +14,8 @@ plan_approved_at: "2026-06-22"
 plan_approved_scope: "Option 1 — single uniform /ingestion/** authentication filter (gated by auth.ingestion.filter.enabled); per-datasource authz on /ingestion/entities unchanged; INCLUDE the alertmanager webhook (maintainer amendment 2026-06-22 — all ingestion routes gated when the flag is on; 'open by default' caveat documented on 3 pages); DEFER default-flip + per-resource authz + the cross-dataset stats surface as logged follow-ups. ADDITIONALLY (maintainer 2026-06-22): publish the ADR in the documentation ADR-log + the enable-security matrix update on the release/0.29.0 train; build independent infra (per-stream worktree/image/stack) to run parallel to #1754."
 docs_routing: "release/0.29.0"   # unreleased behaviour → documentation train (G-C11). The enable-security deployment matrix (OPEN→AUTH-token rows) + the 'tracked upstream' note update at release. Paired DOC item to be logged on approval.
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1799"
-pr_draft: true
+pr_draft: false              # MERGED 2026-06-22 (squash 4028b4a6 on origin/main; #1740 closed)
+merged_commit: "4028b4a6"    # squash-merge of dc9b6422; released fix byte-identical to the reviewed commit (git diff empty over the 6 files)
 clarify_comment_url:         # none — no clarifying question warranted (G-C6); the issue setup is clear. The ADR is the maintainer touchpoint.
 rootcause_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1740#issuecomment-4768625599"
 scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1740#issuecomment-4768625599"  # root-cause + scope folded into one (G-C6 rate-limit); posted post-GATE-1 2026-06-22
@@ -395,3 +396,20 @@ merge): (1) **ontology re-scan (G-C10)** still deferred — the dirty-tree reaso
 at the next substrate scan. (2) **ADR-0079 `description`** "replacing"→"supplementing" wording nit. (3) Process
 root-cause (regression used the shared `odd-team-sut` tag, not the per-stream tag) — already tracked in the
 parallel-infra findings doc's per-stream-SUT-tag ergonomics. **Human GATE-2 (merge of DRAFT PR #1799) owns `done`.**
+
+---
+
+## GATE 2 — MERGED (2026-06-22) → `pending-release`
+
+Maintainer merged **PR #1799**. Verified against the remote (not inferred):
+- `origin/main` top commit **`4028b4a6 fix(ingestion-auth): authenticate the whole /ingestion/** surface when the flag is on (#1740) (#1799)`** — squash-merge, `Closes #1740`.
+- The merged tree contains `IngestionAuthenticationFilter.java` + `ReactiveDataSourceRepositoryImpl.getByToken` (`git show origin/main:…`).
+- **Released == verified:** `git diff dc9b6422 origin/main` over all 6 fix files is **empty** — the released fix is byte-identical to the independently-reviewed + regression-confirmed commit. Nothing changed in the merge.
+
+**Status `review-ready` → `pending-release`** (milestone `0.29.0`; the code is on `origin/main` but the release has not shipped). The `pending-release → done` flip is owed at **`/review release:0.29.0`**, which must:
+1. **Publish the docs train** — merge documentation `release/0.29.0` (ADR-0079 + the enable-security matrix + the AlertManager `#authentication` subsection + notifications/ingestion-filters edits) to docs `main`, then **live-site-verify** the recorded URLs (Gate 8 PENDING-RELEASE).
+2. **Real-instance verification** on the published `ghcr…:0.29.0` image — flag ON, tokenless `/ingestion/metrics|…/stats|…/alert/alertmanager|GET …/degs/children` → 401; flag OFF → open (the default-unchanged guarantee).
+3. **Ontology re-scan** — the deferred new-node enrichment of `IngestionAuthenticationFilter` to the released tag, committed.
+4. Full-suite GREEN on the published `0.29.0` image (both buckets).
+
+The `odd-team-sut` tag + 18080 stack currently run the dc9b6422 build (`35ca9385`) from the confirmation run — unrelated to the release-gate work.

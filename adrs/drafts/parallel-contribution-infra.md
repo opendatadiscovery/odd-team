@@ -122,10 +122,22 @@ step 5; `pillars/contributor/gates.md` G-C4 human-path clause.)
 ## 5. Recommended changes (for the maintainer's script/skill/agent pass)
 
 1. **`build-sut.sh`** — add `ODD_SUT_TAG` (default `odd-platform:odd-team-sut`); emit it in `SUT_IMAGE=`. (O1/R2)
+   **✓ Built** — `build-sut.sh:27,33` (`TAG=${ODD_SUT_TAG:-…}`) + the `SUT_IMAGE=` emit.
 2. **`run-suite.sh`** — add a stream-id mode: template `COMPOSE_PROJECT_NAME`, container names, host ports, and
    the health URL; keep the persistent-shared stack as the default (one stream), add per-stream stacks for N. (O2/R3/R4)
+   **✓ Built 2026-06-23** — `ODD_STREAM=<id>` mode: per-stream image tag + compose project + container names +
+   an auto-discovered FREE host-port pair (`find_free_port`; pin via `ODD_API_PORT`/`ODD_DB_PORT`) + `ODD_BASE_URL`;
+   the id is lowercased (Compose project names must be); and the latent `ODD_PLATFORM_IMAGE` hardcode that ignored
+   `ODD_SUT_TAG` is fixed. No `ODD_STREAM` = the shared persistent stack, byte-identical.
 3. **The compose file** — parameterise container names + ports (`${ODD_STREAM:-probe}-odd-platform`,
    `${ODD_API_PORT:-18080}:8080`, …) so one file serves every stream. (R3)
+   **✓ Built 2026-06-23** — `odd-minimal.docker-compose.yml` (container names + host ports; service names
+   unchanged) **plus `runner.py`** (the api-probe rail): stream-gated env base/containers + `_resolve_base` so an
+   isolated stream's probes target its own stack. **Verified live 2026-06-23:** two isolated stacks coexisted
+   (`isoa`:18091 ∥ `isob`:18092 — own containers + networks) with the shared `:18080` untouched, clean teardown.
+   **Remaining (follow-up):** a few UI-probes hardcode `:18080` in `xhr_filter_regex` (not auto-rewritten), and the
+   `multi-stack` + `ingestion-e2e` suites' per-spec compose stacks need the same parameterisation for full N-stream
+   isolation of those two suites.
 4. **`state/active-streams.yaml`** — a new coordination lock the `/contribute` skill writes at intake (id, issue,
    branch, worktree, image tag, ports, owned-files) and clears at GATE 2 / blocked. (O4/O5)
    **✓ Built 2026-06-22** (the CTRIB-028 `/review` session): the file exists + is committed, carrying a `role`

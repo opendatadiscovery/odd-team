@@ -10,6 +10,9 @@
 #   integration-tests/run-suite.sh <suite-name>      # e.g. smoke | feature-complete | I2-attachment-storage
 #   integration-tests/run-suite.sh IT-NNN            # a single protocol
 #   integration-tests/run-suite.sh <...> --dry-run   # validate + show what would run, no stack
+#   ODD_STREAM=<id> integration-tests/run-suite.sh <suite>   # ISOLATED env: own image tag + compose project +
+#       container names + a FREE host port pair — parallel-safe across /contribute + /review (no shared stack).
+#       Pin ports with ODD_API_PORT/ODD_DB_PORT; build the SUT from your worktree with ODD_PLATFORM_DIR=<path>.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # integration-tests/
@@ -100,13 +103,55 @@ for m in "${MANUAL[@]:-}"; do [ -n "$m" ] && echo "  → MANUAL $m: open protoco
 #     bring up the SAME odd-minimal compose, so they MUST test the same image. build-sut.sh re-materialises
 #     odd-platform:odd-team-sut from $ODD_SUT (working|main|ref:X|published[:v]); an explicit
 #     $ODD_PLATFORM_IMAGE bypasses it. Skipped for manual-only / dry runs (no stack needed).
+# --- Per-session isolation (parallel /contribute + /review streams) ----------------------------------------
+# Default (ODD_STREAM unset) = the single shared persistent stack (probe-* on 18080/15432, tag odd-team-sut) —
+# today's behaviour, byte-identical. ODD_STREAM=<id> gives a FULLY ISOLATED environment: its own SUT image tag
+# (odd-platform:odd-team-sut-<id>), its own compose project + container names (<id>-odd-platform / <id>-database),
+# its own FREE host port pair (auto-discovered; pin with ODD_API_PORT/ODD_DB_PORT), and its own base URL — so two
+# sessions never share an image, port, container, or network. Both rails inherit it: Playwright via ODD_BASE_URL,
+# the api-probe runner via ODD_BASE_URL / ODD_*_CONTAINER. (adrs/drafts/parallel-contribution-infra.md §4-5;
+# state/active-streams.yaml is the cross-stream id/port ledger the /contribute + /review skills read + register.)
+find_free_port() {  # $1 = preferred start port; prints the first free TCP port >= start (best-effort; tiny race)
+  python3 - "$1" <<'PY'
+import socket, sys
+start = int(sys.argv[1])
+for p in range(start, start + 500):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", p)); s.close(); print(p); break
+    except OSError:
+        s.close()
+else:
+    sys.exit(f"no free TCP port in [{start}, {start + 500})")
+PY
+}
+STREAM="$(printf '%s' "${ODD_STREAM:-}" | tr '[:upper:]' '[:lower:]')"   # Docker Compose project names must be lowercase
+if [ -n "$STREAM" ]; then
+  [ "$STREAM" != "${ODD_STREAM:-}" ] && echo "  -> note: ODD_STREAM lowercased to '$STREAM' (Docker Compose project names must be lowercase)."
+  export ODD_STREAM="$STREAM"
+  export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$STREAM}"
+  export ODD_SUT_TAG="${ODD_SUT_TAG:-odd-platform:odd-team-sut-$STREAM}"
+  export ODD_API_PORT="${ODD_API_PORT:-$(find_free_port 18090)}"
+  export ODD_DB_PORT="${ODD_DB_PORT:-$(find_free_port 15442)}"
+  export ODD_BASE_URL="${ODD_BASE_URL:-http://127.0.0.1:$ODD_API_PORT}"
+  export ODD_BACKEND_CONTAINER="$STREAM-odd-platform"
+  export ODD_DB_CONTAINER="$STREAM-database"
+  HEALTH_BASE="$ODD_BASE_URL"; BACKEND_CONTAINER="$ODD_BACKEND_CONTAINER"
+  echo "  -> ISOLATED stream '$STREAM': image=$ODD_SUT_TAG  project=$COMPOSE_PROJECT_NAME  api=:$ODD_API_PORT  db=:$ODD_DB_PORT  base=$ODD_BASE_URL"
+else
+  HEALTH_BASE="http://127.0.0.1:18080"; BACKEND_CONTAINER="probe-odd-platform"
+fi
+
 sut_ok=1; sut_desc=""; sut_id=""
 if { [ "${#PROBES[@]}" -gt 0 ] || [ "${#E2E[@]}" -gt 0 ]; } && [ -z "$dry" ]; then
   if [ -z "${ODD_PLATFORM_IMAGE:-}" ]; then
     if sut_out="$("$HERE/build-sut.sh")"; then
       sut_desc="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_DESC=//p')"
       sut_id="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_IMAGE_ID=//p')"
-      export ODD_PLATFORM_IMAGE="odd-platform:odd-team-sut"
+      # Use the tag build-sut.sh actually built (it honours ODD_SUT_TAG → the per-stream tag), not a hardcoded
+      # shared tag — otherwise an isolated stream would point its stack at the wrong (shared) image.
+      sut_img="$(printf '%s\n' "$sut_out" | sed -n 's/^SUT_IMAGE=//p')"
+      export ODD_PLATFORM_IMAGE="${sut_img:-${ODD_SUT_TAG:-odd-platform:odd-team-sut}}"
     else
       echo "  x SUT build failed -- aborting the run (not a test failure)."; sut_ok=0
     fi
@@ -164,8 +209,8 @@ if [ "${#E2E[@]}" -gt 0 ] && [ "$sut_ok" = 1 ]; then
     # The SUT image (printed once at the top) is already exported as $ODD_PLATFORM_IMAGE and built. Recreate
     # the persistent stack only if it is not already running that exact image (digest), then confirm before testing.
     COMPOSE="$ROOT/lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml"
-    HEALTH="http://127.0.0.1:18080/actuator/health"
-    running_id="$(docker inspect -f '{{.Image}}' probe-odd-platform 2>/dev/null || true)"
+    HEALTH="$HEALTH_BASE/actuator/health"
+    running_id="$(docker inspect -f '{{.Image}}' "$BACKEND_CONTAINER" 2>/dev/null || true)"
     [ -n "$sut_id" ] && [ "$sut_id" != "$running_id" ] && { echo "  -> e2e: running stack image != SUT -> recreating with the SUT image"; ODD_E2E_FRESH=1; }
     [ "${ODD_E2E_FRESH:-}" = "1" ] && { echo "  -> --fresh: recreating odd-minimal..."; "${COMPOSE_CMD[@]}" -f "$COMPOSE" down -v >/dev/null 2>&1 || true; }
     if curl -fsS --max-time 5 "$HEALTH" 2>/dev/null | grep -q UP; then
@@ -177,7 +222,7 @@ if [ "${#E2E[@]}" -gt 0 ] && [ "$sut_ok" = 1 ]; then
         || { echo "  x odd-minimal did not become healthy at $HEALTH within ~120s -- aborting e2e (not a test failure)."; e2e_outcome="FAIL(stack-unhealthy)"; }
     fi
     if [ "$e2e_outcome" != "FAIL(stack-unhealthy)" ]; then
-      run_now="$(docker inspect -f '{{.Image}}' probe-odd-platform 2>/dev/null || true)"
+      run_now="$(docker inspect -f '{{.Image}}' "$BACKEND_CONTAINER" 2>/dev/null || true)"
       if [ -n "$sut_id" ] && [ "$run_now" = "$sut_id" ]; then echo "  -> confirmed: the e2e stack is running the SUT image."
       else echo "  -> WARNING: the e2e stack is running image $run_now, which does NOT match the SUT digest $sut_id."; fi
       echo "+ (cd $HERE/e2e && ODD_STACK_EXTERNAL=1 npx playwright test ${E2E[*]})"

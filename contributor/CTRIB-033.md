@@ -6,18 +6,19 @@ title: "Reference Data API contract gaps — (a) name-normalisation collision re
 class: bug                    # two distinct, live-reproduced contract defects in the Reference Data (Lookup Tables) WRITE API, same subsystem.
 scope: backend
 milestone: "0.29.0"           # open + semver (due 2026-06-27) → G-C11 PASSES (no hard stop). Internal draft id = PLT-146.
-status: planned               # Phase A→C done; reproduced; plan written. AWAITING GATE 1 (no code yet — G-C3).
+status: plan-approved         # GATE 1 APPROVED 2026-06-23 (RamanDamayeu, AskUserQuestion: Q1=400 USR003, Q2=filed two + destructive DELETE twin). Phase D (implement) next.
 reproduced: "LIVE on a throwaway isolated stack (ctrib033repro on :18130/:15472, image odd-platform:odd-team-sut digest cecd88db — CTRIB-028's confirmation build; CTRIB-028 never touched ReferenceData, so its ReferenceData bytes == current main fd71eb3d), auth DISABLED, 2026-06-23. (a) COLLISION: POST /api/referencedata/table {name:'ctrib033 dup'} → 200; POST {name:'ctrib033_dup'} (normalises to the same physical n_1__ctrib033_dup) → HTTP 500 {\"code\":\"SYS001\",\"message\":\"Internal Server Error\"}. (b) CROSS-TABLE PATCH: created table A(id 2) + B(id 3), added column bcol(field_id 4) to B; GET /table/2/columns/4 (B's column via A) → 400 {\"code\":\"USR001\",\"message\":\"bcol doesn't belong to ctrib033 table b\"} (read guard works); PATCH /table/2/columns/4 {name:'bcol_renamed_via_A'} → HTTP 200 + table B's column renamed to bcol_renamed_via_A while table A stayed [id]. Both defects confirmed. Stack torn down (down -v). See '## Reproduction'."
 adr_required: false           # G-C7 does NOT fire. No migration (no schema change). No auth/security-posture change (RBAC unchanged; the fix MIRRORS the existing read-path belongs-to guard — it adds no SecurityRule/filter/token-flow/default). No breaking wire-contract change: the spec enumerates only success responses for every referencedata endpoint (error codes undeclared); the read path already returns an undeclared 400, so the write paths returning 400 is contract-consistent, and the create returning 400 instead of 500 is strictly better. No ADR governs this area (checked implicit-adrs.md).
-plan_approved_by:             # PENDING — GATE 1
-plan_approved_at:
-plan_approved_scope:
+plan_approved_by: RamanDamayeu
+plan_approved_at: "2026-06-23"
+plan_approved_scope: "Fix BOTH filed defects + the destructive DELETE-column twin. (a) createLookupTable: add ReactiveLookupTableRepository.existsByTableName + a uniqueness pre-check → UniqueConstraintException (400 USR003, NOT 409 — platform convention, Q1). (b) updateLookupTableField: thread lookupTableId into the service + mirror the read-path belongs-to guard (BadUserRequestException, 400). (b-twin) deleteLookupTableField: same signature change + same guard (Q2 — destructive twin, drops a column off the wrong table). EXCLUSIONS: no OpenAPI/migration/auth change; no ControllerAdvice mapping change; updateLookupTable rename-collision → follow-up PLT-242 (logged). Tests: unit (collision + PATCH-guard + DELETE-guard, Mockito mirroring the read-guard test) + re-ground IT-050 UC-007/UC-010 RED→GREEN (LSN-029/G-C15) + a DELETE-cross-table assertion. Approved via AskUserQuestion, 2026-06-23."
 docs_routing:                 # decided in Phase D after READING the lookup-tables.md page; likely release/0.29.0 (the API page documents the 16-endpoint surface) OR none+why.
 pr_url:
 pr_draft:
 clarify_comment_url:          # none warranted (G-C6) — the issue is precise + maintainer-verified; the two open decisions (error code, scope of the twins) are GATE-1 decisions, not public clarifying questions.
-rootcause_comment_url:        # PENDING — the root-cause + scope comment posts post-GATE-1, before any code (G-C5/G-C6)
-scope_comment_url:
+rootcause_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1769#issuecomment-4780877046"   # folded root-cause + scope (G-C6 one comment), posted post-GATE-1 before any code as odd-contributor[bot] (HTTP 201)
+scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1769#issuecomment-4780877046"        # same comment — it states the 400-not-409 reframe + the DELETE-twin scope expansion + the rename-collision follow-up (G-C5)
+follow_ups: "PLT-242 (issues/odd-platform/PLT-242.md) — updateLookupTable rename-collision → 500 (sibling of defect (a); reuses the existsByTableName finder)."
 ---
 
 # CTRIB-033 — Reference Data write-API contract gaps (#1769)

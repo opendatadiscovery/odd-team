@@ -78,3 +78,13 @@
 > attachment-local-durability (LSN-001/PLT-086), IT-006 error-boundary-containment (TEST-GAP-1013/F-042), IT-004
 > quality-dashboard-unknown-status (PLT-052). CTRIB-031's FE thunk-arm fix flipped NO known-bug pin — as expected.
 
+## 2026-06-23 — suite/protocol: known-bugs
+- runner: AI-assisted Claude — /review review-ctrib031-3 (separate session). RESULT: **3 failed / 0 passed = the 3 EXPECTED-RED pins, 0 unexpected GREEN** (IT-007 attachment-local-durability LSN-001/PLT-086 · IT-006 error-boundary-containment TEST-GAP-1013/F-042 · IT-004 quality-dashboard-unknown-status PLT-052). CTRIB-031's FE thunk-arm fix flipped NO known-bug pin — as expected for a confirm-dialog UX change. Built via ODD_SUT=ref:f44e1827.
+- odd-platform working-tree HEAD: f44e1827 (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-review-ctrib031  (image odd-platform:odd-team-sut-review-ctrib031, digest sha256:b87465ab46bf31addd7b5d6325fb47df0c79aceb51aca569aa84c45bb9435bac)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

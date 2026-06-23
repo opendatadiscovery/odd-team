@@ -6,7 +6,7 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: review-ready         # 2026-06-23 — Phase D COMPLETE (resumed from the code-complete checkpoint; FE env unblocked via clean pnpm install + the merged ODD_STREAM isolation tooling). Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311, known-bugs 3-RED-as-expected, docs read (none), ontology committed, pixel-reviewed. multi-stack + ingestion-e2e: maintainer-approved FE-only skip (AskUserQuestion 2026-06-23). Branch NOT pushed; GitHub-write deferred to the maintainer (App unconfigured). /review owns the done flip.
+status: review-ready         # 2026-06-23 — Phase D COMPLETE (resumed from the code-complete checkpoint; FE env unblocked via clean pnpm install + the merged ODD_STREAM isolation tooling). Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311, known-bugs 3-RED-as-expected, docs read (none), ontology committed, pixel-reviewed. multi-stack + ingestion-e2e: maintainer-approved FE-only skip (AskUserQuestion 2026-06-23). Branch PUSHED + scope comment posted + DRAFT PR #1801 opened via the odd-contributor App (config VERIFIED live — the prior "unconfigured" note was wrong; the App auto-sources ~/.config/odd-contributor/env). PR is draft + mergeable_state:blocked → human merge = GATE 2; /review owns the done flip.
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
   datasource delete forced-500 → modal closes-as-success + the row remains + an error toast appears
@@ -21,11 +21,11 @@ plan_approved_by: "maintainer (GATE 1, AskUserQuestion, 2026-06-23)"
 plan_approved_at: "2026-06-23"
 plan_approved_scope: "Full ARM-2 — all 13 redux-thunk consumers .unwrap() + TermDetails navigate-on-success; closes #1766 (inline-message Option-A default; no shared-helper change)"
 docs_routing: none           # to be READ-confirmed in Phase D (management.md / master-data-management.md) before asserting (G-C10)
-pr_url:                       # not opened — GitHub-write blocked (odd-contributor App not configured); handover at Phase E
+pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1801   # DRAFT (draft:true; mergeable_state:blocked — branch-protection human merge gate intact); author odd-contributor[bot]
 pr_draft: true
-clarify_comment_url:
-rootcause_comment_url:
-scope_comment_url:
+clarify_comment_url:          # none — no clarifying question warranted (G-C6)
+rootcause_comment_url:        # folded into the scope comment
+scope_comment_url: https://github.com/opendatadiscovery/odd-platform/issues/1766#issuecomment-4777886478
 ---
 
 # CTRIB-031 — ConfirmationDialog ARM-2 (redux-thunk silent-close), the remaining arm of #1766
@@ -361,9 +361,16 @@ no CHECKPOINT) + **`a2a71af5`** (the 2 unit tests). NOT pushed.
 - Ontology (G-C10): **DONE.** `feature-reflections/detail/F-031.yaml` H-005 `release_gated_update` item (5) records the thunk-arm fix (flips `resolved` at 0.29.0); `F-076.yaml` H-003 gets a cross-referenced `release_gated_update` (same class; canonical record = F-031 H-005). YAML-only; committed at finalization. (Lineage tree carries an UNOWNED maintainer probe-run residue `2026-06-23-P-001` — left untouched; only F-031/F-076 staged.)
 - Reproduction (Phase B): ARM-2 silent-close cited from CTRIB-027; **term-navigate (PLT-234) now DRIVEN LIVE** in IT-139 (RED on ref:main shows the `…/termsearch/…` navigate-away; GREEN on the fix stays on `/terms/{id}`).
 
-### GitHub-write handover (Phase E — unchanged)
-The `odd-contributor` App is NOT configured here (`GH_APP_ID`/`GH_INSTALLATION_ID` unset). Per
-`playbooks/github-write.md` on-fail, do NOT fall back to a PAT. After review-ready, the **maintainer**: posts
-the drafted scope comment to #1766 (before the public PR), pushes `contrib/CTRIB-031-confirmationdialog-thunk-arm`,
-opens the DRAFT PR (`Closes #1766`, body = `CTRIB-031-pr-body.md`). GATE 2 (human approve + merge) owns
-`merged`/`done`. At merge: flip F-031 H-005's thunk facet + close #1766.
+### GitHub-write — DONE (Phase E, via the odd-contributor App)
+**Correction:** the earlier "App NOT configured" note was WRONG — it checked the shell env (`GH_APP_ID`
+unset there), but `scripts/gh-app/*` **auto-source `~/.config/odd-contributor/env`** (present, with
+`key.pem`). `verify-app.sh` confirmed the token + EXACT scopes (`contents/issues/pull_requests=write,
+metadata=read`). The writes were performed (1-hour token, never logged/committed; no `main` write):
+- **Scope comment** → https://github.com/opendatadiscovery/odd-platform/issues/1766#issuecomment-4777886478
+  (public-clean — workspace-internal `PLT-`/`CTRIB-` ids stripped per the playbook).
+- **Branch pushed** `contrib/CTRIB-031-confirmationdialog-thunk-arm` @ `a2a71af5` (explicit same-name
+  refspec `refs/heads/X:refs/heads/X`; `main` untouched — LSN-038 guard held).
+- **DRAFT PR #1801** → https://github.com/opendatadiscovery/odd-platform/pull/1801
+  (`draft:true`, `Closes #1766`, base `main`, author `odd-contributor[bot]`, `mergeable_state:blocked`).
+GATE 2 = the human maintainer reviews (`/review` in a separate session) + approves + merges (the bot is
+the PR author → cannot self-approve). At merge: flip F-031 H-005's thunk facet `resolved` + close #1766.

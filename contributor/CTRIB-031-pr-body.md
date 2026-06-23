@@ -8,7 +8,7 @@ The shared `ConfirmationDialog` sits behind two kinds of consumer. #1797 fixed t
 
 A redux-toolkit dispatch promise **resolves even on a rejected action** — `handleResponseAsyncThunk` catches the API error, fires the toast, and `rejectWithValue(...)`, but the dispatch itself still resolves. So when the backend refuses a destructive confirm (cascade-block `USR004`/400, RBAC 403, 500, network), the dialog's `onClose` `.then` branch ran and the modal **closed exactly as on success**. For term delete, `TermDetails` additionally chained `navigate(termsSearch)` onto the always-resolving dispatch, so a **refused term delete navigated away as if the term were deleted** — contradicting the error toast.
 
-This is the silent-close (PLT-233) + term navigate-away (PLT-234) deferred from #1797/CTRIB-027.
+This is the silent-close + term-navigate-away behaviour deferred from #1797.
 
 ## Fix
 
@@ -33,8 +33,8 @@ The inline dialog message is the generic `An error occurred` (the unwrapped `rej
 This PR is the redux-thunk arm only. Deliberately out of scope, tracked separately:
 - The 10 mutateAsync consumers — already correct post-#1797. No touch.
 - The shared `ConfirmationDialog` / `DialogWrapper` / `errorHandling` — already fixed (#1797 / #1771).
-- `MetadataItem.handleUpdate` (the edit-FORM submit, not a `ConfirmationDialog`) has the same silent-success shape → **PLT-238** (separate item).
-- DataSource pre-flight / forewarning UX → **PLT-128** (separate item).
+- `MetadataItem.handleUpdate` (the edit-FORM submit, not a `ConfirmationDialog`) has the same silent-success shape — tracked separately as a follow-up.
+- A DataSource delete pre-flight / forewarning UX improvement — a separate follow-up.
 
 Milestone: 0.29.0
 Docs: none — the relevant published page (`management.md`) already documents "the dialog stays open with the cancel option highlighted" for the owner/namespace/datasource cascade-block deletes; this fix brings the released code into conformance with that already-published claim (no page change needed).

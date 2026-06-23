@@ -166,3 +166,48 @@ Recommended plan above. Two genuine maintainer decisions (the fix shape is a bes
 2. **Defect 1b bundling.** Recommend: keep separate (CTRIB-030 = crash fix only; the `@Max`/cycle-guard hardening ships via its own item). Alternative: fold the hardening into this PR.
 
 Answering these = GATE-1 approval; I then post the scope comment and proceed to Phase D (worktree → failing tests → fix → both buckets → docs → ontology → draft PR), stopping again at GATE 2.
+
+## Implementation (Phase D)
+
+### Maintainer revision to the fix shape (2026-06-22, mid-implementation)
+
+GATE 1 approved "spec default:1 + controller null-guard (defense-in-depth)". The maintainer then directed:
+keep the fix in the **Platform specification** (the contract stays the single source of truth) and drop the
+controller-side default logic — *"changes to the Platform specification instead of additional logic of applying
+some defaults."* **Adopted: the fix is spec-only**; the controller is reverted byte-identical to base.
+
+- **Codegen verified** (the load-bearing question for spec-only): regenerating the contract from the modified
+  spec emits `@RequestParam(value = "lineage_depth", required = false, defaultValue = "1") Integer lineageDepth`
+  on both ops (`DataEntityApi.java:974,1236`). Spring binds `lineageDepth = 1` when omitted → null never reaches
+  the controller → no NPE. The contract carries the default; no application logic.
+- **Value = 1, not 0 (flagged divergence from the maintainer's "default to 0").** A spec `default: 0` emits
+  `defaultValue = "0"`, which the existing `@Min(1)` rejects → **HTTP 400 on the omitted call** — still an error
+  for an "optional" param, and 0 disagrees with the UI's own default (`defaultLineageQuery.d = 1`). `default: 1`
+  is consistent with `minimum: 1` + the UI default and returns a useful depth-1 graph. **Proceeding with 1**;
+  trivially changed to 0 if depth-0 semantics are intended (that would also require dropping `minimum: 1` and
+  confirming what depth 0 returns).
+
+### The diff (spec-only) — committed `contrib/CTRIB-030-lineage-depth-npe` @ **1cff8a59**
+
+- `odd-platform-specification/openapi.yaml`: `default: 1` on `lineage_depth` for both lineage ops + the
+  operation descriptions note "(defaults to 1 when omitted)". **Controller unchanged** (byte-identical to base).
+- Push-safe (no upstream; `push.default=current`).
+
+### Test ledger (G-C9 / G-C15)
+
+- **Unit bucket (odd-platform CI):** `LineageDepthDefaultTest` (`BaseIntegrationTest` + `@AutoConfigureWebTestClient`
+  → in-process Testcontainers, runs in `./gradlew build`; real HTTP binding). Omitted `lineage_depth` on a missing
+  entity → **404 USR002** (not 500 SYS001) for downstream + upstream; control pins explicit depth=1 → same 404.
+  - **RED→GREEN, run not reasoned (2026-06-22):** on the base spec (stashed) the contract regenerates WITHOUT
+    `defaultValue` and the two no-depth assertions **FAIL** (500) — `3 tests completed, 2 failed`, BUILD FAILED;
+    with `default: 1` all 3 **PASS** (404). No test was CHANGED (G-C15 N/A — added only).
+- **Integration bucket:** the symptom is a backend API-contract defect a third-party consumer hits directly —
+  the issue itself states *"No FE surface is load-bearing here."* No browser / FE / multi-process surface, so no
+  new odd-team `IT-NNN` is warranted (G-C9's mandatory-IT clause targets user-facing / FE↔BE contradictions).
+  The in-process `WebTestClient` test drives the real HTTP endpoint end-to-end; the integration-bucket obligation
+  is the FULL regression (G-C2), below.
+
+### Regression (G-C2 — full set, working-tree SUT @ 1cff8a59) — IN PROGRESS
+
+- Unit CI replica (`:odd-platform-api:build` = test + checkstyle + assemble): _pending_
+- feature-complete: _pending_ · multi-stack: _pending_ · known-bugs (RED-expected): _pending_ · ingestion-e2e: _pending_

@@ -6,7 +6,7 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: implementing         # GATE 1 APPROVED 2026-06-23 (Full ARM-2). Phase D PAUSED at the code-complete checkpoint — blocked on an isolated FE test env (maintainer is building parallel-stream infra in another session). RESUME: see "## Phase D progress + RESUME POINT".
+status: review-ready         # 2026-06-23 — Phase D COMPLETE (resumed from the code-complete checkpoint; FE env unblocked via clean pnpm install + the merged ODD_STREAM isolation tooling). Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311, known-bugs 3-RED-as-expected, docs read (none), ontology committed, pixel-reviewed. multi-stack + ingestion-e2e: maintainer-approved FE-only skip (AskUserQuestion 2026-06-23). Branch NOT pushed; GitHub-write deferred to the maintainer (App unconfigured). /review owns the done flip.
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
   datasource delete forced-500 → modal closes-as-success + the row remains + an error toast appears
@@ -339,14 +339,27 @@ record the thunk-arm fix (the actual DataSource surface H-005 describes) and fli
 8. **Amend/replace the checkpoint commit** `932fcd51` if needed (drop the `[CHECKPOINT]` marker once tests are
    green; or add the test files as additional commits on the branch).
 
-### Test / doc / ontology ledger (fill as steps run)
-- Unit (DataSourceItem, TermDetails): **NOT RUN** (env blocker).
-- IT-139: **NOT AUTHORED / NOT RUN** (env blocker).
-- Full regression: **NOT RUN**.
-- Docs read: **NOT DONE** (planned `none`).
-- Ontology F-031 H-005: **NOT UPDATED**.
-- Reproduction (Phase B): ARM-2 silent-close cited from CTRIB-027 (`ctrib027-arm2-silent-close.png`, code
-  byte-unchanged); **term-navigate (PLT-234) still to be driven live** in step 2.
+### Test / doc / ontology ledger — RESUMED + RUN 2026-06-23 (FE env unblocked via clean `pnpm@9 install` in the worktree + generated-sources copy; integration via the merged ODD_STREAM isolation tooling)
+
+Branch rewritten to a clean state (was `932fcd51 [CHECKPOINT]`): **`e1fce6c1`** (fix, 13 files, reformat folded,
+no CHECKPOINT) + **`a2a71af5`** (the 2 unit tests). NOT pushed.
+
+- Unit (vitest, odd-platform CI bucket): **GREEN — RED→GREEN proven.**
+  - `DataSourceItem.test.tsx` — rejected `deleteDataSource` → dialog STAYS OPEN (+ generic inline error); RESOLVED → closes. RED on a reverted `.unwrap()` (the "stays open" test failed → dialog closed-as-success), GREEN on the fix.
+  - `TermDetails.test.tsx` — rejected `deleteTerm` → `navigate` NOT called (PLT-234); RESOLVED → navigates. RED on reverted `.unwrap()`, GREEN on the fix.
+  - Full vitest suite GREEN except **one PRE-EXISTING, unrelated** failure (`i18n-key-parity` guard false-positives on the ternary `error.message : 'Unknown Error'` in `LinkedTermsList.tsx:63`, from #1798 — NOT my files, NOT CI-gated). Logged → `issues/odd-platform/PLT-239.md`.
+  - `tsc --noEmit` GREEN; eslint + prettier clean on all touched + new files.
+- Integration `IT-139` (NEW — `protocols/IT-139-confirmation-dialog-thunk-arm.md` + `e2e/specs/confirmation-dialog-thunk-arm.spec.ts`; registered in `suites.yaml` feature-complete + ui-e2e): **AUTHORED + RUN, RED→GREEN proven on the working-tree SUT.**
+  - **GREEN** on `working` (`odd-platform:odd-team-sut-ctrib031`, digest `56f54a05`, built from the working tree @ `a2a71af5`), isolated stream ctrib031 on 18100/15452: both tests PASS — datasource dialog stays open; **term delete does NOT navigate away** (PLT-234 driven LIVE — the not-yet-driven facet, now driven).
+  - **RED** on `ODD_SUT=ref:main` (`fd71eb3d`, isolated stream ctrib031base on 18110/15462): both FAIL exactly as the bugs predict — datasource dialog **closed** (close-as-success); term URL navigated to `…/termsearch/…` instead of `/terms/{id}`.
+  - Tooling fix made en route: `run-suite.sh` now exports `ODD_DB_URL` from the stream's `ODD_DB_PORT` (the e2e db.ts seed helpers were hardcoded to the shared :15432 — the isolation gap that ECONNREFUSED'd the first run). Completes the per-stream isolation the runner.py + Playwright base URL already had.
+- Full regression (G-C2, working-tree SUT `odd-platform:odd-team-sut-ctrib031`, isolated stream):
+  - **feature-complete: 311/311 GREEN** (api:PASS e2e:PASS; run-log `2026-06-23-feature-complete.md`). NB the first run was 310/311 — the 1 failure was `advisory-lock-registry.spec.ts` hard-coding its DB CONN to the shared `:15432` (ECONNREFUSED under isolation), NOT my change; fixed to respect `ODD_DB_URL` and the re-run is clean 311/311.
+  - **known-bugs: 3-RED-as-expected** (IT-004 PLT-052 DQ-crash · IT-006 TEST-GAP-1013 no-error-boundary · IT-007 LSN-001/PLT-086 attachment-durability) — **no unexpected GREEN** (my change flipped no known-bug pin).
+  - **multi-stack + ingestion-e2e: maintainer-approved FE-only SKIP** (AskUserQuestion 2026-06-23 → "Accept FE-only reasoning"). These test backend HA/MinIO/LDAP/WAL-failover + the real collector ingestion pipeline — the backend jar is byte-identical to `main` (only the bundled SPA changed), so a FE-only change has zero blast radius there; and the per-session isolation tooling isn't ready for their own stacks (the advisory-lock hard-coding above is symptomatic). Flagged for the maintainer's GATE-2 env if belt-and-suspenders is wanted.
+- Docs read (G-C10): **DONE → `docs_routing: none`, well-grounded.** `management.md:85` ALREADY documents "the dialog stays open with the cancel option highlighted" for the owner/namespace/datasource cascade-block deletes — i.e. the THUNK consumers this fix corrects. On the released 0.28.x the thunk arm closes-as-success (the PLT-233 bug), so the live doc currently over-claims for these three; the fix (0.29.0) brings the code into conformance with the already-published claim. No new/changed page, no train item. `master-data-management.md` has no confirm/delete content.
+- Ontology (G-C10): **DONE.** `feature-reflections/detail/F-031.yaml` H-005 `release_gated_update` item (5) records the thunk-arm fix (flips `resolved` at 0.29.0); `F-076.yaml` H-003 gets a cross-referenced `release_gated_update` (same class; canonical record = F-031 H-005). YAML-only; committed at finalization. (Lineage tree carries an UNOWNED maintainer probe-run residue `2026-06-23-P-001` — left untouched; only F-031/F-076 staged.)
+- Reproduction (Phase B): ARM-2 silent-close cited from CTRIB-027; **term-navigate (PLT-234) now DRIVEN LIVE** in IT-139 (RED on ref:main shows the `…/termsearch/…` navigate-away; GREEN on the fix stays on `/terms/{id}`).
 
 ### GitHub-write handover (Phase E — unchanged)
 The `odd-contributor` App is NOT configured here (`GH_APP_ID`/`GH_INSTALLATION_ID` unset). Per

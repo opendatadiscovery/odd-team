@@ -6,7 +6,7 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: planned              # Phase A–C done; STOPPED at GATE 1 (plan approval). No code yet (G-C3).
+status: implementing         # GATE 1 APPROVED 2026-06-23 (Full ARM-2). Phase D PAUSED at the code-complete checkpoint — blocked on an isolated FE test env (maintainer is building parallel-stream infra in another session). RESUME: see "## Phase D progress + RESUME POINT".
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
   datasource delete forced-500 → modal closes-as-success + the row remains + an error toast appears
@@ -17,9 +17,9 @@ reproduced: >-
   LIVE in Phase B (post-GATE-1) when the failing IT is authored. A fresh isolated re-drive is deferred to
   implementation rather than rebuilding a heavy SUT to re-confirm a same-day-reproduced, code-unchanged defect.
 adr_required: false          # G-C7 does NOT fire — FE-only, no migration / auth-posture / wire-contract change; no ADR governs FE error-handling (implicit-adrs.md: 0 hits)
-plan_approved_by:            # GATE 1 — pending
-plan_approved_at:
-plan_approved_scope:
+plan_approved_by: "maintainer (GATE 1, AskUserQuestion, 2026-06-23)"
+plan_approved_at: "2026-06-23"
+plan_approved_scope: "Full ARM-2 — all 13 redux-thunk consumers .unwrap() + TermDetails navigate-on-success; closes #1766 (inline-message Option-A default; no shared-helper change)"
 docs_routing: none           # to be READ-confirmed in Phase D (management.md / master-data-management.md) before asserting (G-C10)
 pr_url:                       # not opened — GitHub-write blocked (odd-contributor App not configured); handover at Phase E
 pr_draft: true
@@ -263,10 +263,94 @@ record the thunk-arm fix (the actual DataSource surface H-005 describes) and fli
 > residual is the false-success close + the term navigate-away). Closes #1766. (Tracked internally as
 > PLT-233 / PLT-234; PLT-128 — DataSource pre-flight UX — remains its own item.)
 
-## Test / doc / ontology ledger (Phase D)
-_(empty — implementation begins only after GATE 1 approval.)_
+## Phase D progress + RESUME POINT (2026-06-23 — code-complete checkpoint, verification PENDING)
 
-**GitHub-write status:** the `odd-contributor` App is NOT configured here (`GH_APP_ID`/`GH_INSTALLATION_ID`
-unset). Per `playbooks/github-write.md` on-fail, do NOT fall back to a PAT. The scope comment + branch push +
-draft PR are a **maintainer handover** at Phase E (same as CTRIB-027). The "scope comment before any code"
-invariant holds at the public layer — nothing becomes public until the maintainer runs the GitHub steps.
+> **Why paused:** the FE unit tests need `node_modules` + `generated-sources`, which a fresh isolated
+> worktree does not have. The maintainer is building proper parallel-stream isolated-env infra in a separate
+> session and instructed: log everything so a later session resumes from here. The code change is DONE; only
+> local verification + finalisation remain.
+
+### ✅ DONE — the implementation (committed, NOT pushed)
+
+- **Worktree:** `../odd-platform-ctrib031` — branch `contrib/CTRIB-031-confirmationdialog-thunk-arm`, base
+  `origin/main` **fd71eb3d**, **no upstream** (push-safety OK, O6/LSN-038). Push.default=current on the clone.
+- **Checkpoint commit:** `932fcd51` (`fix(ui): ConfirmationDialog thunk consumers .unwrap() …`). Carries the
+  full `Consumer-read:` + `Sources:` footers. **Marked `[CHECKPOINT — tests pending]` in the body.**
+- **The diff (13 files, verified):** `.unwrap()` appended to the `onConfirm` dispatch in **12** thunk
+  consumers, + `TermDetails.tsx` navigate gated on `.unwrap().then(...)`:
+  RoleItem · EditableOwnerItem · EditableNamespaceItem · DataSourceItem · PolicyItem · CollectorItem ·
+  CollectorItemToken · DataSourceItemToken · EditableTagItem · terms/OverviewGeneral · MetadataItem
+  (`handleDelete` only) · OwnershipDeleteForm · **TermDetails** (navigate-on-success).
+- **Consumer-read findings (Gate 4) that changed the plan's count from 13 → 12:**
+  - **`SelectableSeverity.tsx` already had `.unwrap()`** (added in `#1750`, the entity-status pattern) →
+    **left untouched** (already correct). Fresh in-repo precedent that consumer-`.unwrap()` is the idiom.
+  - **`MetadataItem.handleUpdate`** (the edit-FORM submit, not a `ConfirmationDialog`) has the SAME
+    silent-success shape (`dispatch(thunk).then(() => setEditMode(false))` on failure) → **out of scope**,
+    logged as **`issues/odd-platform/PLT-238.md`** (G-C5). NOT touched in this PR.
+- **No change** to the shared `ConfirmationDialog` / `DialogWrapper` / `errorHandling` (already fixed by
+  #1797 / #1771). The inline-message Option-A default holds (generic inline + specific toast).
+
+### ⛔ REMAINING — exact resume steps (each must actually RUN before the PR leaves draft — G-C2/G-C9/G-C13)
+
+0. **Set up the isolated FE env** (the blocker). The worktree needs `node_modules` + `src/generated-sources`.
+   Use **Node 24** (`~/.local/node/bin`, default Node 18 cannot load vite 7). The symlink-from-shared approach
+   (`ln -s ../../odd-platform/odd-platform-ui/node_modules`, `… src/generated-sources`) was DENIED this
+   session pending the maintainer's isolated-env infra — use whatever that infra provides (or `corepack pnpm
+   install` in the worktree). prettier `printWidth: 90`; run **`pnpm format` + `pnpm lint:fix`** on the 13
+   touched files first (one line, `OwnershipDeleteForm` `.unwrap()` line, is 91 cols → prettier will wrap it).
+1. **Unit tests (vitest, odd-platform CI bucket) — author + prove RED→GREEN, then run the full suite:**
+   - **(a) `DataSourceItem`** — render with the test-helper store (`lib/tests/testHelpers.tsx` provides
+     `Provider`+store+QueryClient+Theme), mock `deleteDataSource` to **reject**, click Delete → Confirm,
+     assert the dialog **stays open** (title still present). **RED on base** (revert `.unwrap()` → bare
+     dispatch resolves → dialog closes) → **GREEN on fix**. Inject the failing condition explicitly.
+   - **(b) `TermDetails`** — mock `deleteTerm` to reject; assert `navigate` is **NOT** called on failure, IS
+     called on success. **RED on base** (navigate called unconditionally) → **GREEN**.
+   - Prove RED by reverting just the component edit (keep the test), as CTRIB-027 did. Then full vitest suite
+     green (no regression). Pattern reference: the existing `ConfirmationDialog/__tests__/ConfirmationDialog.test.tsx`
+     (from #1797) for the rejecting-`onConfirm` + `MuiThemeProvider` setup.
+2. **Integration `IT-139` (odd-team, NEW — MANDATORY, user-facing symptom):** reuse the IT-138 forced-500
+   route-intercept harness (`integration-tests/protocols/IT-138-*.md` + `e2e/specs/confirmation-dialog-failed-action.spec.ts`).
+   New protocol `integration-tests/protocols/IT-139-confirmation-dialog-thunk-arm.md` + spec. Drive **datasource
+   delete** (thunk) forced-500 → assert dialog **does NOT close-as-success** (stays open + inline error; the
+   row remains). Drive **term delete** forced-500 → assert **no navigate-away** (still on the term page) +
+   inline error (**this is the not-yet-driven PLT-234 facet** — drive it live here). `gates: validates [F-031],
+   regresses [PLT-233, PLT-234]`; add to `suites.yaml` (feature-complete, ui-e2e). **RED on `ODD_SUT=ref:main`
+   → GREEN on the working-tree SUT** (`odd-platform:odd-team-sut-ctrib031`, ports 18100/15452).
+3. **FULL integration regression (G-C2)** on the working-tree SUT (serialized e2e; register `wants: e2e`,
+   queue behind any live run): `run-suite.sh feature-complete` (green) + `multi-stack` (green) + `known-bugs`
+   (expected RED, no unexpected GREEN) + `ingestion-e2e` (green). Read actual pass/fail counts. Build SUT into
+   the per-stream tag `odd-platform:odd-team-sut-ctrib031` (NOT the shared tag).
+4. **Docs (G-C10):** READ `documentation/docs/management.md` + `master-data-management.md` → confirm
+   `docs_routing: none` (CTRIB-027 found `management.md:68` mentions the dialog on the cascade-block path but
+   not the failure-close behaviour; re-confirm). No release-train DOC item expected.
+5. **Ontology (G-C10):** update `lineage/odd-platform/feature-reflections/detail/F-031.yaml` H-005's
+   `release_gated_update` — record the thunk-arm fix (the actual DataSource surface H-005 describes); flip its
+   facet `resolved` at the 0.29.0 release (NOT now — main still silent-closes). YAML annotation only (no
+   substrate node; `/enrich --touched` has nothing). Commit it.
+6. **Principal sufficiency (G-C13):** patch-coverage gate is JaCoCo = **Java-only** → **N/A** (this is all TS).
+   Confirm enough/meaningful tests, no control lost, no functionality harmed (the full regression is the
+   measurement). **Pixel review (G-C12 step 5):** screenshot the failed datasource-delete dialog (stays open +
+   inline error) and confirm a failed term-delete stays on the term page.
+7. **Finalise → review-ready (NEVER self-done):** flip CTRIB-031 `status: review-ready`; write
+   `contributor/CTRIB-031-pr-body.md` (`Closes #1766`, root-cause + the 13-file change + scope-exclusions +
+   test evidence + `Milestone: 0.29.0` + `Docs: none`). Update the `ctrib031` stream entry. The DoD checklist
+   (full unit build + full integration regression + docs read + ontology committed + sufficiency) must ALL be
+   recorded as actually-RUN before leaving draft.
+8. **Amend/replace the checkpoint commit** `932fcd51` if needed (drop the `[CHECKPOINT]` marker once tests are
+   green; or add the test files as additional commits on the branch).
+
+### Test / doc / ontology ledger (fill as steps run)
+- Unit (DataSourceItem, TermDetails): **NOT RUN** (env blocker).
+- IT-139: **NOT AUTHORED / NOT RUN** (env blocker).
+- Full regression: **NOT RUN**.
+- Docs read: **NOT DONE** (planned `none`).
+- Ontology F-031 H-005: **NOT UPDATED**.
+- Reproduction (Phase B): ARM-2 silent-close cited from CTRIB-027 (`ctrib027-arm2-silent-close.png`, code
+  byte-unchanged); **term-navigate (PLT-234) still to be driven live** in step 2.
+
+### GitHub-write handover (Phase E — unchanged)
+The `odd-contributor` App is NOT configured here (`GH_APP_ID`/`GH_INSTALLATION_ID` unset). Per
+`playbooks/github-write.md` on-fail, do NOT fall back to a PAT. After review-ready, the **maintainer**: posts
+the drafted scope comment to #1766 (before the public PR), pushes `contrib/CTRIB-031-confirmationdialog-thunk-arm`,
+opens the DRAFT PR (`Closes #1766`, body = `CTRIB-031-pr-body.md`). GATE 2 (human approve + merge) owns
+`merged`/`done`. At merge: flip F-031 H-005's thunk facet + close #1766.

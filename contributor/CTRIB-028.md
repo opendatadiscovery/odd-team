@@ -6,15 +6,15 @@ title: "Term Detail page UI hardening epic (8 defects; FE+BE; labeled 'to decomp
 class: bug
 scope: frontend+backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop)
-status: docs-done            # GATE 1 APPROVED (maintainer). Implemented + committed (3 repos) + unit-gate green + FULL integration regression green-as-expected (feature-complete 310 + multi-stack 9 + known-bugs 3-RED-expected + ingestion-e2e 6) + docs routed. ONE DoD gate remains before review-ready: ontology /enrich (DEFERRED — the concurrent CTRIB-029 session has uncommitted lineage/* edits; an /enrich now would collide). Then GATE 2 /review. GitHub App unconfigured → scope comment + draft PR are on-disk handovers. See ## Implementation ledger.
+status: pending-release      # GATE-2 MERGED 2026-06-22 (PR #1798, squash fd71eb3d on odd-platform origin/main; verified via git fetch — content-identical to the reviewed 75fc06cd, git diff empty over the changed files). /review #3 ACCEPTED. Milestone 0.29.0 → pending-release (NOT done): /review release:0.29.0 owns the done flip — documentation release/0.29.0 train publishes (DOC-478 live-site verify) + G-C10 /enrich at the release substrate scan + real-instance verify on ghcr…:0.29.0. See ## Merge (GATE-2) + ## Review (session #3).
 reproduced: "LIVE 2026-06-22 on the running odd-minimal SUT (odd-platform:odd-team-sut 65c9b3ad, Term-Detail files == origin/main). Seeded term ctrib028_PiiTerm (id 21) with 60 linked columns. API (curl): badge GET /api/terms/21 → columns_using_count=60; GET /api/terms/21/linked_columns?page=1&size=50 → 50 items, page_info{total:50,hasNext:false} (the lie); ?page=2 → the remaining 10 (reachable, never advertised). UI (Playwright specs/ctrib028-repro.spec.ts, 6/6 pass = 6 defects confirmed): D1 GET /api/terms/21 fired 2× per Overview open; D2 zero-count term hides all 3 reverse-lookup tabs; D4 list rendered 50 rows under a badge of 60; D5 mocked 500 on linked_terms → 'No linked entities' empty state (error swallowed); D6 linked-terms empty copy = 'No linked entities'; D7 typing 5 chars fired 5 requests. Screenshots: integration-tests/e2e/evidence/ctrib028-defect{2,4,5}-*.png."
 adr_required: false          # in-scope work (Defects 1,2,4,5,6,7) needs no ADR. Defect 8 (state ADR) is DEFERRED out of this PR; Defect 1's de-dup must not pre-empt that ADR's redux↔tanstack direction.
 plan_approved_by: "maintainer (GATE 1, this session — AskUserQuestion 'Approve as planned')"
 plan_approved_at: "2026-06-22"
 plan_approved_scope: "Defects 1,2,4,5,6,7 in one PR (D1 Option A, D4 FE infinite-query + BE honest page_info); defer 3→PLT-235, 8→PLT-236. D4 BE implemented via a separate countByTerm query (justified deviation from the plan's pageifyResult — the complex CTE+groupBy query's name-based mapper extraction makes paginate-wrapping risky; same honest-page_info outcome, lower risk)."
 docs_routing: "release/0.29.0"   # 3 published caveats (DOC-233) become false in 0.29.0 → removed on the documentation release/0.29.0 train; tracked by DOC-478 (pending-release). Defect-3 caveat kept.
-pr_url:
-pr_draft: true
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1798"   # MERGED (squash fd71eb3d on origin/main, 2026-06-22); content-identical to reviewed 75fc06cd
+pr_draft: false              # merged at GATE-2 (human)
 clarify_comment_url:
 rootcause_comment_url:
 scope_comment_url:
@@ -397,18 +397,26 @@ release-gate live-verify.
   IT-007 (LSN-001/PLT-086); **no unexpected GREEN** (no un-flipped fix) — the expected-RED outcome.
 - `ingestion-e2e` → **6 passed** (`2026-06-22-ingestion-e2e.md`, e2e:PASS).
 
-**Commits — DONE (3 repos; parallel CTRIB-029 work untouched):** odd-platform `9d3de146`
-(`contrib/CTRIB-028-term-detail-hardening`) · documentation `980c88e` (`release/0.29.0`) · odd-team `436b695`
-(`main`).
+**Commits — DONE (3 repos; parallel CTRIB-029 work untouched):** odd-platform `75fc06cd`
+(`contrib/CTRIB-028-term-detail-hardening`, PUSHED to origin — reconciled from the stale `9d3de146`: reverted
+`b5930a75` + reapplied `75fc06cd`, `git diff 9d3de146 75fc06cd` empty / content-identical) · documentation
+`980c88e` (`release/0.29.0`) · odd-team `436b695` (`main`).
 
-**REMAINING before `review-ready`:**
-1. **Ontology** `/enrich --touched` (F-151/F-152/F-153 + the changed FE/BE nodes) + re-embed + commit —
-   **DEFERRED**: the concurrent CTRIB-029 session has uncommitted edits to `lineage/feature-flows.yaml` +
-   `lineage/understanding/*`; running `/enrich` now (which rewrites those files + re-embeds) would collide.
-   Run it once the lineage is not being concurrently edited. (G-C10 — the one open DoD gate.)
-2. **Handover (GitHub App unconfigured):** post the scope comment + open the DRAFT PR
-   (`Closes #1754`, body = `CTRIB-028-pr-body.md`) after pushing the branch.
-3. Then **GATE 2:** `/review` (separate session) → human merge.
+**REMAINING before `review-ready`** — RESOLVED to `pr-draft` 2026-06-22 (see ## Implementation finish):
+1. **Ontology** `/enrich` — **DEFERRED to the 0.29.0 release full-substrate scan** (release-review step 5:
+   `lineage-extractor scan odd-platform --full` → `graph-build`, at the released tag). The substrate tracks
+   *main*, pinned at `e67461de` (7 commits behind origin/main; origin/main never touched these files — only
+   CTRIB-028 did); the code is on an unmerged branch. Nodes confirmed existing + cleanly re-enrichable, so a
+   per-file enrich would work — making this a **scheduling** deferral (not a tooling / new-node block): it would
+   anchor transient feature-branch SHAs into shared, main-tracking lineage and be redone post-merge. (Also: at
+   finish time the lineage tree is dirty again from concurrent probe-run/regression activity — the single-writer
+   rule O10 forbids `/enrich` into a dirty tree regardless.) Consistent with CTRIB-029's G-C10 resolution; G-C10
+   gates the PR *leaving* draft (= merge), satisfied by the release scan.
+2. **Handover:** branch PUSHED to origin @75fc06cd; on-disk pr-body ready (`contributor/CTRIB-028-pr-body.md`,
+   partial-#1754 — deliberately NOT `Closes`). App secrets unavailable in the finish session → the real draft PR
+   is opened from the compare URL (## Implementation finish) by a maintainer / `/contribute` Phase E; `/review`
+   proceeds on the pushed branch meanwhile. DONE (handover recorded).
+3. **GATE 2:** `/review` (separate session) → human merge. READY.
 
 ## Review-precondition decline (2026-06-22, session: review-ctrib028 / parallel-aware)
 
@@ -466,3 +474,176 @@ release-gate live-verify.
   this session — registers CTRIB-028, CTRIB-029, **and this reviewer** so all parallel parties are mutually
   visible, and records the true holder of every shared resource (incl. the probe-run lineage lock). See that
   file's header for the protocol + the design source (`adrs/drafts/parallel-contribution-infra.md` §5.4).
+
+## Second review pass — precondition decline re-confirmed (2026-06-22T18:17, session: review-ctrib028 #2 / parallel-aware)
+
+- **Result: STILL NOT REVIEWED — precondition decline re-confirmed** (not ACCEPT, not defect-REJECT). Status
+  remains **`docs-done`**, which is ≠ the contributor review-ready-equivalent **`pr-draft`**. The contributor
+  loop runs `docs → ontology refresh → draft PR [GATE 2]` (`pillars/contributor/pillar.md:36-40`), so
+  `docs-done` is **two phases short** of GATE-2. The 2-minute bounce still fires: the `/enrich` DoD gate is
+  **NOT RUN** at the reviewed SHA, and `/enrich` is `/implement`'s job (the reviewer is read-only on
+  `lineage/**`). **Status left at `docs-done`** — no flip: this is correct deferred in-progress work, with no
+  code defect and no rejected review, so `blocked` would mislabel it (same reasoning as the first decline).
+- **Two deltas verified-live since the first decline (`33fed88`) — both NARROW the remaining work:**
+  1. **Lineage lock CLEARED.** Probe-run P-001's residue is committed (`212b214`); `git status --short
+     lineage/` is empty (clean + unclaimed). CTRIB-028's deferred `/enrich --touched` is now **UNBLOCKED** —
+     the first decline's path-step-2 blocker is gone; it simply has not been run yet.
+  2. **Branch PUSHED.** `contrib/CTRIB-028-term-detail-hardening` is on origin at **`75fc06cd`** (it was an
+     on-disk-only handover at the first decline). The draft-PR handoff is now feasible; `pr_url` still unrecorded.
+- **Still stale in this ledger (unchanged):** the Implementation-ledger "Commits — DONE" line cites odd-platform
+  **`9d3de146`**; the live branch head is **`75fc06cd`**. `git diff 9d3de146 75fc06cd` is **empty**
+  (content-identical — the revert `b5930a75` + reapply `75fc06cd`), so the code + the regression evidence stand,
+  but the recorded reviewed-SHA must be reconciled.
+- **Narrowed path to review-ready — every step is `/implement`/`/contribute`'s job, NOT the reviewer's:**
+  1. Run the now-unblocked `/enrich --touched` (F-151/F-152/F-153 + the changed FE/BE nodes) + re-embed + commit.
+  2. Reconcile the ledger SHA `9d3de146 → 75fc06cd` (note the revert+reapply; content-identical).
+  3. Record the draft-PR handoff: the branch is pushed — open the DRAFT PR (`Closes`-free body per
+     `CTRIB-028-pr-body.md`) + set `pr_url`, or record the explicit on-disk-PR review decision.
+  4. Flip **`docs-done → pr-draft`** (the `/contribute` transition), then re-invoke `/review` for the full
+     ACCEPT/REJECT (regression confirmation + editorial audit).
+
+## Implementation finish — to `pr-draft` (2026-06-22T18:30, /implement CTRIB-028)
+
+The maintainer ran `/implement CTRIB-028` to drive the narrowed finish. Done this session (deterministic; no
+lineage write — see the enrich deferral):
+
+- **SHA reconciled.** Ledger "Commits — DONE" now cites the live head `75fc06cd` (was the stale `9d3de146`;
+  `git diff 9d3de146 75fc06cd` empty / content-identical via revert `b5930a75` + reapply `75fc06cd`).
+- **G-C10 ontology `/enrich` — DEFERRED to the 0.29.0 release full-substrate scan** (NOT run on the branch).
+  This **refines** the review's "run the now-unblocked enrich" (written before the substrate state was
+  inspected): the shared substrate (`lineage/odd-platform/nodes.jsonl`) tracks *main*, is pinned at `e67461de`,
+  and `manifest.enrichment.last_enriched_commit = 82812cdf` — the shared `../odd-platform` checkout (`75fc06cd`)
+  is 7+ commits ahead, so `/enrich --touched` would over-enrich the whole origin/main advance, and a per-file
+  enrich would bake transient feature-branch SHAs into shared lineage (redone at the post-merge scan). The nodes
+  exist + are cleanly re-enrichable (only CTRIB-028 touched these files since the scan) → a **scheduling**
+  deferral, matching CTRIB-029's G-C10 resolution. (Also blocked in practice right now: the lineage tree is
+  dirty again from concurrent probe/regression activity — O10 forbids `/enrich` into a dirty tree.) The
+  comprehensive refresh runs at release-review step 5 (`scan --full` + `graph-build` at the released tag).
+- **PR handover.** Branch PUSHED to origin `@75fc06cd`; on-disk pr-body ready. The finish session does NOT hold
+  the GitHub App secrets (`GH_APP_ID`/`GH_INSTALLATION_ID`/key all unset), so the real draft PR is opened from
+  the compare URL below (maintainer click, or a `/contribute` Phase E / App-enabled context):
+  `https://github.com/opendatadiscovery/odd-platform/compare/main...contrib/CTRIB-028-term-detail-hardening?expand=1`
+  — title *"Term Detail page hardening (#1754 — defects 1, 2, 4, 5, 6, 7)"*; body `contributor/CTRIB-028-pr-body.md`
+  (partial-#1754, deliberately NOT `Closes`). `/review` (separate session) can proceed on the pushed branch +
+  on-disk pr-body now.
+- **Status flipped `docs-done → pr-draft`** (the contributor review-ready-equivalent). `/review` owns
+  `pr-draft → review-ready`; the human GATE-2 merge owns `done`.
+- **active-streams.yaml ctrib028→pr-draft reconcile: DEFERRED** — at finish time `state/active-streams.yaml`
+  had uncommitted edits from a concurrent session; per the parallel doctrine (never clobber / sweep another
+  stream) the coordination mirror is reconciled once the tree clears (next session reconciles per the file's
+  protocol).
+
+**For `/review` (GATE 2):** code under review = odd-platform `75fc06cd` (pushed branch) + `contributor/CTRIB-028-pr-body.md`.
+Tests (per ledger): unit `:odd-platform-api:build` GREEN + new `DatasetFieldServiceImplTest`/`DatasetFieldListMapperImplTest`;
+integration `IT-139` (new) + `IT-032`/`IT-082` (extended) GREEN on the working-tree SUT, RED on `ref:main`.
+Affected live URL (release-gated — verify at the 0.29.0 gate, DOC-478): the Business Glossary page
+`docs.opendatadiscovery.org/.../features/data-glossary/business-glossary` (retires the D1/D2/D4 caveats on
+`release/0.29.0`; live GitBook slug per `/review`).
+
+## Review (2026-06-22, session: review-ctrib028 #3 — full GATE-2 review)
+
+- **Result: ACCEPTED** → `pr-draft` → `review-ready`. (The human GATE-2 merge owns `done`; this flip is the
+  contributor review-ready-equivalent.) Reviewed at odd-platform `75fc06cd`. This is the THIRD pass: the two
+  prior PRECONDITION DECLINES (status `docs-done` ≠ `pr-draft`; `/enrich` DoD gate not run) are RESOLVED by the
+  `/implement` finish (`f981c58`) — status is now `pr-draft`, and the `/enrich` deferral is justified-as-scheduled
+  to the 0.29.0 release scan (consistent with the accepted CTRIB-029 resolution).
+
+- **2-minute-bounce precondition — assessed, did NOT fire.** Decoded the run-logs against the docker image
+  timeline: the implement-side regression evidence is *valid* (not the no-fix-SUT failure that rejected CTRIB-029's
+  first pass). `multi-stack`/`known-bugs`/`ingestion-e2e` each had a build-from-source run at committed `9d3de146`
+  (git-identical to `75fc06cd` — `git diff` empty); the `35ca9385` negative control (no term fix) correctly
+  *failed* feature-complete. The one gap: `feature-complete` was freshly run by implement only at
+  `fb597e04+uncommitted` (`81ba2101`), never build-from-source at the committed SHA. Per `/review` §3 the reviewer
+  runs its own confirmation regardless — maintainer-approved (AskUserQuestion).
+
+- **Acceptance criteria (the in-scope defects 1,2,4,5,6,7):**
+  - [x] **D1 double-fetch** — PASS. `Overview.tsx` reads redux `getTermDetails`+permissions; mutations dispatch
+    `fetchTermDetails`. IT-032 `D1: Overview fetches GET /api/terms/{id} exactly once` (added) GREEN; RED on main (2×).
+  - [x] **D2 auto-hide tabs** — PASS. `TermDetailsTabs.tsx` drops the `hidden:!count` lines. IT-032 `D2: zero-count
+    term shows the three reverse-lookup tabs` (added) GREEN; RED on main.
+  - [x] **D4 silent 50-cap (CRITICAL)** — PASS. BE: `DatasetFieldListMapperImpl` `hasNext=(long)page*size<total`
+    + `PageInfo().total(total)` (replaces `new PageInfo(size,false)`); `ReactiveDatasetFieldRepository.countByTerm`
+    (`countDistinct(DATASET_FIELD.ID)`, same join/filter as `listByTerm`); `DatasetFieldServiceImpl.listByTerm`
+    `Mono.zip(list,count)`. Unit: `DatasetFieldListMapperImplTest` (3 boundary cases) + `DatasetFieldServiceImplTest`
+    GREEN. IT-139 (new) badge=60 ∧ all 60 rows reachable GREEN; RED on main.
+  - [x] **D5 swallowed error** — PASS. `LinkedTermsList.tsx` real `AppErrorPage showError={isError}`, empty gated on
+    `!isError`. IT-082 `D5: a real 500 renders an error, not the empty state` (added) GREEN; RED on main.
+  - [x] **D6 wrong empty copy** — PASS. `'No linked entities'`→`'No linked terms'` + 7 locales. IT-082 D6 pin
+    **re-grounded** (G-C15-clean, below).
+  - [x] **D7 un-debounced search** — PASS. `useDebouncedCallback(…,500)` + Enter. IT-082 `D7: debounced (≤2 reqs
+    for 5 keystrokes)` (added) GREEN; RED on main.
+  - [x] **Scope bounded (G-C5)** — PASS. D3/D8/orphan-NPE deferred with on-disk drafts (`PLT-235`/`PLT-236`+
+    `adrs/drafts/ui-state-management.md`/`PLT-237`), all present; no out-of-scope diff.
+
+- **Quality Bar / contributor gates:**
+  - **Footer (Gate 4/9)** — PASS via `git log 75fc06cd`: `Consumer-read:` (extensive FE+BE consumer list) +
+    `Sources:` both present.
+  - **G-C2 regression — PASS (own confirmation, GREEN-as-expected).** Built the SUT **once** from `75fc06cd`
+    (working tree, tracked-clean → digest `cecd88db`), ran all four buckets sequentially against that one pinned
+    image (stack recreated — "running stack image != SUT -> recreating"): **feature-complete 310/310** (api:PASS
+    e2e:PASS — closes the `fb597e04+uncommitted` gap on the headline suite), **multi-stack 9/9**, **known-bugs
+    3-failed = exactly the quarantine pins IT-004(PLT-052)/IT-006(TEST-GAP-1013)/IT-007(LSN-001+PLT-086), 0
+    unexpected-green**, **ingestion-e2e 6/6**. Run-logs: `integration-tests/run-log/2026-06-22-*.md` (digest
+    `cecd88db`). Own unit CI-replica also GREEN @75fc06cd (`BUILD SUCCESSFUL 4m55s`, `:check`+`:build`).
+  - **G-C15 (changed test integrity)** — PASS. The ONLY changed test is the IT-082 D6 pin: `getByText('No linked
+    entities')`→`getByText('No linked terms')` + an *added* `'No linked entities'` `toHaveCount(0)`. SoT = the
+    corrected copy (not system output); oracle *tightened*; RED-on-`ref:main` preserved (comment states it). All
+    other tests are *added* (IT-139, IT-032 D1/D2, IT-082 D5/D7) — additive, safe.
+  - **G-C9 (both buckets)** — PASS. Unit (Mockito/in-process) + integration (IT-139 new, IT-032/IT-082 extended);
+    the user-facing badge-vs-list contradiction is covered by an integration IT (required by G-C9).
+  - **G-C10 ontology** — DEFERRED-as-scheduled (NOT a blocker). `/enrich` scheduled at the 0.29.0 release
+    full-substrate scan; the nodes exist + are re-enrichable but the substrate tracks *main* (the code is on an
+    unmerged branch), so enriching now would anchor transient feature-branch SHAs into shared main-tracking
+    lineage. Matches CTRIB-029's accepted G-C10 resolution. G-C10 gates the PR *leaving draft* (= GATE-2 merge),
+    satisfied by the release scan — not the `pr-draft`→`review-ready` flip. **Tracked for the release scan.**
+  - **G-C10 docs half / Gate 8 (live-site)** — PENDING-RELEASE (0.29.0). The Business Glossary caveat retirement
+    is on documentation `release/0.29.0` @ `980c88e` (verified branch-present: removes exactly the D1/D2/D4 Term-
+    Detail caveats, 12 lines; keeps the D3 dual-surface + security caveats). Live GitBook verification scheduled at
+    the 0.29.0 release gate — tracked `DOC-478` (pending-release).
+  - **Gate 7 (layout)** — PASS. `suites.yaml` registers IT-139; deferred drafts on disk.
+
+- **Regressions**: none. Full confirmation green-as-expected on a fresh `75fc06cd` build (`cecd88db`).
+- **Navigation**: consistent. Minor (Low, non-blocking): the new `ReactiveDatasetFieldRepository.countByTerm`
+  (linked-columns backend) is not yet listed in `navigation/domains/glossary.md` — optional follow-up, not logged
+  separately (trivial; fold into the next glossary-domain navigation touch).
+- **Upstream issues logged**: none new (PLT-235/236/237 were created by `/implement`).
+- **Banned-phrase check**: none used.
+- **Doc-product editorial audit (§5)** — ran a bounded pass; **partitioned**:
+  - **Coverage this run**: the `data-glossary` subtree (`business-glossary.md` — the surface this change touches).
+    CLEAN: the 0.29.0 caveat retirement is surgical (removes exactly D1/D2/D4), leaves **no dangling cross-
+    references** (the `double-fetch`/`silently truncate` grep hits are the *entity*-detail-page + *alerting*
+    pages, unrelated), and leaves **no empty subsection headers** (Visibility/Correctness/Performance each retain
+    other still-true caveats; the D3 dual-surface caveat is correctly kept).
+  - **Findings**: none surfaced this run.
+  - **Partition / deferred**: the full published doc-product audit is DEFERRED to a dedicated pass — the
+    `documentation` checkout is on the unreleased `release/0.29.0` train (CTRIB-028 + CTRIB-029 doc commits
+    unmerged), not `main`; a proper audit reads the published `main` tree read-only without churning the shared
+    train checkout. Queued in `state/PROGRESS.md`; **not skipped silently**.
+- **Notes**:
+  - Run-log entries for this confirmation are the 4 newest in `integration-tests/run-log/2026-06-22-*.md`
+    (digest `cecd88db`, runner = review session #3). The "explicit raw image (build-sut bypassed)" label is
+    correct + intentional: I built the SUT once from `75fc06cd` then pinned `ODD_PLATFORM_IMAGE` so all four
+    buckets share one coherent image — NOT the LSN-033 frozen-tag anti-pattern. VERIFIED via the regression run.
+  - Probe-runtime `lineage/**` drift produced by the run was reverted (`git checkout -- lineage/`) before commit —
+    review is read-only on the ontology. VERIFIED via `git status` (clean lineage).
+  - Ledger nit (non-blocking): the Implementation-ledger "Code changed" line says "+133/−85 across 17 files"; the
+    actual commit is **+214/−85 across 19 files** (the 2 new BE unit-test files = the +81 delta). The code is
+    correct; only the ledger count is stale. NOT VERIFIED-as-defect → cosmetic, noted not logged.
+
+## Merge (GATE-2, 2026-06-22)
+
+- **MERGED by the maintainer → `review-ready` → `pending-release`.** GATE-2 is human; the agent never merges.
+- **Verified against the remote ref (not the report — `git fetch` + `git log origin/main`, per LSN-034/038):**
+  the merge is **`fd71eb3d` (squash, PR #1798)** — `contrib(CTRIB-028): #1754 Term Detail page hardening
+  (defects 1,2,4,5,6,7)` — on odd-platform `origin/main` (sitting on top of CTRIB-029's `4028b4a6`/#1799).
+- **Content-identical to the reviewed code:** `git diff origin/main 75fc06cd` over the changed files is **empty**;
+  spot-verified the D4 core is present on `origin/main` (`DatasetFieldListMapperImpl` `hasNext=(long)page*size<total`
+  + `new PageInfo().total(total)`; `ReactiveDatasetFieldRepository.countByTerm`). The released fix == the reviewed fix.
+- **Why `pending-release`, not `done`:** milestone `0.29.0` is open. The done flip is owned by **`/review
+  release:0.29.0`**, which still owes: (1) the documentation `release/0.29.0` train publishes → Gate-8 live-site
+  verify of the Business-Glossary caveat retirement (DOC-478); (2) G-C10 `/enrich` at the release full-substrate
+  scan (the deferred ontology refresh — now mergeable, runs at the release scan); (3) real-instance verification
+  on the published `ghcr…:0.29.0` image. Consistent with CTRIB-029's GATE-2 → pending-release path.
+- **Post-merge cleanup:** the shared `../odd-platform` checkout was reset to `main` and the merged local branch
+  `contrib/CTRIB-028-term-detail-hardening` deleted (content preserved in `origin/main` via the squash) — the
+  shared-checkout resource is freed. `state/active-streams.yaml` ctrib028 entry → terminal (merged/pending-release).

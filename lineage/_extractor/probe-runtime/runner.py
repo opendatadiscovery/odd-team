@@ -86,9 +86,24 @@ STACK_PROFILES = {
 # Anything outside this list is a SCOPE_VIOLATION (exit 4).
 ALLOWED_VERBS = {"docker-compose", "docker", "wget", "curl"}
 
-DEFAULT_BACKEND_BASE = "http://localhost:18080"
-DEFAULT_DB_CONTAINER = "probe-database"
-DEFAULT_BACKEND_CONTAINER = "probe-odd-platform"
+# Per-session isolation (parallel /contribute + /review): when run-suite.sh exports ODD_STREAM=<id>, the runner
+# targets that stream's isolated stack (its base URL + container names) instead of the shared probe-* stack on
+# :18080. Outside a stream (ODD_STREAM unset) these stay the original literals, so non-stream runs are unchanged.
+# (adrs/drafts/parallel-contribution-infra.md §4-5.)
+_STREAM = os.environ.get("ODD_STREAM") or ""
+DEFAULT_BACKEND_BASE = (os.environ.get("ODD_BASE_URL") or "http://localhost:18080") if _STREAM else "http://localhost:18080"
+DEFAULT_DB_CONTAINER = (os.environ.get("ODD_DB_CONTAINER") or "probe-database") if _STREAM else "probe-database"
+DEFAULT_BACKEND_CONTAINER = (os.environ.get("ODD_BACKEND_CONTAINER") or "probe-odd-platform") if _STREAM else "probe-odd-platform"
+
+
+def _resolve_base(step: dict) -> str:
+    """Base URL for a probe HTTP step. In an isolated stream, force the stream's stack (ODD_BASE_URL), overriding
+    any per-step ``base`` hardcoded for the shared :18080 stack; outside a stream, honour the step's base
+    (unchanged behaviour). A UI probe's ``xhr_filter_regex`` that hardcodes :18080 is NOT rewritten here — that
+    is a per-probe concern (logged follow-up); api ``base``+``path`` steps are fully covered."""
+    if _STREAM:
+        return os.environ.get("ODD_BASE_URL") or DEFAULT_BACKEND_BASE
+    return step.get("base", DEFAULT_BACKEND_BASE)
 
 # Wait-for-ready loop bounds (seconds)
 STACK_READY_TIMEOUT = 180
@@ -368,7 +383,7 @@ def execute_arrange(steps: list[dict], compose_file: Path, *, captures: dict[str
                 path = step["path"]
                 # Substitute ${var} from captures (recursive over dict/list/str)
                 path = substitute_captures(path, captures)
-                url = step.get("base", DEFAULT_BACKEND_BASE) + path
+                url = _resolve_base(step) + path
                 body = substitute_captures(step.get("body"), captures) if step.get("body") is not None else None
                 headers = step.get("headers", {})
                 r = requests.request(method, url, json=body, headers=headers, timeout=step.get("timeout", 30))
@@ -448,7 +463,7 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
         }
 
     path = substitute_captures(step["path"], captures)
-    base = step.get("base", "http://localhost:18080")
+    base = _resolve_base(step)
     full_url = base + path
     # xhr_filter accepts substring OR regex. If `xhr_filter_regex` is set, use re.search;
     # otherwise use substring (backward-compat with v0.1 probes).
@@ -588,7 +603,7 @@ def execute_act(steps: list[dict], *, captures: dict[str, Any], verbose: bool) -
                 if kind == "rest":
                     method = step["method"].upper()
                     path = substitute_captures(step["path"], captures)
-                    url = step.get("base", DEFAULT_BACKEND_BASE) + path
+                    url = _resolve_base(step) + path
                     body = substitute_captures(step.get("body"), captures) if step.get("body") is not None else None
                     headers = step.get("headers", {})
                     r = requests.request(method, url, json=body, headers=headers, timeout=step.get("timeout", 30))

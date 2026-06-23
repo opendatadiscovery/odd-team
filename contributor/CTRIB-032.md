@@ -6,18 +6,18 @@ title: "Lookup table Description (Create/Edit form) is never propagated to the a
 class: bug                    # real, live-reproduced data-propagation defect on both the create AND the update path.
 scope: backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop). Internal draft id = PLT-224.
-status: scoping              # Phase A→C this session; STOPS at GATE 1. No code until the plan is approved (G-C3).
+status: implementing         # GATE 1 APPROVED 2026-06-23 (RamanDamayeu, AskUserQuestion rounds 1-3). Phase D in progress.
 reproduced: "LIVE on the running SUT (shared probe stack :18080, build cecd88db == current main fd71eb3d; lookup-table mapper code byte-unchanged from origin/main — CTRIB-028 touched dataset-field BE + Terms UI, not DataEntityMapperImpl's lookup methods). 2026-06-23, auth DISABLED. CREATE: POST /api/referencedata/table {name, description:'CTRIB032_DESC_SHOULD_SHOW_IN_ABOUT', namespace_name:'it097-ns'} → table_id 43 / dataset_id 76, LT.description SET; GET /api/dataentities/76 → internal_description=null, external_description=null (type LOOKUP_TABLE, lookup_table_id 43) — the About is empty. UPDATE: PUT /api/referencedata/table/43 {description:'CTRIB032_UPDATED_DESC_STILL_NOT_PROPAGATED'} → GET entity 76 internal_description STILL null while LT.description updated. Both paths broken. Repro LT deleted (DELETE 204). See '## Reproduction'."
 adr_required: false          # No migration (internal_description column exists), no auth/security-posture change, no breaking wire-contract change → G-C7 does NOT fire. The fix conforms to the existing 'manually-created entity → internal_description' + 'raw-verbatim description' implicit-ADR (implicit-adrs.md:1340).
-plan_approved_by:            # PENDING — GATE 1
-plan_approved_at:            # PENDING — GATE 1
-plan_approved_scope:         # PENDING — GATE 1
+plan_approved_by: RamanDamayeu
+plan_approved_at: "2026-06-23"
+plan_approved_scope: "Propagate lookup_tables.description → Data Entity external_description on create (DataEntityMapperImpl.mapCreatedLookupTablePojo) + update (applyToPojo). LT form UNCHANGED (backward-compatible — keeps its Description field); internal_description untouched (no clobber); the overview already renders external_description (OverviewDescription.tsx:25). Tests: unit (DataEntityMapperImplTest) + in-process integration + a browser e2e IT. Deprecation signal = docs note + tracked follow-up (NO global UI banner — ExternalDescription is a global component). Docs on the release/0.29.0 train. Approved via AskUserQuestion rounds 1-3, 2026-06-23."
 docs_routing: "release/0.29.0"   # the fix is unreleased behaviour → the existing 'description not propagated' caveat on master-data-management/lookup-tables.md (docs main) is retired/updated on the release/0.29.0 train so it publishes exactly when 0.29.0 ships + a paired backlog DOC item. Final decision after reading the page (Phase D).
 pr_url:                      # PENDING — GATE 2
 pr_draft:                    # PENDING — GATE 2
 clarify_comment_url:         # none warranted (G-C6) — the issue is precise + reproduced; the one design choice (sync direction) is a GATE-1 decision, not a public clarifying question.
-rootcause_comment_url:       # PENDING — a concise root-cause confirmation posted post-GATE-1 before any code (precise both-methods locus + chosen sync direction + term-linker scope note). G-C6 one comment.
-scope_comment_url:           # not required — the plan implements the issue's FULL ask (both paths); no scope narrowing (G-C5). The verbatim/no-term-link boundary is an edge case the issue never raised, not a narrowing of its stated scope.
+rootcause_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1781#issuecomment-4777553889"   # folded root-cause + reframing (G-C6 one comment), posted post-GATE-1 before any code as odd-contributor[bot] (HTTP 201)
+scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1781#issuecomment-4777553889"        # same comment — it reframes the issue's proposed write-through-to-internal into the external_description approach (G-C5)
 ---
 
 # CTRIB-032 — Lookup-table description not propagated to the entity About (#1781)

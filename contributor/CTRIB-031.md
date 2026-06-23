@@ -6,7 +6,7 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: blocked              # 2026-06-23 RE-REVIEW #2 REJECTED → blocked: the rework's renumber RENAMED the feature-complete `IT-139` slot to `IT-141` instead of SPLITTING it, ORPHANING CTRIB-028's IT-139 (term-linked-columns / #1754-D4 / F-153 / PLT-058) from suites.yaml — it now runs in NO suite (run-suite.sh sources ids ONLY from suites.yaml). Same class the 1st review rejected on, incompletely fixed. FIX (one pass): add IT-139 back to suites.yaml feature-complete ALONGSIDE IT-141 (ui-e2e already correct), then run the owed FULL confirmation regression with counts. The .tsx fix is CORRECT + byte-unchanged (a2a71af5); IT-141 RED→GREEN solid. See "## Review (2026-06-23, session 2 — rework re-review)" below. ─── PRIOR: REWORK (1st-bounce fix) renumbered IT-139→IT-141 + re-proved RED→GREEN on cached images; 1st /review REJECTED on the IT-139 id collision. ─── BOUNCE HISTORY: /review REJECTED → blocked; the blocker was IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
+status: in-progress          # 2026-06-23 REWORK #2 (maintainer-directed: "fix the suites.yaml orphan and re-run"). suites.yaml fix DONE — IT-139 (term-linked-columns) RESTORED to feature-complete alongside IT-141 (verified: --list shows both; dry-run resolves both specs; each id globs uniquely). Owed FULL confirmation regression (feature-complete + known-bugs on cached SUT 56f54a05; multi-stack+ingestion-e2e = maintainer-approved FE-only skip) flock-queued behind ctrib030 → RUNNING. → pr-draft on green. See "## Rework #2 (2026-06-23)" below. ─── PRIOR: RE-REVIEW #2 REJECTED → blocked on the suite orphan (the 1st-bounce renumber RENAMED instead of SPLIT the feature-complete IT-139 slot); the .tsx fix is CORRECT + byte-unchanged (a2a71af5), IT-141 RED→GREEN solid. 1st /review REJECTED on the IT-139 id collision. ─── BOUNCE HISTORY: /review REJECTED → blocked; the blocker was IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
 # Prior hand-off note (pre-review, retained): Phase D COMPLETE — Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311 (ledger), known-bugs 3-RED-as-expected (ledger), docs read (none), ontology committed, pixel-reviewed; multi-stack + ingestion-e2e maintainer-approved FE-only skip; branch PUSHED + scope comment + DRAFT PR #1801. NB the implementer set status straight to `review-ready`; contributor items hand off at `pr-draft` (review flips pr-draft→review-ready on PASS).
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
@@ -630,3 +630,30 @@ Current live state (verified):
   run-logs/suites.yaml/history; **no SUT build, no stack, no heavy-e2e flock, no lineage write.**
 - **Committed (explicit paths)**: `contributor/CTRIB-031.md` (this verdict + status flip) · `state/active-streams.yaml`
   (ctrib031 → blocked + `review-ctrib031-2`) · `state/PROGRESS.md` (review record).
+
+## Rework #2 (2026-06-23, maintainer-directed — "fix the suites.yaml orphan and re-run")
+
+### (a) [BLOCKER] suites.yaml — IT-139 (term-linked-columns) restored to feature-complete — DONE
+
+The renumber had RENAMED the `feature-complete` `IT-139` slot to `IT-141`; `IT-139` (CTRIB-028's
+term-linked-columns-pagination / F-153 / PLT-058 / #1754-Defect-4) is re-added **alongside** `IT-141`:
+`…, IT-138, IT-139, IT-141]` (ui-e2e unchanged — term-linked-columns is feature-complete-only; the thunk-arm
+correctly stays at IT-141 there). A documenting comment was added next to the entry.
+
+**Verified (no SUT needed):**
+- `run-suite.sh --list` feature-complete → `…, IT-139, IT-141` (both present).
+- `run-suite.sh feature-complete --dry-run` resolves BOTH specs: `term-linked-columns-pagination.spec.ts`
+  (IT-139) + `confirmation-dialog-thunk-arm.spec.ts` (IT-141).
+- Per-id glob is unique: `IT-139` → `IT-139-term-linked-columns-pagination.md`; `IT-141` →
+  `IT-141-confirmation-dialog-thunk-arm.md`. The orphan is gone; CTRIB-028's guard runs again.
+
+The `.tsx` fix + the odd-platform SUT are **untouched** by this (odd-team-only change) — so the cached fix image
+`odd-platform:odd-team-sut-ctrib031` (digest `56f54a05`) remains the correct SUT for the confirmation re-run; no
+rebuild.
+
+### (b) [owed gate] FULL confirmation regression — feature-complete + known-bugs on cached 56f54a05
+
+Running flock-serialized (queued behind ctrib030's in-flight regression — G-C2 one-at-a-time) against the cached
+fix image (no rebuild; the suites.yaml fix doesn't change the SUT). multi-stack + ingestion-e2e remain the
+maintainer-approved FE-only skip. Counts to be recorded in the run-logs (closing finding (b)). Results below once
+the run completes.

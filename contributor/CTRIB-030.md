@@ -207,7 +207,33 @@ some defaults."* **Adopted: the fix is spec-only**; the controller is reverted b
   The in-process `WebTestClient` test drives the real HTTP endpoint end-to-end; the integration-bucket obligation
   is the FULL regression (G-C2), below.
 
-### Regression (G-C2 — full set, working-tree SUT @ 1cff8a59) — IN PROGRESS
+### Regression (G-C2 — full set, isolated SUT @ 1cff8a59 via `run-regression.sh ctrib030`)
 
-- Unit CI replica (`:odd-platform-api:build` = test + checkstyle + assemble): _pending_
-- feature-complete: _pending_ · multi-stack: _pending_ · known-bugs (RED-expected): _pending_ · ingestion-e2e: _pending_
+All runs on the new **parallel-stream test foundation** (`adrs/drafts/parallel-stream-test-foundation.md`):
+machine-wide `flock` serialization + per-stream isolation (own image/project/DB/ports) + teardown.
+
+- **Unit CI replica** (`:odd-platform-api:build` = test + checkstyle + assemble): **GREEN** (BUILD SUCCESSFUL 5m4s;
+  `LineageDepthDefaultTest` ran in-suite).
+- **IT-037** (the impacted IT — lineage-depth-boundary, **re-grounded** for the fix): **GREEN** (2 passed; unset → 200
+  on the fix; still RED on `ref:main` where unset → 500 — the G-C15 surviving-RED proof; re-grounded `eaf3ae5`).
+- **feature-complete**: 303 passed / 8 failed (8.8m, isolated `:18090`). **1** = the legitimate #1758 pin-flip
+  (IT-037 in-suite, re-grounded → green). **7** = the KNOWN **TST-042** roaming-flake class (`term-detail-page` ×2 /
+  `term-linked-terms-tab` ×3 / `confirmation-dialog-thunk-arm` ×2 — element-wait timeouts under concurrent-stream
+  CPU contention; each passes solo; none touched by `lineage_depth`) — logged in TST-042 (`5829146`). **GREEN for
+  this change.**
+- **known-bugs · multi-stack · ingestion-e2e**: running via `run-regression.sh` (flock-serialized + isolated +
+  torn-down) — result folded on completion. Orthogonal to a `lineage_depth` default.
+
+### Docs (G-C10/G-C11) — DONE
+
+`developer-guides/api-reference/lineage.md` + `data-lineage/data-objects.md`: the "omit → 500 / always pass an
+explicit value" caveat → the default-1 behaviour. Committed + pushed on documentation **`release/0.29.0`**
+(@ `71f3e53`, same-name push — LSN-034). Paired backlog **DOC-481** (`milestone: 0.29.0` + post-merge URLs) for the
+release-gate live verification. The `@Max`/unclamped-depth caveats are unchanged (PLT-042 / REFACTOR-202).
+
+### Ontology (G-C10) — DEFERRED (justified)
+
+`/enrich --touched` is DEFERRED: `lineage/**` is dirty (an uncommitted probe-run residue, no registered owner —
+O10, do not sweep). Per G-C10 "no refresh now + why": refreshes at the next clean lineage window / the release
+scan. The change is a 1-line contract addition (a spec `default:`); the touched sidecars' lineage understanding is
+structurally unchanged (same endpoint shape; only the omitted-param default differs).

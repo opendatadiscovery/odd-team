@@ -6,7 +6,8 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: review-ready         # 2026-06-23 — Phase D COMPLETE (resumed from the code-complete checkpoint; FE env unblocked via clean pnpm install + the merged ODD_STREAM isolation tooling). Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311, known-bugs 3-RED-as-expected, docs read (none), ontology committed, pixel-reviewed. multi-stack + ingestion-e2e: maintainer-approved FE-only skip (AskUserQuestion 2026-06-23). Branch PUSHED + scope comment posted + DRAFT PR #1801 opened via the odd-contributor App (config VERIFIED live — the prior "unconfigured" note was wrong; the App auto-sources ~/.config/odd-contributor/env). PR is draft + mergeable_state:blocked → human merge = GATE 2; /review owns the done flip.
+status: blocked              # 2026-06-23 /review (separate session) REJECTED → blocked. SINGLE blocker: IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
+# Prior hand-off note (pre-review, retained): Phase D COMPLETE — Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311 (ledger), known-bugs 3-RED-as-expected (ledger), docs read (none), ontology committed, pixel-reviewed; multi-stack + ingestion-e2e maintainer-approved FE-only skip; branch PUSHED + scope comment + DRAFT PR #1801. NB the implementer set status straight to `review-ready`; contributor items hand off at `pr-draft` (review flips pr-draft→review-ready on PASS).
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
   datasource delete forced-500 → modal closes-as-success + the row remains + an error toast appears
@@ -374,3 +375,119 @@ metadata=read`). The writes were performed (1-hour token, never logged/committed
   (`draft:true`, `Closes #1766`, base `main`, author `odd-contributor[bot]`, `mergeable_state:blocked`).
 GATE 2 = the human maintainer reviews (`/review` in a separate session) + approves + merges (the bot is
 the PR author → cannot self-approve). At merge: flip F-031 H-005's thunk facet `resolved` + close #1766.
+
+## Review (2026-06-23, session: review-ctrib031 — separate session, read-only on the repos)
+
+- **Result: REJECTED → `blocked`.** Single blocker: the **IT-139 id collision** (below). The fix code and
+  both test buckets are independently verified **correct** — the `.tsx` change needs no rework; only the IT
+  bookkeeping does.
+
+### Reviewer's independent verification (not trusting the ledger)
+
+- **Fix mechanism — CORRECT (read the code):** `handleResponseThunk.ts:24-42` `rejectWithValue(errResp)` → a
+  rejected *action*, but `dispatch()` itself RESOLVES (root cause confirmed). `ConfirmationDialog.tsx:27-46`
+  `onClose` → `.then`(close) / `.catch`(clear loading + inline error + stays open); the `.catch` shipped in
+  #1797 is genuinely present, and `.unwrap()` is exactly what turns the rejected-action-resolve into a
+  promise-reject that routes through it. `errorHandling.tsx` `getErrorResponse` is double-parse-safe on the
+  `AppError` payload (`toResponse` returns `undefined` → generic `'An error occurred'` inline; specific
+  reason in the toast). The 13-file diff appends `.unwrap()` to 12 consumers + gates `TermDetails`' navigate
+  on `.unwrap().then(...)`. Minimal, idiomatic, correct.
+- **Gate 4 completeness — PASS (grep sweep of every `onConfirm` consumer):** all 12 fixed + TermDetails are
+  redux-thunk dispatches; every UNFIXED consumer is correctly out of scope — `DatasetDataTableRowActions`,
+  `DatasetFieldHeader`, `QueryExampleDetailsContainerActions`, `ActiveAssociationRequest`,
+  `LookupTablesListItem` are all `mutateAsync` (already handled by #1797), and `SelectableSeverity` is a
+  thunk that already `.unwrap()`s (since #1750, left untouched). **No thunk consumer missed.**
+- **Unit bucket — PASS (reviewer's OWN run, Node 24 / vitest 4):** `DataSourceItem.test.tsx` +
+  `TermDetails.test.tsx` = **4/4 GREEN** on the fix. They exercise the real store + thunk + `.unwrap()`, mock
+  only the API boundary, and inject the rejecting condition explicitly. VERIFIED via `npx vitest run`.
+- **IT-139 RED→GREEN — corroborated via the committed Playwright failure artifacts:** the `ref:main`
+  (8615e9ed, port :18110) run shows the GENUINE bug symptoms — term `Received "…/termsearch/…"` (navigated
+  away on the failed delete, PLT-234) + datasource `getByRole('dialog') element(s) not found` (closed-as-
+  success, PLT-233), both with the `Forced 500` toast visible. GREEN on the fix (56f54a05). A real
+  discriminator, not bug-hiding. VERIFIED via `e2e/test-results/confirmation-dialog-thunk-*` error-context.
+- **G-C15 (the one CHANGED existing spec) — PASS:** `advisory-lock-registry.spec.ts` changed only
+  `const CONN = '…:15432'` → `process.env.ODD_DB_URL ?? '…:15432'` (per-stream CONN parametrization,
+  byte-identical for non-isolated/CI runs). No assertion weakened, no `.skip`, no mock swap.
+
+### Contributor gates
+
+- **G-C1 reproduce-first** — PASS (ARM-2 cited from CTRIB-027; term-navigate driven LIVE in IT-139, the RED
+  artifact confirms the navigate-away).
+- **G-C2 verify-running-system / FULL regression** — PASS-with-caveat. unit GREEN (own run); IT-139 RED→GREEN
+  (corroborated); feature-complete `e2e:PASS` on the reviewed SUT 56f54a05 (run-log line 27, after the
+  ECONNREFUSED infra fix); known-bugs `e2e:FAIL` = the 3 pins still RED, expected; multi-stack + ingestion-e2e
+  = maintainer-approved FE-only skip (AskUserQuestion). **Caveat:** the run-logs record only BINARY pass/fail —
+  the "311/311" + "3-RED/0-unexpected-green" counts are ledger narration, not in the citable run-log (rework
+  (b); systemic — same gap flagged in the CTRIB-030 bounce). A reviewer FULL confirmation re-run was NOT done:
+  the heavy-e2e flock is held by ctrib032 (G-C2 one-at-a-time), and the item bounces on the collision anyway —
+  it is owed at the rework re-review.
+- **G-C3 GATE 1** — PASS (`plan_approved_by` maintainer, AskUserQuestion, 2026-06-23, full ARM-2).
+- **G-C4 GATE 2 + push-safety** — PASS (local): branch has **no upstream** + `push.default=current` (LSN-038
+  guard intact); PR draft + `mergeable_state:blocked` per the ledger (the bot is PR author → cannot
+  self-approve). Not re-fetched live (gh absent); the structural guarantee stands.
+- **G-C5 bounded scope** — PASS: odd-platform diff = the 13 planned `.tsx` files only; ba44f06's run-suite.sh +
+  advisory-lock isolation fixes are an honestly-documented test-enabler (minor, acceptable).
+- **G-C6 one-question clarify** — PASS (none warranted, recorded).
+- **G-C7 irreversible/ADR** — N/A (FE-only; no migration/auth/wire-contract change; `implicit-adrs.md` 0 hits).
+- **G-C8 issue-as-data** — PASS (re-verified origin/main; found #1766 already 2/3 shipped; did not follow the
+  stale issue text).
+- **G-C9 test integrity (both buckets)** — substance PASS (genuine RED→GREEN both buckets); **IDENTITY FAIL →
+  the IT-139 collision (the blocker).**
+- **G-C10 ontology + docs move** — PASS: ontology committed (`737d5a5`; F-031 H-005 `release_gated_update`,
+  not narrated); `docs_routing: none` well-grounded — `management.md:85` READ, already documents "the dialog
+  stays open" for these deletes (fix brings released code into conformance). [One editorial nit on that line →
+  DOC-482, non-blocking.]
+- **G-C12 design-before-build** — PASS (reuse of the #1797 `.catch` + the `.unwrap()` idiom; impact checklist;
+  PO/SRE lens; zero new components).
+- **G-C13 principal sufficiency** — PASS (enough + meaningful tests; JaCoCo N/A for TS; no control lost).
+- **G-C16 product analysis** — PASS (user problem restated independent of the issue's fix; HIGH→MEDIUM severity
+  reframe surfaced at GATE 1).
+
+### THE BLOCKER — IT-139 id collision (G-C9 identity / tests-pillar traceability)
+
+Two **committed** protocols claim `id: IT-139`:
+- `protocols/IT-139-confirmation-dialog-thunk-arm.md` — CTRIB-031, validates F-031, commit `ba44f06`
+  (2026-06-23 11:12).
+- `protocols/IT-139-term-linked-columns-pagination.md` — CTRIB-028, validates F-153 / regresses PLT-058,
+  commit `436b695` (2026-06-22 14:51).
+
+`run-suite.sh:81` resolves an IT id via `f=$(ls "$PROTODIR/$it"-*.md | head -1)`. For `IT-139` the glob
+matches BOTH; `head -1` takes the alphabetically-first → `IT-139-confirmation-dialog-…`. So **CTRIB-031's
+spec silently SHADOWS CTRIB-028's `term-linked-columns-pagination`** — F-153/PLT-058 is no longer runnable by
+its id and is dropped from the suite's id-based enumeration. CTRIB-028's IT-139 predates CTRIB-031's by ~21h
+→ CTRIB-031 reused an already-taken id. The tests pillar requires unique IT-NNN ids (the traceability
+ledger / "no orphan tests" invariant); a duplicate that shadows another stream's regression test fails it.
+
+### Rework (one pass — the `.tsx` fix itself needs NO change)
+
+- **(a) [blocker] Renumber CTRIB-031's IT to `IT-141`** (IT-140 is taken by CTRIB-032; IT-141 is free):
+  rename `protocols/IT-141-confirmation-dialog-thunk-arm.md` (+ `id: IT-141`); rename
+  `e2e/specs/` reference + the spec header; update the protocol's `automation:` field; rename the run-log
+  → `run-log/2026-06-23-IT-141.md`; update **suites.yaml in BOTH lists** (feature-complete + ui-e2e, + the
+  ui-e2e comment); update the `lineage` F-031 gate refs (IT-139→IT-141) and `test-gates.yaml` if present;
+  update this CTRIB record + `CTRIB-031-pr-body.md`. Leave CTRIB-028's
+  `IT-139-term-linked-columns-pagination` as the **sole** IT-139. Re-run IT-141 RED→GREEN to regenerate the
+  run-log under the new id.
+- **(b) [evidence, systemic] Record actual COUNTS** (feature-complete 311/311; known-bugs 3-RED / 0-unexpected-
+  green) + runner + SUT-source-SHA in the run-logs — not the binary `outcome:` line only (same gap flagged in
+  CTRIB-030's bounce). The rework re-review owes the reviewer's own FULL confirmation regression on the
+  rebuilt SUT (it could not run this pass — the heavy-e2e flock was held by ctrib032).
+- **(c) [process, minor] Hand off contributor items at `pr-draft`**, not `review-ready` (review owns the
+  pr-draft→review-ready flip on PASS); this item was set straight to `review-ready` pre-review.
+
+### Outcomes
+
+- **Regressions**: none observed (FE-only; unit GREEN own-run; IT-139 GREEN on fix; feature-complete e2e:PASS
+  on 56f54a05). Count-granularity is the (b) caveat.
+- **Navigation**: N/A — no navigation pointer shifts.
+- **Banned-phrase check**: none used.
+- **Upstream issues logged**: none new (PLT-238 + PLT-239 already on disk from implement).
+- **Doc-product editorial findings** (partial pass — covered `management.md` via the Gate-10 read; full-tree
+  audit DEFERRED to the re-review, per the CTRIB-028/CTRIB-030 2-minute-bounce precedent):
+  - **DOC-482** (low, doc-claim-vs-code drift) — `management.md:85` "the dialog stays open with the cancel
+    option highlighted" overstates the ConfirmationDialog failure UX (there is no cancel option to highlight).
+    Logged: `backlog/docs/DOC-482.md`. Pre-exists CTRIB-031; non-blocking.
+- **lineage/ left untouched** — unowned P-001 residue (O10); this review ran no probe/enrich → no ontology
+  drift; the vitest run wrote nothing to the repo.
+- **Committed (explicit paths)**: `contributor/CTRIB-031.md` (verdict + status flip) · `state/active-streams.yaml`
+  (ctrib031 → blocked + `review-ctrib031` complete) · `state/PROGRESS.md` (review record) · `backlog/docs/DOC-482.md`.

@@ -327,3 +327,43 @@ green + known-bugs still-RED + ingestion-e2e green)". The artifacts contradict i
 - **`lineage/**` left untouched** — the unowned P-001 probe residue is routed-around per O10; this review ran no
   suites, so it produced no ontology drift. Review committed only: this verdict + the `review-ctrib030`
   active-streams entry + the `state/PROGRESS.md` record.
+
+## Rework directive (2026-06-23, maintainer) — RESUME POINT for the ctrib030 stream
+
+**Maintainer order (2026-06-23):** rebase `contrib/CTRIB-030-lineage-depth-npe` onto current `origin/main`
+(`fd71eb3d`) and re-run the FULL suite, **under the multi-stream protocol** (`playbooks/stream-coordination.md`) —
+other contributor + reviewer streams are live; coordinate through `state/active-streams.yaml`, isolate resources,
+respect the serialized heavy-e2e flock.
+
+**Pre-verified read-only (review session, 2026-06-23):** the rebase is **conflict-free** —
+`git -C ../odd-platform-ctrib030 merge-tree --write-tree fd71eb3d 1cff8a59` → exit 0, clean tree `039a1142`; the
+fix touches only `{openapi.yaml, LineageDepthDefaultTest.java}`, **disjoint** from the 028 squash's files. (Same
+check ⇒ PR #1800's eventual merge into `main` is clean too.) So the rebase will not conflict.
+
+**Steps (in order):**
+0. **Register/refresh** the ctrib030 entry in `state/active-streams.yaml` at intake; trust the live tree over the
+   record (O4/O8/O9). Reuse ctrib030's own namespace — worktree `../odd-platform-ctrib030`, SUT tag
+   `odd-platform:odd-team-sut-ctrib030`, compose project `ctrib030`, ports `18090/15442` (all idle). Flip the item
+   `blocked → in-progress`.
+1. **Rebase** (in the worktree):
+   `git -C ../odd-platform-ctrib030 rebase --onto fd71eb3d 4028b4a6 contrib/CTRIB-030-lineage-depth-npe`
+   (replays only `1cff8a59`). Confirm `git diff --stat origin/main...HEAD` = exactly the 2 fix files, and the
+   worktree now carries the merged 028 Term Detail hardening (so the `term-*` specs are valid on this SUT).
+2. **Rebuild ONE SUT** from the rebased HEAD (per-stream tag `odd-team-sut-ctrib030`); record the digest.
+3. **Unit CI replica** on the rebased HEAD → GREEN (read pass/fail + checkstyle **counts**, not the exit code).
+4. **FULL regression on that ONE SUT** — `integration-tests/run-regression.sh ctrib030` (acquires the heavy-e2e
+   **flock**; the flock is **FREE now** — ctrib032 finished — but it is serialized: if another stream grabs it
+   first, queue behind it, G-C2; never concurrent with a maintainer run). Required, **with counts**:
+   feature-complete GREEN-for-change (IT-037 re-grounded ⇒ unset→200 passes; name + count any residual failure);
+   multi-stack **GREEN** (resolve/explain the prior `d03a378e` FAIL); known-bugs 3-RED-expected / 0-unexpected-GREEN;
+   ingestion-e2e GREEN — **all on the same SUT digest**.
+5. **Record** each bucket **with counts + runner + the SUT source-SHA** in `integration-tests/run-log/2026-06-23-*.md`
+   and **fold the numbers into** this ledger's "Implementation (Phase D) → Regression" (replace "folding on completion").
+6. **Docs/ontology**: DOC-481 (release/0.29.0) stands; `/enrich --touched` only while `lineage/**` is clean+unclaimed
+   (currently DIRTY with the unowned P-001 residue → defer-justified per G-C10/O10 if still dirty).
+7. **Push** the rebased branch via the odd-contributor App (same-name, never main-tracked — O6/LSN-038) so PR #1800
+   updates to the rebased HEAD; re-submit `in-progress → pr-draft` for a fresh `/review` (separate session).
+
+**Serialized-resource state at dispatch (~2026-06-23T12:25):** heavy-e2e flock **FREE** (ctrib032's regression
+pid 1059078 done; `state/locks/heavy-e2e.holder` gone). `lineage/**` DIRTY+unowned (P-001 + ctrib032 — O10
+route-around). ctrib030 worktree idle @ `1cff8a59`; stack down. odd-team index = explicit-path atomic commits only.

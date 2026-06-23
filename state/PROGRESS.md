@@ -4477,3 +4477,44 @@ ingestion-e2e green) → record results with counts+runner+SUT-SHA and fold into
 **Editorial audit** deferred to the re-review (2-minute-bounce precedent, CTRIB-028). **lineage/** left untouched**
 (unowned P-001 residue, O10; this review ran no suites → no ontology drift). Committed: CTRIB-030.md verdict +
 active-streams `review-ctrib030` + this record. Full verdict: `contributor/CTRIB-030.md` "## Review (2026-06-23)".
+
+---
+
+### 2026-06-23 — /review CTRIB-031 (#1766 ARM-2, DRAFT PR #1801) → REJECTED → `blocked`
+
+Separate-session review (`review-ctrib031`) of the redux-thunk arm of #1766 (the 13 ConfirmationDialog thunk
+consumers `.unwrap()` + TermDetails navigate-gating), branch `contrib/CTRIB-031-confirmationdialog-thunk-arm`
+@ `a2a71af5`. **The fix code + both test buckets are verified CORRECT; the single blocker is a test-bookkeeping
+id collision.**
+
+**Verified correct (reviewer's own checks, not the ledger):** fix mechanism read end-to-end (`handleResponseThunk`
+`rejectWithValue`→dispatch resolves; `ConfirmationDialog` `.catch` stays-open; `.unwrap()` bridges them;
+`getErrorResponse` double-parse-safe) · Gate-4 `onConfirm` sweep — every unfixed consumer is `mutateAsync`
+(already #1797) or already-`.unwrap()` (`SelectableSeverity`), **no thunk consumer missed** · **unit 4/4 GREEN on
+the reviewer's own `npx vitest run`** · **IT-139 RED→GREEN corroborated** via the committed Playwright artifacts
+(ref:main 8615e9ed shows the genuine bug symptoms — term navigates to `…/termsearch/…`, datasource dialog
+`element(s) not found`) · **G-C15 clean** on the one changed spec (`advisory-lock-registry` = CONN-parametrization
+only, byte-identical for CI). Gates G-C1/3/4(local)/5/6/8/10/12/13/16 PASS; G-C7 N/A.
+
+**Why blocked (the single blocker — G-C9 identity / tests-pillar traceability):** two committed protocols claim
+`id: IT-139` — `IT-139-confirmation-dialog-thunk-arm.md` (CTRIB-031, F-031, commit `ba44f06` 06-23 11:12) and
+`IT-139-term-linked-columns-pagination.md` (CTRIB-028, F-153/PLT-058, commit `436b695` 06-22 14:51). `run-suite.sh:81`
+resolves an id via `ls IT-139-*.md | head -1` → alphabetically `confirmation-dialog-…` wins, so CTRIB-031's spec
+**silently shadows CTRIB-028's term-linked-columns regression test** (no longer runnable by id). CTRIB-028's IT-139
+predates CTRIB-031's by ~21h → CTRIB-031 reused a taken id.
+
+**Rework (one pass; the `.tsx` fix needs no change):** (a) [blocker] renumber CTRIB-031's IT → **IT-141** (IT-140 =
+CTRIB-032; IT-141 free): protocol file+`id:`, spec file+refs, `automation:`, run-log → `2026-06-23-IT-141.md`,
+suites.yaml (BOTH feature-complete + ui-e2e lists + comment), lineage F-031 gate refs, test-gates.yaml if present,
+the CTRIB record + PR-body — leave CTRIB-028's IT-139 as the sole IT-139; re-run IT-141 RED→GREEN. (b) [evidence,
+systemic] record actual COUNTS (fc 311/311; kb 3-RED/0-unexpected-green) + runner + SUT-SHA in the run-logs (same
+gap flagged in CTRIB-030's bounce); the re-review owes the reviewer's own FULL confirmation regression (couldn't run
+— heavy-e2e flock held by ctrib032). (c) [process, minor] hand off contributor items at `pr-draft`, not
+`review-ready` (this item was set straight to `review-ready` pre-review).
+
+**Editorial** (partial pass — `management.md` via the Gate-10 read; full-tree audit deferred to re-review):
+**DOC-482** (low) — `management.md:85` "cancel option highlighted" overstates the ConfirmationDialog failure UX
+(no cancel option exists). **lineage/** left untouched** (O10; no probe/enrich; the vitest run wrote nothing to the
+repo). Committed (explicit paths): `contributor/CTRIB-031.md` verdict + status flip · `state/active-streams.yaml`
+(ctrib031→blocked + `review-ctrib031`) · `backlog/docs/DOC-482.md` · this record. Full verdict:
+`contributor/CTRIB-031.md` "## Review (2026-06-23)".

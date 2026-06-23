@@ -58,8 +58,13 @@ builds on: `adrs/drafts/parallel-contribution-infra.md`, R1-R9 / O1-O10).
    - **`lineage/**` is single-writer (R9).** Run `/enrich`/`/probe-run`/a reducer ONLY when `lineage/**` is
      clean **and** unclaimed, *whoever* the holder is. If it is dirty from another activity, **do not** `/enrich`
      into it and **do not** commit/revert that activity's work (O10) — wait, or defer with a justification.
-   - **The heavy e2e regression is one-at-a-time across ALL streams** (`feature-complete`/`multi-stack`/
-     `ingestion-e2e`), never concurrent with a possible maintainer run (G-C2). Queue via a `wants: e2e` entry.
+   - **The heavy e2e regression is one-at-a-time across ALL streams** — ENFORCED by a machine-wide `flock`
+     (`state/locks/heavy-e2e.lock`), not just convention. Run it via **`integration-tests/run-regression.sh
+     <id>`** (build the SUT once from your worktree → acquire the flock → run all suites isolated → tear down →
+     release; `adrs/drafts/parallel-stream-test-foundation.md`). It blocks until the lock is free, so the running
+     regression gets the machine to itself (fast + reliable); mirror it with a `wants: e2e` registry entry for
+     visibility. Cheap runs (the unit build, a targeted API probe on your own isolated stack) do NOT take the
+     lock and parallelise freely.
    - **The odd-team git index + `PROGRESS.md` (R5)** take explicit-path atomic commits only; keep new files
      untracked until the commit moment (a stray `git add -A` sweeps another stream's staged files — O3).
    - **The `documentation` `release/{version}` train (R6)** — per-stream docs worktree; same-name pushes only.

@@ -23,7 +23,10 @@ a record is a claim, the tree is the truth:
 - the same for `../documentation` and every `../odd-platform-<id>` worktree (`git worktree list`).
 - `git -C ../odd-platform status lineage/` + the `probe_run_id` in `lineage/odd-platform/feature-flows.yaml`
   (who actually holds the R9 lineage lock — never guess a stream; O8).
-- `docker ps` (which `<id>-*` / `probe-*` stacks + ports + images are live).
+- `docker ps` (which `<id>-*` / `probe-*` stacks + ports + images are live) — a `<id>-*` or `probe-*` stack
+  whose `<id>` has **no LIVE entry** is an ORPHAN stack (a crashed/manual run that skipped teardown) → GC it (§3).
+- `cat state/locks/heavy-e2e.holder` — the flock holder of the serialized heavy-e2e lock (the authoritative
+  "who is running the full regression right now"; absent = the lock is free; see `run-regression.sh`).
 
 Reconcile the registry to what you observe: fix stale heads, wrong lock holders, and the `unowned_dirty_state`
 block. Stamp each touched entry with a `verified-at`. Commit the reconciliation (explicit path, atomic).
@@ -45,10 +48,13 @@ For each, present the options; **never act destructively without the work captur
 
 - **resume** — the worktree + branch + record are intact; print the exact commands to re-attach (the
   `cd ../odd-platform-<id>`, the SUT tag, the ports) and the next pending DoD gate. Nothing is reclaimed.
-- **reclaim** — free the namespace (remove the worktree, drop the image tag, release the ports, clear the
-  registry entry) **only after the work is captured**: the contrib branch is pushed to origin, **or** its
-  uncommitted diff is saved to `state/abandoned/<id>.patch` (with a one-line provenance header) and surfaced.
-  Print what was captured + where before freeing anything.
+- **reclaim** — free the namespace **only after the work is captured** (the contrib branch is pushed to origin,
+  **or** its uncommitted diff is saved to `state/abandoned/<id>.patch` with a one-line provenance header and
+  surfaced). Then free, in order: **tear down its stack** — `docker compose -p <id> -f
+  lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml down -v` (containers + network + volume; the
+  backstop for a run that crashed before `run-regression.sh`'s teardown trap fired) — drop the image tag
+  (`docker image rm odd-platform:odd-team-sut-<id>`), remove the worktree, release the ports, clear the registry
+  entry. Print what was captured + where before freeing anything.
 - **discard** — maintainer-confirmed only. Even then, save the diff to `state/abandoned/<id>.patch` first
   (a discard is recoverable for one release cycle), then free the namespace.
 
@@ -62,8 +68,9 @@ Print a compact table: `id · role · work-item · phase · LIVE/STALE/ORPHANED 
 
 - **Next-free namespace** — the lowest unused stream id pattern + the next free port pair + the next image tag,
   so a starting stream can copy them (the `shared_resources.next_free` values, re-derived live).
-- **Serialized-resource status** — who holds `lineage/**` (R9), whether a heavy e2e regression is running
-  (one-at-a-time — G-C2), and the `wants: e2e` queue order.
+- **Serialized-resource status** — who holds `lineage/**` (R9); the heavy-e2e flock (`cat
+  state/locks/heavy-e2e.holder` — the authoritative one-at-a-time holder that `run-regression.sh` acquires,
+  G-C2); and the `wants: e2e` queue order.
 - **GC candidates** — the STALE/ORPHANED list with the recommended action each.
 
 ## Rules

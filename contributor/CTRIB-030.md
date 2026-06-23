@@ -6,7 +6,7 @@ title: "Lineage endpoints: unset lineage_depth autoboxes null → NPE → HTTP 5
 class: bug                    # Defect 1a (unset-depth → 500) is a real, live-reproduced crash. Defect 2 (RBAC) reclassifies to expected-behaviour (see Product analysis). Defect 1b is out-of-scope (owned by existing items).
 scope: backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop). Internal id = PLT-100.
-status: pr-draft             # REWORK COMPLETE 2026-06-23T14:53: rebased onto current-main c7f14fc5 (04e22af4) → unit GREEN (593/0) → FULL e2e regression GREEN-for-change on ONE SUT (digest 74b8a80e): feature-complete 309/2 (IT-037 unset→200 GREEN; the 2 fails = unmerged confirmation-dialog fix), multi-stack 9/0, known-bugs 3-RED-expected/0-unexpected-green, ingestion-e2e 6/0. PR #1800 force-updated 1cff8a59→04e22af4 + body refreshed. Handoff to a fresh /review → GATE 2 (human merge). See "## Rework run (2026-06-23)".
+status: review-ready         # /review (review-ctrib030-2, separate session) ACCEPTED 2026-06-23: every gate cited; reviewer's OWN unit (595/0 @04e22af4) + FULL e2e regression on a fresh reviewer SUT (digest 698f4a02 ← 04e22af4) independently reproduces GREEN-for-change (feature-complete 309/2 = CTRIB-031 unmerged-fix delta-0 + IT-037 unset→200; known-bugs 3-RED-expected/0-green; multi-stack 9/0; ingestion-e2e 6/0). pr-draft → review-ready; human GATE-2 (approve+merge PR #1800) owns done. ─── PRIOR: REWORK COMPLETE 2026-06-23T14:53 (rebased onto current-main c7f14fc5 = 04e22af4); implementer's run digest 74b8a80e. See "## Review (2026-06-23, session: review-ctrib030-2)".
 reproduced: "LIVE on the running SUT (odd-platform:odd-team-sut digest 35ca9385 = the ctrib029 dc9b6422 build; lineage files byte-identical to origin/main 4028b4a6 — verified `git diff origin/main..HEAD` empty over Lineage/DataEntityController/SecurityConstants/ControllerAdvice). 2026-06-22, auth DISABLED. RED: `GET /api/dataentities/1/lineage/downstream` (no lineage_depth) → HTTP 500 {code:SYS001, message:'Internal Server Error'}. CONTROL (proves NPE is pre-lookup): `…/lineage/downstream?lineage_depth=1` → HTTP 404 {code:USR002, message:'DataEntity with id 1 is not found'} — same nonexistent id reaches the service and 404s gracefully WITH a depth; 500s BEFORE the lookup WITHOUT one. See '## Reproduction'."
 adr_required: false          # The crash fix (Defect 1a) needs NO ADR. Defect 2 (RBAC) is INTENDED behaviour (ODD's published authz model) → no security-posture code; an OPTIONAL implicit-ADR could CODIFY the existing 'reads-open, writes-permissioned' decision (adr pillar) — maintainer's call at GATE 1, NOT a blocker for this PR.
 plan_approved_by: RamanDamayeu
@@ -458,3 +458,126 @@ control lost, no existing functionality harmed; non-UI change (no screenshot war
 Push `04e22af4` via the odd-contributor App (same-name refspec, force — the rebase rewrote history; never
 main-tracked) so PR #1800 updates to the current-main HEAD; flip `in-progress → pr-draft`; hand to a fresh
 `/review` (separate session) → GATE 2 (human merge).
+
+## Review (2026-06-23, session: review-ctrib030-2 — re-review of the rework, separate /review session)
+
+- **Result**: ACCEPTED → `pr-draft` → **`review-ready`** (the human GATE-2 approve+merge of PR #1800 owns `done`).
+- **Scope**: re-review of the rework after the first `/review`'s 2-minute bounce (the 6 regression-evidence defects).
+  The fix itself was found sound then; this re-review confirms the rework's regression evidence is now real **and runs
+  the reviewer's OWN full confirmation** (unit + FULL e2e) — the maintainer directive (regression measured at review,
+  not inferred). The first review bounced before its expensive run; this one executed it.
+- **Separate-session check**: PASS — fresh `/review` session, distinct from the ctrib030 contribute/rework session.
+- **Sources footer**: PASS — `04e22af4` carries both `Consumer-read:` and `Sources:` (verified `git show`).
+- **Cheap precondition (2-min bounce)**: NO BOUNCE — an integration run-log's SUT digest (`74b8a80e`) is provenance-
+  tied to the reviewed commit `04e22af4` (counts + runner), and the ledger claims full completion → the expensive
+  confirmation was OPENED (not a bounce).
+
+### Reviewed artifact (all verified live)
+- PR **#1800** (GitHub API): `state:open`, `draft:false`, `merged:false`, `mergeable_state:clean`, head `04e22af4`,
+  base `main`, author `odd-contributor[bot]`, 1 commit / 2 files / +77 −2. **G-C4 intact**: bot is the author; a
+  HUMAN (RamanDamayeu) APPROVED 2026-06-23T13:02Z (GATE-2 first half — merge pending); the bot did not self-approve and
+  did not merge. `origin/main` is `c7f14fc5`; `04e22af4` sits one commit ahead (`merge-tree` clean) → definitively unmerged.
+- 3-dot diff `origin/main...04e22af4` = exactly **2 files**: `odd-platform-specification/openapi.yaml` (`default: 1` on
+  `lineage_depth` for both ops + a description note) and `LineageDepthDefaultTest.java` (+73, ADDED). Parent of
+  `04e22af4` == `c7f14fc5` == current origin/main.
+
+### Acceptance criteria (the 17 contributor criteria)
+1. Code-after-plan — PASS (GATE-1 2026-06-22; code in Phase D). 2. Reproduction logged — PASS (live 2026-06-22:
+   unset→500, depth=1→404 control). 3. Diff bounded — PASS (2 files). 4. Unit injects failing condition — PASS
+   (`LineageDepthDefaultTest` omitted-depth→404-not-500; ADDED; **3/3 in my own build**). 5. Pins re-grounded not deleted
+   — PASS (IT-037 `eaf3ae5`). 6. Docs routed per release-train — PASS (DOC-481 on `release/0.29.0`; both pages read).
+   7. Ontology — DEFERRED-justified (lineage/** dirty w/ unowned P-001 residue; 1-line spec change; endpoint shape
+   unchanged — same accepted bar as CTRIB-028/029/032). 8. Ends `pr-draft` not self-`done` — PASS. 9. ADR — N/A
+   (`adr_required:false` justified). 10. Prompt-injection — PASS (**G-C8 re-verified live: no agent-directed
+   instructions in #1758**). 11. Definition of Done — PASS (see Regression). 12. Milestone — PASS (**re-verified live:
+   0.29.0 open + semver, due 2026-06-27**). 13. Design-before-build — PASS (reuse/ADR/impact/PO-SRE in the plan).
+   14. Principal sufficiency — PASS (spec-only, ZERO production-Java delta, patch-coverage vacuously met, no control lost;
+   confirmed by the full regression). 15. Private-advisory — N/A (public issue). 16. Test-change integrity (G-C15) —
+   PASS (IT-037, below). 17. Change-request product analysis (G-C16) — PASS (Defect 2 RBAC = expected-behaviour w/
+   ODD-authz-doc + writes-only-SECURITY_RULES evidence; Defect 1a default-vs-400 critiqued; Defect 1b deferred to
+   PLT-042/REFACTOR-202).
+
+### Quality Bar
+- Gate 1 — PASS (3-dot diff = 2 files; no parallel content) via `git diff origin/main...04e22af4`.
+- Gate 2 — N/A (no alias in the code diff). Gate 3 — PASS (the doc preserves the @Max/unclamped/cycle-guard + RBAC/
+  DISABLED admonitions; only the unset→500 half is flipped) via reading both train pages. Gate 4 — PASS (footer
+  `Consumer-read:` cites DataEntityController:257-274 / LineageServiceImpl:88-91 / ControllerAdvice:94-99 / generated
+  DataEntityApi:974,1236 / constants.ts:74-84 — match the call chain) via `git show`. Gate 5 — N/A (no SDK builder).
+- Gate 6 — PASS (the default-1 code path documented; doc diff `71f3e53` accurate) via reading the diff. Gate 7 — N/A
+  (code PR; doc layout/cross-links intact on the train). Gate 8 — PENDING-RELEASE (DOC-481, 0.29.0): the doc rides
+  `release/0.29.0` (`71f3e53`, 2 files, verified on the train); live-site Gate 8 scheduled at the 0.29.0 release gate;
+  the code PR has no live surface. Gate 9 — PASS (`Sources:` → issue #1758 + openapi.yaml + codegen-verified-locally +
+  live repro; the spec `default:1` → generated `@RequestParam(defaultValue="1")` confirmed by the generated cite + the
+  green unit suite). Gate 10 — N/A (code diff; doc homed on the 2 lineage pages). Gate 11 — PASS (train lines use
+  operator language — "server-side default", "#1758", version-gating; no workspace-internal terms).
+- **G-C15 (changed-test) — PASS.** IT-037 `lineage-depth-boundary.spec.ts` re-grounded (`eaf3ae5`): the GREEN @pins of
+  unset→500 flipped to assert unset→**200**; (1) new expected traces to an INDEPENDENT SoT — the api-reference "Unset
+  returns the platform's default depth" — not the system's output; (2) matcher not weakened
+  (`.toBe(500)`→`.toBe(200)`; nothing skipped/deleted); (3) **RED-on-ref:main SURVIVES** — the base advance
+  `4028b4a6→c7f14fc5` touches ZERO lineage code (empty diff), and `c7f14fc5`'s openapi `lineage_depth` still has no
+  `default:` + `getLineage(long,int)` is still primitive, so the unset→500 bug is structurally present on current main
+  (first review's empirical RED measurement on byte-identical lineage code transfers). IT-037 protocol doc updated to match.
+
+### Regression (Step 3 — FULL suites, the reviewer's OWN run, both buckets)
+- **Unit (own run, exact reviewed commit `04e22af4`)**: `scripts/run-platform-tests.sh` → **BUILD SUCCESSFUL 6m11s**;
+  JUnit XML aggregate **144 suites / 595 tests / 0 failures / 0 errors / 0 skipped**; checkstyleMain+Test clean;
+  `LineageDepthDefaultTest` **3/3**. (595 vs implement's 593-on-`ca38fd0e` = the +2 unit tests from #1802 now in the
+  `c7f14fc5` base — the expected base-advance delta; closes the implement-ran-on-`ca38fd0e` SHA gap.)
+- **Integration (own run, ONE fresh reviewer SUT built from `04e22af4`, digest `sha256:698f4a02…`, flock-serialized,
+  torn down)** — independently reproduces the implementer's results:
+
+  | Suite | Reviewer's own run | Verdict |
+  |---|---|---|
+  | feature-complete | **309 passed / 2 failed** (7.2m) | GREEN-FOR-CHANGE |
+  | known-bugs | **3 failed / 0 passed** | expected-RED, 0 unexpected-green |
+  | multi-stack | **9 passed / 0 failed** (3.0m) | GREEN |
+  | ingestion-e2e | **6 passed / 0 failed** (58.3s) | GREEN |
+
+  - **IT-037 lineage-depth-boundary GREEN in-suite**: `:32` explicit→200, `:38` **UNSET→200 ("#1758 fixed")** — the
+    fix proven on the reviewer's own running SUT, not the diff.
+  - **The 2 feature-complete failures are NOT #1758's**: `confirmation-dialog-thunk-arm.spec.ts:32` (datasource delete)
+    + `:91` (term delete) = **CTRIB-031's F-031/PLT-233+234 unmerged-fix tests** (CTRIB-031 `blocked`, its `.tsx` fix
+    `a2a71af5` not in main; verified via `ba44f06`/`e440cf4` git provenance). They fail on plain main too → **delta-0**
+    (a lineage_depth spec default cannot affect a deletion-confirmation Redux thunk).
+  - **known-bugs 3 = the tracked known bugs** (IT-007 attachment LOCAL-durability LSN-001/PLT-086, IT-006 error-boundary
+    TEST-GAP-1013/F-042, IT-004 quality-dashboard PLT-052) — all stayed RED, none lineage-related.
+  - Run-logs filled with runner + counts + SUT-source-SHA: `integration-tests/run-log/2026-06-23-{feature-complete,
+    known-bugs,multi-stack,ingestion-e2e}.md` (the `698f4a02` entries).
+
+### Cross-stream observations (NOT CTRIB-030 blockers — tracked elsewhere; not re-logged)
+- **suites.yaml feature-complete is missing IT-139** (CTRIB-028's term-linked-columns / F-153 / PLT-058), orphaned by
+  CTRIB-031's IT-139→IT-141 renumber. **Owned + tracked in CTRIB-031 (`blocked`)** — its fix re-adds IT-139. Delta-0 to
+  #1758 (term-linked-columns is disjoint from lineage_depth; cannot mask a lineage regression). CTRIB-030 ran exactly
+  what the shared suites.yaml currently defines; not a CTRIB-030 defect. Flagged for awareness only.
+- **PR #1800 is non-draft + maintainer-pre-approved** — a minor deviation from the G-C4 "open as draft" signal, but the
+  human drove it (un-draft + approve = the maintainer engaging GATE-2, ready to merge once this /review passes). The
+  structural merge guarantee (branch protection + bot-cannot-self-approve) is intact.
+
+- **Outbound URL sweep**: code PR has no outbound URLs in the diff; the train pages' cross-links are tree-relative and
+  resolve; DOC-481 holds the 2 live `docs.opendatadiscovery.org` URLs for the release-gate Gate-8 check.
+- **Banned-phrase check**: none used.
+- **Navigation**: consistent — no lineage controller/service pointer in `navigation/`; the 1-line spec + a test move no code location.
+- **Upstream issues logged**: none.
+- **Doc-product editorial audit** (`playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: scoped to the lineage cluster — `developer-guides/api-reference/lineage.md` +
+    `data-lineage/data-objects.md` read end-to-end (the pages this change touches). Whole-tree audit deferred per the
+    contributor-code-item precedent (CTRIB-028/032).
+  - **Findings**: none surfaced this run — the default-1 update is internally consistent across both pages, correctly
+    version-gated ("Before 0.29.0… fixed — #1758"), preserves the still-valid @Max/unclamped/cycle-guard + RBAC/DISABLED
+    caveats, and the cross-links resolve.
+- **lineage/** **handling (O10 route-around)**: the confirmation run's P-001 probe drifted `lineage/**`
+  (feature-flows.yaml + 2 understanding/*.md, intermingled with the pre-existing unowned P-001 residue). NOT committed
+  (this review commits explicit paths only — no `lineage/**`) and NOT blanket-`git checkout`-ed (O10: do not sweep
+  another activity's unowned uncommitted work). The drift stays for the probe-run owner / next session to reconcile.
+  This review commits: this verdict + status flip · `state/PROGRESS.md` · `state/active-streams.yaml` · the 4 reviewer
+  run-log entries.
+
+### Notes (every load-bearing claim VERIFIED)
+- The fix is minimal, contract-as-SoT, correct: VERIFIED via the openapi diff + the generated `@RequestParam(
+  defaultValue="1")` cite + the green 595/0 unit suite + IT-037 unset→200 on the running SUT.
+- Defect 2 (lineage RBAC) classified expected-behaviour: VERIFIED via ODD's published authorization doc (reads granted
+  to every authenticated user by design) + the code (every SECURITY_RULES entry is a write).
+- The reviewer's full e2e regression independently reproduces the implementer's green-for-change on a fresh SUT
+  (different digest 698f4a02 vs 74b8a80e, same source 04e22af4): VERIFIED via my own `run-regression.sh ctrib030` run.
+- Minor (non-blocking): the item frontmatter notes the milestone "due 2026-06-22"; the live milestone due is 2026-06-27
+  — immaterial (the milestone is open + semver; G-C11 satisfied).

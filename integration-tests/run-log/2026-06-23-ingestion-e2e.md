@@ -40,3 +40,15 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-23 — suite/protocol: ingestion-e2e
+- runner: AI-assisted Claude Opus 4.8 (review-ctrib030-2 — reviewer's OWN confirmation regression on SUT digest 698f4a02 ← source 04e22af4; separate /review session)
+- result: 6 passed / 0 failed — GREEN (IT-128 relationships-ingestion-pipeline). Ingestion-grade pipeline stands.
+- odd-platform SUT source: 04e22af4 (current origin/main c7f14fc5 + the #1758 spec-only fix; reviewer's own working-tree build via run-regression.sh ODD_SUT=working). [the auto 'working-tree HEAD' line, if present, is run-suite.sh reading the default ../odd-platform checkout, NOT this per-stream worktree — the SUT digest is the authority.]
+- odd-platform working-tree HEAD: fd71eb3d (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib030  (image odd-platform:odd-team-sut-ctrib030, digest sha256:698f4a02755a7b1c7ef9e8c96678185cb6c5f9fe1f5eff58bc03b852a411a143)
+- protocols: IT-128
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

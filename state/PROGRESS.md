@@ -4577,3 +4577,34 @@ P-001 residue — O10). Editorial full-tree audit DEFERRED to the re-review (sta
 Committed (explicit paths): `contributor/CTRIB-031.md` (verdict + status flip) · `state/active-streams.yaml`
 (ctrib031 → blocked + `review-ctrib031-2`) · this record. Full verdict: `contributor/CTRIB-031.md`
 "## Review (2026-06-23, session 2 — rework re-review)".
+
+### 2026-06-23 — CTRIB-031 REWORK #2 (maintainer-directed: "fix the suites.yaml orphan and re-run") → `blocked` → `pr-draft`
+
+**(a) Orphan fixed.** `IT-139` (CTRIB-028's term-linked-columns-pagination / F-153 / PLT-058 / #1754-D4) restored to
+`suites.yaml` `feature-complete` alongside `IT-141` (the renumber had RENAMED the slot instead of splitting it).
+ui-e2e unchanged (term-linked-columns is feature-complete-only; the thunk-arm correctly stays at IT-141). Verified:
+`--list` shows both, the dry-run resolves both specs, each id globs uniquely. Committed `061e09e`.
+
+**(b) Owed FULL confirmation regression — RAN GREEN-for-CTRIB-031** on the CACHED fix SUT
+`odd-platform:odd-team-sut-ctrib031` (digest `56f54a05`, no rebuild — the suites.yaml fix doesn't change the SUT),
+flock-serialized (the flock was free — ctrib030's regression had completed), isolated stream ctrib031 :18130/:15482:
+
+- **feature-complete: 311 passed / 1 failed** (api P-001 PASS). 312 total — the +1 vs the pre-renumber 311 is the
+  RESTORED IT-139 term-linked-columns, which **PASSED** (CTRIB-028's guard runs+passes again). **IT-141 thunk-arm
+  PASSED both arms** (PLT-233 datasource no-close + PLT-234 term no-navigate). The single failure = **IT-037
+  `lineage-depth-boundary.spec.ts`** ("UNSET lineage_depth → 200 not 500 — #1758 fixed") = **CTRIB-030's**
+  fix-assertion (re-grounded `eaf3ae5`, G-C15); #1758/CTRIB-030 is review-ready/**UNMERGED** → expected-RED on a
+  pre-#1758 SUT (identical on the fd71eb3d baseline) — **NOT a CTRIB-031 regression** (FE thunk-arm can't affect
+  lineage depth). Delta vs main = the thunk-arm flips FAIL→PASS; IT-037 fails on both.
+- **known-bugs: 3 failed / 0 passed = the 3 expected RED pins** (IT-004/006/007), 0 unexpected GREEN.
+- multi-stack + ingestion-e2e = maintainer-approved FE-only skip.
+
+Counts recorded in `run-log/2026-06-23-{feature-complete,known-bugs}.md` (annotated — **finding (b) closed** for
+these runs). The probe's `lineage/**` drift (api P-001 rail) was reverted (`git checkout -- lineage/…`), not
+committed; the unowned P-001 residue stays untracked (O10). Flock + isolated stack released/torn down.
+
+**Status `blocked` → `pr-draft`.** Both Rework #2 deliverables done; the `.tsx` fix was already verified CORRECT
+(review session 1). A FRESH `/review` (separate session — this one did the implement-side suites.yaml fix) owns the
+final `pr-draft → review-ready` flip (a light confirm + the deferred full-tree editorial audit); human GATE-2 merges
+PR #1801. Committed (explicit paths): `integration-tests/suites.yaml` + `contributor/CTRIB-031.md` (`061e09e`) ·
+the 2 run-log annotations · `contributor/CTRIB-031.md` (results + status) · `state/active-streams.yaml` · this record.

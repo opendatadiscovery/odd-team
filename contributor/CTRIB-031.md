@@ -6,7 +6,7 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: in-progress          # 2026-06-23 REWORK #2 (maintainer-directed: "fix the suites.yaml orphan and re-run"). suites.yaml fix DONE — IT-139 (term-linked-columns) RESTORED to feature-complete alongside IT-141 (verified: --list shows both; dry-run resolves both specs; each id globs uniquely). Owed FULL confirmation regression (feature-complete + known-bugs on cached SUT 56f54a05; multi-stack+ingestion-e2e = maintainer-approved FE-only skip) flock-queued behind ctrib030 → RUNNING. → pr-draft on green. See "## Rework #2 (2026-06-23)" below. ─── PRIOR: RE-REVIEW #2 REJECTED → blocked on the suite orphan (the 1st-bounce renumber RENAMED instead of SPLIT the feature-complete IT-139 slot); the .tsx fix is CORRECT + byte-unchanged (a2a71af5), IT-141 RED→GREEN solid. 1st /review REJECTED on the IT-139 id collision. ─── BOUNCE HISTORY: /review REJECTED → blocked; the blocker was IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
+status: pr-draft             # 2026-06-23 REWORK #2 DONE (maintainer-directed: "fix the suites.yaml orphan and re-run"). (a) suites.yaml fix DONE — IT-139 (term-linked-columns) RESTORED to feature-complete alongside IT-141 (verified: --list + dry-run + unique globs). (b) Owed FULL confirmation regression RAN GREEN-for-CTRIB-031 on cached SUT 56f54a05 (counts in run-logs, finding (b) closed): feature-complete 311 pass / 1 fail = IT-037 lineage-depth-boundary (CTRIB-030's UNMERGED #1758 fix-assertion, re-grounded eaf3ae5 — expected-RED on a pre-#1758 SUT, NOT a CTRIB-031 regression); IT-141 thunk-arm PASS both arms; restored IT-139 term-linked-columns PASS; known-bugs 3-RED-expected / 0-unexpected-green. multi-stack+ingestion-e2e = maintainer-approved FE-only skip. A FRESH /review (separate session — this one did the implement-side suites.yaml fix) flips pr-draft→review-ready (light confirm + the deferred full-tree editorial audit); human GATE-2 merges. See "## Rework #2 (2026-06-23)" below. ─── PRIOR: RE-REVIEW #2 REJECTED → blocked on the suite orphan; 1st /review REJECTED on the IT-139 id collision; the .tsx fix is CORRECT + byte-unchanged (a2a71af5). ─── BOUNCE HISTORY: /review REJECTED → blocked; the blocker was IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
 # Prior hand-off note (pre-review, retained): Phase D COMPLETE — Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311 (ledger), known-bugs 3-RED-as-expected (ledger), docs read (none), ontology committed, pixel-reviewed; multi-stack + ingestion-e2e maintainer-approved FE-only skip; branch PUSHED + scope comment + DRAFT PR #1801. NB the implementer set status straight to `review-ready`; contributor items hand off at `pr-draft` (review flips pr-draft→review-ready on PASS).
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
@@ -653,7 +653,35 @@ rebuild.
 
 ### (b) [owed gate] FULL confirmation regression — feature-complete + known-bugs on cached 56f54a05
 
-Running flock-serialized (queued behind ctrib030's in-flight regression — G-C2 one-at-a-time) against the cached
-fix image (no rebuild; the suites.yaml fix doesn't change the SUT). multi-stack + ingestion-e2e remain the
-maintainer-approved FE-only skip. Counts to be recorded in the run-logs (closing finding (b)). Results below once
-the run completes.
+Ran flock-serialized (the flock was free — ctrib030's regression had just completed) against the cached fix image
+`odd-platform:odd-team-sut-ctrib031` (digest `56f54a05`, no rebuild — the suites.yaml fix doesn't change the SUT),
+isolated stream ctrib031 on :18130/:15482. multi-stack + ingestion-e2e remain the maintainer-approved FE-only skip.
+
+**RESULT — GREEN-for-CTRIB-031** (counts recorded in the run-logs, closing finding (b)):
+
+- **feature-complete: 311 passed / 1 failed** (api P-001 PASS). 312 total — the **+1 vs the pre-renumber 311 is the
+  RESTORED IT-139 term-linked-columns, which PASSED** (`term-linked-columns-pagination.spec.ts:68` — 60 columns
+  shown; CTRIB-028's guard runs again and is green). **IT-141 thunk-arm PASSED both arms** (datasource 500 keeps the
+  dialog open — PLT-233; term 500 does NOT navigate away — PLT-234). The **single failure is IT-037
+  `lineage-depth-boundary.spec.ts`** ("UNSET lineage_depth → 200 not 500 — #1758 fixed") — **CTRIB-030's**
+  fix-assertion, re-grounded at `eaf3ae5` (G-C15); #1758 / CTRIB-030 is review-ready / **UNMERGED**, so it is
+  **expected-RED on this pre-#1758 SUT** (it fails identically on the fd71eb3d baseline) — **NOT a CTRIB-031
+  regression** (an FE thunk-arm change cannot affect lineage depth). Delta vs main = the thunk-arm flips FAIL→PASS
+  (the intended fix); IT-037 fails on both, unrelated.
+- **known-bugs: 3 failed / 0 passed = the 3 EXPECTED RED pins, 0 unexpected GREEN** (IT-007 attachment-durability /
+  LSN-001-PLT-086, IT-006 error-boundary / TEST-GAP-1013-F-042, IT-004 quality-dashboard / PLT-052). The fix
+  flipped no known-bug pin.
+
+Run-logs: `run-log/2026-06-23-feature-complete.md` + `run-log/2026-06-23-known-bugs.md` (each annotated with the
+counts + runner + SUT digest + the IT-037-is-CTRIB-030 explanation). The probe runtime's `lineage/**` drift from
+the api P-001 rail was reverted (`git checkout -- lineage/…`), not committed (re-enrichment is /implement's job, not
+a test-run side-effect; the unowned P-001 residue stays untracked — O10).
+
+### Status
+
+`in-progress` → **`pr-draft`**. Both Rework #2 deliverables are done: (a) the suites.yaml orphan is fixed +
+verified, and (b) the owed FULL confirmation regression ran GREEN-for-CTRIB-031 with counts. The `.tsx` fix was
+already independently verified CORRECT (review session 1). A **fresh `/review`** (separate session — this session did
+the implement-side suites.yaml fix, so it cannot self-flip to `review-ready`) owns the final `pr-draft → review-ready`
+flip: a light confirm (the suites.yaml one-liner + the recorded regression results) + the deferred full-tree
+editorial audit. Then human GATE-2 (approve + merge PR #1801) owns `done`/merge.

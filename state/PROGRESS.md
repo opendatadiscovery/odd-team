@@ -4441,3 +4441,39 @@ Maintainer parallel-aware directive → **created `state/active-streams.yaml`** 
 and the reviewer so all parallel parties are mutually visible, with every shared resource attributed to its
 true current holder (resolving the awareness asymmetry the maintainer named). Skill-wiring of read/register/
 clear into `/contribute` + `/review` is the proposed next step (not yet done).
+
+
+## CTRIB-030 (#1758) /review — REJECTED → bounce → blocked (2026-06-23)
+
+`/review PR 1800` (parallel-aware, separate session). **Verdict: REJECTED — 2-minute precondition bounce.**
+`pr-draft → blocked`. The fix is **sound**; the bounce is scoped entirely to the FULL-regression *evidence*.
+
+**What's good (do not change on rework):** spec-only fix `openapi.yaml default:1` on `lineage_depth` (both ops,
+alongside `minimum:1`); exemplary `Consumer-read:`/`Sources:` footer on `1cff8a59`; correct G-C15 re-grounding of
+IT-037 (GREEN @pins unset→500 → assert unset→200, verified still-RED on `ref:main`, matcher not weakened); clean
+**three-dot** PR diff (`git diff origin/main...HEAD` = 2 files: openapi.yaml + LineageDepthDefaultTest.java). The
+alarming two-dot diff (appears to revert CTRIB-028) is **base-skew only** (merge-base `4028b4a6`); live PR #1800
+(WebFetched: draft, base `main`, head `1cff8a59`, Closes #1758) shows just the lineage change. Scope correct
+(Defect 1a only; 1b→PLT-042/REFACTOR-202; Defect 2 = expected-behaviour). Gates 1/4/9 + G-C15 PASS.
+
+**Why blocked (the regression DoD, cited):**
+1. `run-log/2026-06-23-multi-stack.md` = **e2e:FAIL** on image `d03a378e` — multi-stack is normally green (5/5 on
+   2026-06-22), and its protocols (IT-008..012,123,124) are NOT IT-037, so this is neither the lineage pin-flip nor
+   missing-028 work. Commit `41fa303`'s "multi-stack green" is contradicted by the run-log.
+2. No single coherent full-green SUT: the 4 buckets ran on 4 different images (feature-complete on 68521cc6/8f4967c9
+   both FAIL; IT-037 on e5a55b74 PASS; multi-stack/known-bugs/ingestion-e2e on d03a378e FAIL/FAIL/PASS).
+3. feature-complete's ctrib030 runs (FAIL) pre-date the IT-037 re-grounding (`eaf3ae5` @11:26 > fc @11:19) → "303/8
+   green-for-change" rests on a stale run; never re-run green after re-grounding.
+4. The "7=TST-042 flake" attribution is unsafe for the 5 term-* failures — the SUT (base `4028b4a6`, 028 reverted)
+   is missing the merged 028 Term Detail hardening those specs exercise.
+5. Run-logs are unfilled skeletons (no counts/runner/SUT-source-SHA); no run-log provenance-tied to `1cff8a59`.
+6. The ledger's own "Regression (G-C2)" still reads "known-bugs · multi-stack · ingestion-e2e: running … folded on
+   completion" — never folded. Live: ctrib030 e2e pid 985474 DEAD + stack DOWN (run completed; not in-flight).
+
+**Rework (one pass):** rebase `contrib/CTRIB-030-lineage-depth-npe` onto `origin/main fd71eb3d` → rebuild ONE SUT →
+run the FULL set on it (multi-stack green; feature-complete green-for-change with counts; known-bugs 3-RED/0-green;
+ingestion-e2e green) → record results with counts+runner+SUT-SHA and fold into the ledger → re-submit `pr-draft`.
+
+**Editorial audit** deferred to the re-review (2-minute-bounce precedent, CTRIB-028). **lineage/** left untouched**
+(unowned P-001 residue, O10; this review ran no suites → no ontology drift). Committed: CTRIB-030.md verdict +
+active-streams `review-ctrib030` + this record. Full verdict: `contributor/CTRIB-030.md` "## Review (2026-06-23)".

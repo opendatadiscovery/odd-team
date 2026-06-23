@@ -1,10 +1,10 @@
 ---
 id: IT-037
-title: "Lineage depth boundary — unset lineage_depth 500s (NPE) instead of the documented default depth"
+title: "Lineage depth boundary — unset lineage_depth returns the default-depth graph (200), not a 500 (#1758 fixed)"
 gates:
   validates: [F-055]
   enforces: []
-  regresses: []
+  regresses: [PLT-100]   # #1758 — the unset-depth NPE→500 fix this IT now guards
 test_class: integration
 stack: odd-minimal
 automation: "e2e:lineage-depth-boundary.spec.ts"
@@ -16,10 +16,12 @@ status: ready
 
 ## 1. What this checks
 
-The downstream lineage endpoint takes an OPTIONAL `lineage_depth`. The live api-reference doc says
-"Unset returns the platform's default depth"; the impl binds the param as a primitive `int`, so a
-null autoboxes → NPE → **HTTP 500**. The documented unset contract is unimplementable. **Operator
-consequence:** the lineage canvas / an API caller that omits depth gets a 500, not a default graph.
+The downstream lineage endpoint takes an OPTIONAL `lineage_depth`. The api-reference doc says
+"Unset returns the platform's default depth". This was unimplementable until **#1758**: the impl bound
+the param as a primitive `int`, so a null autoboxed → NPE → **HTTP 500**. **FIXED in #1758** by
+declaring `default: 1` on the parameter in the OpenAPI spec — an omitted `lineage_depth` now binds to 1
+and returns the depth-1 graph (200), matching the documented default. This IT regresses the fixed
+contract (it was a GREEN @pins of the 500 per LSN-029 until the fix landed).
 
 ## 2. Preparation
 
@@ -36,16 +38,16 @@ consequence:** the lineage canvas / an API caller that omits depth gets a 500, n
 
 1. Ingest one entity `E`; resolve its id.
 2. `GET /api/dataentities/{id}/lineage/downstream?lineage_depth=1` → **200** (explicit depth works).
-3. `GET /api/dataentities/{id}/lineage/downstream` (NO depth) → **500** (the pinned bug).
+3. `GET /api/dataentities/{id}/lineage/downstream` (NO depth) → **200** (the contract's default depth — #1758 fixed; was a 500 NPE on base).
 
 **Automated rail:** `ODD_STACK_EXTERNAL=1 integration-tests/run-suite.sh IT-037`.
 
 ## 5. Assertions
 
-- **PASS (today)** when: explicit depth → 200; unset depth → 500 (the bug reproduced — GREEN
-  characterization pin per LSN-029).
-- **FLIPS / FAIL** when: unset depth returns 200 — the fix landed (Integer + default, or required:true).
-  At that point invert the pin to assert the default-depth result.
+- **PASS** when: explicit depth → 200; unset depth → **200** (the documented default-depth graph —
+  #1758 fixed). Re-grounded RED→GREEN per G-C15/LSN-029 when the fix landed (`default: 1` in the spec).
+- **RED on `ref:main`** (the surviving RED proof): unset depth → 500 (the NPE) ≠ 200 — so this still
+  fails on the pre-fix base, proving it regresses the fix and was not neutered.
 
 ## 6. Result log
 

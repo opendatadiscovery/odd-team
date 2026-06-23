@@ -8,11 +8,13 @@ import { ingestEntities, tableEntity } from '../helpers/ingest';
  * Protocol: integration-tests/protocols/IT-037-lineage-depth-boundary.md
  * Gates: validates F-055; pins DOC-GAP-089 / TEST-GAP-279 (unset-depth contract break).
  *
- * The downstream/upstream lineage endpoints take an OPTIONAL lineage_depth. The live api-reference
- * doc states "Unset returns the platform's default depth", but the impl binds the param as a
- * primitive int → null autoboxing throws → HTTP 500. So the documented unset contract is
- * unimplementable. Operator consequence: a caller (or the lineage canvas) that omits the depth gets
- * a 500, not a default graph. Confirmed live on this image (unset → 500, depth=1 → 200).
+ * The downstream/upstream lineage endpoints take an OPTIONAL lineage_depth. The api-reference doc
+ * states "Unset returns the platform's default depth". This was unimplementable until #1758: the impl
+ * bound the param as a primitive int → null autoboxing threw → HTTP 500. FIXED in #1758 by declaring
+ * `default: 1` on the parameter in the OpenAPI spec, so an omitted lineage_depth binds to 1 and the
+ * existing entity's depth-1 graph returns 200 — matching the documented default. This spec now
+ * regresses the FIXED contract (unset → 200, depth=1 → 200); it was a GREEN @pins of the 500 (LSN-029)
+ * until the fix landed.
  */
 const DS_ID = 2037;
 const DS_ODDRN = '//e2e-it037/datasource';
@@ -33,14 +35,15 @@ test.describe('F-055 Lineage Depth Boundary Contract', () => {
     expect(res.status(), 'an explicit depth must return the graph (200)').toBe(200);
   });
 
-  test('PINS F-055/DOC-GAP-089: UNSET lineage_depth 500s (NPE) instead of the documented default', async ({
+  test('UNSET lineage_depth returns the default-depth graph (200), not a 500 — #1758 fixed', async ({
     request,
   }) => {
     const id = await ingestOne();
-    // GREEN characterization pin (LSN-029) of the broken contract: the doc promises a default-depth
-    // result on omission, but the primitive-int param NPEs → 500. Flip this to expect 200 the moment
-    // the fix lands (Integer + a sensible default, OR spec change to required:true).
+    // Re-grounded RED→GREEN on the #1758 fix (G-C15 / LSN-029): the doc promises a default-depth result
+    // on omission; the fix declares `default: 1` in the OpenAPI spec, so an omitted lineage_depth binds
+    // to 1 and the existing entity's depth-1 graph returns 200 (was a primitive-int NPE → 500 on base).
+    // Still goes RED on ref:main (unset → 500 ≠ 200); green only on the fix.
     const res = await request.get(`/api/dataentities/${id}/lineage/downstream`);
-    expect(res.status(), 'unset lineage_depth currently 500s — the bug this pins').toBe(500);
+    expect(res.status(), 'unset lineage_depth returns the default-depth graph (200) — #1758 fixed').toBe(200);
   });
 });

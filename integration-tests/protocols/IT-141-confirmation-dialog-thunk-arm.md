@@ -1,5 +1,5 @@
 ---
-id: IT-139
+id: IT-141
 title: "A failed destructive confirm on a redux-thunk consumer must not close-as-success / navigate away"
 gates:
   validates: [F-031]
@@ -12,7 +12,7 @@ plan_ref: "CTRIB-031"
 status: ready
 ---
 
-# IT-139 — a failed destructive confirm on a redux-thunk consumer must not close-as-success
+# IT-141 — a failed destructive confirm on a redux-thunk consumer must not close-as-success
 
 > A protocol is the **source of truth** — a human can execute every step below WITHOUT any tooling. The
 > `automation:` e2e rail runs the same steps and writes the same result; it never replaces the protocol.
@@ -72,8 +72,8 @@ behaviour under test is pure front-end error handling, independent of any source
 2. Open the header **kebab** menu, click **Delete**, then the **Delete term** confirm button.
 3. The intercepted DELETE returns 500; observe the URL + the dialog.
 
-**Automated rail**: `integration-tests/run-suite.sh IT-139`
-(RED proof: `ODD_SUT=ref:main integration-tests/run-suite.sh IT-139`).
+**Automated rail**: `integration-tests/run-suite.sh IT-141`
+(RED proof: `ODD_SUT=ref:main integration-tests/run-suite.sh IT-141`).
 
 ## 5. What it checks — assertions
 
@@ -85,7 +85,7 @@ behaviour under test is pure front-end error handling, independent of any source
 
 ## 6. Result log
 
-Appends to `integration-tests/run-log/{YYYY-MM-DD}-IT-139.md` (date · SUT digest · runner · outcome ·
+Appends to `integration-tests/run-log/{YYYY-MM-DD}-IT-141.md` (date · SUT digest · runner · outcome ·
 evidence · notes).
 
 ## Cross-references

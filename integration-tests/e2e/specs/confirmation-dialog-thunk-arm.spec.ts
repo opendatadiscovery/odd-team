@@ -2,10 +2,10 @@ import { test, expect } from '@playwright/test';
 import { seedDataSource, seedTermWithDefinition } from '../helpers/db';
 
 /**
- * IT-139 — a refused destructive confirm on a redux-THUNK consumer must NOT close-as-success / navigate
+ * IT-141 — a refused destructive confirm on a redux-THUNK consumer must NOT close-as-success / navigate
  * away as if it succeeded (#1766 ARM-2 / PLT-233 + PLT-234 / CTRIB-031).
  *
- * Protocol: integration-tests/protocols/IT-139-confirmation-dialog-thunk-arm.md
+ * Protocol: integration-tests/protocols/IT-141-confirmation-dialog-thunk-arm.md
  * Gates: validates F-031 (data source management — a thunk ConfirmationDialog consumer) ·
  *        regresses PLT-233 (thunk-arm silent close-as-success) + PLT-234 (term-delete navigate-away).
  *

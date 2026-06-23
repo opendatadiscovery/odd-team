@@ -23,7 +23,7 @@ The inline dialog message is the generic `An error occurred` (the unwrapped `rej
 - `TermDetails.test.tsx` — a rejected `deleteTerm` does **not** call `navigate` (PLT-234); a resolved delete navigates to term-search.
 - Both proven RED on a reverted `.unwrap()` (bare dispatch) and GREEN on the fix; the real store + thunk + `.unwrap()` are exercised, only the API is mocked.
 
-**Integration (odd-team `IT-139`, browser e2e, RED→GREEN proven):**
+**Integration (odd-team `IT-141`, browser e2e, RED→GREEN proven):**
 - `confirmation-dialog-thunk-arm.spec.ts` route-intercepts `DELETE /api/datasources/{id}` and `DELETE /api/terms/{id}` to force a 500. **GREEN** on the working-tree build: the datasource dialog stays open, the term delete stays on `/terms/{id}`. **RED** on `ref:main`: the datasource dialog closes-as-success, the term navigates to `…/termsearch/…`.
 
 **Full integration regression (working-tree build):** `feature-complete` **311/311 GREEN**; `known-bugs` 3-RED-as-expected (no known-bug pin flipped). multi-stack + ingestion-e2e test backend HA/storage/ingestion (the backend jar is byte-identical to `main` here — only the bundled SPA changed), so they are unaffected by this FE-only change.

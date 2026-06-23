@@ -6,7 +6,7 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: blocked              # 2026-06-23 /review (separate session) REJECTED → blocked. SINGLE blocker: IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
+status: pr-draft             # 2026-06-23 REWORK DONE (maintainer-directed): IT renumbered IT-139→IT-141 (collision RESOLVED — run-suite.sh IT-139 now uniquely globs CTRIB-028's term-linked-columns; IT-141 globs this one) + RED→GREEN RE-PROVEN under IT-141 on the two CACHED images (GREEN 56f54a05 2/2; RED 8615e9ed 2/2-fail as-expected — no rebuild). .tsx fix byte-unchanged (branch @ a2a71af5; PR #1801 unaffected). Hand-off = pr-draft; a FRESH /review (separate session) confirms pr-draft→review-ready, then human GATE-2 merge. See "## Rework (2026-06-23)" below. ─── BOUNCE HISTORY: /review REJECTED → blocked; the blocker was IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
 # Prior hand-off note (pre-review, retained): Phase D COMPLETE — Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311 (ledger), known-bugs 3-RED-as-expected (ledger), docs read (none), ontology committed, pixel-reviewed; multi-stack + ingestion-e2e maintainer-approved FE-only skip; branch PUSHED + scope comment + DRAFT PR #1801. NB the implementer set status straight to `review-ready`; contributor items hand off at `pr-draft` (review flips pr-draft→review-ready on PASS).
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
@@ -491,3 +491,26 @@ ledger / "no orphan tests" invariant); a duplicate that shadows another stream's
   drift; the vitest run wrote nothing to the repo.
 - **Committed (explicit paths)**: `contributor/CTRIB-031.md` (verdict + status flip) · `state/active-streams.yaml`
   (ctrib031 → blocked + `review-ctrib031` complete) · `state/PROGRESS.md` (review record) · `backlog/docs/DOC-482.md`.
+
+## Rework (2026-06-23, maintainer-directed — "Renumber the IT to IT-141 and re-run")
+
+The single blocker (the IT-139 id collision) is resolved. The `.tsx` fix is **byte-unchanged** (branch still
+@ `a2a71af5`; PR #1801 unaffected — the IT lives in odd-team, not the odd-platform PR).
+
+### Renumber IT-139 → IT-141 (surgical — CTRIB-028's IT-139 left intact)
+- `git mv protocols/IT-139-confirmation-dialog-thunk-arm.md → IT-141-…` (+ `id: IT-141`, heading, run-suite examples, run-log ref).
+- `git mv run-log/2026-06-23-IT-139.md → 2026-06-23-IT-141.md` (rewritten as a clean authoritative RED→GREEN record).
+- Spec header in `confirmation-dialog-thunk-arm.spec.ts` IT-139→IT-141 (the filename has no id — unchanged).
+- `suites.yaml` — IT-139→IT-141 in both the feature-complete + ui-e2e lists + the comment.
+- lineage gate refs — `F-031.yaml:449` + `F-076.yaml:276` IT-139→IT-141 (the unowned P-001 residue left untouched — O10).
+- `CTRIB-031-pr-body.md` IT-139→IT-141 (local copy; the **live PR #1801 body still reads "IT-139"** — an internal-id-only cosmetic divergence, optional to sync via the App).
+- **Collision resolved**: `run-suite.sh IT-139` now uniquely globs CTRIB-028's `term-linked-columns-pagination`; `IT-141` globs this thunk-arm protocol. CTRIB-028's IT-139 (protocol + spec + refs) untouched.
+- Left as historical (not rewritten): the `## Review` bounce narrative above, the 06-22/06-23 `feature-complete` suite-run snapshots, and the `state/*` verdict records.
+
+### Re-run RED→GREEN under IT-141 (reviewer's own run, two CACHED images — no rebuild)
+- **GREEN** — `ODD_PLATFORM_IMAGE=odd-platform:odd-team-sut-ctrib031` (digest `56f54a05`, the fix): `run-suite.sh IT-141` → **e2e:PASS, 2/2** (datasource dialog stays open + inline error; term delete stays on `/terms/{id}`).
+- **RED** — `ODD_PLATFORM_IMAGE=odd-platform:odd-team-sut-ctrib031base` (digest `8615e9ed`, main/pre-fix): `run-suite.sh IT-141` → **e2e:FAIL, 2/2 as-expected** (term navigated to `…/termsearch/{uuid}` — PLT-234; datasource dialog closed-as-success — PLT-233).
+- Record: `run-log/2026-06-23-IT-141.md` (annotated with runner + counts + evidence — addressing the run-log granularity gap, finding (b), for this IT). Both ephemeral stacks torn down after.
+
+### Status + what remains
+`blocked` → **`pr-draft`** (the contributor hand-off state; fixes the earlier `review-ready` mislabel, finding (c)). Still owed at the **fresh `/review`** (separate session, which flips `pr-draft → review-ready`; then human GATE-2 merge owns `done`): the reviewer's own FULL confirmation regression (feature-complete + known-bugs) with **counts recorded in those run-logs** (finding (b) at the full-regression level — the heavy-e2e flock was held during the bounce; both cached SUT images remain available for a fast re-run).

@@ -4538,3 +4538,40 @@ FULL confirmation regression (feature-complete + known-bugs) with counts in thos
 available for a fast re-run. Committed (explicit paths): the renamed protocol + IT-141 run-log · spec · suites.yaml ·
 F-031/F-076 · CTRIB-031.md (Rework section + status) · CTRIB-031-pr-body.md · active-streams (ctrib031→pr-draft) ·
 this record.
+
+### 2026-06-23 — CTRIB-031 RE-REVIEW #2 (rework re-review, separate session) → REJECTED → `blocked`
+
+The rework's renumber **orphaned CTRIB-028's `IT-139` (term-linked-columns-pagination) from `suites.yaml`** — it
+RENAMED the `feature-complete` `IT-139` slot to `IT-141` (handing it to the thunk-arm) instead of SPLITTING it into
+BOTH `IT-139` (term-linked-columns) + `IT-141` (thunk-arm). CTRIB-028's `#1754`-Defect-4 / F-153 / PLT-058
+regression guard now runs in **no suite**. Same class the 1st review rejected on (a stream's regression test dropped
+from the suite) — the file-glob collision was resolved, but a suite-membership orphan was introduced in its place.
+
+**Proven (not inferred):** `run-suite.sh:64-82` sources the protocol-id list ONLY from `suites.yaml`
+(`mapfile PROTO_IDS < python3(suites[arg]['protocols'])`), then globs each id-in-the-list to a file — a protocol
+file whose id is absent from the list is never iterated. `git show 436b695:…suites.yaml` → `IT-139` was in
+`feature-complete` (CTRIB-028, term-linked-columns, feature-complete-only). `git show e440cf4 -- …suites.yaml` →
+both lists changed `IT-139 → IT-141`, IT-139 never re-added. The ui-e2e `IT-139` was the thunk-arm (added by
+ba44f06) — correctly renamed; the feature-complete `IT-139` was term-linked-columns — wrongly dropped. Live:
+`IT-139` + `term-linked-columns` both absent from `suites.yaml`; the protocol + spec files still exist (one-line
+re-add, no test authoring). The rework's own "uniquely globs CTRIB-028's term-linked-columns" claim is true at the
+file level but never exercised (IT-139 is in no suite).
+
+**What's GOOD (not to redo):** the `.tsx` fix is CORRECT + byte-unchanged (branch @ `a2a71af5`; mechanism re-read;
+scope = the 13 planned files only); IT-141 RED→GREEN solid on the cached images (`56f54a05` GREEN 2/2, `8615e9ed`
+RED 2/2); thunk-arm correctly at IT-141 in both suites; lineage F-031/F-076 refs updated; push-safety intact.
+
+**Rework (one pass):** (a) [BLOCKER] `suites.yaml` `feature-complete.protocols` — add `IT-139` back ALONGSIDE
+`IT-141` (ui-e2e already correct); confirm `run-suite.sh --list feature-complete` shows both + each globs its own
+file. (b) [owed gate + finding (b)] run the FULL confirmation regression on cached SUT `56f54a05` (no rebuild) —
+`feature-complete` (with restored IT-139 + IT-141) GREEN + `known-bugs` 3-RED, with actual COUNTS + runner + SUT-SHA
+in the run-logs (expect count > the stale 311). multi-stack + ingestion-e2e remain the maintainer-approved FE-only
+skip; queue behind ctrib030 for the heavy-e2e flock.
+
+**Review isolation**: read-only — git inspection of `../odd-platform-ctrib031` @ `a2a71af5` + odd-team
+suites.yaml/run-suite.sh/run-logs/history; NO SUT build, NO stack, NO heavy-e2e flock (held by ctrib030 — G-C2),
+NO probe/enrich/lineage write. **lineage/ untouched** (the only `lineage/**` drift is the pre-existing unowned
+P-001 residue — O10). Editorial full-tree audit DEFERRED to the re-review (static bounce); DOC-482 already on disk.
+Committed (explicit paths): `contributor/CTRIB-031.md` (verdict + status flip) · `state/active-streams.yaml`
+(ctrib031 → blocked + `review-ctrib031-2`) · this record. Full verdict: `contributor/CTRIB-031.md`
+"## Review (2026-06-23, session 2 — rework re-review)".

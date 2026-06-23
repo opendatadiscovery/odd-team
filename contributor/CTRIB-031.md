@@ -6,7 +6,7 @@ title: "ConfirmationDialog ARM-2 (redux-thunk): a refused destructive confirm cl
 class: bug
 scope: frontend
 milestone: "0.29.0"          # open + semver (verified via GitHub API) → G-C11 PASSES (no hard stop)
-status: pr-draft             # 2026-06-23 REWORK DONE (maintainer-directed): IT renumbered IT-139→IT-141 (collision RESOLVED — run-suite.sh IT-139 now uniquely globs CTRIB-028's term-linked-columns; IT-141 globs this one) + RED→GREEN RE-PROVEN under IT-141 on the two CACHED images (GREEN 56f54a05 2/2; RED 8615e9ed 2/2-fail as-expected — no rebuild). .tsx fix byte-unchanged (branch @ a2a71af5; PR #1801 unaffected). Hand-off = pr-draft; a FRESH /review (separate session) confirms pr-draft→review-ready, then human GATE-2 merge. See "## Rework (2026-06-23)" below. ─── BOUNCE HISTORY: /review REJECTED → blocked; the blocker was IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
+status: blocked              # 2026-06-23 RE-REVIEW #2 REJECTED → blocked: the rework's renumber RENAMED the feature-complete `IT-139` slot to `IT-141` instead of SPLITTING it, ORPHANING CTRIB-028's IT-139 (term-linked-columns / #1754-D4 / F-153 / PLT-058) from suites.yaml — it now runs in NO suite (run-suite.sh sources ids ONLY from suites.yaml). Same class the 1st review rejected on, incompletely fixed. FIX (one pass): add IT-139 back to suites.yaml feature-complete ALONGSIDE IT-141 (ui-e2e already correct), then run the owed FULL confirmation regression with counts. The .tsx fix is CORRECT + byte-unchanged (a2a71af5); IT-141 RED→GREEN solid. See "## Review (2026-06-23, session 2 — rework re-review)" below. ─── PRIOR: REWORK (1st-bounce fix) renumbered IT-139→IT-141 + re-proved RED→GREEN on cached images; 1st /review REJECTED on the IT-139 id collision. ─── BOUNCE HISTORY: /review REJECTED → blocked; the blocker was IT-139 id COLLISION — CTRIB-031 reused `IT-139`, already taken 21h earlier by CTRIB-028's term-linked-columns-pagination IT (commit 436b695); run-suite.sh:81 `ls IT-139-*.md | head -1` → CTRIB-031's spec (alphabetically first) silently SHADOWS CTRIB-028's F-153/PLT-058 test (no longer runnable by id). CODE + TESTS verified CORRECT (fix mechanism, Gate-4 completeness, unit 4/4 GREEN on the reviewer's own vitest run, IT-139 RED→GREEN corroborated via the committed Playwright artifacts showing genuine bug symptoms, G-C15 clean on the one changed spec). REWORK = renumber the IT to IT-141 + re-run under the new id (the .tsx code needs no change). Full verdict: "## Review (2026-06-23)" below.
 # Prior hand-off note (pre-review, retained): Phase D COMPLETE — Unit RED→GREEN, IT-139 RED→GREEN (both arms), feature-complete 311/311 (ledger), known-bugs 3-RED-as-expected (ledger), docs read (none), ontology committed, pixel-reviewed; multi-stack + ingestion-e2e maintainer-approved FE-only skip; branch PUSHED + scope comment + DRAFT PR #1801. NB the implementer set status straight to `review-ready`; contributor items hand off at `pr-draft` (review flips pr-draft→review-ready on PASS).
 reproduced: >-
   ARM-2 thunk silent-close: CITED from CTRIB-027's same-day LIVE reproduction (2026-06-22, current-main SUT) —
@@ -514,3 +514,119 @@ The single blocker (the IT-139 id collision) is resolved. The `.tsx` fix is **by
 
 ### Status + what remains
 `blocked` → **`pr-draft`** (the contributor hand-off state; fixes the earlier `review-ready` mislabel, finding (c)). Still owed at the **fresh `/review`** (separate session, which flips `pr-draft → review-ready`; then human GATE-2 merge owns `done`): the reviewer's own FULL confirmation regression (feature-complete + known-bugs) with **counts recorded in those run-logs** (finding (b) at the full-regression level — the heavy-e2e flock was held during the bounce; both cached SUT images remain available for a fast re-run).
+
+## Review (2026-06-23, session 2 — rework re-review; separate session, read-only on the repos)
+
+- **Result: REJECTED → `blocked`.** Single blocker: **the rework's renumber ORPHANED CTRIB-028's `IT-139`
+  (term-linked-columns-pagination) from `suites.yaml`.** It RENAMED the `feature-complete` slot `IT-139 → IT-141`
+  (handing it to the thunk-arm) instead of SPLITTING it into BOTH `IT-139` (term-linked-columns) + `IT-141`
+  (thunk-arm). CTRIB-028's `#1754` Defect-4 / F-153 / PLT-058 regression guard now runs in **no suite**. This is
+  the *same class* of failure the 1st review rejected on (a stream's regression test dropped from the suite) —
+  the file-glob collision was resolved, but the suite-membership orphan was introduced in its place.
+- **The `.tsx` fix is CORRECT and needs NO change** (byte-unchanged, branch @ `a2a71af5`). The blocker is purely
+  the odd-team test-wiring regression the rework introduced in `suites.yaml`. The fast path back is one line.
+
+### The blocker — proven (tests-pillar traceability / G-C9 identity, Gate 7)
+
+`run-suite.sh` sources its protocol-id list **exclusively from `suites.yaml`**, then globs each id-in-the-list to
+a file:
+- `run-suite.sh:64-69` — `mapfile -t PROTO_IDS < <(python3 … suites[arg].get('protocols'))` (the ids come from
+  the suite's `protocols:` array, NOT a directory scan).
+- `run-suite.sh:80-82` — `for it in "${PROTO_IDS[@]}"; do f=$(ls "$PROTODIR/$it"-*.md | head -1); [ -z "$f" ] && … skipping`.
+- **Consequence:** a protocol *file* whose id is **not in the suite list** is never iterated. The orphaned file
+  existing on disk is irrelevant.
+
+The renumber did this (`git show e440cf4 -- integration-tests/suites.yaml`):
+- `feature-complete.protocols`: `…, IT-138, IT-139]` → `…, IT-138, IT-141]` (renamed, **IT-139 not re-added**).
+- `ui-e2e.protocols`: `…, IT-138, IT-139]` → `…, IT-138, IT-141]`.
+
+Provenance of the dropped slot — **`IT-139` in `feature-complete` was CTRIB-028's term-linked-columns**, not the
+thunk-arm:
+- `git show 436b695:integration-tests/suites.yaml` → `feature-complete HAS IT-139` (CTRIB-028 added it; the
+  thunk-arm did not yet exist). CTRIB-028 placed it in **`feature-complete` only** (NOT `ui-e2e`).
+- `git show ba44f06 -- …suites.yaml` → CTRIB-031 added `IT-139` to **`ui-e2e`** (comment: "ConfirmationDialog
+  thunk-arm") and reused CTRIB-028's existing `feature-complete` `IT-139` slot via the file glob (the shadow the
+  1st review caught).
+- So the renumber's `ui-e2e` IT-139→IT-141 was **correct** (that slot was the thunk-arm); the `feature-complete`
+  IT-139→IT-141 was **wrong** (that slot was term-linked-columns).
+
+Current live state (verified):
+- `grep -n 'IT-139' integration-tests/suites.yaml` → **absent everywhere**; `grep -n 'term-linked-columns' …` →
+  **absent** (not run via any spec list either — both specs run via protocol `automation:`, confirmed).
+- The files still exist (so the fix is a one-line re-add, no test authoring): `protocols/IT-139-term-linked-columns-pagination.md`
+  + `e2e/specs/term-linked-columns-pagination.spec.ts` (4.6 KB, `automation: e2e:term-linked-columns-pagination.spec.ts`).
+- The rework's own claim — "run-suite.sh IT-139 now uniquely globs CTRIB-028's term-linked-columns" — is true at
+  the *file* level but **never exercised**: `IT-139` is in no suite, so that glob is never invoked.
+
+### What is GOOD (do NOT redo — the fix code is verified)
+
+- **Fix mechanism — re-verified CORRECT (read the diff @ `a2a71af5`):** `.unwrap()` appended to the `onConfirm`
+  dispatch in the 12 thunk consumers (e.g. `DataSourceItem.tsx` `dispatch(deleteDataSource(…)).unwrap()`,
+  `OwnershipDeleteForm.tsx`, `MetadataItem.tsx` `handleDelete` only); `TermDetails.tsx` navigate now gated —
+  `dispatch(deleteTerm({termId:id})).unwrap().then(() => navigate(termsSearchPath(termSearchId)))`. Byte-unchanged
+  from the 1st review's CORRECT verdict; routes the rejected-action through the #1797 `.catch`. **No change owed.**
+- **G-C5 bounded scope — PASS:** the odd-platform 3-dot diff is exactly the planned 15 files (13 `.tsx` consumers
+  + `TermDetails` + 2 vitest tests; 231/15). No BE, no scope creep. `SelectableSeverity` correctly untouched.
+- **IT-141 RED→GREEN — PASS (cited):** `run-log/2026-06-23-IT-141.md` — GREEN on the fix image `56f54a05` (2/2),
+  RED on base `8615e9ed` (2/2, term → `…/termsearch/{uuid}` PLT-234; datasource closed-as-success PLT-233). The
+  renamed protocol/spec/suite wiring resolves and runs for IT-141. The discriminator is genuine (RED survives on
+  base) — G-C15 PASS for the thunk-arm test (a rename, no assertion weakened).
+- **Renumber bookkeeping (other than the dropped slot) — PASS:** thunk-arm correctly at IT-141 in feature-complete
+  + ui-e2e; lineage `F-031.yaml:449` + `F-076.yaml:276` refs updated IT-139→IT-141; no other id dropped (the
+  renumber touched only IT-139→IT-141).
+- **G-C4 push-safety — PASS:** branch `contrib/CTRIB-031-confirmationdialog-thunk-arm` @ `a2a71af5`, no upstream,
+  `push.default=current` (LSN-038 guard intact).
+- **G-C1 / G-C8 / G-C10 / G-C12 / G-C16 — carry from the 1st review** (code byte-unchanged): reproduce cited +
+  IT-141 RED drives PLT-234 live; origin/main re-verified (#1766 2/3 already shipped); ontology committed +
+  `docs_routing: none` grounded on `management.md:85`; reuse of the #1797 `.catch` + `.unwrap()` idiom; HIGH→MEDIUM
+  severity reframe surfaced at GATE 1.
+
+### Quality Bar / contributor gates
+
+- **G-C2 verify-running-system / FULL regression** — **FAIL (the blocker lives here).** The standing
+  `feature-complete` suite is now MISSING term-linked-columns. Separately, the reviewer's own FULL confirmation
+  regression was **NOT RUN** (the heavy-e2e flock is held by **ctrib030**, actively running its own full regression
+  — `state/locks/heavy-e2e.holder = ctrib030 pid=1082597 since 12:58:33`, `docker ps` shows its `probe-odd-platform-a/-b`
+  multi-stack stacks live; G-C2 one-at-a-time forbids a concurrent run). Per the 2-minute-bounce principle the
+  expensive re-run is not opened when the item bounces on a static finding — it is **owed at the next re-review**,
+  and now has added meaning (the implementer's "311" never included term-linked-columns; the post-fix count must
+  be higher). VERIFIED via `run-suite.sh:64-82` + `git show e440cf4/436b695/ba44f06`.
+- **G-C9 test integrity (both buckets)** — substance PASS (the thunk-arm RED→GREEN is genuine) but **IDENTITY/
+  TRACEABILITY FAIL** — term-linked-columns orphaned (the blocker).
+- **G-C5 / G-C4 / G-C1 / G-C8 / G-C10 / G-C12 / G-C13 / G-C15 / G-C16** — PASS (above / carried).
+- **Gate 7 (layout/traceability)** — FAIL (orphan test, same finding as G-C9 identity).
+- **Gate 8 (live-site)** — N/A for this FE code change (`docs_routing: none`; `management.md` correction is the
+  separate DOC-482; released code conforms at 0.29.0).
+
+### Rework (one pass — the implementer touches all of these together)
+
+- **(a) [BLOCKER] `suites.yaml` → `feature-complete.protocols`: add `IT-139` back ALONGSIDE `IT-141`** (e.g.
+  `…, IT-138, IT-139, IT-141]`). **`ui-e2e` needs NO change** (term-linked-columns was feature-complete-only per
+  CTRIB-028's 436b695 placement; the thunk-arm IT-141 correctly stays in ui-e2e). After the edit, confirm
+  `run-suite.sh --list feature-complete` shows **both** ids, and `run-suite.sh IT-139` globs term-linked-columns
+  while `run-suite.sh IT-141` globs the thunk-arm. Fix the misleading "uniquely globs CTRIB-028's term-linked-columns"
+  wording in the Rework note / PROGRESS to "…and is restored to the feature-complete suite".
+- **(b) [the owed gate + finding (b)] Run the FULL confirmation regression** on the cached fix SUT `56f54a05`
+  (no rebuild needed): `run-suite.sh feature-complete` (now including the restored IT-139 + IT-141) **GREEN** +
+  `known-bugs` **3-RED / 0-unexpected-green**, with **actual COUNTS + runner + SUT-SHA recorded in the run-logs**
+  (not the binary `outcome:` line). Queue behind ctrib030 for the heavy-e2e flock. multi-stack + ingestion-e2e
+  remain the maintainer-approved FE-only skip.
+- **(c) [cosmetic, optional]** The live PR #1801 body still reads "IT-139" (internal-id-only divergence) — sync via
+  the App if desired; not a blocker.
+
+### Outcomes
+
+- **Regressions introduced by the change**: yes — `feature-complete` lost CTRIB-028's term-linked-columns guard
+  (the blocker). No regression in the fix code itself.
+- **Navigation**: N/A — no navigation pointer shifts.
+- **Banned-phrase check**: none used.
+- **Upstream issues logged**: none new.
+- **Doc-product editorial findings**: full-tree audit **DEFERRED to the re-review** (the item bounces on a static
+  finding — same 2-minute-bounce precedent as the 1st review / CTRIB-030). DOC-482 (`management.md:85`, the page
+  most relevant to this change) is already on disk; non-blocking.
+- **lineage/ left untouched** — this review ran no probe/enrich/suite; the only `lineage/**` drift in the tree is
+  the pre-existing unowned P-001 residue (O10 route-around, not mine).
+- **Review isolation**: read-only git inspection of `../odd-platform-ctrib031` @ `a2a71af5` + the odd-team
+  run-logs/suites.yaml/history; **no SUT build, no stack, no heavy-e2e flock, no lineage write.**
+- **Committed (explicit paths)**: `contributor/CTRIB-031.md` (this verdict + status flip) · `state/active-streams.yaml`
+  (ctrib031 → blocked + `review-ctrib031-2`) · `state/PROGRESS.md` (review record).

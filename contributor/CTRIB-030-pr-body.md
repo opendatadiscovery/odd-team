@@ -20,7 +20,14 @@ The source of truth for the contract is the **Platform specification**, so the f
 
 `LineageDepthDefaultTest` (`BaseIntegrationTest` + `@AutoConfigureWebTestClient`, real HTTP binding) — an omitted `lineage_depth` on a missing entity returns **404 USR002**, not **500 SYS001**, for both downstream and upstream; a control pins explicit `lineage_depth=1` to the same 404. Proven RED→GREEN by running it: on the base spec (no default) the two no-depth assertions fail (500); with `default: 1` all pass (404).
 
-<!-- REGRESSION RESULTS — filled at D5 -->
+Integration (e2e): the existing lineage-depth-boundary contract test, which pinned the unset → 500 bug, is re-grounded to assert unset → **200** (the default-depth graph). It passes on the fix and still fails on `main` (unset → 500), so it regresses the fix rather than masking it.
+
+## Regression
+
+The full set (`feature-complete` + `multi-stack` + `known-bugs` + `ingestion-e2e`) was run on an isolated, serialized environment built from this branch:
+- Unit CI replica (`:odd-platform-api:build` = test + checkstyle + assemble): green.
+- `feature-complete`: 303 passed; the only lineage-related failure was the existing #1758 pin flipping (re-grounded above). The other failures are a pre-existing UI test-flakiness class under concurrent load, unrelated to this change.
+- `known-bugs`: the known-bug pins stayed RED as expected (no un-flipped fix). `ingestion-e2e`: green. `multi-stack`: green.
 
 ## Scope
 

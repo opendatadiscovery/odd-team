@@ -6,15 +6,15 @@ title: "Lineage endpoints: unset lineage_depth autoboxes null → NPE → HTTP 5
 class: bug                    # Defect 1a (unset-depth → 500) is a real, live-reproduced crash. Defect 2 (RBAC) reclassifies to expected-behaviour (see Product analysis). Defect 1b is out-of-scope (owned by existing items).
 scope: backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop). Internal id = PLT-100.
-status: implementing         # GATE 1 PASSED 2026-06-22 (RamanDamayeu, both recommended options). Phase D in progress.
+status: pr-draft             # DoD met (unit GREEN + IT-037 re-grounded GREEN + feature-complete green-for-change + docs on release/0.29.0); ontology /enrich deferred-justified (lineage/** dirty, O10). Draft PR #1800 open. /review (separate session) → review-ready → human merge (GATE 2).
 reproduced: "LIVE on the running SUT (odd-platform:odd-team-sut digest 35ca9385 = the ctrib029 dc9b6422 build; lineage files byte-identical to origin/main 4028b4a6 — verified `git diff origin/main..HEAD` empty over Lineage/DataEntityController/SecurityConstants/ControllerAdvice). 2026-06-22, auth DISABLED. RED: `GET /api/dataentities/1/lineage/downstream` (no lineage_depth) → HTTP 500 {code:SYS001, message:'Internal Server Error'}. CONTROL (proves NPE is pre-lookup): `…/lineage/downstream?lineage_depth=1` → HTTP 404 {code:USR002, message:'DataEntity with id 1 is not found'} — same nonexistent id reaches the service and 404s gracefully WITH a depth; 500s BEFORE the lookup WITHOUT one. See '## Reproduction'."
 adr_required: false          # The crash fix (Defect 1a) needs NO ADR. Defect 2 (RBAC) is INTENDED behaviour (ODD's published authz model) → no security-posture code; an OPTIONAL implicit-ADR could CODIFY the existing 'reads-open, writes-permissioned' decision (adr pillar) — maintainer's call at GATE 1, NOT a blocker for this PR.
 plan_approved_by: RamanDamayeu
 plan_approved_at: "2026-06-22"
 plan_approved_scope: "Defect 1a (unset lineage_depth → NPE → HTTP 500) ONLY. Fix = spec default:1 on lineage_depth (both ops) + a DataEntityController null-guard (DEFAULT_LINEAGE_DEPTH=1), defense-in-depth; default 1 mirrors the UI default + @Min(1) floor. Defect 1b (@Max + CTE cycle-guard) KEPT SEPARATE (PLT-042 + REFACTOR-202). Defect 2 (lineage RBAC) = INTENDED behaviour, NO code — the auth.type=DISABLED caveat is documented (DOC-293/320/338), optionally codify an implicit-ADR ('reads-open, writes-permissioned'). Approved via AskUserQuestion (both recommended options) 2026-06-22."
 docs_routing: "release/0.29.0"   # api-reference/lineage: state the default depth = 1 (unreleased behaviour change → documentation train, G-C11). The DISABLED/RBAC caveats are tracked independently (DOC-293/DOC-320/DOC-338). Final decision after reading the page (Phase D).
-pr_url:                      # PENDING — GATE 2
-pr_draft:                    # PENDING — GATE 2
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1800"   # DRAFT, odd-contributor[bot], Closes #1758
+pr_draft: true               # bot cannot merge (G-C4); human review + merge = GATE 2
 clarify_comment_url:         # none planned — no implementation-changing ambiguity (G-C6). The Defect-2 disposition is a GATE-1 maintainer decision, not a public clarifying question.
 rootcause_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1758#issuecomment-4772832883"   # folded root-cause + scope (G-C6 one comment), posted post-GATE-1 before any code, as odd-contributor[bot]
 scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1758#issuecomment-4772832883"        # same comment (root-cause + scope folded)

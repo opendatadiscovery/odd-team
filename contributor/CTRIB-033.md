@@ -12,7 +12,7 @@ adr_required: false           # G-C7 does NOT fire. No migration (no schema chan
 plan_approved_by: RamanDamayeu
 plan_approved_at: "2026-06-23"
 plan_approved_scope: "Fix BOTH filed defects + the destructive DELETE-column twin. (a) createLookupTable: add ReactiveLookupTableRepository.existsByTableName + a uniqueness pre-check → UniqueConstraintException (400 USR003, NOT 409 — platform convention, Q1). (b) updateLookupTableField: thread lookupTableId into the service + mirror the read-path belongs-to guard (BadUserRequestException, 400). (b-twin) deleteLookupTableField: same signature change + same guard (Q2 — destructive twin, drops a column off the wrong table). EXCLUSIONS: no OpenAPI/migration/auth change; no ControllerAdvice mapping change; updateLookupTable rename-collision → follow-up PLT-242 (logged). Tests: unit (collision + PATCH-guard + DELETE-guard, Mockito mirroring the read-guard test) + re-ground IT-050 UC-007/UC-010 RED→GREEN (LSN-029/G-C15) + a DELETE-cross-table assertion. Approved via AskUserQuestion, 2026-06-23."
-docs_routing:                 # decided in Phase D after READING the lookup-tables.md page; likely release/0.29.0 (the API page documents the 16-endpoint surface) OR none+why.
+docs_routing: "release/0.29.0"   # REQUIRED correction: api-reference/reference-data.md published a caveat documenting defect (b) ("the platform never checks that the column belongs to the named table") — my fix makes it FALSE. Corrected on release/0.29.0 @ 4dddcb7 (defect-b para fixed; the SEPARATE permission-gate path-mismatch caveat KEPT — PLT-243; collision-400 noted). Paired DOC-484. lookup-tables.md unchanged (its RBAC-global caveat is orthogonal). Page READ (G-C10).
 pr_url:
 pr_draft:
 clarify_comment_url:          # none warranted (G-C6) — the issue is precise + maintainer-verified; the two open decisions (error code, scope of the twins) are GATE-1 decisions, not public clarifying questions.
@@ -190,4 +190,30 @@ Out of scope here (tracked separately): the rename path (updateLookupTable) reus
 same name-builder and shares the collision risk; it will be addressed as a separate
 follow-up to keep this change focused on the two reported defects + the delete twin.
 ```
+
+## Phase D progress (implement + test + docs + ontology)
+
+**Base reconciled (live drift):** while working, `origin/main` advanced `fd71eb3d → e481cefd` (CTRIB-032 #1802 + CTRIB-030 #1800 merged). The diff touches only `DataEntityMapperImpl` + `openapi.yaml` (lineage_depth) + tests — **zero ReferenceData write-API code**, so the reproduction base + fix base are unaffected. The worktree is correctly based on the latest `e481cefd`, conflict-free.
+
+**Code — COMMITTED @ `0cc89f79`** on `contrib/CTRIB-033-referencedata-write-contract` (worktree `../odd-platform-ctrib033`, same-name-tracked, never main — `@{u}` errors / push.default=current). 8 files (5 src + 3 test):
+- (a) `ReactiveLookupTableRepository[Impl].existsByTableName` (new finder); `createLookupTable` pre-check → `UniqueConstraintException` (400 USR003).
+- (b) `ReferenceDataService`/`Impl`/`Controller`: `updateLookupTableField` + `deleteLookupTableField` now take `lookupTableId` + the read-path belongs-to guard (400 `BadUserRequestException`).
+
+**Unit (G-C2 unit bucket) — GREEN on the working tree.** `scripts/run-platform-tests.sh` (full `:odd-platform-api:build` = test + checkstyle + assemble): **BUILD SUCCESSFUL** (the second run incl. the new controller + repo tests). Suites: `ReferenceDataServiceImplTest` 10/10 (collision + both guards, reject + pass), `ReferenceDataControllerTest` 2/2 (controller forwards both path ids), `ReactiveLookupTableRepositoryImplTest` 1/1 (existsByTableName vs real Postgres). 0 failures, 0 skips.
+- **Local patch-coverage gate (G-C13) — MET.** Changed measured lines covered: controller L139/L163 COVERED (ci=9/6); service createLookupTable pre-check + both guards COVERED. `ReactiveLookupTableRepositoryImpl` is jacoco-EXCLUDED (`**/repository/**`, `odd-platform-api/build.gradle:187`) → not measured (the repo test still validates it). Gate = Madrapps `min-coverage-changed-files: 98` (diff-line); checked locally, not in CI.
+
+**Integration (G-C2 integration bucket) — IT-050 re-grounded (LSN-029/G-C15); FULL regression RUNNING.**
+- Re-grounded `integration-tests/e2e/specs/lookup-tables-rdm.spec.ts` + the protocol SoT `protocols/IT-050-lookup-tables-rdm.md` IN SYNC: **UC-007** 500→**400 USR003** + "already exists"; **UC-010** 200+renamed→**400** + B untouched; **UC-011 NEW** (DELETE twin) → 400 + B's column survives. New expected values trace to the platform-convention SoT (`ControllerAdvice` + `ErrorCode.UNIQUE_CONSTRAINT`) + the read-guard contract — never the system's current output; tightened not weakened; **RED survives on pre-fix main**.
+- **FULL regression LAUNCHED:** `integration-tests/run-regression.sh ctrib033` (flock was FREE — ctrib030's run finished; isolated ctrib033 namespace; builds SUT from the committed worktree `0cc89f79`; tears down). Suites: feature-complete + multi-stack + known-bugs + ingestion-e2e. **[counts pending — running; recorded on completion.]**
+- **RED proof (pending):** `ODD_SUT=ref:main run-suite.sh IT-050` → the re-grounded cases must FAIL on `e481cefd`. The live reproduction above already shows the base returns 500 / 200+renamed (which the re-grounded `expect(400)` rejects).
+
+**Docs (G-C10/G-C11) — DONE + routed (release/0.29.0).** READ `api-reference/reference-data.md` → it **published a caveat documenting defect (b)** which my fix makes FALSE → REQUIRED correction. Corrected on the **release/0.29.0** train @ `4dddcb7` (pushed, same-name): defect-(b) para removed (fixed), column rows note the new 400, create row notes the collision-400; the **separate** permission-gate path-mismatch caveat KEPT (still true — PLT-243). Paired **DOC-484** (`pending-release`, post-release Gate-8). `lookup-tables.md` unchanged (its RBAC-global caveat is orthogonal).
+
+**Ontology (G-C10) — DEFERRED (justified).** `lineage/**` is DIRTY+unowned (P-001 residue; R9/O10 — never `/enrich` into a dirty/unowned tree). The F-026 facets (now FIXED) re-enrich when `lineage/**` is clean+unclaimed (next substrate scan / 0.29.0 release scan) — same accepted bar as CTRIB-028/029/032.
+
+**Follow-ups logged on disk (G-C5 / follow-up-on-disk):**
+- **PLT-242** — `updateLookupTable` rename-collision → 500 (sibling of defect (a); reuses `existsByTableName`).
+- **PLT-243** — **SECURITY (high):** the column PATCH/DELETE permission gate never fires (SecurityRule on singular `/column/` vs the plural `/columns/` route → endpoints are authentication-only). Confirmed at `SecurityConstants.java:337,341`. Out of #1769's scope + a G-C7 posture change → NOT fixed here; **surfaced at GATE 2**. My fix mitigates the cross-table vector but does not restore this gate.
+
+**Definition of Done (five gates):** 1. unit build GREEN ✓ · 2. FULL integration regression **RUNNING** (+ RED proof pending) · 3. docs read + corrected + routed ✓ · 4. ontology deferred-justified · 5. Principal sufficiency — enough+meaningful tests (both buckets, both branches of each guard), local coverage gate met, no control lost, no auth/contract change — **pending** the FULL regression. The PR stays `draft` until 2 + the RED proof are green.
 

@@ -219,3 +219,33 @@ Rewrite the `master-data-management/lookup-tables.md` caveat: the LT description
 
 ### The one open item (deprecation signal scope)
 "A deprecation warning for the external description, future = internal-only." The overview `ExternalDescription` component is **global** (every ingested entity) — a UI banner there is a platform-wide statement, almost certainly out of scope for this fix. Options below; the core fix (BE propagation) is locked either way.
+
+**GATE-1 FINAL decision (2026-06-23, RamanDamayeu):** Removal shape question superseded by the external-description model; deprecation signal = **docs note + tracked follow-up** (no global UI banner). Test scope = unit + browser e2e. Comment = posted. → proceed to Phase D.
+
+---
+
+## Implementation (Phase D)
+
+### The fix — committed `contrib/CTRIB-032-lookuptable-description-propagation` @ **ff7d58a7**
+Two lines in `DataEntityMapperImpl` (`*MapperImpl*` — jacoco-excluded by repo config):
+- `mapCreatedLookupTablePojo` (`:211`): `.setExternalDescription(tableDto.getTableDescription())`.
+- `applyToPojo(DataEntityPojo, ReferenceTableDto)` (`:247`): `.setExternalDescription(dto.getTableDescription())`.
+LT form + contract + DB schema unchanged (backward-compatible); `internal_description` untouched (no clobber); push-safe (no upstream, `push.default=current`).
+
+### Test ledger (G-C9 / G-C15)
+- **Unit (odd-platform CI) — DataEntityMapperImplTest, ADDED 2 tests (G-C15 N/A — no test changed):**
+  - `mapCreatedLookupTablePojo_setsExternalDescriptionFromTableDescription` + `applyToPojo_referenceTable_updatesExternalDescriptionAndKeepsInternalDescription` (the second also asserts `internal_description` is NOT clobbered).
+  - **RED→GREEN, RUN not reasoned:** base worktree → `14 tests completed, 2 failed` (`expected "ISO 3166…" but was null`); with the fix → JUnit XML `tests=14 failures=0 errors=0`, both new tests present + passing (11:19). checkstyle clean both runs.
+- **Integration (odd-team IT-140 — browser e2e, maintainer-requested):** authored — `integration-tests/protocols/IT-140-lookup-description-on-overview.md` + `e2e/specs/lookup-description-on-overview.spec.ts` (drives the REAL create/update API → asserts the description renders on the entity Overview as the external description; + an edit-updates case + a no-description negative). **RUN PENDING — blocked by the heavy-e2e flock (held by ctrib030, `state/locks/heavy-e2e.holder`).** Will run GREEN (`ODD_SUT=working`, my worktree) + the RED proof (`ODD_SUT=main`) once the flock frees.
+
+### Definition of Done — status
+1. **Full unit build (working tree) — ✅ GREEN.** `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build` = test + checkstyle + assemble + ALL Testcontainers integration tests) → `BUILD SUCCESSFUL in 7m 18s`, 0 failures (the log "FAILED" hits are `io.r2dbc PARAM` test-data binds, not test results).
+2. **FULL integration regression (working-tree SUT) — ⏳ PENDING (queued behind the heavy-e2e flock).** IT-140 GREEN+RED + `feature-complete`/`multi-stack`/`known-bugs`/`ingestion-e2e` on an isolated `ODD_STREAM=ctrib032` stack (tag `odd-team-sut-ctrib032`, ports 18110/15462). Registered `wants: e2e`; runs when ctrib030 releases the flock. NOT recorded as run; NOT handed off until run.
+3. **Docs read + decided + routed — ✅.** `master-data-management/lookup-tables.md` caveat rewritten on `release/0.29.0` @ `9e35fcb` (warning→info: LT description = entity external description; internal stays catalog-curated + term-linkable; future-consolidation note). Paired `backlog/docs/DOC-480.md` (pending-release).
+4. **Ontology — ⏳ PENDING.** `/enrich --touched` the lookup create/update flow + `DataEntityMapper` sidecar. **Deferred (G-C10 justified):** `lineage/**` is DIRTY+unowned (the P-001 probe residue) — no `/enrich` into a dirty tree (R9/O10). Runs once `lineage/**` is clean+unclaimed.
+5. **Principal sufficiency (G-C13) — ✅ (pending the regression confirming no harm).** Enough+meaningful tests (create + update + no-clobber unit; e2e for the user-facing path). Patch coverage: the changed file is `*MapperImpl*` → **jacoco-excluded by repo config** (build.gradle:185), so the CI changed-files gate does not measure it (consistent with prior merged `*MapperImpl*` changes, e.g. #1755); the changed lines are nonetheless exercised by the two passing unit tests. No control lost (2 additive lines, no signature/abstraction change). "What did I make worse" — answered once the full regression is green.
+
+### Follow-ups logged on disk
+- `backlog/docs/DOC-480.md` — the release-train doc change (pending-release, 0.29.0).
+- `issues/odd-platform/PLT-240.md` — the future single-description consolidation direction (the deprecation-signal follow-up).
+- `issues/odd-platform/PLT-224.md` — backfilled to #1781 (the draft that became this issue).

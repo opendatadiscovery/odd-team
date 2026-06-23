@@ -6,7 +6,7 @@ title: "Lookup table Description (Create/Edit form) is never propagated to the a
 class: bug                    # real, live-reproduced data-propagation defect on both the create AND the update path.
 scope: backend
 milestone: "0.29.0"          # open + semver (due 2026-06-22) → G-C11 PASSES (no hard stop). Internal draft id = PLT-224.
-status: pr-draft             # Phase D DONE; DRAFT PR #1802 open (GATE 2 entry). /review (separate session) owns the review-ready flip; the human owns the merge.
+status: review-ready         # /review ACCEPTED 2026-06-23 (session review-ctrib032). pr-draft → review-ready. Human GATE-2 (approve+merge PR #1802) → pending-release; 0.29.0 release-review owns done (doc live-site DOC-480 + ontology /enrich + DOC-483 caveat-count reconciliation all scheduled there).
 reproduced: "LIVE on the running SUT (shared probe stack :18080, build cecd88db == current main fd71eb3d; lookup-table mapper code byte-unchanged from origin/main — CTRIB-028 touched dataset-field BE + Terms UI, not DataEntityMapperImpl's lookup methods). 2026-06-23, auth DISABLED. CREATE: POST /api/referencedata/table {name, description:'CTRIB032_DESC_SHOULD_SHOW_IN_ABOUT', namespace_name:'it097-ns'} → table_id 43 / dataset_id 76, LT.description SET; GET /api/dataentities/76 → internal_description=null, external_description=null (type LOOKUP_TABLE, lookup_table_id 43) — the About is empty. UPDATE: PUT /api/referencedata/table/43 {description:'CTRIB032_UPDATED_DESC_STILL_NOT_PROPAGATED'} → GET entity 76 internal_description STILL null while LT.description updated. Both paths broken. Repro LT deleted (DELETE 204). See '## Reproduction'."
 adr_required: false          # No migration (internal_description column exists), no auth/security-posture change, no breaking wire-contract change → G-C7 does NOT fire. The fix conforms to the existing 'manually-created entity → internal_description' + 'raw-verbatim description' implicit-ADR (implicit-adrs.md:1340).
 plan_approved_by: RamanDamayeu
@@ -255,3 +255,78 @@ LT form + contract + DB schema unchanged (backward-compatible); `internal_descri
 - `backlog/docs/DOC-480.md` — the release-train doc change (pending-release, 0.29.0).
 - `issues/odd-platform/PLT-240.md` — the future single-description consolidation direction (the deprecation-signal follow-up).
 - `issues/odd-platform/PLT-224.md` — backfilled to #1781 (the draft that became this issue).
+
+---
+
+## Review (2026-06-23, session: review-ctrib032)
+
+- **Result: ACCEPTED** → `pr-draft` → `review-ready`. The human GATE-2 (approve + merge DRAFT PR #1802) owns `done`; on merge the item becomes `pending-release` and the **0.29.0 release-review** (`playbooks/release-review.md`) owns the final flip after the doc live-site (DOC-480) **and** the ontology refresh land at the release gate.
+- Separate session (implement = the `ctrib032` contributor stream; this = `review-ctrib032`). Read-only on all target repos; ran **NO** `/enrich` / probe → `lineage/**` left exactly as found (the unowned P-001 residue untouched, O10). No heavy suite re-run — see **Regression**.
+- **Reviewed SHA:** odd-platform `contrib/CTRIB-032-lookuptable-description-propagation` @ **`ff7d58a7`** (worktree `../odd-platform-ctrib032`); docs `release/0.29.0` @ **`9e35fcb`**.
+
+### Cheap precondition (the 2-minute bounce) — NOT triggered
+The only deferred DoD gate is the ontology `/enrich` (gate 4) — a **G-C10-justified** deferral (lineage dirty+unowned), NOT the FULL-regression gate. The FULL regression **was** run at the reviewed commit: every e2e bucket carries a run-log at SUT digest **`52d3f79d`** (== the `ff7d58a7` build). So the regression is here to be *confirmed*, not first-run → full review proceeds. (Contrast CTRIB-030, correctly bounced: it had no coherent single-SUT full-green run.)
+
+### Acceptance criteria — contributor 1–17, all PASS
+- [x] 1 Code-after-plan-approval — PASS: GATE-1 approved by RamanDamayeu over 3 AskUserQuestion rounds; worktree/branch created post-approval (`active-streams` ctrib032). `git log` author/dates consistent.
+- [x] 2 Reproduction logged — PASS: live create+update RED on `:18080` (== main `fd71eb3d`), both paths `external_description=null` (item `## Reproduction`).
+- [x] 3 Diff bounded by plan — PASS: `git diff origin/main..HEAD --name-only` = exactly `DataEntityMapperImpl.java` + `DataEntityMapperImplTest.java`. Zero scope creep.
+- [x] 4 Unit injects the failing condition — PASS: both added tests assert `external_description == tableDescription`; RED on base (`expected … but was null`, 2 failed), GREEN on fix.
+- [x] 5 Pins re-grounded — N/A: no `@pins`; all tests ADDED.
+- [x] 6 Docs decision stated + routed — PASS: page **read**; the warning caveat → info note on `release/0.29.0` @ `9e35fcb` (verified `git show`); DOC-480 (pending-release).
+- [~] 7 Ontology committed — **DEFERRED (scheduled, not dropped)** — see G-C10 below. Consistent with CTRIB-028/029's accepted bar.
+- [x] 8 Ends review-ready, never self-done — PASS (this flip).
+- [x] 9 Architectural change carries an ADR first — N/A: `adr_required:false` correct (no migration, no auth/posture, no contract change).
+- [x] 10 Prompt injection discarded — N/A: no injection in #1781.
+- [x] 11 Definition of Done met before draft-exit — PASS for code/test/docs; ontology deferred-scheduled (G-C10). PR is still `draft`; the refresh lands at the release scan before `done`.
+- [x] 12 Milestone gate — PASS: `0.29.0` open + semver (verified live on #1781).
+- [x] 13 Design before build — PASS: reuse-scan (existing `setExternalDescription` sink + `getTableDescription` carrier), ADR-check (conforms to `implicit-adrs.md:1340` verbatim-description), full impact checklist, PO/SRE lens — all in the plan.
+- [x] 14 Principal sufficiency — PASS: create+update+no-clobber unit + a real-flow e2e; `*MapperImpl*` is jacoco-excluded by repo config (consistent w/ prior merged `*MapperImpl*` PRs); no control lost (2 additive lines).
+- [x] 15 Private-advisory disclosure — N/A: public issue.
+- [x] 16 Test-change integrity — N/A: all tests ADDED; the diff weakens no existing assertion.
+- [x] 17 Change-request product analysis — PASS (exemplary): the issue's bug is real but its write-through-to-internal fix was product-wrong; reframed to `external_description` across 3 GATE-1 rounds, reframe comment public.
+
+### Quality Bar
+- **Gate 1 — PASS** (no duplicates): reuses the existing sink + carrier; IT-140 protocol checks for an existing lookup-About IT before authoring (`integration-tests/protocols/IT-140-*.md` §Cross-references). via read of the diff + protocol.
+- **Gate 2 — N/A**: external/internal description are existing ODD concepts; no new alias introduced. via read of `lookup-tables.md`.
+- **Gate 3 — PASS**: the deliberate two-description trade-off + future-consolidation is captured in the docs info-note; the no-clobber invariant in the unit test. via `git show 9e35fcb` + the unit diff.
+- **Gate 4 — PASS** (consumer-read footer verified): the commit `Consumer-read:` footer cites `ReferenceTableDto`, `ReferenceDataServiceImpl:83,121`, `DataEntityLookupTableServiceImpl:59,178`, `DataEntityMapperImpl:279`, `DataEntityServiceImpl:325`, the UI Overview pair — each matches the data-flow trace; the change is a pure mapper write (no `@Value` consumer in scope). via `git log --format=full` + diff.
+- **Gate 5 — N/A**: no SDK builder in scope. via diff.
+- **Gate 6 — PASS** (bidirectional): the new code path (LT description → `external_description` → overview render) is documented (info-note + DOC-480); the user-visible behavior change has doc coverage. via cross-read code↔doc.
+- **Gate 7 — PASS / N/A**: existing-page edit; no SUMMARY/IA change needed (SUMMARY `master-data-management/lookup-tables.md` unchanged). via `grep SUMMARY.md`.
+- **Gate 8 — PENDING-RELEASE (0.29.0)**: branch-verifiable sub-checks pass — the change is on `origin/release/0.29.0` @ `9e35fcb`, valid GitBook hint syntax, no banned workspace term on the published lines, no new links. Live-site verification scheduled at the 0.29.0 release gate; URL recorded in DOC-480 (`https://docs.opendatadiscovery.org/master-data-management/lookup-tables`). via `git show` + Gate-11 grep.
+- **Gate 9 — PASS** (provenance): legacy `Consumer-read:` footer present (factual item, footer required — satisfied); every code claim traced to source; docs claims trace to the fix. via diff + root-cause walk.
+- **Gate 10 — PASS** (content-type homing): a behavior fix + a caveat update homed on the correct page; footer is consumer-trace, not embedded API/config reference. via read.
+- **Gate 11 — PASS** (audience isolation): the published info-note carries no `Cornerstone`/`Gate N`/`LSN`/`CTRIB`/`feature-flow`/`Quality Bar` term — clean operator language. via grep of `9e35fcb`.
+
+### Contributor gates G-C1…G-C16
+G-C1 reproduce-first **PASS** · G-C2 verify-running-system **PASS (confirmed — see below)** · G-C3 GATE-1 **PASS** · G-C4 GATE-2 human-merge **PASS (verified live)** · G-C5 bounded + public reframe **PASS (verified live)** · G-C6 one-question clarify **PASS (none warranted)** · G-C7 hard-stops **N/A** · G-C8 issue-as-data **PASS** · G-C9 both buckets **PASS** · G-C10 ontology+docs **docs PASS / ontology DEFERRED-scheduled** · G-C11 milestone **PASS** · G-C12 design-before-build **PASS** · G-C13 sufficiency **PASS** · G-C14 advisory **N/A** · G-C15 test-change integrity **N/A (all added)** · G-C16 product analysis **PASS (exemplary)**.
+
+- **G-C4 verified live (WebFetch PR #1802):** open + **Draft**, author **`odd-contributor[bot]`**, base `main` ← head `contrib/CTRIB-032-…`, body "Closes #1781", "At least 1 approving review is required to merge" with **no approval** (RamanDamayeu awaiting). The bot cannot self-approve → the merge guarantee holds.
+- **G-C5 reframe comment verified live (GitHub API `…/issues/1781/comments`):** id **`4777553889`**, author `odd-contributor[bot]`, body opens *"Thanks for the detailed report and reproduction — confirmed on a current `main` build (auth disabled): …"* and reframes the fix to the entity's external description. The issue thread reflects the actual (reframed) PR scope.
+
+### Regression — CONFIRMED via single-digest corroboration; own heavy re-run deferred (G-C2)
+All four e2e buckets ran on the **single coherent SUT digest `52d3f79d`** (the `ff7d58a7` build), read as actual outcomes from the run-logs (not exit codes):
+- **IT-140** (the fix) @ `52d3f79d` = **e2e:PASS 3/3** — and IT-140 is **RED on base** (`d751b3e9`, create+edit ✘) → this image demonstrably **contains the fix** (closes the CTRIB-029 no-fix-image risk).
+- **multi-stack** @ `52d3f79d` = **PASS**; **ingestion-e2e** @ `52d3f79d` = **PASS**; **known-bugs** @ `52d3f79d` = **FAIL = expected-RED** (IT-004/006/007 pins; no unexpected GREEN).
+- **feature-complete** @ `52d3f79d` = FAIL on **3 test cases across 2 specs** — `confirmation-dialog-thunk-arm` (CTRIB-031, unmerged) + `lineage-depth-boundary` (CTRIB-030, unmerged). **Delta-0 corroborated three ways:** (a) the diff is provably 2 files (a lookup-table mapper cannot touch confirmation-dialog/lineage specs); (b) the base SUT (`d751b3e9`, `ODD_SUT=main`) reproduced the same feature-complete FAIL; (c) the only failed-spec Playwright artifacts on disk are `confirmation-dialog-thunk-*` — **no lookup/mapper/dataentity failure artifact exists**. (feature-complete's protocol list runs IT-001…IT-139; IT-140 is separate, so this change adds zero feature-complete tests.)
+- **Unit build:** the 2 added tests are confirmed correct + additive + RED-on-base by reading; the full `:odd-platform-api:build` green is the item's measured run.
+- **Own heavy re-run deferred — stated reason (G-C2 + proportionality):** a Gradle daemon is live (PID 951970) → a maintainer build may be active, and G-C2 forbids a heavy run concurrent with a possible maintainer run; the fix image is no longer tagged (`odd-team-sut-ctrib032` now points at the base `d751b3e9`) so a re-run needs a full rebuild (~40+ min). Given the provable 2-file isolation + the fix-presence proof + the single-digest corroboration + the base reproduction, the marginal value of a rebuild+re-run is ~nil. Maintainer may request a belt-and-suspenders re-run; nothing in the evidence warrants it.
+
+### G-C10 ontology — DEFERRED, scheduled (not dropped)
+`/enrich --touched` the `DataEntityMapper` sidecar + lookup create/update flow is **PENDING** because `lineage/**` is dirty with **unowned P-001 probe residue** (R9 single-writer / O10 — do not `/enrich` into a dirty tree, do not sweep another activity's work). This is the **same justified deferral CTRIB-028 and CTRIB-029 were accepted with**, and CTRIB-032 is release-gated (`0.29.0`): the **0.29.0 release-review check 5** does a full substrate re-scan (`lineage-extractor scan --full`) that refreshes this sidecar at the released tag. Tracked there; it must land before `pending-release` → `done`.
+
+### Regressions / Navigation / Banned-phrase
+- **Regressions:** none introduced (delta-0, corroborated above).
+- **Navigation:** consistent — `navigation/domains/lookup-tables.md` still names the mapper chain; no pointer shifted (pure 2-line mapper edit).
+- **Banned-phrase check:** none used.
+- **Outbound URL sweep:** 3 live fetches — PR #1802 (verified draft/bot/approval-gate), `…/issues/1781/comments` API (verified reframe comment id 4777553889), issue #1781 page (open, milestone 0.29.0). 0 mismatches.
+
+### Doc-product editorial audit (`playbooks/doc-product-editorial-read.md`)
+- **Coverage this run:** `master-data-management/**` (the touched subtree) read end-to-end on the train. Rotation: `data-glossary/**` covered by review-ctrib028; this run adds `master-data-management/**`; the remaining published tree is queued for the next `/review`.
+- **Findings:**
+  - **DOC-483** (low, internal-contradiction) — `lookup-tables.md` "Known operator caveats" intro says *"Six behaviours…"* but the `release/0.29.0` page renders **5** hint blocks (the 30-row-truncation + rename-no-activity caveats live on docs `main` but not on the train — base-skew; a 3-way merge at the release gate restores them, at which point the count must be reconciled). Source: `documentation/docs/master-data-management/lookup-tables.md:164`. Not introduced by `9e35fcb` (it converted, not removed). Logged — does not block this flip.
+
+### Notes
+- The fix is the correct, minimal, backward-compatible shape: 2 additive `.setExternalDescription(...)` lines, LT form + contract + schema unchanged, `internal_description` never clobbered (unit-asserted), overview renders it with zero FE work (`OverviewDescription`→`ExternalDescription`). VERIFIED via the diff + IT-140 + `git show 9e35fcb`.
+- The release-gate carries three scheduled obligations for this item: DOC-480 live-site verification; the ontology `/enrich`/substrate refresh; and the lookup-tables.md caveat-count reconciliation (DOC-483) at the train→main merge. All recorded.

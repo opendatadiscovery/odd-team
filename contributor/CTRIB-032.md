@@ -149,3 +149,73 @@ Recommended plan above. Two decisions for approval (answering = GATE-1 approval;
 
 1. **Sync direction.** Recommend **A — write-through on create + update** (the issue's own preference; consistent; the LT form is the canonical surface). Trade-off: an LT edit overwrites an entity-About-set description. Alternative **C** guards the update to only-when-changed; **B** (create-only) is rejected as inconsistent.
 2. **Test scope.** Recommend **unit (mapper) + in-process integration** (both odd-platform CI); the symptom is API-observable. Alternative: also add a browser e2e IT asserting the rendered About.
+
+---
+
+## GATE 1 — maintainer response + RE-PLAN (round 2, 2026-06-23)
+
+The maintainer **rejected the issue's own write-through fix** — the textbook G-C16 case (the bug is real; the issue's *solution* is product-wrong). Decision (verbatim): *"I don't want we have duplicates in data input — if it's easier to just remove possibility to add description of LT in the lookup table create/edit — it's fine — let's leave only one way how to edit description of a lookup table — via Data Entity overview. There should be possibility to use live links to terms."* Plus: Test scope = **also add a browser e2e IT**; Issue comment = **post a concise confirmation**.
+
+**Adopted product direction:** ONE editing surface for an LT's description — the **Data Entity overview "About"** editor (`upsertDescription`) — and **remove** the Description input from the Lookup-Table create/edit form. This is *better* than write-through: it removes the duplicate data-input surface AND **gains term-linking** — the About editor runs `termService.handleDataEntityDescriptionTerms` unconditionally (`DataEntityServiceImpl:328`, entity-type-agnostic, so LT entities term-link), whereas the LT form's Markdown field wrote `lookup_tables.description` and never term-linked. The original 2-line mapper write-through plan above is **superseded** (kept for the audit trail).
+
+### Re-scoped change (design-before-build, round 2)
+
+- **FE (the core change, all variants):**
+  - `LookupTableForm.tsx` — remove the `description` Markdown-editor `Controller` (`:94-116`) + its default (`:43`). The form keeps name + namespace.
+  - `LookupTables/LookupTablesListItem.tsx` — remove the `item.description` cell (`:36`).
+  - `LookupTables/LookupTablesList.tsx` — remove the "Description" header cell (`:51-53`) + redistribute the column `$flex` widths.
+  - **Reuse, not new:** the single editor already exists (the entity-About `Markdown` description editor + `upsertDescription`); we delete a duplicate, we build nothing. i18n: the `Description`/`lookup table` keys are shared (entity About etc.) — **not** removed, just unreferenced here; no locale churn.
+- **Existing-data + contract = the two G-C7-class decisions (below).** Removing the form field orphans any existing `lookup_tables.description` from the UI unless it is **backfilled** into the entity `internal_description` (a one-time Liquibase migration). Optionally the now-unused `description` is stripped from the contract (`LookupTableFormData`/`LookupTableUpdateFormData`/`LookupTable` in `components.yaml:3893/3906/3967`) + BE plumbing (`LookupTableMapper:44/52/62`, `ReferenceTableDto.tableDescription`, `ReferenceDataServiceImpl:83/121`) + regenerate. The `lookup_tables.description` **column is NOT dropped** (a destructive migration; left vestigial).
+- **G-C7:** a data-backfill migration and/or a wire-contract change ALWAYS need explicit sign-off before code → the single re-GATE-1 question below.
+
+### Tests (round 2)
+- **FE unit (vitest, odd-platform-ui):** `LookupTableForm` no longer renders/sends a description field; submit payload omits it. (Worktree FE-dev-env setup — `npm ci` + codegen — is a Phase-D logistics item; cf. CTRIB-031's FE-env note.)
+- **Browser e2e IT-NNN (maintainer-requested, odd-team `integration-tests/`):** create an LT → the LT form has **no** Description field; open the LT entity overview → set the About description **with a `[[ns:term]]` live link** → assert it renders on the About *and* the term link resolves. Check `integration-tests/protocols/` for an existing lookup-table / data-entity-About IT to extend first. RED on `ODD_SUT=ref:main` (form still has the field), GREEN on the working tree.
+- **BE (full-removal variant only):** update `ReferenceDataServiceImplTest`/`LookupDataServiceTest`/`DataEntityMapperImplTest` references to the removed `description`/`tableDescription`. (FE-only variant: BE tests unchanged.)
+- **Backfill (if approved):** a migration test / a before-after data assertion that an existing LT description lands in the entity `internal_description`.
+- Full regression (G-C2) on the working-tree SUT regardless.
+
+### Docs (round 2, G-C10/G-C11)
+The existing caveat on `master-data-management/lookup-tables.md` (docs `main`) said "description not propagated; use the entity-About workaround." After this change the *workaround becomes the official single way* — update the page (on the `release/0.29.0` train) to: drop the bug caveat; document that an LT's description is authored on the **Data Entity overview About** (with term-link support), not on the create/edit form. Paired backlog DOC item (`milestone: 0.29.0` + URL).
+
+### Issue comment (round 2 — approved by the maintainer; posted post-GATE-1, before code)
+Concise root-cause + **reframing** confirmation (mandatory now per G-C5 — the plan reframes the issue's stated fix): bug confirmed (description never reached the entity); rather than duplicate the description across two inputs, the PR removes the LT-form Description field so the **Data Entity overview About** is the single editor (which also supports `[[term]]` live links); existing descriptions are [backfilled per the decision]. Closes #1781.
+
+### The one remaining decision (re-GATE-1)
+Removal depth × existing-data handling — both G-C7-class (migration / contract). Recommended: **FE-only removal + backfill existing descriptions** (smallest code change, no breaking contract change, preserves curation; strip the dead contract field later as a logged REFACTOR follow-up).
+
+---
+
+## GATE 1 — maintainer refinement + FINAL plan (round 3, 2026-06-23)
+
+The maintainer refined again to an **elegant, backward-compatible model** (verbatim): *"leave the description of lookups as well to not have issues with backward incompatibility. But we will treat lookup table description as an **external description** for Data Entity… we use ODD Platform to store real data in a form of lookup and we 'auto' ingest these entities into the catalog as Data Entities, from that point of view once we change description of lookup table we see it in Data Entity as an external description… Data Entity will have 2 descriptions: as Data Entity (internal for catalog) and as Lookup (external for catalog). We could put a deprecation warning for the external description with the notification that only internal description will be left in future releases."*
+
+**Both prior approaches are SUPERSEDED** (kept for audit): the issue's write-through-to-internal (round 0/1 — clobbers the About) and the remove-the-field (round 2 — backward-incompatible + needs a migration). **Final model:** the lookup table is a *source* auto-ingested into the catalog, so its description is the **source-provided** description → the Data Entity's **`external_description`** (the exact semantic of that field). `internal_description` stays the catalog user's manual description (the About editor, with term links). Two descriptions coexist — a normal ODD pattern for ingested entities.
+
+### KEY load-bearing finding (verified in FE) — the fix is small + safe
+The entity overview **already renders `external_description`**: `OverviewDescription.tsx:25` renders `<ExternalDescription />` directly below `<InternalDescription />`; `ExternalDescription.tsx:11-17` reads `getDataEntityExternalDescription(dataEntityId)` and shows it as read-only Markdown **when non-empty** (else renders nothing). The details API already returns it (`mapDtoDetails:279` → `.externalDescription`). **So propagating the LT description to `external_description` surfaces it on the overview with NO new FE display work.** (The empty-state `null` return is why nothing shows today — `external_description` is null for manually-created LTs.)
+
+### Final change (the genuinely small, backward-compatible fix)
+**BE — 2 lines in `DataEntityMapperImpl`, targeting `external_description` (not internal):**
+1. `mapCreatedLookupTablePojo` (`:203-218`, create) — add `.setExternalDescription(tableDto.getTableDescription())`.
+2. `applyToPojo(DataEntityPojo, ReferenceTableDto)` (`:233-243`, update) — add `.setExternalDescription(dto.getTableDescription())`.
+
+**Why this is correct + safe:**
+- The LT form is **unchanged** (keeps its Description field → `lookup_tables.description`); editing it updates the LT (as today) AND now the entity's `external_description` (synced) — exactly "we see this change in associated Lookup table instantly." Backward-compatible: no contract change, no FE removal, no migration.
+- **No clobber** (the round-0 problem): `external_description` ≠ `internal_description`. The About editor (internal, term-linkable) is independent; a catalog curator's manual description is never overwritten by an LT edit.
+- **Term-link requirement satisfied** by the unchanged internal/About editor (`upsertDescription` → `handleDataEntityDescriptionTerms`, type-agnostic, `DataEntityServiceImpl:328`). The external (LT) description renders read-only on the overview.
+- `external_description` for a manually-created LT has no other writer (ingestion never touches manual LTs) → the LT description fully owns it; no conflict.
+
+**Scope EXCLUSIONS (G-C5):** no LT-form change; no contract/openapi change; no migration; `internal_description` untouched; no change to non-LT mapper paths or the global `ExternalDescription` component's behaviour.
+
+### Tests (final)
+- **Unit (odd-platform CI):** `DataEntityMapperImplTest` — both methods set `external_description` from `tableDescription`. RED→GREEN.
+- **Integration (in-process `BaseIntegrationTest`, odd-platform CI):** POST/PUT `/referencedata/table` with a description → GET entity → assert `external_description` == it AND `internal_description` stays independent. From the captured real shape (snake_case `external_description`).
+- **Browser e2e IT (maintainer-requested):** create an LT with a description → entity overview shows it (as the external description, read-only); set the About (internal) description with a `[[ns:term]]` link → it renders as a live link. Extend an existing data-entity-overview IT if present.
+- Full regression (G-C2) on the working-tree SUT.
+
+### Docs (final, release/0.29.0)
+Rewrite the `master-data-management/lookup-tables.md` caveat: the LT description now appears on the entity overview **as the external description**; the editable catalog description is the entity-About (internal); note the future consolidation. Paired DOC item.
+
+### The one open item (deprecation signal scope)
+"A deprecation warning for the external description, future = internal-only." The overview `ExternalDescription` component is **global** (every ingested entity) — a UI banner there is a platform-wide statement, almost certainly out of scope for this fix. Options below; the core fix (BE propagation) is locked either way.

@@ -36,7 +36,11 @@ const REGISTRY = {
 } as const;
 const ALL_IDS = Object.values(REGISTRY);
 
-const CONN = 'postgresql://odd-platform:odd-platform-password@localhost:15432/odd-platform';
+// Respect ODD_DB_URL (set per-stream by run-suite.sh under ODD_STREAM) so the raw two-session advisory-lock
+// probes hit THIS stream's DB, not the shared :15432 (which is down under isolation → ECONNREFUSED). The
+// default preserves the non-isolated behaviour. Mirrors helpers/db.ts.
+const CONN =
+  process.env.ODD_DB_URL ?? 'postgresql://odd-platform:odd-platform-password@localhost:15432/odd-platform';
 
 test.describe('IT-095 F-065 advisory-lock registry — distinctness contract + PLT-089 silent-collision pin', () => {
   // ─────────────────────────────────────────────────────────────────────────

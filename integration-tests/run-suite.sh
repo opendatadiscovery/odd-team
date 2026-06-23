@@ -136,6 +136,11 @@ if [ -n "$STREAM" ]; then
   export ODD_SUT_TAG="${ODD_SUT_TAG:-odd-platform:odd-team-sut-$STREAM}"
   export ODD_API_PORT="${ODD_API_PORT:-$(find_free_port 18090)}"
   export ODD_DB_PORT="${ODD_DB_PORT:-$(find_free_port 15442)}"
+  # The e2e db.ts seed helpers connect to Postgres directly via ODD_DB_URL (default :15432 — the SHARED
+  # stack). Without this, an isolated stream's seeds hit the shared DB (or ECONNREFUSED if it is down),
+  # not its own — so wire ODD_DB_URL to THIS stream's DB port. Same creds/db as the odd-minimal compose
+  # (only the host port is per-stream). Completes the isolation the runner.py + Playwright base URL already got.
+  export ODD_DB_URL="${ODD_DB_URL:-postgresql://odd-platform:odd-platform-password@127.0.0.1:$ODD_DB_PORT/odd-platform}"
   export ODD_BASE_URL="${ODD_BASE_URL:-http://127.0.0.1:$ODD_API_PORT}"
   export ODD_BACKEND_CONTAINER="$STREAM-odd-platform"
   export ODD_DB_CONTAINER="$STREAM-database"

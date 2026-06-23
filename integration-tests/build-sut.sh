@@ -37,7 +37,10 @@ TAG="${ODD_SUT_TAG:-odd-platform:odd-team-sut}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "$HERE/.." && pwd)"
 PLATFORM="${ODD_PLATFORM_DIR:-$(cd "$WORKSPACE/../odd-platform" 2>/dev/null && pwd || true)}"
-[ -n "$PLATFORM" ] && [ -d "$PLATFORM/.git" ] || { echo "ERROR: odd-platform repo not found (set ODD_PLATFORM_DIR)" >&2; exit 1; }
+# -e (exists), not -d (dir): in a git WORKTREE — the per-stream isolation primitive (ODD_PLATFORM_DIR=
+# ../odd-platform-<id>) — `.git` is a FILE pointing at the main clone's worktree dir, not a directory, so
+# `-d` would wrongly reject a perfectly valid worktree checkout (the very thing isolation depends on).
+[ -n "$PLATFORM" ] && [ -e "$PLATFORM/.git" ] || { echo "ERROR: odd-platform repo not found (set ODD_PLATFORM_DIR)" >&2; exit 1; }
 
 find_jdk17() {
   if [ -n "${JAVA_HOME_17:-}" ] && [ -x "${JAVA_HOME_17}/bin/javac" ]; then echo "$JAVA_HOME_17"; return; fi

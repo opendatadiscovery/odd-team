@@ -24,10 +24,12 @@ Integration (e2e): the existing lineage-depth-boundary contract test, which pinn
 
 ## Regression
 
-The full set (`feature-complete` + `multi-stack` + `known-bugs` + `ingestion-e2e`) was run on an isolated, serialized environment built from this branch:
-- Unit CI replica (`:odd-platform-api:build` = test + checkstyle + assemble): green.
-- `feature-complete`: 303 passed; the only lineage-related failure was the existing #1758 pin flipping (re-grounded above). The other failures are a pre-existing UI test-flakiness class under concurrent load, unrelated to this change.
-- `known-bugs`: the known-bug pins stayed RED as expected (no un-flipped fix). `ingestion-e2e`: green. `multi-stack`: green.
+Rebased onto current `main`; the full set was then re-run on **one** isolated, serialized SUT built from this branch (machine-wide flock + per-stream isolation + teardown):
+- Unit CI replica (`:odd-platform-api:build` = test + checkstyle + assemble): **green** — 593 tests, 0 failures; `LineageDepthDefaultTest` 3/3.
+- `feature-complete`: **309 passed / 2 failed**, green for this change. The lineage-depth-boundary e2e is **green** (unset → 200). The 2 failures belong to an unrelated confirmation-dialog UI fix that is not yet on `main` — its two tests assert the fixed behaviour, so they fail on this branch's base; they fail identically on plain `main` and are not touched by this lineage change.
+- `multi-stack`: **9 / 0 green**. `ingestion-e2e`: **6 / 0 green**. `known-bugs`: the known-bug pins stayed **RED as expected** (no un-flipped fix).
+
+All four suites ran on the same SUT digest, built from this branch on top of current `main`.
 
 ## Scope
 

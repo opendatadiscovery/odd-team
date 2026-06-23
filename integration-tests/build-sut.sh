@@ -27,6 +27,9 @@
 #   ODD_SUT_TAG=<image:tag>   per-stream SUT image tag (default the stable shared tag). For N parallel
 #                            streams, each builds into odd-platform:odd-team-sut-<stream-id> so the streams
 #                            do not clobber each other's image (findings §5.1 / parallel-contribution model).
+# NOTE: pass these env vars INLINE (`ODD_SUT=working ODD_PLATFORM_DIR=<path> build-sut.sh`), NOT via `export` —
+#   .claude/settings.json denies `Bash(export *)`/`Bash(env *)`, which auto-denies the `export` idiom under the
+#   agent permission system. (memory: feedback_inline_env_not_export)
 set -euo pipefail
 
 SUT="${1:-${ODD_SUT:-working}}"

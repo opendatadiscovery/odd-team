@@ -13,6 +13,9 @@
 #   ODD_STREAM=<id> integration-tests/run-suite.sh <suite>   # ISOLATED env: own image tag + compose project +
 #       container names + a FREE host port pair — parallel-safe across /contribute + /review (no shared stack).
 #       Pin ports with ODD_API_PORT/ODD_DB_PORT; build the SUT from your worktree with ODD_PLATFORM_DIR=<path>.
+# NOTE: pass env vars INLINE (`VAR=value integration-tests/run-suite.sh …`), NOT via `export` — the repo's
+#   .claude/settings.json denies `Bash(export *)`/`Bash(env *)` (an env-dump guard), which also auto-denies the
+#   `export VAR=value` idiom under the agent permission system. (memory: feedback_inline_env_not_export)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # integration-tests/

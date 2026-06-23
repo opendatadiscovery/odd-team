@@ -34,6 +34,9 @@
 # that ref and run this there — the integration analogue is `integration-tests/build-sut.sh` ($ODD_SUT).
 #
 # Overrides: ODD_PLATFORM_DIR=<path>  JAVA_HOME_17=<jdk17 path>
+# NOTE: pass overrides INLINE (`ODD_PLATFORM_DIR=<path> scripts/run-platform-tests.sh`), NOT via `export` —
+#   .claude/settings.json denies `Bash(export *)`/`Bash(env *)`, which auto-denies the `export` idiom under the
+#   agent permission system. (memory: feedback_inline_env_not_export)
 set -euo pipefail
 
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

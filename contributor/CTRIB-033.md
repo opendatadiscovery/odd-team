@@ -1,0 +1,192 @@
+---
+ctrib: CTRIB-033
+github_issue_number: 1769
+github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1769
+title: "Reference Data API contract gaps — (a) name-normalisation collision returns raw 500 not 409; (b) PATCH column endpoint discards the path table-id and mutates the wrong table"
+class: bug                    # two distinct, live-reproduced contract defects in the Reference Data (Lookup Tables) WRITE API, same subsystem.
+scope: backend
+milestone: "0.29.0"           # open + semver (due 2026-06-27) → G-C11 PASSES (no hard stop). Internal draft id = PLT-146.
+status: planned               # Phase A→C done; reproduced; plan written. AWAITING GATE 1 (no code yet — G-C3).
+reproduced: "LIVE on a throwaway isolated stack (ctrib033repro on :18130/:15472, image odd-platform:odd-team-sut digest cecd88db — CTRIB-028's confirmation build; CTRIB-028 never touched ReferenceData, so its ReferenceData bytes == current main fd71eb3d), auth DISABLED, 2026-06-23. (a) COLLISION: POST /api/referencedata/table {name:'ctrib033 dup'} → 200; POST {name:'ctrib033_dup'} (normalises to the same physical n_1__ctrib033_dup) → HTTP 500 {\"code\":\"SYS001\",\"message\":\"Internal Server Error\"}. (b) CROSS-TABLE PATCH: created table A(id 2) + B(id 3), added column bcol(field_id 4) to B; GET /table/2/columns/4 (B's column via A) → 400 {\"code\":\"USR001\",\"message\":\"bcol doesn't belong to ctrib033 table b\"} (read guard works); PATCH /table/2/columns/4 {name:'bcol_renamed_via_A'} → HTTP 200 + table B's column renamed to bcol_renamed_via_A while table A stayed [id]. Both defects confirmed. Stack torn down (down -v). See '## Reproduction'."
+adr_required: false           # G-C7 does NOT fire. No migration (no schema change). No auth/security-posture change (RBAC unchanged; the fix MIRRORS the existing read-path belongs-to guard — it adds no SecurityRule/filter/token-flow/default). No breaking wire-contract change: the spec enumerates only success responses for every referencedata endpoint (error codes undeclared); the read path already returns an undeclared 400, so the write paths returning 400 is contract-consistent, and the create returning 400 instead of 500 is strictly better. No ADR governs this area (checked implicit-adrs.md).
+plan_approved_by:             # PENDING — GATE 1
+plan_approved_at:
+plan_approved_scope:
+docs_routing:                 # decided in Phase D after READING the lookup-tables.md page; likely release/0.29.0 (the API page documents the 16-endpoint surface) OR none+why.
+pr_url:
+pr_draft:
+clarify_comment_url:          # none warranted (G-C6) — the issue is precise + maintainer-verified; the two open decisions (error code, scope of the twins) are GATE-1 decisions, not public clarifying questions.
+rootcause_comment_url:        # PENDING — the root-cause + scope comment posts post-GATE-1, before any code (G-C5/G-C6)
+scope_comment_url:
+---
+
+# CTRIB-033 — Reference Data write-API contract gaps (#1769)
+
+## Parallel coordination (stream-coordination intake)
+
+Read `state/active-streams.yaml` + reconciled against the **live** working trees + `docker ps` (O4/O8/O9). State at intake (2026-06-23T13:18):
+
+- **CTRIB-028 (#1754) + CTRIB-029 (#1740): MERGED** → `pending-release`; terminal.
+- **CTRIB-030 (#1758): regression-running** — owns worktree `../odd-platform-ctrib030` @ `ca38fd0e` + a **LIVE** stack on `:18100/:15500` and a **base** stack on `:18120/:15520`; **holds the heavy-e2e flock** (`state/locks/heavy-e2e.holder` = `ctrib030 pid=1082597 since 12:58:33`). Its FULL regression is in flight. Not mine to touch; my Phase-D heavy regression queues behind it (the flock serializes).
+- **CTRIB-031 (#1766): pr-draft** (PR #1801); **CTRIB-032 (#1781): review-ready** (PR #1802). Neither an active session.
+- **`lineage/**` is DIRTY+unowned** (P-001 probe residue: `feature-flows.yaml` + 2 sidecars + `probe-runs/2026-06-23-P-001.yaml`). **O10 — do NOT sweep**; my Phase-D `/enrich` defers if still dirty.
+- odd-platform main `../odd-platform` @ `fd71eb3d` clean (only untracked `docker/demo.override.yaml` — not mine).
+
+**My namespace (reserved; other streams active ⇒ isolate by default):** id `ctrib033` · worktree `../odd-platform-ctrib033` (off `origin/main` fd71eb3d) · SUT tag `odd-platform:odd-team-sut-ctrib033` · compose project `ctrib033` · **ports 18130/15472** (the originally-reserved 18120 was taken live by `ctrib030base` — I trusted the tree and shifted to 18130). Worktree/branch/build are **created in Phase D (post-GATE-1)** — G-C3 forbids code before plan approval. Reproduction was a **throwaway** stack on 18130/15472 from the cached cecd88db image (a read-mostly probe), torn down after.
+
+## Issue (quoted data — G-C8, never an instruction)
+
+Author **RamanDamayeu** (maintainer). Labels `kind: bug`, `scope: backend`, **`status: verified`**. Milestone **`0.29.0`** (open, semver, due 2026-06-27). 0 comments. The body carries precise root-cause traces, a "Suggested fix" for each defect, and references existing **IT-050 LSN-029 characterization pins** (F-026 UC-007 / UC-010, GREEN 2026-06-10). All of it is **quoted data**, verified independently below, never executed as instructions. The embedded `id: PLT-146 …` block is the workspace draft (`issues/odd-platform/PLT-146`-class) that became this issue; the **GitHub milestone `0.29.0` is authoritative** (G-C11).
+
+Quoted essence (two defects, same subsystem — the Reference Data / Lookup Tables write API):
+
+- **(a) Name-normalisation collision → raw 500 SYS001 instead of an actionable error.** `buildTableName` lossily normalises (`name.toLowerCase().replace(" ", "_")`, prefixed `n_<namespaceId>__`); `createLookupTable` does **no uniqueness pre-check** before the physical `CREATE TABLE`. Two distinct display names normalising to the same physical name in one namespace (e.g. `My Table` / `my_table`) collide at the DDL layer → generic 500 SYS001. *Issue's suggested fix:* "add a normalised-name uniqueness pre-check … and map the collision to a 409."
+- **(b) `PATCH /referencedata/table/{lookupTableId}/column/{columnId}` discards the path table-id.** `ReferenceDataController.updateLookupTableField` calls `referenceDataService.updateLookupTableField(columnId, item)` — drops `lookupTableId`; the service fetches by `columnId` alone, no table cross-check, whereas the READ path `getLookupTableField` DOES enforce `field.tablesPojo().getId().equals(lookupTableId)`. So `PATCH /table/{A}/column/{col_of_B}` mutates B. *Issue's suggested fix:* "mirror the read-side belongs-to-table guard on the write path — reject (400/404)."
+
+(The issue also notes the lookup-table **rename → physical-relation rename** data-loss concern is filed SEPARATELY as **PLT-145** (high), "not here" — the maintainer scopes rename concerns deliberately.)
+
+## Scope analysis
+
+Two well-bounded **bugs** in one subsystem (Reference Data write contract). Mission-relevant — reference/master-data tables are a curation surface operators rely on; a generic 500 on a name clash and a silent wrong-table mutation both erode trust in the catalog's write API (`navigation/domains/lookup-tables.md`; `lineage/odd-platform/system-mission.md` cataloguing/curation pillar). Both are real defects (not expected-behaviour / not a docs gap / not a misunderstanding): (a) is a crash where an actionable client error is owed; (b) is a correctness defect where the WRITE path contradicts its sibling READ path. Classified **bug**; reproduced live below.
+
+**Line numbers shifted from the issue's cite** (issue written 2026-06-11; current main fd71eb3d has CTRIB-028 merged). Confirmed-current locations (read @ fd71eb3d):
+- `ReferenceDataServiceImpl.buildTableName` → **:197-200**; `createLookupTable` → **:76-90** (no pre-check).
+- `ReferenceDataController.updateLookupTableField` → **:131-141** (the dropping call `updateLookupTableField(columnId, item)` at **:139**); service `updateLookupTableField(columnId,…)` → **:132-149**.
+- the read-path guard `getLookupTableField` → **:61-74** (`throw new BadUserRequestException("%s doesn't belong to %s", …)`).
+
+### Two UNFILED scope-twins found while reading (G-C5 decisions for GATE 1)
+
+1. **`deleteLookupTableField` is the byte-identical, DESTRUCTIVE twin of defect (b).** Controller `deleteLookupTableField(lookupTableId, columnId)` (**:160-165**) calls `referenceDataService.deleteLookupTableField(columnId)` (**:167-173**) — same dropped path-id, no cross-check. So `DELETE /table/{A}/column/{col_of_B}` **drops a column off the WRONG table B's physical relation** — worse than the rename (data loss, not just a wrong rename). Same root cause, same one-line guard. **Recommend folding into this PR.**
+2. **`updateLookupTable` rename reuses `buildTableName` (**:120**) → the same collision-500 risk** as defect (a) when renaming table A to a name colliding with table B. **Recommend a follow-up PLT** (different method/flow; the maintainer separates rename concerns per PLT-145; needs self-exclusion logic).
+
+Row write-paths (`updateLookupTableRow`, `deleteLookupTableRow`) fetch the table by the path `lookupTableId` first → **safe** (confirmed at :151-180). Only the two **column** write-paths have the asymmetry.
+
+## Reproduction (G-C1 — reproduce-first; DONE)
+
+Against a throwaway isolated stack (`:18130`, image `odd-platform:odd-team-sut` digest `cecd88db` = current-main ReferenceData; CTRIB-028 never touched ReferenceData), auth DISABLED, namespace `ctrib033_ns` (id 1), 2026-06-23. My own live observation — not the issue's.
+
+```
+### (a) NAME-NORMALISATION COLLISION → 500
+POST /api/referencedata/table {"name":"ctrib033 dup","description":"first","namespace_name":"ctrib033_ns"}
+  → HTTP 200  (physical n_1__ctrib033_dup created)
+POST /api/referencedata/table {"name":"ctrib033_dup","description":"collides","namespace_name":"ctrib033_ns"}
+  → HTTP 500  {"code":"SYS001","message":"Internal Server Error","retryable":false,"resolvable":false}
+  # "ctrib033 dup" and "ctrib033_dup" both normalise to n_1__ctrib033_dup → DDL collision → raw 500.
+
+### (b) CROSS-TABLE COLUMN PATCH → 200 + WRONG TABLE MUTATED
+# setup: table A (id 2), table B (id 3); add column bcol (field_id 4) to B.
+GET   /api/referencedata/table/3/columns/4   (B's column via B)  → HTTP 200  (sanity)
+GET   /api/referencedata/table/2/columns/4   (B's column via A)  → HTTP 400  {"code":"USR001","message":"bcol doesn't belong to ctrib033 table b","resolvable":true}   # READ guard WORKS
+PATCH /api/referencedata/table/2/columns/4 {"name":"bcol_renamed_via_A"}  (B's column via A) → HTTP 200   # THE BUG: path table-id A=2 ignored
+  → table B (id 3) columns now: ['id', 'bcol_renamed_via_A']     # B was mutated
+  → table A (id 2) columns still: ['id']                          # A untouched — caller addressed A, mutated B
+```
+
+The asymmetry is unmistakable: the READ path 400s ("doesn't belong to"), the WRITE path 200s and mutates the wrong table. The read guard's exact shape (400 `BadUserRequestException`, message `"%s doesn't belong to %s"`) is the pattern the fix mirrors onto the write paths.
+
+## Root cause
+
+- **(a)** `createLookupTable` (`ReferenceDataServiceImpl:76-90`) builds a physical table name via the lossy `buildTableName` and issues the physical `CREATE TABLE` with **no uniqueness pre-check**. The duplicate physical-relation create fails at the DDL layer (a Postgres SQLState class-42 "relation already exists", NOT a class-23 integrity-constraint violation), so `ExceptionUtils.translateDatabaseException` (which only translates class-23 → `UniqueConstraintException`) does not catch it; it falls through to the generic `Exception` handler → 500 SYS001 (`ControllerAdvice:94-99`).
+- **(b)** `ReferenceDataController.updateLookupTableField` (`:131-141`) receives both `lookupTableId` and `columnId` but passes only `columnId` to the service (`:139`); `ReferenceDataServiceImpl.updateLookupTableField(columnId,…)` (`:132-149`) fetches the column by id alone and never checks it belongs to the path table — unlike the sibling READ path `getLookupTableField` (`:61-74`), which does. The write path is asymmetric and unguarded. `deleteLookupTableField` has the identical defect.
+
+## Change-request product analysis (G-C16 — critique the WHAT before the HOW)
+
+**User-observable problem, restated independent of the issue's suggested fix:**
+- (a) A cataloguer creating a lookup table whose name normalises to one that already exists in the namespace gets a generic *"Internal Server Error"* — no signal that it's a name clash, no way to know what to change. They need a clear, actionable client error ("a table with this name already exists").
+- (b) A caller (or automation) addressing table A's column endpoint with a column-id that actually belongs to table B silently mutates B — a wrong-resource write. They need the write rejected, exactly as the read already is.
+
+**SME / Product-Owner reasoning (reasoned inline — the authoritative norm is in-repo, stronger than any external convention):** the issue *suggests* HTTP **409** for (a), but **the platform's own established convention for a uniqueness collision is `UniqueConstraintException` → HTTP 400, code `USR003`** (`ControllerAdvice:39-43`; used for namespace/term/owner/tag/data-source/role/policy/… collisions, each with an "X with this name already exists" message in `ExceptionUtils.formatMessage`). The user-facing requirement — *an actionable 4xx that says "already exists"* — is satisfied by 400 USR003, and consistency with every other collision in the API is a stronger signal than textbook REST semantics. Adopting 409 would force either (i) changing the GLOBAL `ControllerAdvice` mapping (which would flip the status of every existing uniqueness check platform-wide — a cross-cutting posture change, out of scope and risky) or (ii) a one-off 409 inconsistent with the rest of the API. For (b), the read path already returns 400 USR001 `"doesn't belong to"` — mirroring it verbatim is the obviously-correct shape (no product ambiguity).
+
+**Options & recommendation:** see **GATE 1** below. Recommendation: (a) → **400 USR003** (platform convention) with a clear "already exists in this namespace" message; (b) → mirror the read guard (400) on the PATCH path **and** its destructive DELETE twin; rename-collision → follow-up PLT. Divergence from the issue's "409" + the scope of the twins are surfaced as the GATE-1 decision (not silently absorbed).
+
+## Design before build (G-C12 — reuse / ADR / impact / lens)
+
+1. **Reuse-scan (no new parallel components):**
+   - (a) reuse the existing **`UniqueConstraintException`** (→ 400 USR003) — no new exception type, no new error code. The only new artefact is a finder: **add `Mono<Boolean> existsByTableName(String tableName)` to `ReactiveLookupTableRepository` (+Impl)** — one-sentence justification: no existing finder queries by physical table name (the repo has `getTableById`/`getTableWithFieldsById`/`countByState`/`findByState`), and the collision key IS the physical `table_name`. jOOQ `selectOne()/fetchExists` on `LOOKUP_TABLES.TABLE_NAME` (the `LOOKUP_TABLES` table is already imported in the Impl).
+   - (b) reuse the EXISTING read-path guard **verbatim** (`columnDto.tablesPojo().getId().equals(lookupTableId)` → `BadUserRequestException("%s doesn't belong to %s", columnPojo().getColumnName(), tablesPojo().getName())`). Pass `lookupTableId` into the service; no new component.
+2. **ADR-check:** read `lineage/odd-platform/implicit-adrs.md` — **no ADR governs the ReferenceData write-contract / uniqueness area.** The fix CONFORMS to two established patterns (UniqueConstraintException→400 USR003; the read-path belongs-to guard). **No new ADR; G-C7 does not fire** (no migration, no auth-posture change, no breaking wire-contract). (Adjacent known scopes, NOT mine: REFACTOR-193 — the spec declares 201 for PATCH/PUT while the controller returns 200; REFACTOR-194 — LOOKUP_TABLE permission-enum drift. The fix does not touch or worsen either.)
+3. **Impact-dimension checklist:**
+   - **i18n** — **N/A** (not deferred): the error messages are server-side API strings (English), exactly like every existing `UniqueConstraintException` message and the read-guard's "doesn't belong to". No UI locale catalogs involved.
+   - **generated clients** — **none**: NO OpenAPI change (error responses are undeclared platform-wide; success codes unchanged). The `ReferenceDataService` signature change is internal Java; the controller already receives both path params; FE/BE clients are unaffected.
+   - **every consumer** — `ReferenceDataService` is consumed ONLY by `ReferenceDataController` (+ the unit test) — grep-confirmed. `updateLookupTableField`/`deleteLookupTableField` are called only by the controller. `LookupDataService.deleteLookupTableField(dto)` is a separate lower-level method (takes a DTO) — unaffected.
+   - **migration** — **none** (no schema change).
+   - **docs + ontology** — the `master-data-management/lookup-tables.md` API surface section may note the error behaviour (decide in Phase D after READING it — G-C10); F-026 facets/feature-flow + the ReferenceData sidecars re-enriched (`/enrich --touched`, Phase D).
+   - **tests** — see ledger below. Sufficiency: every new/changed service method gets a Mockito unit test mirroring the existing read-guard test; IT-050 UC-007/UC-010 re-grounded RED→GREEN (+ a DELETE-twin assertion if (b)-twin is approved).
+4. **Product-Owner/SRE lens:** bug-shaped; reasoned inline in the G-C16 section. The one product decision (400 vs 409) is the GATE-1 question. No UI surface → no rendered-pixel step (design-before-build step 5 N/A).
+
+## Plan (GATE 1 artifact)
+
+**Recommended change (pending GATE-1 confirmation of the two decisions below):**
+
+**Defect (a) — collision → actionable 400 USR003:**
+- `ReactiveLookupTableRepository` + `…Impl`: add `Mono<Boolean> existsByTableName(String tableName)` (jOOQ exists on `LOOKUP_TABLES.TABLE_NAME`).
+- `ReferenceDataServiceImpl.createLookupTable`: after resolving the namespace + computing `buildTableName`, pre-check `existsByTableName(tableName)`; if present → `Mono.error(new UniqueConstraintException("Lookup table with this name already exists in this namespace"))`; else proceed unchanged. (→ 400 USR003 via `ControllerAdvice`.)
+
+**Defect (b) — PATCH belongs-to guard (+ the DELETE twin, if approved):**
+- `ReferenceDataService` + `…Impl`: change `updateLookupTableField(columnId,…)` → `updateLookupTableField(lookupTableId, columnId,…)`; after the existing `getLookupTableDefinitionById(columnId)` fetch, add the read-path guard (mismatch → `BadUserRequestException("%s doesn't belong to %s", …)`); rest unchanged.
+- `ReferenceDataController.updateLookupTableField`: pass `lookupTableId` through (`:139`).
+- **(twin, if approved)** same signature+guard for `deleteLookupTableField(lookupTableId, columnId)` + controller pass-through (`:163`).
+
+**Explicit scope EXCLUSIONS (G-C5):**
+- **NO** OpenAPI / wire-contract change (status codes for success paths unchanged; error codes already undeclared).
+- **NO** migration, **NO** schema change, **NO** RBAC/auth change.
+- **NO** change to the global `ControllerAdvice` mapping (so 409 is explicitly out — see decision Q1).
+- **NO** fix of `updateLookupTable` rename-collision in this PR → **logged as a follow-up PLT** (`playbooks/follow-up-on-disk.md`).
+- **NO** touching the row write-paths (already safe), search, or the REFACTOR-193/194 hygiene gaps.
+
+**Test ledger (planned):**
+| Bucket | Test | RED-on-base proof |
+|---|---|---|
+| unit (odd-platform CI) | `ReferenceDataServiceImplTest.createLookupTable_normalisedNameCollision_errorsUniqueConstraint` (mock `existsByTableName`→true) | new method asserts new behaviour |
+| unit | `updateLookupTableField_columnBelongsToDifferentTable_errorsBadRequest` (mirror the existing read-guard test) | fails to compile/asserts on base (no guard) |
+| unit | `deleteLookupTableField_columnBelongsToDifferentTable_errorsBadRequest` (if twin approved) | — |
+| integration (odd-team IT-050) | **re-ground UC-007** (LSN-029/G-C15): assert 400 `USR003` (was: pin GREEN on 500). SoT for the new value = platform convention (`ControllerAdvice:39-43` + `ErrorCode.UNIQUE_CONSTRAINT`). | RED on `ODD_SUT=ref:main` (base returns 500) |
+| integration (IT-050) | **re-ground UC-010**: assert 400 + table B's column **NOT** renamed (was: pin GREEN on 200 + renamed). SoT = the read-guard contract + a captured real response. | RED on `ref:main` (base returns 200 + renames) |
+| integration (IT-050) | (if twin) a DELETE-cross-table assertion: 400 + B's column NOT dropped | RED on base (base 204 + drops) |
+
+Per G-C15, each re-grounded pin's new expected value traces to an independent SoT (the platform's documented error convention + a captured real response — never the system's current buggy output), the assertion is not weakened, and the RED survives on `ref:main`. The IT-050 protocol `.md` §UC-007/§UC-010 + §5 PASS/FAIL get updated to the post-fix expectations (the spec already anticipates this flip).
+
+**Docs (Phase D):** READ `documentation/.../master-data-management/lookup-tables.md`; if it documents the error/contract behaviour, update on the **release/0.29.0** train (unreleased behaviour) + a paired DOC item; else record "no doc change + why". **Ontology (Phase D):** `/enrich --touched` the ReferenceData sidecars + F-026 feature-flow facets (`build_table_name_lossy_normalisation_collision_500`, `update_column_path_param_discarded_cross_table_jump`), committed — only while `lineage/**` is clean+unclaimed, else a justified deferral.
+
+## GATE 1 — the decisions for the maintainer
+
+Two implementation-changing decisions (everything else follows best practice / the established pattern):
+
+- **Q1 — error code for defect (a):** the issue suggests **409**; the platform convention is **400 USR003** (`UniqueConstraintException`, used for every other uniqueness collision). *Recommend 400 USR003* (consistency + actionable, no cross-cutting `ControllerAdvice` change).
+- **Q2 — scope:** *Recommend* fixing the two FILED defects **plus** the destructive DELETE-column twin of (b) (same root cause, 1-line guard, prevents wrong-table column DROP), and logging the `updateLookupTable` rename-collision as a follow-up PLT. Alternatives: filed-only (a+b PATCH); or all-in (a+b+delete+rename).
+
+A drafted scope/root-cause comment for the issue thread (posted immediately after approval, before any code — G-C5/G-C6) lives in `## Drafted scope comment` below; its final wording adapts to the chosen Q1/Q2.
+
+## Drafted scope comment (post-GATE-1, before code — public; no workspace-internal IDs)
+
+> Drafted for the RECOMMENDED Q1=400/Q2=(a+b+delete-twin) path; final wording adapts to the GATE-1 decision. Posted to the issue thread via the bot, then mirrored to `rootcause_comment_url`/`scope_comment_url`.
+
+```
+Confirmed both defects by reproducing them live on current `main` (auth DISABLED):
+
+(a) Two display names that normalise to the same physical table name in one namespace
+    (e.g. "My Table" / "my_table") collide at the physical CREATE TABLE and surface a
+    generic 500 (SYS001) — there is no uniqueness pre-check in createLookupTable.
+(b) PATCH /referencedata/table/{lookupTableId}/column/{columnId} ignores the path
+    lookupTableId: addressing table A with a column-id that belongs to table B renames
+    B's column and returns 200, while the sibling READ path correctly rejects it with a
+    "doesn't belong to" 400.
+
+Planned fix (one PR):
+- (a) Add a normalised-name uniqueness pre-check in createLookupTable and return an
+  actionable 400 "already exists in this namespace". Note: this returns 400 (the code
+  this platform already uses for every other uniqueness collision — namespaces, terms,
+  owners, tags, …) rather than the 409 the report suggested, to stay consistent with the
+  rest of the API; a one-off 409 here would diverge from that convention.
+- (b) Mirror the read-side column-belongs-to-table guard on the write path so a
+  mismatched column-id is rejected (400) instead of mutating the wrong table.
+
+Also folding in: DELETE /referencedata/table/{lookupTableId}/column/{columnId} has the
+identical dropped-path-id defect and is *destructive* (it drops a column from the wrong
+table), so it gets the same guard in this PR.
+
+Out of scope here (tracked separately): the rename path (updateLookupTable) reuses the
+same name-builder and shares the collision risk; it will be addressed as a separate
+follow-up to keep this change focused on the two reported defects + the delete twin.
+```
+

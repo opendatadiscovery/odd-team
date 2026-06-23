@@ -50,8 +50,12 @@ else:
     sys.exit("no free port")
 PY
 }
-API_PORT="${ODD_API_PORT:-$(find_free_port 18090)}"
-DB_PORT="${ODD_DB_PORT:-$(find_free_port 15442)}"
+# Start the stream-SUT port search ABOVE the per-spec e2e stacks' FIXED ports (the multi-stack/ingestion
+# helpers hardcode DB 15432-15437 and API 18080-18090 — e.g. odd-notifications' webhook-stub binds :18090).
+# Starting at 18100/15500 keeps the per-stream SUT clear of them, so a stream's own multi-stack run can't
+# collide its SUT with a per-spec stack (the 2026-06-23 ctrib030 :18090 ↔ webhook-stub bind failure).
+API_PORT="${ODD_API_PORT:-$(find_free_port 18100)}"
+DB_PORT="${ODD_DB_PORT:-$(find_free_port 15500)}"
 
 # --- teardown + lock-holder cleanup: ALWAYS runs (flock auto-drops when fd 9 closes on exit) ---
 teardown() {

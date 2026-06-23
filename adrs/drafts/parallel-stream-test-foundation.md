@@ -69,6 +69,12 @@ per-stream sandbox.
 - Per-spec stacks stay fixed-name — simpler than parameterising every MinIO/LDAP/collector compose — because
   serialization + teardown make concurrent use impossible. (If true parallel heavy e2e is ever needed, those
   stacks get the same `<id>` treatment as a follow-up.)
+- **Port map (SUT must not collide with a per-spec stack).** The per-spec e2e stacks hardcode host ports —
+  DB `15432-15437`, API/service `18080-18090` (e.g. `odd-notifications`' webhook-stub binds `:18090`). The
+  per-stream SUT therefore allocates from **`18100+` / `15500+`** (`run-regression.sh` `find_free_port` base),
+  clear of that range — otherwise a stream's own `multi-stack` run collides its SUT with a per-spec stack (the
+  2026-06-23 ctrib030 `:18090` ↔ webhook-stub bind failure). **Follow-up:** `run-suite.sh`'s standalone
+  `find_free_port` base (18090/15442) needs the same bump for direct (non-orchestrator) stream runs.
 
 ## Consequences
 

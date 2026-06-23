@@ -62,3 +62,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-23 — suite/protocol: ingestion-e2e
+- runner: AI-assisted Claude Opus 4.8 (review-ctrib033 — reviewer's OWN FULL confirmation regression on SUT digest 652c0e81 ← ref:0cc89f79; separate /review session)
+- odd-platform working-tree HEAD: e481cefd (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-review-ctrib033  (image odd-platform:odd-team-sut-review-ctrib033, digest sha256:652c0e817dbfc235a1eb033a9c97b9fcc343b9b7690efc16a910e17f4a468d1d)
+- protocols: IT-128
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: 6 passed / 0 failed (1.1m).
+

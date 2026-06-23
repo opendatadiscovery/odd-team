@@ -6,7 +6,7 @@ title: "Reference Data API contract gaps — (a) name-normalisation collision re
 class: bug                    # two distinct, live-reproduced contract defects in the Reference Data (Lookup Tables) WRITE API, same subsystem.
 scope: backend
 milestone: "0.29.0"           # open + semver (due 2026-06-27) → G-C11 PASSES (no hard stop). Internal draft id = PLT-146.
-status: pr-draft              # Phase E DONE: DRAFT PR #1804 opened (Closes #1769, head 0cc89f79, base main, draft:true, bot author, mergeable_state:blocked). DoD all-green (unit + FULL regression GREEN-for-change + RED proof on ref:main + docs routed). /review (separate session) flips pr-draft → review-ready; human GATE-2 approves+merges → pending-release.
+status: review-ready          # /review (review-ctrib033, SEPARATE session) ACCEPTED 2026-06-23 → pr-draft → review-ready. Reviewer's OWN unit (BUILD SUCCESSFUL 6m40s + 13 new tests green) + FULL e2e regression on a fresh SUT from ref:0cc89f79 (fc 311/2 all-non-mine, ms 9/0, kb 3-RED-expected, ie 6/0; IT-050 4/4) + IT-050 RED proof on the unfixed base (1/3) all confirm GREEN-for-change. Human GATE-2 (approve+merge PR #1804) → pending-release; the 0.29.0 release-review owns done. PLT-243 (security) surfaced for GATE 2.
 reproduced: "LIVE on a throwaway isolated stack (ctrib033repro on :18130/:15472, image odd-platform:odd-team-sut digest cecd88db — CTRIB-028's confirmation build; CTRIB-028 never touched ReferenceData, so its ReferenceData bytes == current main fd71eb3d), auth DISABLED, 2026-06-23. (a) COLLISION: POST /api/referencedata/table {name:'ctrib033 dup'} → 200; POST {name:'ctrib033_dup'} (normalises to the same physical n_1__ctrib033_dup) → HTTP 500 {\"code\":\"SYS001\",\"message\":\"Internal Server Error\"}. (b) CROSS-TABLE PATCH: created table A(id 2) + B(id 3), added column bcol(field_id 4) to B; GET /table/2/columns/4 (B's column via A) → 400 {\"code\":\"USR001\",\"message\":\"bcol doesn't belong to ctrib033 table b\"} (read guard works); PATCH /table/2/columns/4 {name:'bcol_renamed_via_A'} → HTTP 200 + table B's column renamed to bcol_renamed_via_A while table A stayed [id]. Both defects confirmed. Stack torn down (down -v). See '## Reproduction'."
 adr_required: false           # G-C7 does NOT fire. No migration (no schema change). No auth/security-posture change (RBAC unchanged; the fix MIRRORS the existing read-path belongs-to guard — it adds no SecurityRule/filter/token-flow/default). No breaking wire-contract change: the spec enumerates only success responses for every referencedata endpoint (error codes undeclared); the read path already returns an undeclared 400, so the write paths returning 400 is contract-consistent, and the create returning 400 instead of 500 is strictly better. No ADR governs this area (checked implicit-adrs.md).
 plan_approved_by: RamanDamayeu
@@ -235,4 +235,58 @@ follow-up to keep this change focused on the two reported defects + the delete t
 **Draft PR — DRAFT #1804** ([link](https://github.com/opendatadiscovery/odd-platform/pull/1804)): `Closes #1769`, head `contrib/CTRIB-033-referencedata-write-contract` @ `0cc89f79`, base `main`, `draft:true`, author `odd-contributor[bot]`, `mergeable_state:blocked` (G-C4 merge gate verified — the bot cannot self-approve; ≥1 maintainer approval required). Branch pushed via the App with an explicit same-name refspec — `main` untouched (LSN-038). PR body: `contributor/CTRIB-033-pr-body.md` (no workspace-internal IDs; the security follow-up referenced as "a separate, already-documented permission-gate issue").
 
 **Handoff (GATE 2):** run `/review` in a **separate session** (it flips `pr-draft → review-ready` + re-confirms the gates), then a human approves + merges #1804 → `pending-release` (the 0.29.0 release-review owns the `done` flip: docs-train publish + Gate-8 live-site DOC-484 + the deferred `/enrich` at the release substrate scan). **Surface to the maintainer: PLT-243 (security — the column-write permission gate never fires) — decide whether to schedule it for 0.29.0 or later.**
+
+## Review (2026-06-23, session: review-ctrib033)
+
+- **Result: ACCEPTED → `pr-draft` → `review-ready`.** Separate `/review` session (implement was a prior session — commits 4b03a23 / 5206383 / c3174d6). Human GATE-2 (approve + merge PR #1804) owns the `pending-release` flip; the 0.29.0 release-review owns `done`.
+- **Live reconcile (O4/O8/O9):** origin/main advanced `fd71eb3d → e481cefd → 56480919` (CTRIB-031 #1801 merged mid-review — FE-only). PR #1804 live: draft, author `odd-contributor[bot]`, head `0cc89f79`, base main, 8 files +236/-15 (matches the diff exactly). Reviewed commit `0cc89f79`, worktree `../odd-platform-ctrib033` clean.
+
+### Cheap precondition (2-minute bounce) — NOT triggered
+DoD claims full completion (no "NOT RUN"/"deferred" for the test gates); integration run-logs exist with a coherent single SUT digest (`a44613f0`) across all four fix-buckets + the RED-proof base (`3885c4af`). Proceeded to the full confirmation.
+- **Observation (non-blocking):** the implementer's five run-logs were *skeletons* — `runner:`/`evidence:` unfilled, **no pass/fail counts** in the log files (counts were only in this ledger). Coherent (single SUT + expected outcome flags), so not a bounce — but counts belong in the run-log. Filled with my own measured counts this session.
+
+### Acceptance criteria (GATE-1-approved scope) — all delivered
+- [x] (a) collision → **400 USR003** (not 409) via `existsByTableName` pre-check — PASS (`ReferenceDataServiceImpl:88-93`; IT-050 UC-007 GREEN-on-fix / RED-on-base)
+- [x] (b) PATCH column belongs-to guard (400) — PASS (`:143-147`, mirrors read-guard `:67-71` verbatim; IT-050 UC-010 GREEN/RED)
+- [x] (b-twin) DELETE column belongs-to guard (400) — PASS (`:183-187`; IT-050 UC-011 GREEN/RED)
+- [x] Exclusions held (no openapi/migration/auth/ControllerAdvice change) — PASS (diff = exactly the 8 scoped files, +236/-15)
+- [x] rename-collision deferred → PLT-242 on disk — PASS
+
+### Quality Bar
+- **Gate 1 — PASS** (no duplicate: reuses `UniqueConstraintException` + the read-path guard; only new artefact `existsByTableName`, justified)
+- **Gate 4 — PASS** (`Consumer-read:`/`Sources:` footer verified — `ReferenceDataController` is the sole consumer of the changed service methods via grep; `UniqueConstraintException→400 USR003` + `BadUserRequestException→400` confirmed in `ControllerAdvice:27-41` + `ErrorCode` (USR001/USR003); `getLookupTableField` read-guard mirrored verbatim)
+- **Gate 5 — N/A** (no SDK builder in scope)
+- **Gate 8 — PENDING-RELEASE (0.29.0)** (docs corrected on `documentation@release/0.29.0` @4dddcb7, DOC-484; live-site verification scheduled at the 0.29.0 release gate)
+- **Gate 9 — PASS** (footer sources verified: openapi.yaml endpoint shapes; ControllerAdvice/ErrorCode mappings; read-guard; reproduction re-confirmed by my RED proof)
+- **Gate 10 — N/A** (code change; docs change is correctly homed on the API-reference page)
+- **Gate 11 — PASS** (mechanical banned-term grep on `reference-data.md` CLEAN — operator language only)
+- **G-C1 reproduce-first — PASS** (documented reproduction; independently re-confirmed by my RED proof: base 500 / 200+mutate / 204+drop)
+- **G-C2 verify-running-system, FULL regression both buckets — PASS (reviewer's OWN runs):**
+  - Unit (CI replica `:odd-platform-api:build` on 0cc89f79): **BUILD SUCCESSFUL 6m40s** + checkstyleMain/Test; JUnit XML — `ReferenceDataServiceImplTest` 10/10, `ReferenceDataControllerTest` 2/2, `ReactiveLookupTableRepositoryImplTest` 1/1, 0 failures.
+  - Integration (SUT `odd-team-sut-review-ctrib033` digest `652c0e81` ← `ref:0cc89f79`): **feature-complete 311/2**, **multi-stack 9/0**, **known-bugs 3-RED-expected/0-unexpected-green**, **ingestion-e2e 6/0**. The 2 fc fails = `confirmation-dialog-thunk-arm.spec.ts:32,:91` (CTRIB-031 #1801's fix, absent from this SUT — delta-0; #1801 now in main → pass post-rebase). **IT-050 all 4 GREEN.**
+- **G-C3 — PASS** (`plan_approved_by: RamanDamayeu`, GATE 1, AskUserQuestion)
+- **G-C4 — PASS** (structural: draft + `odd-contributor[bot]` author; a human must approve+merge). *Note: PR API now reports `mergeable_state: clean` (was `blocked`) — draft + bot-cannot-self-approve still gate the merge; maintainer should confirm branch protection requires a review before merging.*
+- **G-C5 — PASS** (bounded: diff = exactly the plan; public scope/root-cause comment live at #1769 issuecomment-4780877046)
+- **G-C6 — PASS** (no clarifying question warranted — recorded)
+- **G-C7 — N/A, correctly** (no migration / no auth-posture change / no breaking wire-contract; the auth-gate issue PLT-243 is correctly deferred, not implemented)
+- **G-C8 — PASS** (issue quoted as data; the 409 suggestion critiqued, not absorbed)
+- **G-C9 — PASS** (both buckets: unit Mockito + Testcontainers; integration IT-050 re-grounded; user-facing → integration IT present)
+- **G-C10 — PASS (docs) / DEFERRED-justified (ontology)** (docs on release/0.29.0 @4dddcb7 + DOC-484; ontology `/enrich` deferred — lineage/** dirty+unowned P-001 residue, same accepted bar as CTRIB-028/029/032; scheduled at the 0.29.0 release substrate scan)
+- **G-C11 — PASS** (milestone 0.29.0 open + semver, due 2026-06-27)
+- **G-C12 — PASS** (reuse-scan: `existsByTableName` justified, read-guard reused verbatim; ADR-check: no ADR governs, conforms to 2 patterns; impact checklist; PO lens)
+- **G-C13 — PASS** (both branches of each guard + collision both ways + controller-forwarding + repo finder + RED proof; unit build green incl. checkstyle; no control lost; regression delta-0)
+- **G-C14 — N/A** (public issue, not a GHSA)
+- **G-C15 — PASS (CONFIRMED — the key gate for this change).** IT-050 re-grounding (UC-007/UC-010 changed, UC-011 new): (1) new expected values trace to an INDEPENDENT SoT (platform uniqueness convention `ControllerAdvice`+`ErrorCode.UNIQUE_CONSTRAINT=USR003` + the read-guard contract) — verified against source, never the system's output; (2) assertions TIGHTENED (UC-007 added code+message asserts), real API + real Postgres (`physicalColumns`/`catalogRow`, helpers/lookup.ts:166/259) boundaries retained, no `.skip`/mock-swap/matcher-widening; (3) **RED SURVIVES** — my own run on the unfixed base: IT-050 **1 passed / 3 failed** (UC-001 ✓, UC-007/010/011 ✘ at the assertion lines), GREEN on the fix → the tests assert more truth and do not hide the bug. Protocol `.md` updated in sync (PASS + FAIL criteria flipped).
+- **G-C16 — PASS** (409→400 reframe critiqued + surfaced at GATE 1, not silently absorbed)
+- **Outbound URL sweep:** no new outbound URLs in the change (docs edit added no links; PR/issue/comment URLs in the ledger verified live via the GitHub API).
+- **Banned-phrase check:** none used.
+- **Regressions:** none attributable to CTRIB-033 (the only e2e fails are the CTRIB-031 unmerged-fix tests, delta-0; known-bugs unchanged).
+- **Security follow-up (GATE 2):** PLT-243 (high) VERIFIED — `SecurityConstants.java:337,341` register the column PATCH/DELETE rules on singular `/column/{column_id}` while the live route (and the POST-create rule :333) use plural `/columns/{column_id}` → the gate falls through to authentication-only. The retained reference-data.md caveat is accurate. CTRIB-033 correctly does not touch it (G-C7). Maintainer decides scheduling.
+- **Navigation:** `navigation/domains/lookup-tables.md` lists `ReactiveLookupTableRepository` (touched) but NOT `ReferenceDataController`/`ReferenceDataServiceImpl` (the change's core files) — pre-existing minor gap → **NAV-003** (low) logged.
+- **lineage/**:** left untouched — my regression's P-001 api-probe re-touched the unowned residue (`feature-flows.yaml` + 2 sidecars + `probe-runs/2026-06-23-P-001.yaml`); per O10/R9 the review committed nothing there and reverted nothing (it is indistinguishable from, and is, the pre-existing unowned residue); the lineage owner / 0.29.0 release scan reconciles.
+- **Doc-product editorial audit** (`playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run:** the touched MDM subtree end-to-end — `master-data-management.md`, `master-data-management/lookup-tables.md`, `developer-guides/api-reference/reference-data.md`. Full 135-page tree partitioned (covered across today's CTRIB-028/030/031/032 reviews, DOC-478..483; the 0.29.0-train re-audit queued per review-ctrib031-3).
+  - **Findings:** none NEW. The reference-data.md change integrates coherently (collision-400 + belongs-to-400 on the endpoint rows; the danger hint correctly layers the verified permission-gate caveat over the now-closed cross-table defect). Pre-existing **DOC-483** (lookup-tables.md "Six behaviours" header vs 5 hint blocks) already logged today by review-ctrib032 — reconcile at the release-train merge; not re-logged.
+- **GATE-2 advisory (non-blocking):** rebase `0cc89f79` onto current `origin/main` (`56480919`, now with CTRIB-031 #1801) before merge — the 2 delta-0 feature-complete fails clear once CTRIB-031's FE fix is in the SUT.
+- **Notes:** every load-bearing claim VERIFIED via read/grep/own-run (unit build log + JUnit XML; my own e2e regression + RED proof; ControllerAdvice/ErrorCode/SecurityConstants source; the live PR via GitHub API; the release/0.29.0 doc diff). The fix is correct, bounded, regression-clean, and its tests genuinely prove it (RED→GREEN).
 

@@ -98,3 +98,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-06-23 — suite/protocol: known-bugs
+- runner: AI-assisted Claude Opus 4.8 (review-ctrib033 — reviewer's OWN FULL confirmation regression on SUT digest 652c0e81 ← ref:0cc89f79; separate /review session)
+- odd-platform working-tree HEAD: e481cefd (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-review-ctrib033  (image odd-platform:odd-team-sut-review-ctrib033, digest sha256:652c0e817dbfc235a1eb033a9c97b9fcc343b9b7690efc16a910e17f4a468d1d)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: 3 failed = the 3 expected-RED pins (attachment-local-durability IT-007/LSN-001/PLT-086, error-boundary-containment IT-006/F-042, quality-dashboard-unknown-status IT-004/PLT-052). No unexpected GREEN — no pin flipped by this change.
+

@@ -7,8 +7,8 @@ milestone: "0.29.0"
 status: planned            # intake -> scoping -> reproducing -> root-caused -> [planned] -> plan-approved[GATE1] -> ... -> review-ready -> merged[GATE2]
 reproduced: "live browser repro 2026-06-24 — both defects REPRODUCED on cached buggy SUT 353a5b06 (odd-minimal :18130). See Phase B."
 adr_required: no           # G-C7 does NOT fire (FE-only; no migration / no auth-posture change / no wire-contract change)
-plan_approved_by: ""       # GATE 1 — pending
-plan_approved_at: ""
+plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"
+plan_approved_at: "2026-06-24"   # both recommended: Defect 2 = both surfaces; Defect 1 = thunk-side (emit entityId)
 docs_routing: ""           # decided in Phase D (likely none — behaviour was always intended; the bug is a regression vs intent)
 pr_url: ""
 pr_draft: ""
@@ -192,5 +192,14 @@ restores intended behaviour (no NEW user-facing capability) → likely `docs_rou
 ## Test / Docs / Ontology ledger
 (Phase D — filled with run evidence at the committed SHA.)
 
+## GATE 1 — APPROVED (2026-06-24, RamanDamayeu via AskUserQuestion)
+- Defect 2 confirmation scope: **both surfaces** (per-entity tab + global page).
+- Defect 1 fix side: **thunk-side** (emit `entityId`).
+- No scope narrowing vs the issue → no mandatory scope comment (G-C5).
+
 ## Comments posted
-(Phase C/D — one folded root-cause + live-reproduction comment after GATE 1, per the github-write rate-limit.)
+A standalone root-cause/reproduction issue comment was drafted (scratchpad `issue-comment.md`) but its POST
+was denied by the harness's outward-facing-write guard (the GATE-1 answers approved the design, not publishing
+to the public issue). Decision: **do not** post a separate comment — fold the root-cause + live reproduction
+into the **PR body** instead (it surfaces in the thread via `Closes #1803`). The only external writes then are
+the branch push + the draft PR (Phase E), surfaced for authorization at handoff.

@@ -125,46 +125,40 @@ The edge cases a product owner would flag in a demo are the dangerous ones: a pa
     resolved alerts.
   seed_source: endpoint-shape
   validation:
-    verdict: contradicted
+    verdict: confirmed   # RE-GRADED from `contradicted` — PLT-005 FALSIFIED (2026-06-10) + behaviourally VERIFIED (2026-06-24)
     actual_behavior: |
-      The jOOQ predicate at AlertHousekeepingJob.java:28-34 chains
-      `.where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
-      jOOQ fluent-builder precedence binds `.and(...)` to the most recent
-      `.or(...)`, emitting `WHERE (STATUS='RESOLVED') OR (STATUS='RESOLVED_AUTOMATICALLY'
-      AND STATUS_UPDATED_AT <= cutoff)`. The TTL cutoff therefore applies ONLY to
-      RESOLVED_AUTOMATICALLY rows; a manually-RESOLVED alert matches the bare
-      first clause and is hard-deleted on the VERY NEXT 15-minute cycle,
-      regardless of `resolved_alerts_days`.
+      The hypothesis HOLDS. The earlier `contradicted` verdict was a misread of the
+      jOOQ chain as raw SQL precedence. jOOQ's fluent builder combines the WHOLE
+      accumulated condition and parenthesises, so AlertHousekeepingJob.java:28-34
+      `.where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`
+      emits `WHERE (STATUS='RESOLVED' OR STATUS='RESOLVED_AUTOMATICALLY') AND
+      STATUS_UPDATED_AT <= cutoff` — the INTENDED grouping. A freshly manual-RESOLVED
+      alert does not match (its status_updated_at is not <= cutoff) and survives its
+      full resolved_alerts_days window; only aged resolved alerts are purged. Manual
+      and automatic resolutions are retained symmetrically.
     evidence:
-      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
-        section: bugs_limitations_corner_cases[1]
-        cite: "AlertHousekeepingJob.java:28-34"
-        note: "the operator-precedence predicate chain; PRIMARY-SOURCE confirmation of REFACTOR-142"
-      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
-        section: bugs_limitations_corner_cases[3]
-        cite: "AlertHousekeepingJob.java:28-34 + WebFetch /configuration-and-deployment/odd-platform"
-        note: "second-angle confirmation; live doc acknowledges the bug verbatim"
-      - test: "HousekeepingTtlKnownBugsTest.alertHousekeepingOrAndPrecedence_knownBug_PLT005 (@pins PLT-005)"
+      - test: "odd-platform AlertHousekeepingRetentionTest.freshlyResolvedAlertsAreRetained_onlyAgedOnesArePurged"
         note: >-
-          v0.3.0 — a known-bug characterization pin asserts the CURRENT buggy
-          predicate chain is present (GREEN now, RED the instant the OR is
-          grouped). This GUARDS the contradiction against a silent fix; it does
-          NOT assert the user-facing 30-day-retention PROMISE.
-    operator_visible_failure: |
-      (1) An operator clicking "RESOLVED" on a production alert loses the alert —
-      and its audit trail — within ~15 minutes, not 30 days. (2) Raising
-      `resolved_alerts_days` to 90 for a compliance requirement buys longer
-      retention for auto-resolved alerts ONLY; manual resolutions silently ignore
-      the setting entirely. (3) The data has been silently lost since 2023 (commit
-      c8dc0544) on every deployment — older deployments have years of vanished
-      manual-resolution audit history. SOC2/SOX/HIPAA alert-retention claims built
-      on `resolved_alerts_days` are unsound for manual-resolved rows.
-    severity: HIGH
+          2026-06-24 — a REAL behavioural test: runs the actual AlertHousekeepingJob
+          .doHousekeeping() against a real Postgres (Testcontainers) with TTL=30 and
+          asserts a fresh manual-RESOLVED alert SURVIVES while an aged one is purged.
+          GREEN on the current code; would be RED only if the alleged precedence bug
+          existed. This GREEN test asserts the correct retention PROMISE (it replaces
+          the false source-scan/replica pins).
+      - note: "jOOQ 3.18.4 render of the exact chain → `(A OR B) AND C` (issues/odd-platform/PLT-005.md, status:rejected)."
+    operator_visible_outcome: |
+      Retention behaves as documented: a manual or automatic resolution is retained
+      for resolved_alerts_days (default 30) before housekeeping deletes it. No silent
+      data loss; SOC2/SOX/HIPAA retention claims built on resolved_alerts_days are
+      sound for both resolution kinds. (The one real footgun is leaving
+      resolved_alerts_days UNSET under a partial housekeeping.ttl override — it binds
+      to 0 and deletes immediately; the shipped default sets it to 30. Separate: PLT-083.)
+    severity: none
     confidence: HIGH
-    routes_to_finding: bug-candidate
+    routes_to_finding: confirmed-promise
     use_case_kind: happy-path
-    coverage: unverified  # the BUG is pinned (PLT-005), but no GREEN test asserts the correct retention promise
-    pinned_by: "HousekeepingTtlKnownBugsTest.alertHousekeepingOrAndPrecedence_knownBug_PLT005"
+    coverage: covered  # AlertHousekeepingRetentionTest asserts the correct retention promise (real job + real Postgres)
+    pinned_by: "odd-platform AlertHousekeepingRetentionTest.freshlyResolvedAlertsAreRetained_onlyAgedOnesArePurged"
     test_demand: functional  # the post-fix regression guard: seed a manual RESOLVED alert younger than the TTL, run a cycle, assert it survives
 
 - id: H-002

@@ -93,19 +93,17 @@ test.describe('IT-093 F-010 housekeeping TTL purge — predicate contract + PLT-
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // CORNER PIN 1 — PLT-005 / F-010 H-001 (GREEN now, RED on fix).
-  // AlertHousekeepingJob.java:28-34 chains
-  //   .where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.le(cutoff))
-  // jOOQ binds `.and(...)` to the nearest `.or(...)`, emitting
-  //   WHERE (status = 2) OR (status = 3 AND status_updated_at <= cutoff)
-  // → a manual RESOLVED (status=2) alert is selected REGARDLESS of TTL: it is hard-deleted on
-  // the next 15-min cycle even when freshly resolved. The PROMISE (H-001) is that a manual
-  // RESOLVED alert is retained for resolved_alerts_days, symmetric with auto-resolved.
-  // We seed a FRESH manual RESOLVED alert (status_updated_at = now, far inside the 30d TTL) and
-  // assert the BUGGY predicate selects it while the CORRECT (parenthesised) predicate spares it.
-  // KNOWN BUG (PLT-005): flips RED the moment AlertHousekeepingJob parenthesises the .or().
+  // PLT-005 — FALSIFIED (issues/odd-platform/PLT-005.md, status: rejected). NOT a real bug.
+  // The suspected AlertHousekeepingJob `.or()/.and()` precedence bug does NOT exist: jOOQ DSL
+  // chaining renders `.where(A).or(B).and(C)` as `(A OR B) AND C` (the intended grouping), not
+  // `A OR (B AND C)`, so manual and auto resolutions respect resolved_alerts_days symmetrically.
+  // The skipped test below ran HAND-WRITTEN SQL replicas of an assumed-buggy predicate — it never
+  // executed the real job, so it pinned a misconception. The REAL behaviour is proven by the
+  // odd-platform `AlertHousekeepingRetentionTest` (runs the actual job against a real Postgres:
+  // a fresh manual-RESOLVED alert is retained, only aged ones purged). This block is kept skipped
+  // for traceability and can be deleted outright.
   // ─────────────────────────────────────────────────────────────────────────
-  test('CORNER H-001 [PLT-005 pin, GREEN-now]: the alert .or/.and precedence purges a FRESH manual RESOLVED alert', async () => {
+  test.skip('PLT-005 FALSIFIED — superseded by odd-platform AlertHousekeepingRetentionTest (this hand-written-predicate pin asserted a misconception)', async () => {
     const oddrn = `${NS}/alerts/it093_manual_resolved`;
 
     // alert.data_entity_oddrn FK → data_entity(oddrn); seed a source + entity in our namespace.

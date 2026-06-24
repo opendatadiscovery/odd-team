@@ -4,7 +4,7 @@ title: "Housekeeping TTL purge — search-facets retention contract + alert/sess
 gates:
   validates: [F-010]
   enforces: []
-  regresses: [PLT-005, PLT-074]
+  regresses: [PLT-074]
 test_class: integration
 stack: odd-minimal
 automation: "e2e:housekeeping-ttl-purge.spec.ts"
@@ -26,10 +26,10 @@ runs. Three falsifiable claims:
 - **F-010 H-006 (success)**: `SearchFacetsHousekeepingJob` (`SearchFacetsHousekeepingJob.java:23-27`)
   selects a search-facets row last accessed > 30 days ago for purge, and spares a fresh one — the
   user-facing "retained data lives 30 days" promise (H-002).
-- **PLT-005 / H-001 (pin)**: `AlertHousekeepingJob.java:28-34` chains
-  `.where(RESOLVED).or(RESOLVED_AUTOMATICALLY).and(<=cutoff)`; jOOQ binds `.and` to the nearest
-  `.or`, emitting `status=2 OR (status=3 AND aged)` — so a FRESH manual RESOLVED alert is hard-deleted
-  on the next cycle regardless of the TTL.
+- **PLT-005 — FALSIFIED, not pinned here**: the suspected `AlertHousekeepingJob` `.or()/.and()`
+  precedence bug does NOT exist — jOOQ renders `.where(A).or(B).and(C)` as `(A OR B) AND C`, so manual
+  and auto resolutions respect the TTL symmetrically. Proven behaviourally by the odd-platform
+  `AlertHousekeepingRetentionTest` (real job + real Postgres). See `issues/odd-platform/PLT-005.md`.
 - **PLT-074 / H-012 (pin)**: with the shipped `spring.session.timeout: -1` (`application.yml:2-3`) a
   session never expires, so the reaper's `WHERE expiry_time < now()` (`PostgreSQLSessionHousekeepingJob.java:30`)
   never matches → `SPRING_SESSION` grows monotonically.
@@ -78,7 +78,7 @@ Log fields: `date · stack_commit · runner (AI/human + name) · outcome (PASS|F
 
 ## Cross-references
 - Source: F-010 H-001 / H-002 / H-006 / H-012 (`lineage/odd-platform/feature-flows/detail/F-010.yaml`)
-- Bugs: PLT-005 (alert jOOQ precedence), PLT-074 (session timeout=-1), PLT-083 (TTL=0 silent-wipe, sibling)
+- Bugs: PLT-074 (session timeout=-1), PLT-083 (TTL=0 silent-wipe, sibling). [PLT-005 (alert jOOQ precedence) FALSIFIED — see §1; not a bug, proven by odd-platform AlertHousekeepingRetentionTest]
 - Code: `SearchFacetsHousekeepingJob.java:23-27`, `AlertHousekeepingJob.java:28-34`,
   `PostgreSQLSessionHousekeepingJob.java:30`, `HousekeepingTTLProperties.java:9-11`, `application.yml:2-3,165-170`
 - Plan: `lineage/odd-platform/test-plan.md` batch I8

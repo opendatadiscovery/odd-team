@@ -9,7 +9,7 @@ reproduced: "live browser repro 2026-06-24 — both defects REPRODUCED on cached
 adr_required: no           # G-C7 does NOT fire (FE-only; no migration / no auth-posture change / no wire-contract change)
 plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"
 plan_approved_at: "2026-06-24"   # both recommended: Defect 2 = both surfaces; Defect 1 = thunk-side (emit entityId)
-docs_routing: ""           # decided in Phase D (likely none — behaviour was always intended; the bug is a regression vs intent)
+docs_routing: "release/0.29.0"   # alerting.md "Known UX limitation" (no-confirmation) corrected on the train @ ae43375; paired DOC-485 (pending-release). G-C11.
 pr_url: ""
 pr_draft: ""
 stream_id: ctrib034
@@ -189,8 +189,82 @@ restores intended behaviour (no NEW user-facing capability) → likely `docs_rou
 **Ontology (G-C10):** `/enrich --touched` the alert UI flow sidecars once `lineage/**` is clean+unclaimed
 (currently DIRTY+unowned — P-001 residue; R9/O10 → defer with justification if still dirty).
 
-## Test / Docs / Ontology ledger
-(Phase D — filled with run evidence at the committed SHA.)
+## Phase D — Implementation + Test / Docs / Ontology ledger
+
+**Branch:** `contrib/CTRIB-034-alert-status-reflect-confirm` @ `987ebc5e` (worktree `../odd-platform-ctrib034`,
+push-safe: `push.default=current`, no upstream — never main-tracked, O6/LSN-038). Diff = 11 files, FE-only
+(no Java/backend, no openapi, no migration): `alerts.thunks.ts` (Defect 1, 1-line key) · `AlertItem.tsx` +
+`DataEntityAlertItem.tsx` (Defect 2 ConfirmationDialog + `.unwrap()`) · 7 locale JSONs (+2 keys each) ·
+`alerts.slice.test.ts` (new unit test).
+
+**Static FE gates (node 24 via the gradle-node-plugin toolchain):**
+- `tsc --noEmit` — **0 errors** (production + test).
+- `eslint` (the 4 changed source files) — **0 problems**; `prettier --write` applied.
+- `vitest run` (FULL FE suite) — **54 passed / 1 failed**; the single failure is the PRE-EXISTING **PLT-239**
+  i18n-guard false-positive (`LinkedTermsList.tsx:63` — the guard regex false-matches the ternary
+  `error.message : 'Unknown Error'`), unrelated to this change, RED on `origin/main`, **not CI-gated** (the PR
+  Java gate runs `-PbundleUI=false`, no vitest). My new tests + the i18n key-parity + catalog-parity guards PASS.
+
+**Full unit build — the odd-platform PR CI replica (`scripts/run-platform-tests.sh` = `:odd-platform-api:build
+-PbundleUI=false` → test + checkstyleMain + checkstyleTest + assemble), against the worktree @ 987ebc5e:
+BUILD SUCCESSFUL in 5m31s.** The PR Java gate runs `-PbundleUI=false`, so it does NOT build the FE — for this
+zero-Java change it is green-by-construction (the Java is untouched); the FE compile + bundle is proven by the
+SUT build that produced the 005dee4b image the full e2e regression ran green against.
+
+**Unit bucket (odd-platform CI) — `alerts.slice.test.ts` (RED→GREEN):** runs the REAL `updateAlertStatus` thunk
+(mocking only the API boundary) through the REAL reducer and asserts `state.dataEntityAlerts[id].items` reflects
+the new status. A hand-crafted `.fulfilled({ entityId })` payload would PASS on the buggy system too (the reducer
+is already correct — the bug is the thunk's key), so the test drives the thunk to exercise the emitted key
+(G-C15). **RED on base** (`expected undefined to be 2001` — the thunk emits `dataEntityId`, so `payload.entityId`
+is undefined) → **GREEN on the fix**. (The sibling "global path" assertion passes on both — Defect 1 is
+per-entity-only.)
+
+**Integration bucket (odd-team) — IT-142 (RED→GREEN), MANDATORY (user-facing FE/BE contradiction, LSN-031):**
+new `integration-tests/protocols/IT-142-*.md` + `e2e/specs/alert-status-change.spec.ts` (3 tests: per-entity
+reflect-without-refresh + confirm, cancel-gates-the-flip, global confirm). Added to `feature-complete` + `ui-e2e`.
+- **RED proof** — `ODD_PLATFORM_IMAGE=odd-platform:0.0.1-SNAPSHOT` (digest 353a5b06 = current-main alert code,
+  the alert UI unchanged since #1763) → **3/3 FAILED**, each on `getByRole('dialog')` never visible (Defect 2: no
+  confirmation on the buggy system). Run-log `2026-06-24-IT-142.md`.
+- **GREEN** — on the worktree-built SUT (`run-regression.sh ctrib034`, SUT from 987ebc5e) → IT-142 **3/3 PASSED**
+  (per-entity reflect ✓ · cancel-gates ✓ · global confirm ✓).
+
+**FULL regression (G-C2) — `run-regression.sh ctrib034`, SUT built once from the worktree @ 987ebc5e
+(digest 005dee4b), flock-serialized, torn down — GREEN-for-change across all four buckets:**
+- **feature-complete: 316 passed / 0 failed** (api:PASS e2e:PASS) — incl. **IT-142 3/3** + the merged-sibling specs
+  (IT-037/IT-050/IT-137/IT-138/IT-139/IT-141 all green — every prior CTRIB fix is in my base 8e5b3339, so NO
+  unmerged-fix deltas; a clean full green).
+- **multi-stack: 9 passed / 0 failed** (e2e:PASS).
+- **known-bugs: 3 failed** (e2e:FAIL) — the 3 EXPECTED-RED pins, **0 unexpected green** (no un-flipped fix).
+- **ingestion-e2e: 6 passed / 0 failed** (e2e:PASS).
+- Run-logs: `2026-06-24-{feature-complete,multi-stack,known-bugs,ingestion-e2e,IT-142}.md` (each carries the
+  005dee4b SUT digest == the committed branch SHA 987ebc5e).
+
+**Docs (G-C10 + G-C11) — routed to the release/0.29.0 TRAIN.** Read the live alerting page
+(`documentation/docs/active-platform-features/alerting.md`); it published a **Known UX limitation** —
+*"Clicking `Resolve` … immediately fires the status change — there is no confirmation dialog … an accidental
+click destroys the audit history."* This fix makes that caveat FALSE at 0.29.0, so it is an **unreleased-behaviour**
+correction → the `release/0.29.0` train (NOT docs `main`; the live manual still describes 0.28.0, which has no
+dialog). Committed `documentation@release/0.29.0 ae43375` (rewrote the hint to describe the new safeguard +
+in-place reflection, preserving the export-before-resolve advice for a *deliberate* resolve — the manual-resolve
+retention bug is unchanged). Paired backlog **DOC-485** (`pending-release`, milestone 0.29.0, post-merge URL +
+the Gate-8 release-gate checklist). (Defect 1's in-place reflection restores already-documented intent — line 13
+"resolving an alert updates the same record in place" — so no separate correction needed there.)
+
+**Ontology (G-C10) — DEFERRED with justification.** `lineage/**` is DIRTY + unowned (the P-001 probe-run residue,
+2026-06-23 + 2026-06-24, no registered stream — R9 single-writer / O10 route-around). Running `/enrich --touched`
+now would write into a dirty tree and risk sweeping the probe-run owner's work. Deferred to the next clean +
+unclaimed window / the 0.29.0 release substrate scan — the same accepted bar as CTRIB-028/029/032/033. The touched
+nodes are FE-only (no Java sidecars heavily affected); the alert UI flow sidecar refresh lands at the next scan.
+
+**Principal sufficiency (G-C13).** Enough + meaningful tests: the unit test proves the per-entity in-place update
+(the actual Defect-1 mechanism) RED→GREEN; IT-142 proves both surfaces' confirmation + the reflect-without-refresh
+on a real browser, RED→GREEN. No control lost — the global page restructure REMOVED bespoke `isUpdating`/
+`disableResolve`/`'No access!'` state in favour of the dialog's built-in loading/error (a net simplification),
+folding the existing permission check into `onConfirm` with `.unwrap()`. The local **patch-coverage gate (jacoco
+98% changed-files)** is **N/A** — the change touches ZERO Java; the FE is covered by the unit test + IT-142. UI
+reviewed as a user (the Phase-B screenshots + the IT-142 GREEN run render the dialog + the in-place flip).
+
+## Comments posted
 
 ## GATE 1 — APPROVED (2026-06-24, RamanDamayeu via AskUserQuestion)
 - Defect 2 confirmation scope: **both surfaces** (per-entity tab + global page).

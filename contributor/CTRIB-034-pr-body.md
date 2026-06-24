@@ -54,8 +54,9 @@ housekeeping retention bug is unchanged and out of scope.
   per-entity slice updates in place — RED on the pre-fix `dataEntityId` key, GREEN on the fix.
 - **Browser e2e:** a new Playwright spec asserts the confirmation dialog gates the flip on both surfaces and the
   per-entity row reflects the new status without a reload — 3/3 RED on the pre-fix build, 3/3 GREEN on the fix.
-- **Full regression** against a build of this branch: [FINALISE — feature-complete <N> · multi-stack · known-bugs
-  expected-RED · ingestion-e2e]. `tsc --noEmit` clean; eslint clean.
+- **Full regression** against an image built from this branch: feature-complete **316/0** (incl. the new spec
+  3/3), multi-stack **9/0**, known-bugs **3 expected-RED** (no unexpected green), ingestion-e2e **6/0**. The Java
+  CI replica (`:odd-platform-api:build`) is green; `tsc --noEmit` and eslint are clean.
 
 Milestone: 0.29.0
 Docs: documentation@release/0.29.0 — the alerting page's "no confirmation dialog" Known UX limitation is corrected

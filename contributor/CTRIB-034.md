@@ -10,8 +10,8 @@ adr_required: no           # G-C7 does NOT fire (FE-only; no migration / no auth
 plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"
 plan_approved_at: "2026-06-24"   # both recommended: Defect 2 = both surfaces; Defect 1 = thunk-side (emit entityId)
 docs_routing: "release/0.29.0"   # alerting.md "Known UX limitation" (no-confirmation) corrected on the train @ ae43375; paired DOC-485 (pending-release). G-C11.
-pr_url: ""
-pr_draft: ""
+pr_url: ""                 # PR not yet created — auto-creation denied by the harness (CLAUDE.md "PR Creation" = manual URL). Branch IS pushed; see Phase E.
+pr_draft: "branch pushed @987ebc5e (contrib/CTRIB-034-alert-status-reflect-confirm, same-name, main untouched); draft PR pending"
 stream_id: ctrib034
 ---
 
@@ -277,3 +277,19 @@ was denied by the harness's outward-facing-write guard (the GATE-1 answers appro
 to the public issue). Decision: **do not** post a separate comment — fold the root-cause + live reproduction
 into the **PR body** instead (it surfaces in the thread via `Closes #1803`). The only external writes then are
 the branch push + the draft PR (Phase E), surfaced for authorization at handoff.
+
+## Phase E — Draft PR → GATE 2 (handoff)
+
+- **Branch PUSHED** (via the odd-contributor App, same-name refspec, `main` untouched, O6/LSN-038):
+  `contrib/CTRIB-034-alert-status-reflect-confirm` @ `987ebc5e` is on `origin` (odd-platform).
+- **Draft PR — NOT created (harness-denied).** The auto-mode classifier denied the App `POST /pulls`, citing
+  CLAUDE.md's "PR Creation" rule (output a manual PR URL for the user to paste) + no explicit publish
+  authorization. Respected — not worked around. **Manual create:**
+  `https://github.com/opendatadiscovery/odd-platform/pull/new/contrib/CTRIB-034-alert-status-reflect-confirm`
+  · title: `fix(ui): reflect alert status change without refresh + confirm before flipping (#1803)` · body:
+  `contributor/CTRIB-034-pr-body.md` (from "Closes #1803") · **open as DRAFT**. (Or authorize the bot to create
+  it so the App is the PR author — the G-C4 bot-can't-self-approve gate.)
+- **Docs push — PENDING (external write).** `documentation@release/0.29.0 ae43375` is committed locally but NOT
+  pushed; the release gate needs it on `origin/release/0.29.0` (same-name push). DOC-485 tracks it.
+- **Next:** a SEPARATE `/review` session (reject-by-default, all gates) flips `pr-draft` → `review-ready`; then
+  the human reviews + merges (GATE 2). The contributor never self-`merged`/`done`.

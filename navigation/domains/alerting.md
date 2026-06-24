@@ -54,12 +54,18 @@ Notifications on entity state changes, quality failures, schema drift, ownership
 - `src/components/Alerts/Alerts.tsx` — alerts page container
 - `src/components/Alerts/AlertsTabs/AlertsTabs.tsx` — "All" / "My Objects" / "Dependents" tabs
 - `src/components/Alerts/AlertsList/AlertsList.tsx` — paginated alert list
-- `src/components/Alerts/AlertsList/AlertItem/AlertItem.tsx` — single alert row
+- `src/components/Alerts/AlertsList/AlertItem/AlertItem.tsx` — single alert row on the GLOBAL `/alerts` page (Resolve/Reopen trigger; runtime per-entity permission check)
 - `src/components/Alerts/AlertsRoutes/AlertsRoutes.tsx` — routing for alert views
+- `src/components/DataEntityDetails/DataEntityAlerts/DataEntityAlertItem/DataEntityAlertItem.tsx` — single alert row on the PER-ENTITY Alerts tab (Resolve/Reopen trigger; `<WithPermissions>` gate)
 - `src/components/DataEntityDetails/DataEntityAlerts/NotificationSettings/AlertTypeRange/AlertTypeRange.tsx` — per-entity alert halt config UI (30min–1week)
 - `src/components/shared/elements/AlertStatusItem/AlertStatusItem.tsx` — alert status badge
 - `src/components/shared/elements/AlertIcon/AlertIcon.tsx` — alert icon component
 - `src/components/shared/elements/Activity/ActivityFields/AlertActivityField/AlertActivityField.tsx` — alert activity display
+
+### Redux state (odd-platform-ui) — the alert store the UI renders from
+- `src/redux/thunks/alerts.thunks.ts` — `updateAlertStatus` (the manual status-flip; emits `entityId` for the per-entity slice), `fetchAlerts` / `fetchDataEntityAlerts` / `fetchAlertCounts`, alert-config thunks
+- `src/redux/slices/alerts.slice.ts` — `alerts.items` (global list) vs `dataEntityAlerts[id].items` (per-entity tab); `updateAlertStatus.fulfilled` updates one or the other by the payload's `entityId` (CTRIB-034 / #1803)
+- `src/redux/selectors/alert.selectors.ts` — `getDataEntityAlerts(id)` reads `dataEntityAlerts[id].items` (what the per-entity tab renders)
 
 ## OpenAPI Spec
 - `odd-platform-specification/openapi.yaml` — Alert endpoints at lines 1321, 1340, 1514, 2612, 2630, 2648, 2666, 2681

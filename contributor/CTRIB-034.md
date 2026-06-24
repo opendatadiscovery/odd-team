@@ -4,7 +4,7 @@ github_issue_number: 1803
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1803"
 class: bug
 milestone: "0.29.0"
-status: planned            # intake -> scoping -> reproducing -> root-caused -> [planned] -> plan-approved[GATE1] -> ... -> review-ready -> merged[GATE2]
+status: review-ready       # /review ACCEPTED 2026-06-25 (was STALE at `planned`; implement reached pr-draft hand-off — see Review §). intake -> ... -> plan-approved[GATE1] -> pr-draft -> [review-ready] -> merged[GATE2 human]
 reproduced: "live browser repro 2026-06-24 — both defects REPRODUCED on cached buggy SUT 353a5b06 (odd-minimal :18130). See Phase B."
 adr_required: no           # G-C7 does NOT fire (FE-only; no migration / no auth-posture change / no wire-contract change)
 plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"
@@ -293,3 +293,55 @@ the branch push + the draft PR (Phase E), surfaced for authorization at handoff.
   pushed; the release gate needs it on `origin/release/0.29.0` (same-name push). DOC-485 tracks it.
 - **Next:** a SEPARATE `/review` session (reject-by-default, all gates) flips `pr-draft` → `review-ready`; then
   the human reviews + merges (GATE 2). The contributor never self-`merged`/`done`.
+
+## Review (2026-06-25, session: review-ctrib034 — separate from implement; max-effort)
+
+- **Result: ACCEPTED** → `review-ready`. Human **GATE-2** (approve + merge PR) owns `pending-release`/`done`.
+- **Session boundary (G-C4):** implement ran 2026-06-24 (commits `79d61d2..2d653f2`); this review is a fresh 2026-06-25 session. PASS.
+- **2-minute bounce:** NOT triggered — implement ran its own gate at the reviewed SHA; run-logs `2026-06-24-*` carry SUT digest `005dee4b` ← worktree `987ebc5e`. Confirmed before the expensive run.
+
+### Branch / SHA integrity (the load-bearing reconcile)
+- The item says "branch pushed @`987ebc5e`" — **STALE**. Live `origin/contrib/CTRIB-034-alert-status-reflect-confirm` HEAD is **`8be19e2c`** (a `Merge branch 'main'` commit). `987ebc5e` (tested) **IS an ancestor** of `8be19e2c`; the only delta is main's own **#1806** (housekeeping *test* files — `AlertHousekeepingRetentionTest.java` deleted, `HousekeepingTtlKnownBugsTest.java` modified), already independently merged to main.
+- **Net PR diff `origin/main(016e7d4b)...8be19e2c` = exactly the 11 alert-fix files** (the merge leaked nothing). The 4 alert source files are **byte-identical** between `987ebc5e` (tested) and `8be19e2c` (pushed) — VERIFIED via `git diff --quiet`. **Tested code == pushed code.** The merge is clean mergeability hygiene; "@987ebc5e" is bookkeeping staleness, not a code-integrity break.
+
+### Acceptance criteria (the 17 G-C gates)
+All PASS / N-A: 1 plan-before-code (GATE-1 `579c887` precedes Phase-D code) · 2 reproduced (Phase B; durable proof = IT-142 RED) · 3 diff bounded (= the 11 planned files) · 4 unit injects the failing condition (real thunk, `payload.entityId`) · 5 N/A (no pins) · 6 docs stated+routed (ae43375 train) · **7 ontology DEFERRED-justified** (lineage dirty+unowned P-001 residue — same accepted bar as CTRIB-028/29/32/33) · 8 not self-`done` (status was STALE `planned` → corrected to `review-ready` here) · 9 no-ADR correct (FE-only) · 10 N/A injection · 11 DoD met (unit build + full regression on the branch image) · 12 milestone 0.29.0 + train · 13 design-before-build (reuse ConfirmationDialog/`.unwrap()`/WithPermissions) · 14 Principal-sufficiency (net simplification, no control lost) · 15 N/A advisory · 16 tests NEW not changed (G-C15 surviving-RED) · 17 product-critique (G-C16 options a/b/c at GATE-1).
+
+### Quality Bar
+- **Gate 1 — PASS** (no duplicates): reuses `ConfirmationDialog` (no parallel dialog); the doc warning→info rewrite left **no stale "no confirmation dialog" claim elsewhere** in `documentation/docs/` — VERIFIED via `grep -rniE 'no confirmation dialog|immediately fires the status'` (0 hits outside alerting.md).
+- **Gate 2 — N/A** (no alias introduced).
+- **Gate 3 — PASS** (caveats): the retention caveat re-scoped correctly; the later PLT-005 `e61085f` revised the same hint coherently.
+- **Gate 4 — PASS** (consumer-read): the global-page `throw new Response(JSON.stringify({message}), {status:403})` reuse is **VERIFIED** against `lib/errorHandling.tsx` — `toResponse()` returns `err instanceof Response`, `response.clone().json()` reads `body.message` → "No access!" surfaces in the dialog. Reducer reads `payload.entityId` (`alerts.slice.ts:70`); the fix emits the matching key (`alerts.thunks.ts:78`).
+- **Gate 5 — N/A** (no SDK builder in scope).
+- **Gate 6 — PASS** (code↔doc both directions): the behaviour change → `alerting.md` coverage; the doc claims trace to the code.
+- **Gate 7 — PASS** (layout): existing page; SUMMARY unchanged; the `#auto-cleanup-of-resolved-alerts` anchor the hint links resolves. (One IA nit → DOC-486, editorial.)
+- **Gate 8 — PENDING-RELEASE (0.29.0):** docs on `release/0.29.0` @ `ae43375`, and **already pushed** — `origin/release/0.29.0` = `e61085f` carries it as an ancestor (the item's "docs push PENDING" is STALE). Branch-verifiable sub-checks done: page renders, anchors valid, tree-relative links OK. Live WebFetch scheduled at the 0.29.0 release gate (DOC-485).
+- **Gate 9 — PASS** (provenance): every claim independently verified by read (thunk/reducer/util/locales/IT-142). The public fix commit `987ebc5e` correctly omits a workspace `Sources:`/`Consumer-read:` footer (provenance lives in this ledger; a `lineage/…` footer on a public commit would itself be a Gate-11 leak).
+- **Gate 10 — PASS** (homing): the code is well-homed; the doc info-hint placement is the DOC-486 editorial nit (does not block).
+- **Gate 11 — PASS** (audience isolation): `grep` of the final `alerting.md` for workspace terms (`Cornerstone|Gate N|LSN|CTRIB|DOC-N|feature-flow|Quality Bar|sidecar|playbook|…`) — **CLEAN**.
+
+### Test integrity (G-C15) — both new, not changed
+- **Unit `alerts.slice.test.ts`** — sound surviving-RED: runs the **real** `updateAlertStatus` thunk (mocks only the API boundary) and asserts `payload.entityId === 2001`; on the buggy `dataEntityId:` emit `payload.entityId` is `undefined` → `expect(undefined).toBe(2001)` FAILS (RED), GREEN on the fix. The test comment explicitly explains why a hand-crafted payload would prove nothing. (Not re-run under system node — the FE toolchain is the gradle-node-plugin's pinned node 24; logic is deterministic and verified by read.)
+- **IT-142 `alert-status-change.spec.ts`** — genuine integration test for the user-facing FE/BE contradiction (LSN-031): asserts `getByRole('dialog')` (RED on the no-dialog base) + the per-entity flip-to-Reopen-with-zero-Resolve (the Defect-1 guard).
+
+### Regression — reviewer's OWN full run (measured, not inferred)
+SUT built fresh from the reviewed worktree `987ebc5e` → `odd-platform:odd-team-sut-rev034` (digest `cd66ac39`); flock-serialized; torn down. Actual counts:
+- **feature-complete: 313 passed / 2 failed / 1 skipped** — incl. **IT-142 3/3 GREEN** (the fix). The **2 failures are an independently-PROVEN reviewer-ENVIRONMENT artifact, change-independent**: `owner-association-triage.spec.ts:78` (IT-106) + `remove-user-owner-mapping.spec.ts:123` (IT-108) — both SPA-navigation `page.waitForResponse(GET /api/owner_association_request, r.ok())` **60s timeouts** on the `/management/associations` pages, a subsystem the alert fix shares **no** code with. **Discriminator:** IT-106:78 **fails identically on the implementer's OWN green image `005dee4b`** (the one they ran feature-complete green against) in my env → not the build, not the source, not the change. Zero prior `✘` for these specs in all run history → a my-box delta, not a chronic flake.
+- **multi-stack: 9 / 0** · **ingestion-e2e: 6 / 0** · **known-bugs: 3-RED-expected / 0-unexpected-green** (IT-004/006/007 pins). Matches the implementer's claims.
+
+### Findings — bookkeeping (do not block; for the implementer/maintainer)
+1. `status:` was STALE `planned` (work reached pr-draft hand-off) → corrected to `review-ready` here.
+2. `pr_draft:`/Phase-D/E "@`987ebc5e`" is stale — real pushed HEAD `8be19e2c` (clean merge of main; net diff unchanged).
+3. Phase-E "Docs push — PENDING" is stale — `ae43375` is on `origin/release/0.29.0` (via `e61085f`).
+4. Ontology refresh deferred-justified (consistent with sibling-item precedent).
+
+### Doc-product editorial audit (`playbooks/doc-product-editorial-read.md`)
+- **Coverage this run:** the alerting domain (`active-platform-features/alerting.md`) + cross-links (`developer-guides/api-reference/alerts.md` EXISTS + consistent; `notifications.md`; `Features.md`) read end-to-end. The final page is **coherent** after the PLT-005 `e61085f` revision (the falsified retention-bug tie-in was correctly removed from the #1803 hint). Broader tree **partitioned** — queued for the next `/review` editorial slot.
+- **Finding logged:** **DOC-486** (LOW, content-homing/IA) — the resolved "no confirmation dialog" note now lingers as a positive `info`-hint inside the **"## Known UX limitations"** section (framed as current gotchas); recommend removing it or relocating into the lifecycle narrative.
+
+### Read-only invariant
+- Committed exactly: this verdict + `state/PROGRESS.md` + `backlog/docs/DOC-486.md`.
+- **`lineage/**` disclosure:** my regression's `P-001` api-probe drifted `feature-flows.yaml` + 2 understanding sidecars; I `git checkout -- lineage/` them. That revert also cleared the **pre-existing orphaned P-001 residue** (present at session start per `state/active-streams.yaml`; unowned/route-around). It regenerates at the next `/probe-run P-001` / `/enrich`. The 2 `probe-runs/*.yaml` (untracked) are untouched; my review run-logs `2026-06-25-*.md` are left **untracked** (not committed).
+- **GATE-2 advisory:** the pushed HEAD `8be19e2c` already merges current main (`016e7d4b`) — the PR is mergeable as-is; the human approver merges (the bot cannot self-approve, G-C4).
+
+Verdict author: review-ctrib034. Reject-by-default; every PASS above carries cited evidence.

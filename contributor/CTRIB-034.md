@@ -4,8 +4,8 @@ github_issue_number: 1803
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1803"
 class: bug
 milestone: "0.29.0"
-status: reproducing        # intake -> scoping -> [reproducing] -> root-caused -> planned -> plan-approved[GATE1] -> ... -> review-ready -> merged[GATE2]
-reproduced: ""             # Phase B — pending live capture
+status: planned            # intake -> scoping -> reproducing -> root-caused -> [planned] -> plan-approved[GATE1] -> ... -> review-ready -> merged[GATE2]
+reproduced: "live browser repro 2026-06-24 — both defects REPRODUCED on cached buggy SUT 353a5b06 (odd-minimal :18130). See Phase B."
 adr_required: no           # G-C7 does NOT fire (FE-only; no migration / no auth-posture change / no wire-contract change)
 plan_approved_by: ""       # GATE 1 — pending
 plan_approved_at: ""
@@ -89,11 +89,35 @@ the maintainer mid-intake.
 
 ## Phase B — Reproduce + root-cause
 
-PENDING (live capture). Plan: throwaway stack (own namespace), seed an OPEN alert on an entity, drive the
-per-entity Alerts tab + the global Alerts page in a browser, capture: (1) per-entity Resolve → green toast but
-stale "Open"/"Resolve" until refresh (Defect 1); global Resolve → updates immediately (the contrast);
-(2) Resolve on both surfaces → no confirmation dialog (Defect 2). Evidence → `reproduced:` field +
-`lineage/odd-platform/probes/` if a probe artifact is warranted.
+**REPRODUCED LIVE 2026-06-24** (the issue's `user_facing_verified=false` is now TRUE). Throwaway odd-minimal
+stack on :18130/:15482 (`ODD_STREAM=ctrib034repro`), from the cached buggy image `353a5b06`
+(`odd-platform:0.0.1-SNAPSHOT` — the alert UI files last changed at `37d5dad6`/#1763, an ancestor of every
+cached image, so this image carries the exact current-`main` buggy alert code). Seeded one OPEN alert
+(BACKWARDS_INCOMPATIBLE_SCHEMA) on entity 2001 (`seedEntityAlert` SQL); API-confirmed
+`GET /api/dataentities/2001/alerts` → 1 OPEN item. Drove a real Chromium (Playwright). Stack torn down after.
+
+**Defect 1 — per-entity tab stale until refresh — REPRODUCED.** On `/dataentities/2001/alerts`: initial = 1
+"Resolve" button, status badge "Open". Clicked Resolve → toast **"Alert successfully resolved."** fired, yet
+the row STILL showed badge "Open" + button "Resolve" + tab badge "1" (DOM byte-identical before/after the
+toast — screenshots 02≡03). Only a **reload** flipped it to "Reopen"/"Resolved" → the back end persisted; the
+staleness is client-only. This is the exact on-screen self-contradiction the issue describes (toast says yes,
+the row says no). Screenshot `03-after-resolve-norefresh.png` shows the toast + the stale "Open"/"Resolve".
+
+**Defect 2 — no confirmation before the flip — REPRODUCED on BOTH surfaces.** Per-entity tab: clicking Resolve
+→ `role=dialog` count 0 → the flip happened with no "are you sure?" prompt. Global `/alerts` page (re-seeded
+OPEN): same — clicking Resolve → `role=dialog` count 0, toast fired, **and the global list updated in-place**
+(Resolve→Reopen flipped WITHOUT a refresh), confirming the issue's claim that **Defect 1 does not affect the
+global page** (it dispatches without an entity id → the reducer fall-through correctly updates the very list it
+renders). The global page's runtime permission pre-fetch GRANTED resolve under `AUTH_TYPE=DISABLED` (the button
+worked) — de-risks the Phase-C global-surface restructure.
+
+**Root-cause (confirmed on the running system, not just the static diff):** the live behaviour matches the
+static trace exactly — the per-entity write lands on `state.alerts.items` (the global list) instead of
+`state.dataEntityAlerts[2001].items` (the per-entity list the tab renders), because the thunk's payload key
+(`dataEntityId`) ≠ the reducer's read key (`entityId`). No timing/heuristic element; deterministic.
+
+(Evidence: screenshots in the session scratchpad `evidence/` — ephemeral; the durable, re-runnable proof is
+the Phase-D IT-142 e2e with its RED-on-`ref:main` half.)
 
 ## Phase C — Product analysis + Plan + GATE 1
 

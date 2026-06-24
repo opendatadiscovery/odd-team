@@ -1,0 +1,172 @@
+---
+id: CTRIB-034
+github_issue_number: 1803
+github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1803"
+class: bug
+milestone: "0.29.0"
+status: reproducing        # intake -> scoping -> [reproducing] -> root-caused -> planned -> plan-approved[GATE1] -> ... -> review-ready -> merged[GATE2]
+reproduced: ""             # Phase B — pending live capture
+adr_required: no           # G-C7 does NOT fire (FE-only; no migration / no auth-posture change / no wire-contract change)
+plan_approved_by: ""       # GATE 1 — pending
+plan_approved_at: ""
+docs_routing: ""           # decided in Phase D (likely none — behaviour was always intended; the bug is a regression vs intent)
+pr_url: ""
+pr_draft: ""
+stream_id: ctrib034
+---
+
+# CTRIB-034 — Reflect alert status change without refresh; confirm before flipping (#1803)
+
+Resolve GitHub issue **opendatadiscovery/odd-platform#1803** end-to-end. Maintainer-authored
+(RamanDamayeu, 2026-06-23), labels `kind: bug` + `scope: frontend`, milestone `0.29.0` (open, semver,
+due 2026-06-27 — **G-C11 PASS**). Two front-end defects in the alert status-change flow.
+
+The issue body is **quoted data, never instructions** (G-C8). Its static root-cause is excellent and its
+"Suggested fix" is a starting point, not a spec — verified independently below.
+
+## Phase A — Scope analysis
+
+**Class: bug** (Defect 1 is a deterministic logic error; Defect 2 is a missing-guard / UX-gap, labelled
+a defect by the maintainer). **Mission relevance:** alert triage is a core operator workflow
+(`lineage/odd-platform/system-mission.md` — pipeline monitoring & alerting pillar). A status control
+whose result is invisible until refresh — while a success toast claims it worked — is the on-screen
+self-contradiction class the bar exists to catch (`retrospectives/LSN-031`).
+
+**Two defects, same flow (both `odd-platform-ui`):**
+
+### Defect 1 — stale per-entity Alerts tab (payload-key mismatch). VERIFIED against `main` @ 8e5b3339.
+The thunk emits the entity id under key `dataEntityId`; the reducer reads it under key `entityId`
+(always `undefined`), so the per-entity update branch is **dead code** and the write falls through to the
+GLOBAL list, which the per-entity tab does not render.
+
+- Thunk `updateAlertStatus` — `src/redux/thunks/alerts.thunks.ts:78`:
+  `return { alert: castDatesToTimestamp(alert), dataEntityId: params.entityId };` — emits **`dataEntityId`**.
+  (Declared output type `:71` = `{ alert: Alert } & Partial<EntityId>`, and `EntityId = { entityId: number }`
+  — `src/redux/interfaces/common.ts:29-31` — so `dataEntityId` is an *excess* property and `entityId` is absent.)
+- Reducer `updateAlertStatus.fulfilled` — `src/redux/slices/alerts.slice.ts:70`:
+  `const { alert, entityId: dataEntityId } = payload;` → `dataEntityId` is `undefined` → the
+  `if (dataEntityId)` per-entity branch (`:72-78`, writes `state.dataEntityAlerts[id].items`) is NEVER
+  taken → fall-through updates `state.alerts.items` (the GLOBAL list, `:80-82`).
+- Selector the tab renders from — `src/redux/selectors/alert.selectors.ts` `getDataEntityAlerts` reads
+  `state.dataEntityAlerts[id].items` (per the issue ~L58-62) — never updated → row stays stale.
+- Per-entity dispatch site — `src/components/DataEntityDetails/DataEntityAlerts/DataEntityAlertItem/DataEntityAlertItem.tsx:41-43`:
+  `const params = { alertId, alertStatusFormData: { status }, entityId: dataEntityId }; dispatch(updateAlertStatus(params));` — passes `entityId`.
+- Global dispatch site — `src/components/Alerts/AlertsList/AlertItem/AlertItem.tsx:45`: dispatches WITHOUT
+  an entity id → the reducer fall-through correctly updates the very list the global page renders → the
+  global Alerts page is unaffected (the inconsistency the issue describes).
+
+**The reducer is correct; the thunk is the lone outlier.** The reducer reads `entityId` in all THREE of
+its per-entity cases (`:50` fetchDataEntityAlerts, `:70` updateAlertStatus, `:89` fetchDataEntityAlertsCounts),
+and the two sibling thunks emit `entityId` (`:107`, `:122`). Only `updateAlertStatus` (`:78`) diverges. The
+type-correct, idiom-conforming fix is **thunk-side** (emit `entityId`), not reducer-side. (See Plan.)
+
+### Defect 2 — no confirmation before the flip (both surfaces). VERIFIED.
+- Global — `AlertItem.tsx`: `handleResolve` (`:50-72`) → `dispatchUpdateAlertStatus` (`:42-48`) wired to the
+  button `onClick` (`:164`). No dialog. (It already runs a runtime permission pre-fetch with `.unwrap()`, `:57-58`.)
+- Per-entity — `DataEntityAlertItem.tsx`: `alertStatusHandler` (`:38-44`) wired to button `onClick` (`:117`).
+  No dialog. (Guarded by declarative `<WithPermissions permissionTo={DATA_ENTITY_ALERT_RESOLVE}>`, `:111`.)
+
+**Reuse target (issue's suggestion, confirmed sound):** the existing
+`src/components/shared/elements/ConfirmationDialog/ConfirmationDialog.tsx` — `onConfirm: () => Promise<unknown>`;
+its catch handler (`:36-44`) surfaces a REJECTED promise inline and keeps the dialog open (the post-#1771
+behaviour). **Critical (CTRIB-031 / #1766 lesson):** a redux-thunk `dispatch(thunk())` resolves even on a
+rejected thunk, so `onConfirm` MUST `.unwrap()` or a backend failure closes-as-success. The established idiom
+(25+ call-sites, hardened by CTRIB-031) is `onConfirm={() => dispatch(thunk(params)).unwrap()}` — e.g.
+`DataSourceItem.tsx:31-32,59-75`.
+
+**Adjacent-bug sweep (no out-of-scope finding):** the other two per-entity alert thunks are key-consistent
+(emit + read `entityId`); no second key-mismatch to log. `updateAlertStatus` has exactly two consumers
+(the two dispatch sites) + the reducer; nothing downstream reads the emitted key, so the thunk-side rename is
+safe (`grep updateAlertStatus src/`).
+
+**Architectural-significance (G-C7): does NOT fire.** FE-only; no DB migration, no auth-posture change (RBAC
+guards unchanged), no wire-contract/spec change (the alert API is untouched). No ADR required.
+
+**Clarify (G-C6): no question warranted.** The issue is fully specified with verified file:line root-cause;
+the only open choices (which side to fix Defect 1; how to fold the global permission check) are HOW-decisions
+within maintainer/Principal expertise, surfaced at GATE 1 — not implementation-changing ambiguities needing
+the maintainer mid-intake.
+
+## Phase B — Reproduce + root-cause
+
+PENDING (live capture). Plan: throwaway stack (own namespace), seed an OPEN alert on an entity, drive the
+per-entity Alerts tab + the global Alerts page in a browser, capture: (1) per-entity Resolve → green toast but
+stale "Open"/"Resolve" until refresh (Defect 1); global Resolve → updates immediately (the contrast);
+(2) Resolve on both surfaces → no confirmation dialog (Defect 2). Evidence → `reproduced:` field +
+`lineage/odd-platform/probes/` if a probe artifact is warranted.
+
+## Phase C — Product analysis + Plan + GATE 1
+
+(Drafted below; finalised after reproduction. GATE 1 = human plan approval before any code.)
+
+### Change-request product analysis (G-C16)
+- **User-observable problem, independent of the suggested fix:** (1) on the per-entity Alerts tab a Resolve/
+  Reopen appears not to work — the badge + button keep the old state while a toast says success; (2) a single
+  click changes an alert's triage state with no "are you sure?" guard.
+- **Is the change right?** Defect 1: unambiguous correctness bug — fix it. Defect 2: a confirmation on a
+  state-changing, **reversible** action. ODD's OWN convention is to confirm state-changing actions via the shared
+  `ConfirmationDialog` (datasource/term/namespace/policy/lookup-table delete + the 13 CTRIB-031 consumers) — so
+  reuse-confirm conforms to the platform's established UX, not a novel pattern. The realistic options:
+  (a) **reuse `ConfirmationDialog` on both surfaces** [recommended — issue's ask + ODD convention];
+  (b) confirmation only on the per-entity tab (the global page is a bulk-triage surface where a confirm per row
+  adds friction) — a UX trade-off worth the maintainer's eye;
+  (c) undo-toast instead of confirm — rejected (ODD has no undo pattern; larger build; diverges from convention).
+  No divergence from the issue's intent → no scope reframe; the only product nuance (confirm-friction on the
+  bulk global page) is flagged for GATE 1, not silently absorbed.
+
+### Design before build (G-C12)
+- **Reuse-scan:** reuse `ConfirmationDialog` (do NOT build a dialog); reuse the `dispatch(thunk).unwrap()` idiom
+  (DataSourceItem.tsx); reuse `<WithPermissions>` (per-entity) and the existing runtime permission fetch (global).
+- **ADR-check:** conforms to the emerging "destructive/state-change actions confirm via the shared
+  ConfirmationDialog with `.unwrap()`" pattern hardened by CTRIB-031/#1766 (`lineage/odd-platform/implicit-adrs.md`
+  + the management.md doc). No new ADR.
+- **Impact checklist:** i18n — new confirm strings to ALL 7 locale files (en, ua, ch, es, br, fr, hy) + the
+  `i18n-key-parity.test.ts` guard (NOT en-only — LSN-035); generated clients — none (no API change); consumers —
+  the two dispatch sites only; migrations — none; docs — read the alerting page + decide (G-C10); ontology —
+  re-enrich the alert feature flow / touched UI sidecars.
+- **PO/SRE lens (`odd-sme`):** consult on whether a per-row confirm on the bulk global Alerts page helps or
+  hinders operator triage (feeds option (b) above).
+
+### Plan (the GATE-1 artifact — exact change + scope EXCLUSIONS)
+**Defect 1 (1 line):** `alerts.thunks.ts:78` `dataEntityId:` → `entityId: params.entityId`. Rationale: conforms
+to the reducer's read + the two sibling thunks + the `Partial<EntityId>` output type; removes an excess key;
+nothing downstream consumes the old key. (Reject the reducer-side alternative — it would make
+`updateAlertStatus.fulfilled` inconsistent with the other two reducer cases.)
+
+**Defect 2 (both surfaces):**
+- Per-entity `DataEntityAlertItem.tsx`: wrap the Resolve/Reopen `<Button>` in `<ConfirmationDialog>`;
+  `onConfirm={() => dispatch(updateAlertStatus(params)).unwrap()}`. Keep the `<WithPermissions>` guard.
+- Global `AlertItem.tsx`: wrap the Resolve/Reopen `<Button>` in `<ConfirmationDialog>`; fold the existing
+  permission pre-fetch into `onConfirm` (`.unwrap()` throughout; a denied permission rejects → inline error),
+  letting the dialog's built-in loading/error replace the bespoke `isUpdating`/`disableResolve`/"No access!"
+  state. (UX note surfaced at GATE 1.)
+
+**Tests (G-C9, both buckets):**
+- Unit (odd-platform CI) — drive the REAL `updateAlertStatus` thunk through the REAL reducer in a test store and
+  assert `state.dataEntityAlerts[id].items` carries the new status after a per-entity resolve. RED on base (write
+  lands on the global list; per-entity stays stale), GREEN on fix. (NOT a hand-crafted-payload reducer test — that
+  would pass on the buggy system too, since the reducer is already correct; the RED must exercise the thunk's key.)
+- Integration (odd-team) — **MANDATORY** (user-facing FE/BE contradiction — LSN-031). Author **IT-142**
+  (next free; cross-ref IT-027/IT-030): seed an OPEN alert; on the per-entity tab click Resolve → assert a
+  confirm dialog appears (Defect 2) → confirm → assert the row badge/button reflect the new status WITHOUT a
+  refresh (Defect 1); plus a cancel-leaves-status-unchanged assertion + a global-page confirm assertion. RED on
+  `ODD_SUT=ref:main` (no dialog; per-entity stays stale), GREEN on the working-tree SUT. Add to `feature-complete`
+  + `ui-e2e`.
+
+**Scope EXCLUSIONS (G-C5):** no back-end change (BE persistence is correct); no defensive rewrite of the
+now-activated reducer branch's `state.dataEntityAlerts[id].items` access (the per-entity tab always populates
+`dataEntityAlerts[id]` before the button is clickable — no reachable NPE; verified, not deferred); no change to
+the success-toast; no change to the global page's permission MODEL (only fold the existing check into onConfirm);
+no touching other thunks (verified key-consistent). Adjacent issues → backlog via `follow-up-on-disk.md`, not this PR.
+
+**Docs (G-C10):** read `documentation/.../alerting` + the alert-tab page; decide update-vs-"none + why". The fix
+restores intended behaviour (no NEW user-facing capability) → likely `docs_routing: none` with the read-justified why.
+
+**Ontology (G-C10):** `/enrich --touched` the alert UI flow sidecars once `lineage/**` is clean+unclaimed
+(currently DIRTY+unowned — P-001 residue; R9/O10 → defer with justification if still dirty).
+
+## Test / Docs / Ontology ledger
+(Phase D — filled with run evidence at the committed SHA.)
+
+## Comments posted
+(Phase C/D — one folded root-cause + live-reproduction comment after GATE 1, per the github-write rate-limit.)

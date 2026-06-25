@@ -11,8 +11,8 @@ adr_required: false           # G-C7 does NOT fire (FE-only; no migration / auth
 plan_approved_by: RamanDamayeu
 plan_approved_at: "2026-06-25"
 docs_routing: "TBD at G-C10 (Phase D) — candidate: release/0.29.0 (multilingual-ui.md value-correctness note) OR 'none + why' after READING the page"
-pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/new/contrib/CTRIB-036-i18n-locale-value-corrections (manual — open as DRAFT; body in CTRIB-036-pr-body.md)"
-pr_draft: pending-open       # branch pushed @773098a5; draft PR not yet opened (harness PR-creation = manual URL)
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1808"
+pr_draft: true               # DRAFT PR #1808 opened by odd-contributor[bot] (Closes #1776, base main <- contrib/CTRIB-036-* @773098a5). Bot can't merge — GATE 2 human.
 stream: ctrib036              # active-streams.yaml — CO-ACTIVE with ctrib035 (#1762 BE), zero file overlap
 co_active: "ctrib035 (#1762 — BE error-contract); serialized resources = heavy-e2e flock + lineage single-writer + odd-team index"
 ---

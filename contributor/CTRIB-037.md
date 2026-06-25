@@ -5,11 +5,12 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1794
 title: "DQ Dashboard does not correctly account for run statuses (incl. RUNNING): Test Results Breakdown + Table Health"
 class: bug
 milestone: "0.29.0"            # G-C11 PASS — open, semver, due 2026-06-27; latest release 0.28.0 (2026-06-17) → unreleased behaviour → release/0.29.0 docs train
-status: planned               # intake -> scoping -> reproducing -> root-caused -> planned -> [GATE 1] -> ...
+status: plan-approved         # GATE 1 PASSED 2026-06-25 (RamanDamayeu) — Option A + include 1a; Phase D next
 reproduced: "contributor/CTRIB-037.md §Phase B (live on ctrib037repro :18161, image 005dee4b = main f4cf0693 DQ-identical); raw captures scratchpad/dash-*.json"
 adr_required: false           # G-C7 does NOT fire — see "Architectural-significance check"
-plan_approved_by: ""          # GATE 1
-plan_approved_at: ""
+plan_approved_by: "RamanDamayeu"   # GATE 1 — AskUserQuestion + explicit override message 2026-06-25
+plan_approved_at: "2026-06-25"
+gate1_decisions: "Cascade = Option A — the issue's 4-state mapping, by MAINTAINER OVERRIDE (the AskUserQuestion picked B; the maintainer then explicitly INSISTED on A and to update the docs): Error=at least one FAILED; Warning=at least one BROKEN (no FAILED); Unknown=at least one UNKNOWN (no FAILED/BROKEN); Healthy=none of the above (only SUCCESS/SKIPPED/ABORTED/RUNNING). Scope = include Defect 1a (ingestion NPE) + start_time migration in ONE PR. Docs page /features/data-quality/dashboard MUST be updated to match (the documented 'Error=failed or broken' changes). Scope comment posted on #1794 before code."
 docs_routing: ""              # Phase D — read the page first (G-C10)
 pr_url: ""
 pr_draft: true
@@ -232,12 +233,18 @@ remaining member** — BROKEN is its only natural occupant. So the cascade is a 
   **Warning becomes empty** (effectively a 3-state + Unknown ring). Keeps BROKEN a failure; loses Warning.
 
 Both fix the REAL bug both agree on (today SKIPPED/ABORTED/RUNNING/UNKNOWN all wrongly read Warning; in-flight
-runs are uncounted). They differ ONLY on BROKEN, which decides whether Warning survives. **This is the #1
-GATE-1 decision — I will not pick it unilaterally** (it pits the maintainer's own issue-design against the
-maintainer's own published docs + alerting). My lean: **Option B** (the grounded, consistent choice), but the
-maintainer owns it. odd-sme also flags: **gate the Unknown slice** on a one-query check that UNKNOWN is ever
-actually the worst latest status in real data (ODD's GE adapter never emits UNKNOWN) — if always-empty, fold
-into Warning; I will run that check in Phase D before building the 4th slice.
+runs are uncounted). They differ ONLY on BROKEN, which decides whether Warning survives. My lean was **Option
+B** (grounded), but the maintainer owns the product call.
+
+> **GATE-1 RESOLUTION (2026-06-25, RamanDamayeu — FINAL):** **Option A.** The AskUserQuestion initially picked
+> B; the maintainer then **explicitly overrode** it: *"I would still insist on that mapping … Error=at least
+> one Failed; Warning=at least one Broken (no Failed); Unknown=at least one Unknown (no Failed/Broken);
+> Healthy=none of the above (only Success/Skipped/Aborted/Running) … and update the documentation accordingly."*
+> This is the maintainer's product authority, made with full knowledge of the docs-regression + alerting
+> trade-off I surfaced (they resolve the docs concern by **updating the docs** to match — on `release/0.29.0`).
+> The 4-state ring is coherent (no empty slice). **Implement Option A; update `/features/data-quality/dashboard`
+> to the new cascade + Running-in-breakdown.** The Unknown slice ships (the maintainer wants the 4-state ring);
+> I still run odd-sme's one-query check in Phase D and note the result, but it does not gate the bucket.
 
 **The product-critical ADDITION the issue missed (reproduce-first):** **Defect 1a — in-flight runs can't be
 ingested at all** (HTTP 500 NPE at `DataEntityTaskRunMapperImpl.mapTaskRun`). The issue's Defect 1 names only

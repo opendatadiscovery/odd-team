@@ -927,3 +927,24 @@ session_id: session-2026-05-12-F-DataEntityDetails
   feature_id: F-001
   ran_at: 2026-06-25T13:56:33+00:00
   verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T160307Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T16:03:07+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T185322Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T18:53:22+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T190235Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T19:02:35+00:00
+  verdict: "all assertions passed"

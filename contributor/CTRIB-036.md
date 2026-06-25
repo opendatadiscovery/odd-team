@@ -199,18 +199,65 @@ GATE 2** — each is a multi-item hint, unambiguously better than the current ke
 > (separate CI follow-up; the proposed value==key check wouldn't catch this class). The non-pt-BR
 > hint translations are best-effort and native-speaker review is welcome.
 
-## GATE 1 — pending human approval (G-C3)
+## GATE 1 — APPROVED 2026-06-25 (RamanDamayeu) (G-C3)
 
-Decisions surfaced to the maintainer (via `AskUserQuestion`): **(1)** scope = Option 1
-(recommended); **(2)** FE-only test rigor (full Playwright IT + full regression vs lighter FE bucket).
-No clarifying GitHub comment warranted before the gate (G-C6) — the scope decisions are the maintainer's
-to make at GATE 1, and the maintainer authored the issue.
+- **Scope = Option 1** (all 6 placeholders + pt-BR A/B/C; defer Defect-D + prevention lint).
+- **Tests = FE-only bucket** (CTRIB-031 precedent — vitest guard + Playwright locale IT + feature-complete
+  + known-bugs; SKIP multi-stack + ingestion-e2e).
+- Deferred items logged on disk: **PLT-244** (Label/Tag terminology, @fredguth) + **PLT-245** (prevention lint).
+- **Public scope comment POSTED** (G-C5, maintainer-authorized): `odd-contributor[bot]` →
+  https://github.com/opendatadiscovery/odd-platform/issues/1776#issuecomment-4796317083
+- No clarifying GitHub comment warranted (G-C6) — scope was the maintainer's GATE-1 call; the maintainer
+  authored the issue.
 
-## Test / doc / ontology ledger (filled in Phase D)
+## Test / doc / ontology ledger (Phase D)
 
-- [ ] Unit (vitest) RED→GREEN — separator-hint guard
-- [ ] Integration IT-NNN RED→GREEN — Overview placeholder under non-en locale (ODD_SUT=ref:main RED)
-- [ ] FULL regression on the working-tree SUT (or maintainer-approved FE-bucket) — flock-serialized with ctrib035
-- [ ] Docs read + routed (multilingual-ui.md) / or "none + why"
-- [ ] Ontology `/enrich --touched` committed (lineage clean)
-- [ ] Principal sufficiency (G-C13) + rendered-pixel review of the placeholder under a non-en locale
+Code commit: odd-platform `contrib/CTRIB-036-i18n-locale-value-corrections` @ `773098a5` (6 locale JSON +
+the vitest guard). Tests authored: IT-143 (`integration-tests/protocols/IT-143-*.md` +
+`e2e/specs/i18n-main-search-placeholder.spec.ts`, wired into feature-complete + ui-e2e).
+
+- [x] **Unit (vitest) RED→GREEN** — the symbolic-key hint guard in `i18n-key-parity.test.ts`. RED on base:
+  6 per-locale tests fail (each shows the broken gloss). GREEN on fix: all 6 pass; suite 16/17 (the lone
+  red is the pre-existing PLT-239 guard false-positive on `LinkedTermsList.tsx:63`, not my change). Run in
+  a node:24 container (host node is 18; vitest 4 / vite 7 need ESM).
+- [x] **Integration IT-143 RED→GREEN** — Overview placeholder under es+ua. **GREEN** on the fix SUT
+  (2 passed, both inside feature-complete AND a standalone `run-suite.sh IT-143` re-confirm). **RED-proven**
+  on the no-fix base `odd-team-sut-ctrib034` (2 failed — es+ua) → the RED survives (G-C15), the test
+  genuinely guards #1776.
+- [x] **FE-bucket regression on the working-tree SUT** (maintainer-approved skip of multi-stack +
+  ingestion-e2e) — `run-regression.sh ctrib036 feature-complete known-bugs`, flock-serialized with the
+  co-session; SUT `odd-team-sut-ctrib036` (digest 42cd1804, UI bundled). **feature-complete 316 passed /
+  1 failed**; the 1 = IT-106 owner-association-triage, a FLAKE (re-ran **3/3 GREEN** in isolation;
+  change-independent by construction — i18n-only diff) → **GREEN-for-change (delta 0)**. **known-bugs
+  3-failed-EXPECTED-RED** (IT-004/006/007 known pins) + 1 skipped, **0 unexpected GREEN**. Run-logs:
+  `integration-tests/run-log/2026-06-25-{feature-complete,known-bugs}.md` (filled).
+- [x] **Docs read + routed** — `multilingual-ui.md` read; it claimed "Two build checks" + universal
+  natural-keys. Updated (two→three guards + the symbolic-key value class + #1776) on `release/0.29.0`
+  @ `a0f4656` (NOT pushed — external write deferred to Phase E); paired item **DOC-487** (pending-release).
+- [x] **Ontology — DEFER (G-C10-justified), no stale core.** The enriched i18n node is en.json
+  (`understanding/…i18n-resource__en.md`), UNCHANGED by this change (non-en catalog VALUES + a test
+  guard); the sidecar ALREADY documents the symbolic `main search placeholder` exception (lines 57/67),
+  so its core is accurate. Only marginal context drifts: the guard list (now 3, was 2 — the new
+  symbolic-key value guard). AND lineage/** is DIRTY+unowned (P-001 probe residue: feature-flows.yaml + 2
+  sidecars — R9 single-writer / O10 route-around), so `/enrich` must defer regardless. Refreshes at the
+  next clean window / the 0.29.0 release substrate scan (same accepted bar as CTRIB-028..034). Nothing
+  narrated as stale-but-unfixed; no i18n CODE behavior changed.
+- [x] **Principal sufficiency (G-C13) + pixel review.** Enough + meaningful tests: the unit guard covers
+  all 6 non-en catalogs structurally (RED on base); IT-143 proves the end-to-end render for 2
+  representatives (es Latin + ua Cyrillic), RED on the no-fix base. Patch-coverage/jacoco: **N/A** — zero
+  Java (FE-only; the CI gate is `-PbundleUI=false`). No control lost (value edits + a guard reusing the
+  existing i18n test helpers; no new abstraction). No existing functionality harmed (feature-complete
+  delta-0). **Rendered-pixel review PASS** — screenshots of the home search box under es + ua (against the
+  running fix SUT, :18090): the full translated hint fits legibly in the 640px box, no overflow/truncation;
+  the **Cyrillic renders correctly** (no mojibake). Captured placeholders match the catalog values exactly.
+
+## Phase D — DONE. All 5 DoD gates GREEN (FE-only bucket per GATE 1)
+
+1. Unit (vitest) green on the working tree (16/17; the 1 red = pre-existing PLT-239). · 2. FE-bucket
+integration regression on the working-tree SUT — feature-complete GREEN-for-change (316/1-flake) +
+known-bugs 3-RED-expected; IT-143 RED→GREEN proven (multi-stack + ingestion-e2e skipped per GATE 1). ·
+3. Docs read + routed (`release/0.29.0` @ a0f4656 + DOC-487). · 4. Ontology — justified defer (no stale
+core; lineage dirty+unowned). · 5. Principal sufficiency + pixel review PASS. Java CI replica N/A (zero Java).
+
+**Phase E next:** push `contrib/CTRIB-036-i18n-locale-value-corrections` @ 773098a5 + the docs train + open
+a DRAFT PR (`Closes #1776`, body in `contributor/CTRIB-036-pr-body.md`) → a SEPARATE `/review` → GATE 2.

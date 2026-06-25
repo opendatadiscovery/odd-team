@@ -301,13 +301,27 @@ push + draft PR in Phase E use the same App path.
 
 ## Phase D — implement + test (the ledger)   (IN PROGRESS)
 
-Definition-of-Done gates (filled as each completes):
-1. unit build green (working tree) — ⏳
-2. FULL integration regression on the branch SUT (feature-complete green · multi-stack green · known-bugs still-RED · ingestion-e2e green) — ⏳
-3. docs read + decided + routed (G-C10/G-C11) — ⏳
-4. ontology /enrich --touched + re-embed, committed (G-C10) — ⏳
-5. Principal sufficiency incl. local jacoco patch-coverage 98% (G-C13) — ⏳
+**Worktree** `../odd-platform-ctrib035` @ branch `contrib/CTRIB-035-illegalargument-exception-contract`
+(off origin/main `f4cf0693`, `--no-track`, push-safety verified `@{u}` != origin/main).
 
-Test ledger (BOTH buckets, RED-on-base proof):
-- Unit `PolicyJSONValidatorTest` — ⏳
-- In-process integration `POST /api/policies invalid → 400` — ⏳
+**The change (exactly the GATE-1 scope):**
+- `service/PolicyJSONValidator.java:28,31` — `IllegalArgumentException` → `BadUserRequestException("Policy is not valid: %s", detail)`. Detail passed as a **format arg** (never concatenated into the format string) so a `%` in a validation message cannot break `String.format` inside `BadUserRequestException`.
+- `service/permission/PermissionServiceImpl.java:48` — the missing-extractor fallthrough `IllegalArgumentException` → `IllegalStateException` (server-invariant intent; **no status change**, still 5xx via the catch-all).
+- (odd-team) `adrs/drafts/exception-http-status-mapping.md` — the reverse-engineered ADR (extends published **ADR-0007**).
+
+**Reuse/ADR notes (confirmed in code):** the typed-exception → global-handler path is **ADR-0007** (`backlog/adr/ADR-0007.md`, published at `…/architecture-decision-log/adr-0007-uniform-reactive-controller-pipeline`). `AdrControllerAdviceMappingScanTest` pins the ControllerAdvice handler set — **unaffected** (I add no handler). No test asserted the old IAE on these paths (PolicyServiceImplTest *mocks* the validator) → no breakage.
+
+**Commit:** odd-platform `a4a34e98` (`contrib/CTRIB-035-illegalargument-exception-contract`).
+
+**Definition-of-Done gates:**
+1. **Full unit build (working tree)** — ✅ **GREEN**. `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build` = test + checkstyleMain + checkstyleTest + assemble): `BUILD SUCCESSFUL in 7m29s`; **0 failures / 0 errors across the WHOLE suite** (no existing test broke); my 3 classes `PolicyJSONValidatorTest` 4/4, `PermissionServiceImplTest` 1/1, `PolicyValidationErrorContractTest` 2/2.
+2. **FULL integration regression** on the branch SUT (feature-complete green · multi-stack green · known-bugs still-RED · ingestion-e2e green) — ⏳ **RUNNING** (`run-regression.sh ctrib035`, builds the SUT from worktree `a4a34e98`, flock-serialized). Note: this is the regression-safety gate; the fix itself is proven by the unit + in-process integration RED→GREEN (there is no browser-e2e IT for this fix — GATE-1 Q4).
+3. **Docs read + decided + routed (G-C10/G-C11)** — ✅ **routing: none**. Read `configuration-and-deployment/enable-security/authorization/policies.md`; line 310 already documents the validation-error behaviour generically (*"a condition using `in` is rejected by the policy JSON Schema, and the platform returns an error rather than saving the policy"*) — that stays true and is *improved* by the fix (a clean 400 with detail vs an opaque 500). The page documents policy structure + behaviour, not HTTP status codes; adding one would be inconsistent scope creep. The issue's own "no doc-side companion needed" is read-confirmed.
+4. **Ontology /enrich --touched (G-C10)** — **DEFERRED to the post-merge / 0.29.0 release substrate scan** (the accepted CTRIB-028..034 bar). Justification: the ontology tracks `origin/main`; the fix is on an **unmerged branch**, so re-enriching now would either re-describe pre-fix main (no-op) or premature unmerged code. **Exact staleness recorded for the release scan:** `lineage/odd-platform/understanding/odd-platform__java__service__service__PolicyServiceImpl.md` lines **31** (facet `error_class_misrepresented` — now FIXED), **78**, **91**, **109** (all say "IllegalArgumentException → 500 not 400"), and the **F-006** reflection facet `error_class_misrepresented`. These correctly describe *current main* (which still 500s until GATE-2 merge). No dedicated sidecar exists for `PolicyJSONValidator`/`PermissionServiceImpl`.
+5. **Principal sufficiency + local jacoco patch-coverage 98% (G-C13)** — ✅ **verified locally** (not discovered in CI). From the full-build jacoco XML: every changed executable line is covered (`ci>0`) — `PolicyJSONValidator` :32 + :35 (the two `BadUserRequestException` throws), `PermissionServiceImpl` :51 (the `IllegalStateException`). PolicyJSONValidator has zero missed lines; the PermissionServiceImpl "missed" lines are pre-existing OTHER methods, not my diff. CI gate `Madrapps/jacoco-report min-coverage-changed-files: 98` satisfied. Sufficiency: 3 meaningful RED→GREEN tests, no control lost (a typed-exception swap), no existing functionality harmed (full suite green).
+
+**Test ledger (BOTH buckets; unit bucket per the tests-pillar home rule) — RED→GREEN PROVEN:**
+- Unit `PolicyJSONValidatorTest` (4 cases: schema-invalid→400, malformed→400, %-in-detail format-safe, valid passes) — **GREEN on fix** ✅; **RED on base** ✅ (3 exception-asserting cases fail: pre-fix throws `java.lang.IllegalArgumentException`).
+- Unit `PermissionServiceImplTest` (missing extractor → `IllegalStateException`, stays 5xx) — **GREEN on fix** ✅; **RED on base** ✅ (pre-fix throws `IllegalArgumentException`).
+- In-process integration `PolicyValidationErrorContractTest` (`POST /api/policies` invalid → 400 USR001, detail in body) — **GREEN on fix** ✅ (2/2, BaseIntegrationTest+WebTestClient); **RED on base** ✅ (got `< 500 INTERNAL_SERVER_ERROR`).
+- RED-on-base proof method: reverted the 2 source files to `origin/main`, ran the 3 classes → `7 tests completed, 6 failed` (`validPolicyPasses` is a guard, green on both), fix auto-restored. Both buckets proven.

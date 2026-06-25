@@ -5,7 +5,7 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1794
 title: "DQ Dashboard does not correctly account for run statuses (incl. RUNNING): Test Results Breakdown + Table Health"
 class: bug
 milestone: "0.29.0"            # G-C11 PASS — open, semver, due 2026-06-27; latest release 0.28.0 (2026-06-17) → unreleased behaviour → release/0.29.0 docs train
-status: plan-approved         # GATE 1 PASSED 2026-06-25 (RamanDamayeu) — Option A + include 1a; Phase D next
+status: pr-draft              # Phase D DONE (DoD met; ontology /enrich justified-deferred). Branch committed @d86790b4, NOT pushed (external write gated). Next: push + scope comment + draft PR → SEPARATE /review → human GATE 2.
 reproduced: "contributor/CTRIB-037.md §Phase B (live on ctrib037repro :18161, image 005dee4b = main f4cf0693 DQ-identical); raw captures scratchpad/dash-*.json"
 adr_required: false           # G-C7 does NOT fire — see "Architectural-significance check"
 plan_approved_by: "RamanDamayeu"   # GATE 1 — AskUserQuestion + explicit override message 2026-06-25
@@ -443,5 +443,23 @@ clean+unclaimed `lineage/**` window (currently dirty from co-stream sme-consulta
 
 **Principal sufficiency (G-C13):** meaningful RED→GREEN unit + the mandatory user-facing IT; the FE consumer
 tsc caught (first-time-right via the build, not the reviewer); jacoco patch-coverage assessed in the full build
-(BUILD SUCCESSFUL includes the coverage gate). UI: the 4th Unknown slice — pixel review at the regression's
-running stack / a screenshot before handoff (G-C12 step 5).
+(BUILD SUCCESSFUL includes the coverage gate). **UI pixel review DONE (G-C12 step 5):** screenshotted
+`/data-quality` on the fix SUT with the cascade ingested (`scratchpad/dq-dashboard.png`) — the Table Health
+ring renders **4 legible slices** (green Healthy=3 · amber Warning=1 · red Error=1 · **grey Unknown=1**,
+distinct + proportional, the existing `dataQualityDashboard.unknown` colour), and the Test Results Breakdown
+shows the **cyan Running** slice (in-flight runs counted). Both defects' fixes visually confirmed (LSN-031).
+
+## Phase D — DONE (Definition of Done)
+1. **Unit** — full `:odd-platform-api:build` GREEN (mapper 3/3 + table-health 2/2). ✓
+2. **Integration** — FULL regression GREEN-for-change (IT-144 GREEN; feature-complete 315/3-all-change-independent;
+   multi-stack 9/0; ingestion-e2e 6/0; known-bugs 3-RED-expected) + IT-144 RED proof on the no-fix base. ✓
+3. **Docs** — read + updated on `release/0.29.0` @aa5e21a + DOC-488/489. ✓
+4. **Ontology** — `/enrich` **DEFERRED** (lineage dirty with co-stream P-001 probe residue — R9/O10; the same
+   accepted bar as CTRIB-028/029/032/033/034; scheduled at the 0.29.0 release substrate scan). ⏸ (justified)
+5. **Principal sufficiency** — tests + coverage + pixel review. ✓
+
+## Phase E — handoff (external writes harness-gated)
+Branch `contrib/CTRIB-037-dq-dashboard-runstatus-accounting` @ `d86790b4` committed (push-safe, NOT pushed —
+external write pending the maintainer's authorization). Scope comment drafted (C.9) + PR body
+(`contributor/CTRIB-037-pr-body.md`). Next: push + scope comment + DRAFT PR (`Closes #1794`, Milestone 0.29.0)
+→ a SEPARATE `/review` session → human GATE 2 merge.

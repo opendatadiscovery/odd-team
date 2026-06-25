@@ -5,7 +5,7 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1776
 class: bug
 scope: frontend
 milestone: "0.29.0"            # OPEN + semver, due 2026-06-27 — G-C11 PASS
-status: pr-draft              # Phase D DONE (all 5 DoD gates green); branch PUSHED @773098a5; docs committed (release/0.29.0 @a0f4656, NOT pushed — external write). Next: DRAFT PR (manual URL) → a SEPARATE /review → review-ready → GATE 2 (human merge). GATE 1 APPROVED 2026-06-25 (RamanDamayeu): Scope=Option1; Tests=FE-only bucket.
+status: review-ready          # /review (session review-ctrib036) ACCEPTED 2026-06-25 — pr-draft → review-ready. Every gate PASS with cited evidence; the reviewer's OWN FE-bucket confirmation regression on a SUT freshly built from 773098a5 is GREEN-for-change (feature-complete 316 pass; the lone fail = IT-144, ctrib037's UNMERGED #1794 test, expected-RED on a CTRIB-036-only SUT; IT-106 flake did NOT recur; IT-143 es+ua GREEN), known-bugs 3-RED-expected/0-unexpected-green. Human GATE-2 (approve+merge DRAFT PR #1808) owns the flip to pending-release; the 0.29.0 release gate owns done. NON-BLOCKING FINDING: docs a0f4656 not yet pushed to origin/release/0.29.0 (entangled with ctrib037's stacked aa5e21a) — must land before the 0.29.0 release gate (DOC-487; release-train-merge backstops). GATE 1 APPROVED 2026-06-25 (RamanDamayeu): Scope=Option1; Tests=FE-only bucket.
 reproduced: "STATIC-DEFINITIVE — 6 broken catalog values read + single-hop render path confirmed LIVE-REACHABLE (Overview.tsx:47 no-prop mount -> MainSearchInput:63->71 placeholder). Running-system render-RED scheduled as the mandatory Phase-D integration IT's first run on ODD_SUT=ref:main (G-C9/LSN-031)."
 adr_required: false           # G-C7 does NOT fire (FE-only; no migration / auth-posture / wire-contract change)
 plan_approved_by: RamanDamayeu
@@ -261,3 +261,128 @@ core; lineage dirty+unowned). · 5. Principal sufficiency + pixel review PASS. J
 
 **Phase E next:** push `contrib/CTRIB-036-i18n-locale-value-corrections` @ 773098a5 + the docs train + open
 a DRAFT PR (`Closes #1776`, body in `contributor/CTRIB-036-pr-body.md`) → a SEPARATE `/review` → GATE 2.
+
+## Review (2026-06-25, session: review-ctrib036)
+
+- **Result**: **ACCEPTED** → `pr-draft` → `review-ready`. (Contributor item: human GATE-2 merge of DRAFT PR
+  #1808 owns the flip to `pending-release`; the 0.29.0 release gate owns `done`. Separate session from
+  `/implement` — implement ran in prior sessions through `5b7024e`; self-review gate satisfied.)
+- **2-minute bounce**: did NOT fire. The implementer's ledger claims gates RUN (not deferred); the fix-SUT
+  `odd-team-sut-ctrib036` (digest `42cd1804`) is present, built 08:27 = 16 min after the 08:11 commit
+  `773098a5` (worktree clean at that commit now → digest traces to the reviewed SHA); integration run-logs
+  exist on that digest. So the full review proceeded.
+
+### Acceptance criteria
+- [x] **Group 1 — 6 non-en `main search placeholder` values translate the en VALUE, not the KEY** — PASS.
+  `git show 773098a5` diff: es/fr/ch/ua/hy/br all replace the literal key-gloss with a multi-item hint
+  matching the GATE-1 plan verbatim. Spot-checked correctness: es/fr/pt-BR are clearly-correct native
+  translations of the en hint (`en.json:391`, unchanged SoT); ch (`通过关键词搜索数据表、特征组、作业和 ML 模型`,
+  2× `、`) + ua (`Пошук таблиць даних, груп ознак…`, 2 commas) read correct; hy best-effort (flagged, native
+  review welcome — maintainer-approved at GATE 1). Each carries ≥2 list separators.
+- [x] **Group 2 — pt-BR br.json A/B/C** — PASS. `Toal de entidades`→`Total de entidades` (:425),
+  `excluir esta rótulo`→`excluir este rótulo` (:41, gender), `História`→`Histórico` (:167, matches
+  `Ocultar/Mostrar histórico`). All three present in the diff.
+- [x] **Scope exclusions honored (G-C5)** — PASS. Diff = exactly 7 files (6 locale JSON + the additive vitest
+  guard); NO en.json / key / `.tsx` / Defect-D / prevention-lint changes. Deferred items logged on disk:
+  PLT-244 (Label/Tag split), PLT-245 (symbolic-key prevention lint); public scope comment posted
+  (issuecomment-4796317083).
+
+### Quality Bar — contributor gates (G-C*) + universal
+- **G-C1 (reproduce-first)** — PASS. Render path reproduced static-definitive + IT-143 RED-proven on the
+  no-fix base (`odd-team-sut-ctrib034`), via Phase B.
+- **G-C2 (verify the running system, FULL regression)** — PASS, **reviewer's OWN run** (not the implementer's
+  alone). Built a SUT from `../odd-platform-ctrib036` @773098a5 (`run-regression.sh review-ctrib036`,
+  flock-serialized behind ctrib037): **feature-complete 316 passed / 1 failed / 2 skipped** — the lone fail
+  is **IT-144** (`dq-dashboard-runstatus-accounting.spec.ts`, ctrib037's UNMERGED #1794 fix-test; my SUT has
+  zero DQ-dashboard code, so it is correctly RED — analogous to IT-037 RED for unmerged CTRIB-030). **IT-106
+  (the implementer's flake) PASSED this run**; **IT-143 es+ua GREEN** on my freshly-built SUT. **known-bugs 3
+  failed = IT-004/IT-006/IT-007 (the expected pins), 0 unexpected GREEN** (IT-004 trace confirms the genuine
+  PLT-052 bug). → **GREEN-for-change, delta 0 attributable to CTRIB-036.** multi-stack + ingestion-e2e skipped
+  per the GATE-1 FE-only bucket (a locale-VALUE edit cannot affect backend/ingestion behaviour — CTRIB-031
+  precedent). VERIFIED via my run-log + the implementer's corroborating run on the traced fix-SUT.
+- **G-C5 (bounded by plan)** — PASS (see Acceptance criteria).
+- **G-C7 (irreversible blast radius)** — N/A (FE-only; no migration / auth / wire-contract).
+- **G-C9 (test integrity, both buckets)** — PASS. Unit: the additive vitest guard
+  (`i18n-key-parity.test.ts`) asserts every non-en value of the symbolic key carries ≥2 list separators —
+  non-circular (`localeCatalogs()` auto-discovers all non-en catalogs from disk; does not hard-code my
+  strings), RED on the pre-fix glosses (0 separators). Integration: IT-143 (NEW) asserts the rendered es+ua
+  placeholder contains the translated-hint fragment AND the pre-#1776 gloss is absent (`count 0`) — a
+  user-facing symptom the unit test cannot see (G-C9/LSN-031 mandate). Both RED→GREEN.
+- **G-C15 (test-change integrity)** — N/A→PASS. Both tests are ADDED, not changed: the vitest guard is a
+  purely additive `describe` block (diff shows only `+` after the existing `});`; no existing assertion
+  touched/weakened); IT-143 is a new spec file. No `.skip`/matcher-weakening/mock-swap.
+- **G-C16 (product analysis)** — PASS. Phase C critiqued the issue's premise (bug real; suggested fix mostly
+  sound), enumerated reshape/rescope/revoke options, recommended Option 1, and surfaced the two divergences
+  (defer Defect-D; the issue's `value==key` lint won't catch this class → redesign) as GATE-1 decisions.
+- **Gate 4 (consumer-read)** — PASS. Verified against source @773098a5: `Overview.tsx:47 <MainSearch
+  mainSearch />` (no `placeholder` prop) → `MainSearchInput.tsx:71 placeholder ?? mainSearchPlaceholder` →
+  `t('main search placeholder')`; `Search.tsx:109` passes its own placeholder (unaffected). Home is provably
+  the only affected surface. VERIFIED via grep/read.
+- **Gate 9 (factual provenance)** — PASS. Diff values + render-path line numbers verified against source;
+  the en hint quote in the docs matches `en.json:391` exactly. Independent running-system check: extracted the
+  UI bundle (`static/assets/index-BfzXf_BG.js`, ts 08:26) from the fix-SUT image — the NEW es/pt-BR/ch/ua
+  hints are PRESENT and the OLD glosses (`espacio para b…`, `Toal de entidades`) are GONE. VERIFIED via
+  `docker cp` + unzip + grep.
+- **Gate 11 (audience isolation)** — PASS. The published doc prose (`multilingual-ui.md` @a0f4656) uses only
+  operator language (symbolic key / search hint / non-English operator / `odd-platform#1776`); zero workspace
+  terms (CTRIB/PLT/LSN/Gate/IT-143/vitest/F-141). The public commit `773098a5` correctly carries NO `Sources:`
+  footer (matches merged contrib precedent `e481cefd`/`c7f14fc5`/`8e5b3339` — a footer naming odd-team
+  internals would itself be a Gate-11 leak on a public commit; provenance lives in this CTRIB record).
+- **G-C10 (docs + ontology move with the code)** — PASS-with-finding.
+  - *Docs*: `multilingual-ui.md` updated (two→three build checks + the symbolic-key value-correction class,
+    #1776), routed correctly to `release/0.29.0` (describes unreleased 0.29.0 behaviour); read end-to-end —
+    accurate + coherent. **FINDING (non-blocking)**: `a0f4656` is committed locally but **NOT pushed to
+    `origin/release/0.29.0`** (`git branch -r --contains a0f4656` empty; entangled with ctrib037's stacked
+    `aa5e21a`, still implementing). Required before the 0.29.0 release gate; DOC-487 tracks it and
+    `playbooks/release-train-merge.md` half-1 backstops it. Not blocked here: the CODE PR (#1808) is
+    merge-quality; the docs are correct + on the right branch; pushing is a co-stream coordination step.
+  - *Ontology*: `/enrich` deferred — justified. The enriched i18n node is `en.json` (UNCHANGED by this diff;
+    its sidecar already documents the symbolic-key exception), and `lineage/**` is dirty+unowned (P-001 probe
+    residue, R9/O10). Same accepted bar as CTRIB-028..034; refreshes at the 0.29.0 release substrate scan.
+- **G-C11 (milestone)** — PASS. `0.29.0` open + semver (due 2026-06-27).
+- **G-C13 (Principal sufficiency)** — PASS. Enough+meaningful tests (unit structural over all 6 catalogs +
+  IT-143 end-to-end render for 2 representatives); patch-coverage N/A (zero Java; FE-only); no control lost
+  (value edits + a guard reusing the i18n test helpers); no existing functionality harmed (feature-complete
+  delta 0).
+- **Gate 8 (publishing / live-site)** — **PENDING-RELEASE (0.29.0)**. Release-gated; the live manual describes
+  the latest published release, so live verification is scheduled at the 0.29.0 release gate. Recorded URL:
+  `https://docs.opendatadiscovery.org/multilingual-ui` (live GitBook slug may carry a `/features/` prefix —
+  the i18n nav notes `docs.opendatadiscovery.org/features/multilingual-ui`); phrase to confirm post-publish:
+  "Three automated build checks" + the symbolic-key paragraph. Branch-verifiable sub-checks: the docs commit
+  exists on `release/0.29.0` (PUSH pending — see G-C10 finding).
+
+### Regressions
+None attributable to CTRIB-036. The only feature-complete failure (IT-144) is ctrib037's unmerged #1794
+fix-test; IT-106 flake did not recur; known-bugs are the expected pins (0 unexpected GREEN).
+
+### Navigation
+**Fixed in this review commit.** `navigation/domains/i18n.md` still said "**Two** automated guards enforce
+completeness" — CTRIB-036 added a **third** (the symbolic-key value-hint guard). The published doc was updated
+to "three checks" but the workspace pointer was not (an implementer G-C10 pointer-drift miss). Folded the
+living-pointer correction (2→3 guards + the new guard line, lines 12 + 36) per CLAUDE.md "navigation files are
+living pointers — update immediately when stale" + review protocol step 4. This is the only deviation from the
+"review commits exactly the verdict + PROGRESS.md" rule — a trivial, change-introduced, odd-team-internal
+pointer fact, not a change to the reviewed code/docs.
+
+### Upstream issues logged
+None new (the upstream deferrals PLT-244/PLT-245 were already drafted at GATE 1).
+
+### Doc-product editorial findings
+- **Coverage this run**: focused pass on the touched i18n surface — `multilingual-ui.md` read end-to-end as
+  the doc owner. **Coherent**: the new 0.29.0 paragraph integrates cleanly with the "missing-key fallback"
+  section, correctly distinguishes a "subtler defect than a missing key", and the en-hint quote matches
+  `en.json:391`. No contradiction with the "treat the JSON files as the source of truth" completeness advice
+  (that is about missing keys; this is a wrong-value class). Full published-tree audit continues partitioned
+  (last full pass 2026-06-08 → 203 items; recent contributor reviews partition per precedent).
+- **Findings**: none surfaced this run. *(Minor observation, not logged — over-logging: `multilingual-ui.md:45`
+  says "every non-English value of a symbolic key", while the guard hardcodes the single symbolic key that
+  exists today; accurate for the current catalog — generalisation is already the PLT-245 / code-TODO follow-up.)*
+
+### Notes
+- The fix is correct, minimal (6 values + 3 pt-BR + 1 additive guard), well-tested in both buckets, and the
+  running artifact provably contains it. The single non-blocking action before `done`: push `a0f4656` to
+  `origin/release/0.29.0` (coordinated with ctrib037), which the human GATE-2 / release gate owns. VERIFIED via
+  the reviewer's own regression + independent image-bundle extraction + source consumer-read.
+- Reviewer side-effects: my regression appended to the shared run-logs and re-ran the P-001 probe (lineage
+  drift). Per O10 (ctrib037 active on the same lineage files) these are LEFT uncommitted, not reverted; this
+  review commits only the verdict + PROGRESS.md + the active-streams entry + the folded nav-pointer fix.

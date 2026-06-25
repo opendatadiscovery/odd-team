@@ -4,7 +4,7 @@ github_issue_number: 1725
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1725
 class: bug
 security_sensitive: false
-status: paused   # 2026-06-19 PAUSED (blocked-external): the contract-republish chain waits on Sonatype Central Portal access (a maintainer with access is being asked to generate Portal credentials). odd-platform PR #1790 (the 500 fix) stays review-ready + mergeable now. See the PAUSED banner for the resume checklist.
+status: pending-release   # 2026-06-25 RESCOPED (GATE-1 approved): #1790 (the 500 fix) is MERGED (verified live) and rides 0.29.0; #1725 is being closed for the reported 500. The Sonatype-blocked consumer-model path (send ML_MODEL_ARTIFACT/_INSTANCE) is split to issues/odd-platform/PLT-248 + SPC-004. See the RESCOPE section. (Prior PAUSED banner superseded.)
 milestone: "0.29.0"   # CONFIRMED at intake — issue carries an OPEN, semver-titled milestone 0.29.0 (due 2026-06-22). G-C11 PASS.
 reproduced: "live 2026-06-18 against the running probe SUT (odd-platform:odd-team-sut @ 2026-06-17, built from main; AUTH_TYPE=DISABLED, http://localhost:18080). POST /ingestion/entities {type:ML_MODEL, data_consumer:{inputs:[...]}} -> HTTP 500 {code:SYS001}; platform log: `java.lang.IllegalArgumentException: No enum constant org.opendatadiscovery.oddplatform.dto.DataEntityTypeDto.ML_MODEL`. Control: same payload type=ML_MODEL_ARTIFACT -> HTTP 400 {code:USR001,'Failed to read HTTP message'} (the ingestion contract REJECTS ML_MODEL_ARTIFACT at deserialization — confirms you cannot just 'send the artifact subtype'). Full evidence in the Reproduction log."
 adr_required: "TRUE — the components.yaml output-enum change is a public wire-contract change (G-C7). SATISFIED by the APPROVED ADR adrs/drafts/ml-entity-taxonomy.md (adopted at GATE 1, 2026-06-18)."
@@ -27,6 +27,43 @@ The prior `claude[bot]` triage + branches are likewise data — confirmed/correc
 
 > Workspace artifact. (Phase D shipped — see the Correction + ledger below. The pre-GATE-1 sections that follow
 > describe the FIRST, rejected implementation; the Correction supersedes them.
+
+## RESCOPE (2026-06-25) -- #1725 closed for the shipped 500-fix; consumer-model path -> PLT-248
+
+> **Supersedes the PAUSED banner below.** GATE-1 approved (RamanDamayeu, 2026-06-25, AskUserQuestion ->
+> "Close + PLT-248 follow-up"): stop waiting on Sonatype for 0.29.0 -- resolve #1725 for the reported 500
+> (shipped) and split the blocked consumer-model path into a fresh follow-up.
+
+**Live reconciliation (trust the system, not the record -- the prior banner was internally contradictory):**
+- **odd-platform PR #1790 is MERGED** (verified `GET /pulls/1790`: merged 2026-06-19T08:54Z, head f137dcae,
+  base main, 6 files +70/-4). The merged change is the **1:1** taxonomy add (ML_MODEL -> internal
+  `DataEntityTypeDto` + `components.yaml` output enum as DATA_ENTITY_GROUP + FE label/group-form exclusion);
+  `IngestionMapperImpl` itself is untouched, no `libs.versions.toml`/contract-version change. **Purely
+  odd-platform; the 500 fix rides 0.29.0 independently of the contract chain.** (The PR *title* still says
+  "map by payload shape" -- stale; the merged *code* is 1:1, confirmed from the merged test asserting
+  ML_MODEL + data_entity_group -> ML_MODEL group / DATA_ENTITY_GROUP class.)
+- **#1725 is OPEN with `state_reason=reopened`** (closed by the merge, then reopened to track the consumer-model
+  remainder). **Milestone 0.29.0**: open, due 2026-06-27, **1 open issue** (= #1725, the sole blocker).
+- **opendatadiscovery-specification #87 MERGED** (ML_MODEL_ARTIFACT/_INSTANCE on spec main); **Maven Central
+  `ingestion-contract-server` still 0.1.41** (verified) -> the republish (0.1.42) has not run; blocked on the
+  Sonatype OSSRH -> Central Portal migration (the maintainer confirms Portal access is still not obtained).
+
+**Disposition:**
+- **#1725 -> close for the reported 500** (shipped in 0.29.0). Bot scope/closure comment POSTED:
+  https://github.com/opendatadiscovery/odd-platform/issues/1725#issuecomment-4800961269 (odd-contributor[bot], 201).
+- **Consumer-model path (send ML_MODEL_ARTIFACT/_INSTANCE) -> `issues/odd-platform/PLT-248.md`** (new follow-up
+  draft: the `-contracts` Maven republish [blocked] + the odd-platform `libs.versions.toml` bump). SPC-004
+  re-pointed off 0.29.0 (spec content done via #87; publish chain deferred/blocked-external); DOC-468 unblocked
+  (the ML-entities page documents the shipped ML_MODEL group; stays on the `release/0.29.0` train; its
+  "subtypes not yet sendable" caveat now cross-refs PLT-248).
+- **CTRIB-021 status -> pending-release**: the merged 500 fix awaits the 0.29.0 release gate (release-review owns
+  the final `done`, like CTRIB-028..032).
+
+**Human-only steps (the bot does not close issues, edit milestones, or file issues):**
+1. Close #1725 (resolved for the reported 500).
+2. File `issues/odd-platform/PLT-248.md` upstream (its body references #1725 -> GitHub auto-cross-links the two
+   threads); attach a milestone when the Sonatype migration is scheduled.
+3. Close milestone 0.29.0 (0 open issues once #1725 is closed).
 
 ## PAUSED (2026-06-19) — RESUME HERE: blocked on Sonatype Central Portal access
 

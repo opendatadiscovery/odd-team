@@ -4,7 +4,7 @@ github_issue_number: 1762
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1762"
 class: bug
 milestone: "0.29.0"
-status: pr-draft           # intake -> scoping -> reproducing -> root-caused -> planned -> plan-approved[GATE1 ✓] -> implementing -> tests-green -> docs-done -> [pr-draft ✓] -> review-ready(/review) -> merged[GATE2 human]
+status: review-ready       # intake -> scoping -> reproducing -> root-caused -> planned -> plan-approved[GATE1 ✓] -> implementing -> tests-green -> docs-done -> pr-draft -> [review-ready ✓ /review ACCEPTED 2026-06-25] -> merged[GATE2 human]
 reproduced: "POST /api/policies with invalid policy JSON → HTTP 500/SYS001 'Internal Server Error' (live, image 24b863601d49, 2026-06-25); server log shows the IAE 'Policy is not valid: ...' detail. See Phase B."
 adr_required: "yes — adrs/drafts/exception-http-status-mapping.md (GATE-1 approved: author now)"
 plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"
@@ -344,3 +344,61 @@ push + draft PR in Phase E use the same App path.
 ## Acceptance criteria (1–17) — implementer self-check (the gate authority is `/review`, separate session)
 
 1 plan-before-code ✓ (GATE-1 `b963c30` precedes the fix `a4a34e98`) · 2 reproduced ✓ (Phase B live 500; durable RED proof) · 3 diff bounded ✓ (= GATE-1 scope: 2 source + 3 tests; exclusions logged) · 4 unit injects the failing condition ✓ (real validator throws; real missing-extractor) · 5 pins N/A (no characterization pin) · 6 docs stated + page READ ✓ (none + why) · 7 ontology — DEFERRED-justified (release scan; exact staleness recorded) · 8 not self-`done` ✓ (status `pr-draft`) · 9 ADR ✓ (authored before code per GATE 1; G-C7 did not hard-fire) · 10 injection N/A · 11 DoD ✓ (full unit build + FULL regression green-for-change + docs read + ontology decided) · 12 milestone 0.29.0 ✓ (docs routing none, no train item) · 13 design-before-build ✓ (reuse BadUserRequestException; ADR-check ADR-0007; impact checklist; PO/SRE lens) · 14 Principal sufficiency ✓ (patch-coverage verified local; 3 meaningful tests; no control lost) · 15 test-change integrity N/A (all tests ADDED, none changed) · 16 product critique ✓ (G-C16 options matrix at GATE 1; divergence surfaced + scope comment posted) · 17 = 16.
+
+## Review (2026-06-25, session: review-ctrib035 — separate /review session)
+
+- **Result**: **ACCEPTED** → `pr-draft` → `review-ready`. Human **GATE-2** (approve + merge PR #1807) owns `merged`/`done`; the bot is the PR author and cannot self-approve (G-C4). Milestone 0.29.0 → the 0.29.0 release-review owns the eventual `done`.
+
+### Preconditions
+Status was `pr-draft` (the contributor review-ready-equivalent). Separate session from `/implement` (the fix shipped in a prior session: b963c30 → a4a34e98 → d6076f4). **2-minute bounce did NOT fire** — the fix-SUT image is present + VERIFIED to contain the fix, and integration run-logs exist on its digest. The odd-platform commit carries no `Sources:`/`Consumer-read:` footer, but that is **not** a stop for a contributor *code* commit: `pillars/contributor/gates.md` mandates none, prior ACCEPTED CTRIB platform commits (4028b4a6 / fd71eb3d / 8e5b3339) carry none, and the consumer-read evidence lives inline in the Phase-A ledger table (re-verified below).
+
+### Acceptance criteria (1–17)
+- [x] 1 plan-before-code — PASS (GATE-1 b963c30 @08:00:46 precedes fix a4a34e98 @08:28:55).
+- [x] 2 reproduced — PASS (Phase B live 500 attested; durable RED proof = the 3 added tests assert `BadUserRequestException`/`IllegalStateException`, RED on the IAE base; CI-green on fix).
+- [x] 3 diff bounded — PASS (`git diff --stat origin/main..a4a34e98` = exactly 2 source + 3 NEW test files; exclusions logged PLT-246/247).
+- [x] 4 unit injects the failing condition — PASS (real validator fed real invalid JSON; real `PermissionServiceImpl(List.of(), List.of())` → real `orElseThrow`).
+- [x] 5 pins — N/A (no characterization pin; all behavioral RED→GREEN).
+- [x] 6 docs stated + page READ — PASS (routing:none; reviewer independently read `policies.md` — `:310` stays accurate & improves under the fix; status codes not documented per-endpoint anywhere).
+- [x] 7 ontology — DEFERRED-justified (PolicyServiceImpl sidecar describes the pre-fix `error_class_misrepresented` = current main; `lineage/**` dirty+contended by P-001; the accepted CTRIB-028..034 bar; refreshes at the 0.29.0 release substrate scan).
+- [x] 8 not self-done — PASS (status was `pr-draft`; implementer did not self-flip).
+- [x] 9 ADR — PASS (`exception-http-status-mapping.md` authored before code; taxonomy verified line-by-line vs `ControllerAdvice`; extends ADR-0007; G-C7 did not hard-fire).
+- [x] 10 injection — covered (the `%s`-format-arg safety is the relevant guard; `validatorDetailContainingPercentDoesNotBreakFormatting` pins it).
+- [x] 11 DoD — PASS (full unit = CI 580/0 on the SHA; FULL regression GREEN-for-change — reviewer's OWN run below; docs read; ontology decided).
+- [x] 12 milestone 0.29.0 — PASS (issue milestone 0.29.0 open, due 2026-06-27 — WebFetch; G-C11).
+- [x] 13 design-before-build — PASS (reuse `BadUserRequestException`; ADR-0007 conformance; impact checklist; PO/SRE lens).
+- [x] 14 Principal sufficiency — PASS (CI: **100% coverage on both changed files** ≥ the 98% gate; 3 meaningful tests; no control lost).
+- [x] 15 test-change integrity (G-C15) — N/A (all 3 tests ADDED; no existing test changed — verified via `git diff`; `AdrControllerAdviceMappingScanTest` not touched → handler set unchanged).
+- [x] 16 product critique (G-C16) — PASS (Option B chosen over the issue's Option A; divergence surfaced via scope comment + GATE-1, before code).
+- [x] 17 — = 16.
+
+### Quality Bar
+- Gate 1 — PASS (reuses `BadUserRequestException`; no new component / no parallel copy) via git diff + grep.
+- Gate 2 — N/A (code change, no doc alias).
+- Gate 3 — N/A (no new caveat; the `policies.md` caveat stays accurate).
+- Gate 4 — PASS via consumer-read of the 3 files: `BadUserRequestException(String, Object...)` → `super(ErrorCode.BAD_REQUEST, String.format(message, args))` (format-safe; `%` lands in the arg); `ControllerAdvice.handleBadRequest` `:27-31` `@ResponseStatus(BAD_REQUEST)` → 400/USR001/detail; `IllegalStateException` has no handler & is not a `ResponseStatusException` → `@ExceptionHandler(Exception.class)` `:94-99` → 500/SYS001 unchanged. `ErrorCode.BAD_REQUEST`=USR001.
+- Gate 5 — N/A (no SDK builder in scope).
+- Gate 6 — PASS (the changed error path is documented generically at `policies.md:310`; no new user-visible path needs doc coverage) via read.
+- Gate 7 — N/A (no doc layout/SUMMARY change).
+- Gate 8 — DEFERRED/N/A-for-code (PR is draft, not merged; docs routing:none = no live doc URL; milestone 0.29.0 → release-review owns any live verification).
+- Gate 9 — PASS (claims trace to code; ADR taxonomy verified vs `ControllerAdvice`; CI green on the SHA) via read + WebFetch.
+- Gate 10 — N/A (code change; the ADR is correctly homed in `adrs/drafts/`).
+- Gate 11 — N/A (no `documentation/docs/**` file touched — routing:none; the ADR is an odd-team draft, not published).
+
+### SUT image provenance (CTRIB-029 lesson — verified, not trusted)
+The implementer's SUT `odd-team-sut-ctrib035` (digest `4d541a88`) VERIFIED to contain the fix: extracted `/app/classes` `PolicyJSONValidator.class` → references `BadUserRequestException` + literal `"Policy is not valid: %s"`; `PermissionServiceImpl.class` → `orElseThrow(...)Ljava/lang/IllegalStateException;` at the extractor site. Not the no-fix-image trap.
+
+### Regressions — reviewer's OWN full confirmation regression (measured, not inferred; G-C2 serialized)
+Built a FRESH independent SUT from `../odd-platform-ctrib035 @ a4a34e98` (`ODD_SUT=working`) → `odd-team-sut-revctrib035` digest `sha256:b568bac6`; ran all 4 buckets under the heavy-e2e flock (serialized behind ctrib037's live run; quiet box).
+- **feature-complete: 315 passed / 3 failed / 1 skipped → GREEN-for-change.** The 3 failures are ALL change-independent co-active-stream specs asserting fixes ABSENT from the ctrib035 SUT: `dq-dashboard-runstatus-accounting` (IT-144/#1794) + `i18n-main-search-placeholder` es & ua (IT-143/#1776). The prior 2 flakes (`owner-association-triage` IT-106, `remove-user-owner-mapping`) PASSED on the quiet box — flake diagnosis confirmed. The change-relevant specs PASS: `permission-read-surface` H-001 (GET MANAGEMENT/{id}/permissions → 400 USR001 "does not have context"), H-002/H-003/corner; `rbac-frontend-affordance`; `cross-provider-admin-promotion`.
+- **multi-stack: 9 passed** (incl. `rbac-policy-lifecycle` IT-124 F-006). **ingestion-e2e: 6 passed.**
+- **known-bugs: 3 failed = the exact expected-RED pins** (IT-007 attachment LSN-001/PLT-086, IT-006 error-boundary F-042, IT-004 quality-dashboard PLT-052), **0 unexpected GREEN** (no un-flipped fix).
+- The fix is statically inert on all e2e flows (it changes only invalid-policy-JSON→400 and missing-extractor-bean→500-unchanged; every extractor bean is wired in the SUT, so `getExtractor` never throws). **Unit bucket = CI on a4a34e98 = 580 passed / 0 failed / 150 suites, 100% changed-file coverage.**
+
+### Other gates
+- **Navigation**: consistent — no `navigation/domains/*` pointer references the changed files; a 2-line in-file edit moves nothing.
+- **Banned-phrase check**: none used.
+- **Upstream issues logged**: none new this review (PLT-246/247 already on disk from `/implement`).
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: authorization subtree (`configuration-and-deployment/enable-security/authorization/**` — `policies.md` read end-to-end as the doc owner; siblings cross-link-checked) — the item-adjacent domain. Full-tree audit last ran comprehensively 2026-06-08 (DOC-336..439); queued for a future dedicated pass.
+  - **Findings**: none surfaced this run. Verified non-finding: `policies.md:310` ("the platform returns an error rather than saving the policy") stays true and becomes a clean 400 under the fix; no per-endpoint status codes documented anywhere → no DOC item warranted.
+- **Notes**: All claims VERIFIED via read/grep/WebFetch/own-regression. The scope comment (G-C16) is recorded in the ledger (issuecomment-4796326456) + evidenced by commit b963c30 ("scope comment posted", which precedes the fix) — WebFetch cannot isolate GitHub lazy-loaded comments, so NOT independently re-fetched, but the GATE-1 record + commit ordering corroborate it.

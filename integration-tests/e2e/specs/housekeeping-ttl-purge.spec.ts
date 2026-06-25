@@ -6,8 +6,9 @@ import { dbQuery } from '../helpers/db';
  *
  * Protocol: integration-tests/protocols/IT-093-housekeeping-ttl-purge.md
  * Gates: validates F-010 (UC H-006 search-facets TTL contract) ·
- *        regresses PLT-005 (alert jOOQ .or/.and precedence) + PLT-074 (session timeout=-1
- *        monotonic growth).
+ *        regresses PLT-074 (session timeout=-1 monotonic growth).
+ *        (PLT-005 was FALSIFIED — not a real bug; its dead pin was removed 2026-06-25. See
+ *        the note below + issues/odd-platform/PLT-005.md.)
  *
  * WHY characterization and not a live-cycle observation: HousekeepingJobManager fires
  * `@Scheduled(fixedRate=15m)` (HousekeepingJobManager.java:25) — far longer than a test
@@ -26,11 +27,9 @@ import { dbQuery } from '../helpers/db';
  * Namespace: ids 20930-20939, oddrn `//e2e-it093/`, names `it093_*`. Idempotent.
  */
 
-const NS = '//e2e-it093';
 const SEARCH_TTL_DAYS = 30; // application.yml housekeeping.ttl.search_facets_days
-const ALERT_TTL_DAYS = 30; // application.yml housekeeping.ttl.resolved_alerts_days
 
-test.describe('IT-093 F-010 housekeeping TTL purge — predicate contract + PLT-005/PLT-074 pins', () => {
+test.describe('IT-093 F-010 housekeeping TTL purge — predicate contract + PLT-074 pin', () => {
   // ─────────────────────────────────────────────────────────────────────────
   // SUCCESS — F-010 H-006: a past-TTL row is purged; a fresh row is retained.
   // SearchFacetsHousekeepingJob.java:23-27 deletes
@@ -92,81 +91,13 @@ test.describe('IT-093 F-010 housekeeping TTL purge — predicate contract + PLT-
     ).toBe(14 * 60);
   });
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // PLT-005 — FALSIFIED (issues/odd-platform/PLT-005.md, status: rejected). NOT a real bug.
-  // The suspected AlertHousekeepingJob `.or()/.and()` precedence bug does NOT exist: jOOQ DSL
-  // chaining renders `.where(A).or(B).and(C)` as `(A OR B) AND C` (the intended grouping), not
-  // `A OR (B AND C)`, so manual and auto resolutions respect resolved_alerts_days symmetrically.
-  // The skipped test below ran HAND-WRITTEN SQL replicas of an assumed-buggy predicate — it never
-  // executed the real job, so it pinned a misconception. The REAL behaviour is proven by the
-  // odd-platform `AlertHousekeepingRetentionTest` (runs the actual job against a real Postgres:
-  // a fresh manual-RESOLVED alert is retained, only aged ones purged). This block is kept skipped
-  // for traceability and can be deleted outright.
-  // ─────────────────────────────────────────────────────────────────────────
-  test.skip('PLT-005 FALSIFIED — superseded by odd-platform AlertHousekeepingRetentionTest (this hand-written-predicate pin asserted a misconception)', async () => {
-    const oddrn = `${NS}/alerts/it093_manual_resolved`;
-
-    // alert.data_entity_oddrn FK → data_entity(oddrn); seed a source + entity in our namespace.
-    await dbQuery(
-      `INSERT INTO data_source (id, oddrn, name) VALUES (20932, $1, 'it093-alert-src')
-       ON CONFLICT (id) DO NOTHING`,
-      [`${NS}/alert-src`],
-    );
-    await dbQuery(
-      `INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, view_count,
-                               source_created_at, source_updated_at)
-       VALUES (20932, $1, 'it093_alert_entity', 20932, 1, 0, now(), now())
-       ON CONFLICT (id) DO NOTHING`,
-      [oddrn],
-    );
-
-    // a single FRESH manually-RESOLVED alert (status=2, updated NOW — well inside the 30d TTL)
-    await dbQuery('DELETE FROM alert WHERE data_entity_oddrn = $1', [oddrn]);
-    const ins = await dbQuery<{ id: string }>(
-      `INSERT INTO alert (data_entity_oddrn, last_created_at, status_updated_at, status, type)
-       VALUES ($1, now(), now(), 2, 1) RETURNING id`,
-      [oddrn],
-    );
-    const alertId = ins[0].id;
-
-    const cutoffDays = ALERT_TTL_DAYS;
-
-    // BUGGY predicate — verbatim jOOQ emission of AlertHousekeepingJob.java:30-33.
-    // status_updated_at is `timestamp without time zone` in UTC (DateTimeUtil.generateNow()),
-    // so compare against (now() at UTC) - interval.
-    const buggy = await dbQuery<{ id: string }>(
-      `SELECT id FROM alert
-       WHERE id = $1
-         AND ( (status = 2)
-               OR (status = 3 AND status_updated_at <= (now() AT TIME ZONE 'UTC') - make_interval(days => $2::int)) )`,
-      [alertId, cutoffDays],
-    );
-
-    // CORRECT predicate — the fix (parenthesise the .or before the .and).
-    const fixed = await dbQuery<{ id: string }>(
-      `SELECT id FROM alert
-       WHERE id = $1
-         AND ( (status = 2 OR status = 3)
-               AND status_updated_at <= (now() AT TIME ZONE 'UTC') - make_interval(days => $2::int) )`,
-      [alertId, cutoffDays],
-    );
-
-    expect(
-      buggy.map((r) => r.id),
-      `PLT-005 / F-010 H-001 (GREEN-now characterization): AlertHousekeepingJob's ` +
-        `.where(RESOLVED).or(RESOLVED_AUTOMATICALLY).and(<=cutoff) emits "status=2 OR (status=3 AND aged)". ` +
-        `A FRESH manual RESOLVED alert (status=2, updated now) is therefore selected for hard-delete on the ` +
-        `next 15-min cycle regardless of the ${ALERT_TTL_DAYS}d TTL. This assertion is GREEN today and FLIPS RED ` +
-        `when the predicate is parenthesised (the fix). Got: ${JSON.stringify(buggy)}`,
-    ).toContain(alertId);
-
-    expect(
-      fixed.map((r) => r.id),
-      `PLT-005 fix-target: the CORRECT predicate "(status=2 OR status=3) AND aged" must NOT select a ` +
-        `freshly-resolved manual alert — it should live its full ${ALERT_TTL_DAYS}d TTL. This is the promise ` +
-        `H-001 asserts once the bug is fixed. Got: ${JSON.stringify(fixed)}`,
-    ).not.toContain(alertId);
-  });
+  // PLT-005 (alert jOOQ .or/.and precedence) was FALSIFIED — NOT a real bug: jOOQ renders
+  // .where(A).or(B).and(C) as (A OR B) AND C (the intended grouping), so manual and auto alert
+  // resolutions respect resolved_alerts_days symmetrically. The old hand-written-predicate pin
+  // here replicated an assumed-buggy SQL string (never the real job), so it asserted a
+  // misconception; it was removed 2026-06-25. The real retention behaviour is covered by the
+  // odd-platform unit test AlertHousekeepingRetentionTest (runs the actual job against a real
+  // Postgres). See issues/odd-platform/PLT-005.md (status: rejected).
 
   // ─────────────────────────────────────────────────────────────────────────
   // CORNER PIN 2 — PLT-074 / F-010 H-012 (GREEN now, RED on fix).

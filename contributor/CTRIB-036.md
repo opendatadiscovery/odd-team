@@ -5,11 +5,11 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1776
 class: bug
 scope: frontend
 milestone: "0.29.0"            # OPEN + semver, due 2026-06-27 — G-C11 PASS
-status: planned               # intake -> scoping -> reproducing -> root-caused -> planned -> [GATE 1] ...
+status: plan-approved         # GATE 1 APPROVED 2026-06-25 (RamanDamayeu, AskUserQuestion): Scope=Option1 (all 6 placeholders + pt-BR A/B/C; defer Defect-D + prevention lint); Tests=FE-only bucket (CTRIB-031 precedent — vitest + Playwright IT + feature-complete + known-bugs; SKIP multi-stack + ingestion-e2e).
 reproduced: "STATIC-DEFINITIVE — 6 broken catalog values read + single-hop render path confirmed LIVE-REACHABLE (Overview.tsx:47 no-prop mount -> MainSearchInput:63->71 placeholder). Running-system render-RED scheduled as the mandatory Phase-D integration IT's first run on ODD_SUT=ref:main (G-C9/LSN-031)."
 adr_required: false           # G-C7 does NOT fire (FE-only; no migration / auth-posture / wire-contract change)
-plan_approved_by:
-plan_approved_at:
+plan_approved_by: RamanDamayeu
+plan_approved_at: "2026-06-25"
 docs_routing: "TBD at G-C10 (Phase D) — candidate: release/0.29.0 (multilingual-ui.md value-correctness note) OR 'none + why' after READING the page"
 pr_url:
 pr_draft:

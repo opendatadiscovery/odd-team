@@ -936,3 +936,45 @@ session_id: session-2026-05-13-G
   feature_id: F-001
   ran_at: 2026-06-22T14:55:11+00:00
   verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T062718Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T06:27:18+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T063717Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T06:37:17+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T074749Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T07:47:49+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T124904Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T12:49:04+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T130357Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T13:03:57+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260625T135633Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-06-25T13:56:33+00:00
+  verdict: "all assertions passed"

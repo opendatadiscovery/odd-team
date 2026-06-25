@@ -386,5 +386,51 @@ result), so `total == success+failed+skipped+broken+aborted+unknown`. [GATE-1 co
 > per-dataset test-report `total` is kept consistent with the change. No breaking API change; rides milestone
 > 0.29.0. Out of scope (tracked separately): the unrelated palette-crash on a never-before-seen status.
 
-## Test / docs / ontology ledger
-_(to fill — Phase D)_
+## Phase D — implementation + test / docs / ontology ledger
+
+**Branch:** `contrib/CTRIB-037-dq-dashboard-runstatus-accounting` (worktree `../odd-platform-ctrib037`),
+push-safe (no upstream, push.default=current — LSN-038). Code committed @ `d86790b4`.
+
+**Implementation (per the GATE-1-approved plan, Option A cascade):**
+- Defect 1a — `DataEntityTaskRunMapperImpl.mapTaskRun` null-guards `start_time`/`end_time` (both wire-optional).
+- Defect 1b — `ReactiveDataEntityTaskRunRepositoryImpl.insertLastRuns` includes in-flight runs, orders by
+  effective time `COALESCE(end_time, start_time)` (null-safe `latestLastRun` helper), persists + upserts
+  `start_time`; migration `V0_0_93__last_run_start_time.sql` (additive nullable column + backfill).
+- Defect 2 — `getLatestTablesHealth` rewritten to the priority cascade (Error=FAILED · Warning=BROKEN/no-FAILED
+  · Unknown=UNKNOWN/no-FAILED-BROKEN · Healthy=rest); `TablesDashboardMapper` `UNKNOWN_HEALTH` + the mapper
+  case; `components.yaml` `TablesHealthDashboard.unknown_tables` (additive required); FE `DataQualityContent.tsx`
+  4th donut slice + `dataQuality.ts` initialData; `t('Unknown')` in all 7 locales.
+- Side effect — `ReactiveDataQualityRepositoryImpl.mapTestReport` excludes RUNNING from `total` (consistency).
+
+**Unit (odd-platform CI) — GREEN.** `scripts/run-platform-tests.sh` (full `:odd-platform-api:build` = test +
+checkstyle + assemble) **BUILD SUCCESSFUL in 9m55s**. New tests: `DataEntityTaskRunMapperImplTest` (3/3 — null
+timestamps map without NPE) + `ReactiveDataQualityTableHealthTest` (2/2 — the cascade incl. Unknown +
+insertLastRuns records an in-flight run). RED-on-base note: the mapper test NPEs on pre-#1794 main (clean
+RED→GREEN); the repository test references the new `unknown_tables` field (fix-only — its RED proof is IT-144
+on `ref:main`).
+
+**FE build — GREEN.** `:odd-platform-ui:buildUI` BUILD SUCCESSFUL (vite built the DataQuality bundle). tsc
+caught a missed consumer — `dataQuality.ts` initialData literal needed `unknownTables: 0` (fixed). i18n
+key-parity invariant holds (`en.json` has `"Unknown"`; the only new `t()` key); the local vitest run hit a
+Node-18-vs-24 env quirk (the gradle env uses Node 24 — the FE CI runs it correctly).
+
+**Integration (odd-team) — IT-144** `dq-dashboard-runstatus-accounting.spec.ts` (validates F-032, regresses
+1794): real ingestion → `GET /api/dataqatests/runs` filtered to its datasource (in-flight ingests 200; breakdown
+RUNNING=1; tables_health error=1/warning=1/unknown=1/healthy=3) + a UI render smoke. RED on pre-#1794 main (the
+in-flight ingestion 500s). Registered in `suites.yaml` (feature-complete + ui-e2e). **FULL regression: RUNNING**
+(`run-regression.sh ctrib037` on the d86790b4 SUT — feature-complete + multi-stack + known-bugs + ingestion-e2e;
++ the IT-144 RED proof on `ref:main`). _(counts recorded on completion.)_
+
+**Docs (G-C10) — DONE + routed.** READ the live page (it EXISTS — nav was stale). Updated
+`documentation/docs/data-quality/dashboard.md` on **`release/0.29.0`** @ `aa5e21a` (the four-slice cascade +
+in-flight RUNNING counted). Paired backlog **DOC-488** (`pending-release`, the release-gate tracker + the
+screenshot/alt-text follow-up). odd-sme follow-up logged as **DOC-489** (BROKEN-vs-FAILED defined nowhere
+user-facing — the root of the cross-surface divergence; docs-main, not release-gated).
+
+**Ontology (G-C10) — PENDING.** `/enrich --touched` F-032 + the DQ repo/mapper sidecars, at the next
+clean+unclaimed `lineage/**` window (currently dirty from co-stream sme-consultations; re-check at the write).
+
+**Principal sufficiency (G-C13):** meaningful RED→GREEN unit + the mandatory user-facing IT; the FE consumer
+tsc caught (first-time-right via the build, not the reviewer); jacoco patch-coverage assessed in the full build
+(BUILD SUCCESSFUL includes the coverage gate). UI: the 4th Unknown slice — pixel review at the regression's
+running stack / a screenshot before handoff (G-C12 step 5).

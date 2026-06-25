@@ -417,9 +417,20 @@ Node-18-vs-24 env quirk (the gradle env uses Node 24 — the FE CI runs it corre
 **Integration (odd-team) — IT-144** `dq-dashboard-runstatus-accounting.spec.ts` (validates F-032, regresses
 1794): real ingestion → `GET /api/dataqatests/runs` filtered to its datasource (in-flight ingests 200; breakdown
 RUNNING=1; tables_health error=1/warning=1/unknown=1/healthy=3) + a UI render smoke. RED on pre-#1794 main (the
-in-flight ingestion 500s). Registered in `suites.yaml` (feature-complete + ui-e2e). **FULL regression: RUNNING**
-(`run-regression.sh ctrib037` on the d86790b4 SUT — feature-complete + multi-stack + known-bugs + ingestion-e2e;
-+ the IT-144 RED proof on `ref:main`). _(counts recorded on completion.)_
+in-flight ingestion 500s). Registered in `suites.yaml` (feature-complete + ui-e2e). **FULL regression: GREEN-for-change**
+(`run-regression.sh ctrib037`, SUT digest `c99275c9` ← d86790b4):
+- **IT-144 PASSED** (`✓ specs/dq-dashboard-runstatus-accounting.spec.ts … in-flight runs ingest + counted + the
+  Table-Health cascade incl. Unknown`).
+- **feature-complete 315 passed / 3 failed** — all 3 **change-independent** (none touch DQ): 2 =
+  `i18n-main-search-placeholder` es+ua (CTRIB-036's #1776 IT-143 — its fix is not in this branch off f4cf0693,
+  so it is RED on any SUT lacking #1776; my locale edit only ADDED `"Unknown"`, untouching the main-search key)
+  + 1 = an `owner-association-history` 60s `waitForResponse` timeout (a flake on an unrelated F-174 surface,
+  no DQ path).
+- **multi-stack 9/0** ✓ · **ingestion-e2e 6/0** ✓ · **known-bugs 3-RED-expected (IT-004/006/007) /
+  0-unexpected-green** ✓.
+- **RED proof CONFIRMED:** IT-144 against the pre-#1794 SUT `005dee4b` (DQ-identical to main) → **1 failed** —
+  `Error: an in-flight RUNNING run (no end_time) must ingest with 200, not 500` at `.toBe(200)`
+  (`run-log/2026-06-25-IT-144.md`). The RED survives on the unfixed base; GREEN on the fix (G-C9/G-C15).
 
 **Docs (G-C10) — DONE + routed.** READ the live page (it EXISTS — nav was stale). Updated
 `documentation/docs/data-quality/dashboard.md` on **`release/0.29.0`** @ `aa5e21a` (the four-slice cascade +

@@ -5,8 +5,8 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1794
 title: "DQ Dashboard does not correctly account for run statuses (incl. RUNNING): Test Results Breakdown + Table Health"
 class: bug
 milestone: "0.29.0"            # G-C11 PASS — open, semver, due 2026-06-27; latest release 0.28.0 (2026-06-17) → unreleased behaviour → release/0.29.0 docs train
-status: scoping               # intake -> scoping -> ... (canonical-homes lifecycle)
-reproduced: ""                # Phase B — to fill with the captured live observation
+status: planned               # intake -> scoping -> reproducing -> root-caused -> planned -> [GATE 1] -> ...
+reproduced: "contributor/CTRIB-037.md §Phase B (live on ctrib037repro :18161, image 005dee4b = main f4cf0693 DQ-identical); raw captures scratchpad/dash-*.json"
 adr_required: false           # G-C7 does NOT fire — see "Architectural-significance check"
 plan_approved_by: ""          # GATE 1
 plan_approved_at: ""
@@ -141,11 +141,243 @@ No clarifying question warranted at intake — the issue is well-specified and r
 decisions (scope split, migration-vs-recompute, Running→Healthy product call) are **GATE-1 decisions**
 for the maintainer, surfaced in the plan, not single-answer clarifications.
 
-## Phase B — Reproduction
-_(to fill — live curl reproduction of both defects on a throwaway odd-minimal stack)_
+## Phase B — Reproduction (live, verified on the running system — LSN-031)
 
-## Phase C — Plan (GATE 1)
-_(to fill — product critique (G-C16) + design-before-build (G-C12) + the scoped plan)_
+Stack: throwaway `odd-minimal` (ctrib037repro, `:18161`), image `odd-platform:odd-team-sut-ctrib034`
+(`005dee4b`, proven DQ-identical to current main `f4cf0693` — the only intervening commits #1805/#1806
+touched alert/housekeeping/locale files, zero DQ). Drove the REAL ingestion path
+(`POST /ingestion/entities`) → read the catalog-wide dashboard (`GET /api/dataqatests/runs`). Script +
+raw captures: `scratchpad/repro-1794.py` + `scratchpad/dash-*.json`.
+
+### Defect 1 — the breakdown's "Running" count (ASSERTION category)
+| Step | Action | Observed `Assertion Tests` breakdown | Meaning |
+|---|---|---|---|
+| D1.1 | ingest 1 **SUCCESS** run (end_time present) | `{SUCCESS: 1}` (RUNNING back-filled 0) | baseline |
+| D1.2 | ingest an **in-flight RUNNING** run (start_time, **no end_time**) | **HTTP 500** `{"code":"SYS001",...}`; breakdown unchanged `{SUCCESS: 1}` | **DEFECT 1a (deeper than the issue)** |
+| D1.3 | ingest a **RUNNING run WITH end_time** | `{RUNNING: 1}` | RUNNING IS counted when it has end_time |
+
+> **DEFECT 1a — NEW finding the issue's static analysis missed (this is the reproduce-first payoff).**
+> An in-flight run **cannot even be ingested** today: `POST /ingestion/entities` of a run with null
+> `end_time` returns **HTTP 500 / SYS001**. Stack trace (container log):
+> `java.lang.NullPointerException: Cannot invoke "java.time.OffsetDateTime.toLocalDateTime()" because
+> the return value of "...IngestionTaskRun.getEndTime()" is null` at
+> `DataEntityTaskRunMapperImpl.mapTaskRun(:19)` ← `TaskRunIngestionRequestProcessor.process(:34)`.
+> The mapper (`:18-19`) unconditionally calls `getStartTime()/getEndTime().toLocalDateTime()`. So the run
+> never reaches `insertLastRuns`. **#1793 fixed only the READ side** (`DataEntityRunMapper.mapRunStatus` —
+> tolerant status→enum so the runs *page* doesn't 500); the INGESTION mapper was never made null-safe.
+>
+> **DEFECT 1b — the issue's claim, confirmed:** D1.3 proves a RUNNING run is counted *only because it has
+> an end_time* — i.e. the breakdown logic itself handles RUNNING; the exclusion is purely end_time-gated
+> (`insertLastRuns:103` `.filter(end_time != null)`). **So "make Running count" = fix 1a (ingest null
+> end_time) + 1b (stop dropping it from the last-run rollup, order by COALESCE(end_time,start_time)).**
+
+### Defect 2 — Table Health methodology (one test/table, terminal status, end_time present)
+`GET /api/dataqatests/runs` → `tables_dashboard.tables_health` = **`{"healthy_tables": 1, "error_tables":
+2, "warning_tables": 3}`** (monitored_tables=6). Per-table, under TODAY's rules:
+
+| Table (its only test's latest run) | Bucket today | Correct bucket |
+|---|---|---|
+| `tbl_broken` (BROKEN) | **error** | warning ✗ |
+| `tbl_skipped` (SKIPPED) | **warning** | healthy ✗ |
+| `tbl_unknown` (UNKNOWN) | **warning** | unknown (no such bucket exists) ✗ |
+| `tbl1` (RUNNING, from D1.3) | **warning** | healthy ✗ |
+| `tbl_failed` (FAILED) | error | error ✓ |
+| `tbl_success` (SUCCESS) | healthy | healthy ✓ |
+
+Buggy totals `healthy=1 · error=2 · warning=3` exactly match the cascade in `getLatestTablesHealth`
+(healthy = all-SUCCESS; error = any BROKEN|FAILED; warning = the rest). Post-fix the correct cascade would
+yield `healthy=3 · warning=1 · error=1 · unknown=1`.
+
+**Reproduced ✓ both defects on the running system.** Defect 1 is two-layered (1a ingestion NPE + 1b last-run
+filter); Defect 2 confirmed exactly as the issue describes.
+
+## Phase C — Product critique (G-C16) + Design (G-C12) + Plan (GATE 1)
+
+### C.1 Change-request product analysis (G-C16)
+**User problem, restated independent of the issue's proposed solution:** an operator looking at the DQ
+dashboard cannot trust two of its three signals — (1) tests that are *currently running* are invisible
+(the Running slice is always 0, and a table reverts to its previous status), and (2) the Table Health ring
+mis-rates tables: a currently-running or merely-skipped test makes a table look "Warning" (a false alarm),
+a `Broken` test reads "Error" (over-escalation vs a real data `Failed`), and there is no way to express
+"health unknown".
+
+**Is the issue's direction product-correct?** YES (unlike CTRIB-024/#1757, where the issue's suggested fix
+was product-wrong). The cascade (non-failures don't degrade health; Unknown gets its own bucket) is the
+right shape for an at-a-glance health ring, and it is consistent with the sibling #1793/#1757 direction of
+surfacing in-flight RUNNING prominently. Grounding: `odd-sme` consultation
+`lineage/odd-platform/sme-consultations/2026-06-25-ctrib037-table-health-cascade.md`.
+
+**The central product fork — `BROKEN` classification (odd-sme + live-docs grounded; the GATE-1 decision).**
+odd-sme's consultation (`lineage/odd-platform/sme-consultations/2026-06-25-ctrib037-table-health-cascade.md`,
+confidence HIGH) **rejects the issue's `Broken→Warning`**, and I **VERIFIED its load-bearing claim myself**
+(WebFetch `docs.opendatadiscovery.org/features/data-quality/dashboard`, 200, 2026-06-25, quoted verbatim):
+> Healthy = "none of its latest test runs is anything but a success"; **Error = "when any latest run is
+> failed or broken"**; Warning = "everything in between"; "broken/failed runs roll up into the Error slice";
+> **no Unknown state**; breakdown statuses = Success/Failed/Skipped/Broken/Aborted/Unknown (**no Running** —
+> the docs are already stale vs #1793).
+
+So `Broken→Warning` would (a) **regress documented + shipped behaviour**, (b) diverge from **alerting**
+(`IngestionTaskRunAlertState:20-23` fires on BROKEN == FAILED), and (c) invert the **semantics** — ODD records
+a data-assertion *failure* as **FAILED**, never BROKEN (`odd-great-expectations/mapper.py:63-77`: GE
+`success:false → FAILED`); **BROKEN means the test machinery itself broke / produced no verdict** — *more*
+alarming, not less. SLA rightly ignores BROKEN (it is a ratio, not a health signal) — a *different* question,
+not a precedent for the ring.
+
+**The structural consequence the issue did not foresee:** if `Broken→Error` is kept (per odd-sme) AND the
+other genuine fixes land (SKIPPED/ABORTED/RUNNING→Healthy, UNKNOWN→Unknown), then **the Warning bucket has no
+remaining member** — BROKEN is its only natural occupant. So the cascade is a real fork:
+- **Option A (issue's 4-state ring):** Error=FAILED · **Warning=BROKEN** · Unknown=UNKNOWN · Healthy=rest.
+  Every slice has a member; but it *changes* the documented Error=failed|broken and diverges from alerting.
+- **Option B (odd-sme / docs- + alerting-consistent):** Error=FAILED|BROKEN · Unknown=UNKNOWN · Healthy=rest ·
+  **Warning becomes empty** (effectively a 3-state + Unknown ring). Keeps BROKEN a failure; loses Warning.
+
+Both fix the REAL bug both agree on (today SKIPPED/ABORTED/RUNNING/UNKNOWN all wrongly read Warning; in-flight
+runs are uncounted). They differ ONLY on BROKEN, which decides whether Warning survives. **This is the #1
+GATE-1 decision — I will not pick it unilaterally** (it pits the maintainer's own issue-design against the
+maintainer's own published docs + alerting). My lean: **Option B** (the grounded, consistent choice), but the
+maintainer owns it. odd-sme also flags: **gate the Unknown slice** on a one-query check that UNKNOWN is ever
+actually the worst latest status in real data (ODD's GE adapter never emits UNKNOWN) — if always-empty, fold
+into Warning; I will run that check in Phase D before building the 4th slice.
+
+**The product-critical ADDITION the issue missed (reproduce-first):** **Defect 1a — in-flight runs can't be
+ingested at all** (HTTP 500 NPE at `DataEntityTaskRunMapperImpl.mapTaskRun`). The issue's Defect 1 names only
+the `insertLastRuns` filter; in reality a no-`end_time` run 500s before it ever reaches the rollup. "Make
+Running count" is impossible without fixing 1a too. This *expands the issue's stated scope* → a public scope
+comment is required at GATE 1 (G-C5).
+
+**The product-critical ADDITION the issue missed (reproduce-first):** **Defect 1a — in-flight runs can't be
+ingested at all** (HTTP 500 NPE at `DataEntityTaskRunMapperImpl.mapTaskRun`). The issue's Defect 1 names only
+the `insertLastRuns` filter; in reality a no-`end_time` run 500s before it ever reaches the rollup. "Make
+Running count" is impossible without fixing 1a too. This *expands the issue's stated scope* → a public scope
+comment is required at GATE 1 (G-C5).
+
+### C.2 Design-before-build (G-C12)
+- **Reuse-scan:** (a) the **#1793 ordering idiom** — an in-flight run is the freshest; order by
+  `COALESCE(end_time, start_time)` — is reused for the `insertLastRuns` last-run choice (not invented).
+  (b) the existing **CTE-union-all + `DSL.inline(STATUS)`** shape in `getLatestTablesHealth` is *extended*
+  with a 4th `unknownTables` CTE, not rewritten wholesale. (c) the FE **`palette.dataQualityDashboard.unknown`**
+  colour already exists (used as the breakdown fallback `DataQualityContent.tsx:48`) — reused for the Unknown
+  slice. (d) the `TablesHealthDashboard` count-field + mapper-switch pattern is extended (one field, one case).
+- **ADR-check:** `implicit-adrs.md` / `refactoring-scopes.md` carry **no** decision constraining the last-run
+  rollup or table-health cascade. The change *conforms* to #1793's emerging "in-flight is the freshest"
+  pattern. It is a bug fix completing #1793, **not** a new architectural decision → **no new ADR** (G-C7 does
+  not fire; G-C12(b) reverse-ADR not warranted).
+- **Impact checklist:** migration (additive `start_time`), generated BE+FE clients (additive `unknown_tables`),
+  every consumer (the 5 last-run readers — §C.4), i18n (`Unknown` × 7 locales), docs (read live DQ pages),
+  ontology (F-032). All enumerated; none deferred silently.
+- **PO/SRE lens (`odd-sme`):** Running→Healthy prevents false on-call alarms from a transient state; a distinct
+  Unknown bucket is an honest "we don't know"; the cascade matches CI/DQ-tool norms. [folded from the
+  consultation.]
+
+### C.3 The scoped plan — exact changes (one PR, logical commits)
+
+**Commit 1 — Defect 1a (ingestion accepts in-flight runs).**
+`mapper/DataEntityTaskRunMapperImpl.mapTaskRun` — null-guard BOTH `getStartTime()` and `getEndTime()` (the
+contract makes both optional: `DataEntityRun.required = [status]` only). Maps a null timestamp to a null
+`LocalDateTime` instead of NPE-ing.
+
+**Commit 2 — Defect 1b (in-flight runs become the last run).**
+- Migration `db/migration/V0_0_93__last_run_start_time.sql` — `ALTER TABLE data_entity_task_last_run ADD
+  COLUMN start_time TIMESTAMP WITHOUT TIME ZONE;` (additive, nullable, non-destructive) + a one-shot backfill
+  `UPDATE … SET start_time = (SELECT start_time FROM data_entity_task_run WHERE oddrn = last_task_run_oddrn)`.
+- `ReactiveDataEntityTaskRunRepositoryImpl.insertLastRuns` — drop the `.filter(end_time != null)`; build the
+  last-run pojo with `start_time`; replace the `endTime.isAfter(...)` comparators (in-memory grouping AND the
+  existing-vs-incoming merge) with an **effective-time** comparison `COALESCE(end_time, start_time)` (null-safe);
+  add `START_TIME = excluded` to the `onDuplicateKeyUpdate`. (jOOQ regenerates `DataEntityTaskLastRunPojo` with
+  `startTime`; update the one constructor call site.)
+
+**Commit 3 — Defect 2 (Table Health priority cascade + Unknown).**
+- `ReactiveDataQualityRunsRepositoryImpl.getLatestTablesHealth` — rewrite the CTEs to the cascade: **error** =
+  any `FAILED`; **warning** = any `BROKEN` & no `FAILED`; **unknown** = any `UNKNOWN` & no `FAILED`/`BROKEN`;
+  **healthy** = none of those (SUCCESS/SKIPPED/ABORTED/RUNNING). Add the 4th `unknownTables` CTE + union branch.
+- `mapper/TablesDashboardMapper` (interface) — add `UNKNOWN_HEALTH` constant; `TablesDashboardMapperImpl` —
+  add the `case UNKNOWN_HEALTH -> setUnknownTables(...)`.
+- `odd-platform-specification/components.yaml` `TablesHealthDashboard` — add `unknown_tables` (additive,
+  required like its siblings); regenerate `odd-platform-api-contract` + `odd-platform-ui/src/generated-sources`.
+- FE `DataQualityContent.tsx` — destructure `unknownTables`; add a 4th slice
+  `{ title: t('Unknown'), value: unknownTables, color: palette.dataQualityDashboard.unknown }`.
+- i18n — add `"Unknown"` to all 7 locale JSONs (en/ua/ch/es/br/fr/hy) — NEW key (0/7 today).
+
+**Commit 4 — the per-dataset `test_report` side-effect (§C.4 #3).** Keep `mapTestReport`'s `total` consistent:
+exclude RUNNING from the `total` sum (the report has no `running_total` slot and RUNNING is not a completed
+result), so `total == success+failed+skipped+broken+aborted+unknown`. [GATE-1 confirm — vs adding a
+`running_total` field, vs accept+follow-up.]
+
+**Commits 5+ — tests, docs, ontology** (§C.5–C.6).
+
+### C.4 Blast radius — the 5 last-run readers (verified)
+1. `getLatestDataQualityRunsResults` (breakdown) — **intended** (Defect 1).
+2. `getLatestTablesHealth` (table health) — **intended** (Defect 2).
+3. `getDatasetTestReport`/`mapTestReport` — **side effect**: `total` would include a RUNNING last-run with no
+   `running_total` field → totals stop reconciling. Handled by Commit 4.
+4. `SLACalculator` (per-dataset SLA) — **unaffected**: filters `SUCCESS|FAILED` only; RUNNING is ignored.
+5. `getLatestRunsMap` → `DataEntityServiceImpl.getLastRunsForQualityTests` — **benign/positive**: a DQ-test
+   entity's displayed "last run" can now be RUNNING (correct; the read path is #1793-tolerant).
+(+ `DataEntityHousekeepingJob` — cascade delete only; no status semantics.)
+
+### C.5 Scope EXCLUSIONS (G-C5) — deliberately NOT touched
+- **PLT-052 / IT-004** (the palette `TypeError` blank-dashboard on a *truly-unknown* status) — a different
+  known bug; `palette.runStatus[RUNNING]` already exists (#1793) so my change does not trigger it. Untouched.
+- **The concurrent-overlapping-runs edge case** — the `COALESCE(end_time,start_time)` total order is a
+  reasonable, simple resolution; not over-engineered with NULLS-FIRST display semantics (that is #1793's
+  *display* concern, not the rollup's).
+- **The run-status enum / #1793's run-list ordering / the alerting + SLA models** — untouched.
+- **A `running_total` on the per-dataset `test_report`** — out of the dashboard's scope (Commit 4 keeps the
+  total consistent instead); if wanted, a tracked follow-up on F-022.
+
+### C.6 Test plan (BOTH buckets — G-C9)
+- **Unit (odd-platform CI):** (a) `DataEntityTaskRunMapperImplTest` — null `end_time` (and null `start_time`)
+  maps to null, no NPE (RED on main → GREEN). (b) `ReactiveDataQualityRunsRepositoryTest` (a `BaseIntegrationTest`)
+  — **add `getLatestTablesHealth` coverage** (currently ZERO — G-C13 sufficiency): each status → its correct
+  bucket incl. the new Unknown; plus an **insertLastRuns in-flight** case (ingest SUCCESS then an in-flight
+  RUNNING via the real `insertLastRuns` → last-run is RUNNING). The existing test bypasses `insertLastRuns` and
+  must be extended, not just relied on. Any characterization assertion re-grounded RED→GREEN (G-C15).
+- **Integration IT (odd-team, MANDATORY — user-facing FE/BE contradiction, LSN-031/G-C9):** a NEW `IT-NNN`
+  (DQ dashboard run-status accounting). Real ingestion (`POST /ingestion/entities`) of the Phase-B scenarios →
+  assert `GET /api/dataqatests/runs` counts (Running counted; tables_health healthy/warning/error/unknown) +
+  drive the FE ring (4 slices incl. Unknown). **Assertions from the CAPTURED real responses** (`scratchpad/
+  dash-*.json`). RED on `ODD_SUT=ref:main` (in-flight 500 / Running 0 / health miscount), GREEN on the fix.
+  Cross-ref F-032, IT-004 (sibling), IT-058 (ingestion template).
+
+### C.7 Docs (G-C10) + Ontology
+- **Docs: the DQ-dashboard page DOES exist** — `docs.opendatadiscovery.org/features/data-quality/dashboard`
+  (my nav file `navigation/domains/data-quality.md` "Not documented: DQ dashboard page" is STALE → log a nav
+  follow-up). It documents the *current* behaviour verbatim (Healthy=all-success · Error=failed|broken ·
+  Warning=in-between · no Unknown · breakdown statuses = the 6 pre-#1793 ones, **no Running**). So this change
+  **requires a docs update on `release/0.29.0`** (the page is already stale on Running post-#1793): the new
+  Table-Health cascade (per the GATE-1 cascade choice), Running counted in the breakdown, and (if Option A or
+  the Unknown slice ships) the Unknown state. Paired backlog DOC item (`milestone: 0.29.0` + the page URL).
+  **+ odd-sme follow-up DOC:** BROKEN-vs-FAILED is defined *nowhere* user-facing (the root cause of the
+  three surfaces diverging) — log a DOC-NNN.
+- Ontology: `/enrich --touched` F-032 + the DQ repo/mapper sidecars (only while `lineage/**` is clean+unclaimed
+  — currently dirty from ctrib035's sme-consultation; re-check at the write moment).
+
+### C.8 GATE-1 decisions (the maintainer owns these)
+1. **[#1 — the product fork] Table Health `BROKEN` classification / the cascade shape** (see C.1): **Option A**
+   (issue's 4-state ring, Warning=BROKEN — changes documented Error=failed|broken) vs **Option B** (odd-sme +
+   live-docs + alerting: Error=FAILED|BROKEN, Warning empty → 3-state+Unknown). Both fix the agreed real bugs
+   (SKIPPED/ABORTED/RUNNING→Healthy, UNKNOWN→Unknown, in-flight counted). **My lean: Option B** (grounded), but
+   the maintainer's issue explicitly designed Option A — their call.
+2. **Scope — include Defect 1a (ingestion NPE) + the `start_time` migration?** Recommend **YES** (in-flight runs
+   cannot be counted at all without it — the reproduce-first finding). Expands the issue's stated scope → a
+   public **scope comment** is posted on #1794 at approval (C.9).
+3. **The new Unknown bucket** — ship the 4th `unknown_tables` slice now, or gate it on the Phase-D one-query
+   check (does UNKNOWN ever appear as a table's worst latest status; ODD's GE adapter never emits it)? Recommend
+   **ship it** (the issue asks for it; it is additive + honest), and still run the check to confirm it is reachable.
+4. **One PR** (both defects + 1a, one coherent unit) vs split? Recommend **one PR**, ~4–6 logical commits, one review.
+   (The per-dataset `test_report` `total` is kept consistent inside this PR — Commit 4 — vs adding a `running_total`
+   field, which would be a separate F-022 follow-up.)
+
+### C.9 Drafted scope comment for #1794 (posted at GATE-1 approval — G-C5)
+> _(ASCII, self-contained, no workspace-internal IDs — finalised + posted after approval)_
+> Picking this up. Reproduced both problems on a local stack. One addition beyond the write-up: an in-flight
+> run (no `end_time`) currently **fails to ingest at all** (HTTP 500 — a NullPointerException in the task-run
+> ingestion mapper), so "make Running count" needs that fixed first; the PR will cover it. Planned scope:
+> (1) ingestion accepts in-flight runs; (2) the last-run rollup records the in-flight run as the latest
+> (ordered by `COALESCE(end_time, start_time)`, via a new additive `start_time` column); (3) the Table Health
+> priority cascade + a new **Unknown** health state (additive `unknown_tables` field + ring slice). The
+> per-dataset test-report `total` is kept consistent with the change. No breaking API change; rides milestone
+> 0.29.0. Out of scope (tracked separately): the unrelated palette-crash on a never-before-seen status.
 
 ## Test / docs / ontology ledger
 _(to fill — Phase D)_

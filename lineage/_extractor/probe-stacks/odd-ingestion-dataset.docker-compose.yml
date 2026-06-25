@@ -1,0 +1,109 @@
+# Probe-stack: INGESTION-GRADE dataset-pipeline stand (IT-145).
+#
+# The second full-product-pipeline e2e stand (adrs/drafts/ingestion-grade-e2e-stands.md —
+# the "dataset-structure stand" follow-on the ADR named). Where IT-128 covers RELATIONSHIPS,
+# this covers the CORE collect→store→visualize surface through the REAL pipeline:
+#
+#   source-postgres (warehouse: 2 tables + 1 view, COMMENTs, rows — initdb.d seed)
+#         │
+#         ▼  odd-collector (postgresql plugin; pulls at startup + every minute; pushes via
+#         │   the ingestion API with a REAL collector token)
+#         ▼
+#   odd-platform (SUT image) + its own postgres — what ODD shows (datasets, columns + ODD
+#   types, descriptions, row counts, view lineage) is asserted against the seed above, and
+#   then re-asserted after the source is MUTATED (add column / add table / edit comment /
+#   add rows / drop table) and the collector re-runs — the user-facing "change the source,
+#   re-collect, see exactly the delta in the UI" lifecycle.
+#
+# NOTHING is seeded into the platform DB. Collector token bootstrap is the REAL flow: the
+# spec POSTs /api/collectors and passes the returned one-shot token to the `collector`
+# profile as $COLLECTOR_TOKEN (helpers/ingestion-dataset-stack.ts) — so the collector sits
+# behind a profile; the base `up` never starts it.
+#
+# Ports (distinct from every other probe stack — minimal 18080/15432, minio 18081/15433,
+# loginform 18082, ldap 18083, notifications 18084/15435, ha 18085/18086/15436/15437,
+# ingestion/IT-128 18087/15438 + source 15439 + neo4j 17474/17687):
+#   platform 18089 · platform-db 15440 · source-postgres 15441.
+# Project name: oddingestds (helpers/ingestion-dataset-stack.ts).
+#
+# Image policy (maintainer directive 2026-06-12): postgres:latest for the SOURCE system,
+# odd-collector:latest (the shipped collector), platform via ${ODD_PLATFORM_IMAGE} — the
+# SUT is a run parameter (LSN-033), set by run-suite.sh. Fully ephemeral: the spec runs
+# `down -v` in afterAll. Local-only per APPROACH.md section 5 rule 12.
+
+services:
+  probe-ingestds-database:
+    image: postgres:13.2-alpine
+    container_name: probe-ingestds-database
+    restart: "no"
+    environment:
+      POSTGRES_USER: odd-platform
+      POSTGRES_PASSWORD: odd-platform-password
+      POSTGRES_DB: odd-platform
+    ports:
+      - "15440:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odd-platform -d odd-platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  probe-ingestds-odd-platform:
+    image: ${ODD_PLATFORM_IMAGE:-ghcr.io/opendatadiscovery/odd-platform:latest}
+    container_name: probe-ingestds-odd-platform
+    restart: "no"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://probe-ingestds-database:5432/odd-platform
+      SPRING_DATASOURCE_USERNAME: odd-platform
+      SPRING_DATASOURCE_PASSWORD: odd-platform-password
+      AUTH_TYPE: DISABLED
+    depends_on:
+      probe-ingestds-database:
+        condition: service_healthy
+    ports:
+      - "18089:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+
+  # --- SOURCE SYSTEM: PostgreSQL (datasets / columns / metadata / view lineage) ---------
+  probe-ingestds-source-postgres:
+    image: postgres:latest
+    container_name: probe-ingestds-source-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: warehouse
+      POSTGRES_PASSWORD: warehouse-password
+      POSTGRES_DB: warehouse
+    ports:
+      - "15441:5432"
+    volumes:
+      - ./odd-ingestion-dataset/source-postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse -d warehouse"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # --- THE REAL COLLECTOR (behind a profile: needs the one-shot token first) -------
+  probe-ingestds-collector:
+    image: ghcr.io/opendatadiscovery/odd-collector:latest
+    container_name: probe-ingestds-collector
+    profiles: ["collector"]
+    restart: "no"
+    volumes:
+      - ./odd-ingestion-dataset/collector_config.yaml:/app/collector_config.yaml:ro
+    environment:
+      PLATFORM_HOST_URL: http://probe-ingestds-odd-platform:8080
+      # Default-empty (NOT :?-required): compose interpolates the whole file at parse time,
+      # so a required var would break the BASE `up -d` that runs before the token exists.
+      # startCollector() (helpers/ingestion-dataset-stack.ts) passes the real value.
+      COLLECTOR_TOKEN: ${COLLECTOR_TOKEN:-}
+    depends_on:
+      - probe-ingestds-odd-platform
+      - probe-ingestds-source-postgres

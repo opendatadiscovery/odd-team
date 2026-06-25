@@ -5,14 +5,14 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1776
 class: bug
 scope: frontend
 milestone: "0.29.0"            # OPEN + semver, due 2026-06-27 — G-C11 PASS
-status: plan-approved         # GATE 1 APPROVED 2026-06-25 (RamanDamayeu, AskUserQuestion): Scope=Option1 (all 6 placeholders + pt-BR A/B/C; defer Defect-D + prevention lint); Tests=FE-only bucket (CTRIB-031 precedent — vitest + Playwright IT + feature-complete + known-bugs; SKIP multi-stack + ingestion-e2e).
+status: pr-draft              # Phase D DONE (all 5 DoD gates green); branch PUSHED @773098a5; docs committed (release/0.29.0 @a0f4656, NOT pushed — external write). Next: DRAFT PR (manual URL) → a SEPARATE /review → review-ready → GATE 2 (human merge). GATE 1 APPROVED 2026-06-25 (RamanDamayeu): Scope=Option1; Tests=FE-only bucket.
 reproduced: "STATIC-DEFINITIVE — 6 broken catalog values read + single-hop render path confirmed LIVE-REACHABLE (Overview.tsx:47 no-prop mount -> MainSearchInput:63->71 placeholder). Running-system render-RED scheduled as the mandatory Phase-D integration IT's first run on ODD_SUT=ref:main (G-C9/LSN-031)."
 adr_required: false           # G-C7 does NOT fire (FE-only; no migration / auth-posture / wire-contract change)
 plan_approved_by: RamanDamayeu
 plan_approved_at: "2026-06-25"
 docs_routing: "TBD at G-C10 (Phase D) — candidate: release/0.29.0 (multilingual-ui.md value-correctness note) OR 'none + why' after READING the page"
-pr_url:
-pr_draft:
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/new/contrib/CTRIB-036-i18n-locale-value-corrections (manual — open as DRAFT; body in CTRIB-036-pr-body.md)"
+pr_draft: pending-open       # branch pushed @773098a5; draft PR not yet opened (harness PR-creation = manual URL)
 stream: ctrib036              # active-streams.yaml — CO-ACTIVE with ctrib035 (#1762 BE), zero file overlap
 co_active: "ctrib035 (#1762 — BE error-contract); serialized resources = heavy-e2e flock + lineage single-writer + odd-team index"
 ---

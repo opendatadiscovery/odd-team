@@ -4,15 +4,15 @@ github_issue_number: 1762
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1762"
 class: bug
 milestone: "0.29.0"
-status: plan-approved      # intake -> scoping -> reproducing -> root-caused -> planned -> [plan-approved GATE1 ✓] -> implementing -> ... -> pr-draft -> review-ready -> merged[GATE2 human]
+status: pr-draft           # intake -> scoping -> reproducing -> root-caused -> planned -> plan-approved[GATE1 ✓] -> implementing -> tests-green -> docs-done -> [pr-draft ✓] -> review-ready(/review) -> merged[GATE2 human]
 reproduced: "POST /api/policies with invalid policy JSON → HTTP 500/SYS001 'Internal Server Error' (live, image 24b863601d49, 2026-06-25); server log shows the IAE 'Policy is not valid: ...' detail. See Phase B."
 adr_required: "yes — adrs/drafts/exception-http-status-mapping.md (GATE-1 approved: author now)"
 plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"
 plan_approved_at: "2026-06-25"
 scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1762#issuecomment-4796326456"
 docs_routing: ""          # Phase D — TBD; issue claims "no doc-side companion needed". Confirm by READING the page (G-C10).
-pr_url: ""
-pr_draft: ""
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1807"
+pr_draft: "draft:true, open, Closes #1762 — branch contrib/CTRIB-035-illegalargument-exception-contract @ a4a34e98 (pushed via the App, same-name refspec, main untouched)"
 stream_id: ctrib035
 ---
 
@@ -315,7 +315,11 @@ push + draft PR in Phase E use the same App path.
 
 **Definition-of-Done gates:**
 1. **Full unit build (working tree)** — ✅ **GREEN**. `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build` = test + checkstyleMain + checkstyleTest + assemble): `BUILD SUCCESSFUL in 7m29s`; **0 failures / 0 errors across the WHOLE suite** (no existing test broke); my 3 classes `PolicyJSONValidatorTest` 4/4, `PermissionServiceImplTest` 1/1, `PolicyValidationErrorContractTest` 2/2.
-2. **FULL integration regression** on the branch SUT (feature-complete green · multi-stack green · known-bugs still-RED · ingestion-e2e green) — ⏳ **RUNNING** (`run-regression.sh ctrib035`, builds the SUT from worktree `a4a34e98`, flock-serialized). Note: this is the regression-safety gate; the fix itself is proven by the unit + in-process integration RED→GREEN (there is no browser-e2e IT for this fix — GATE-1 Q4).
+2. **FULL integration regression** on the branch SUT — ✅ **GREEN-for-change** (`run-regression.sh ctrib035`, SUT built from worktree `a4a34e98` → digest `sha256:4d541a88`, flock-serialized 08:35→08:50):
+   - **feature-complete: 313 passed, 1 skipped, 4 failed** — all 4 accounted-for, ZERO attributable to my change: ① + ② `i18n-main-search-placeholder.spec.ts` es/ua = **ctrib036's #1776 unmerged fix** (my SUT correctly lacks ctrib036's locale changes → fails on any SUT without #1776; delta-0); ③ + ④ `owner-association-triage:78` + `remove-user-owner-mapping:123` = `waitForResponse 60s` **environmental flakes** under heavy 3-stream load — **CONFIRMED flakes**: re-ran both spec files on the same SUT (`4d541a88`) on a quiet box → **6/6 PASS in 29.4s** (the two were 6.7s / 9.8s). The change-relevant specs PASSED: `rbac-policy-lifecycle` (multi-stack), `permission-read-surface` + `rbac-frontend-affordance` (feature-complete).
+   - **known-bugs: 3 RED — all expected** (attachment LSN-001/PLT-086 · error-boundary F-042 · quality-dashboard PLT-052/#1794); **0 unexpected GREEN** ✓.
+   - **multi-stack: PASS** ✓ · **ingestion-e2e: PASS** ✓.
+   - Note: this is the regression-safety gate; the fix itself is proven by the unit + in-process integration RED→GREEN (no browser-e2e IT for this fix — GATE-1 Q4). My change is provably inert on normal flows (it alters only invalid-policy-JSON + missing-extractor-bean paths; all extractor beans are wired in the SUT, so `getExtractor` never throws).
 3. **Docs read + decided + routed (G-C10/G-C11)** — ✅ **routing: none**. Read `configuration-and-deployment/enable-security/authorization/policies.md`; line 310 already documents the validation-error behaviour generically (*"a condition using `in` is rejected by the policy JSON Schema, and the platform returns an error rather than saving the policy"*) — that stays true and is *improved* by the fix (a clean 400 with detail vs an opaque 500). The page documents policy structure + behaviour, not HTTP status codes; adding one would be inconsistent scope creep. The issue's own "no doc-side companion needed" is read-confirmed.
 4. **Ontology /enrich --touched (G-C10)** — **DEFERRED to the post-merge / 0.29.0 release substrate scan** (the accepted CTRIB-028..034 bar). Justification: the ontology tracks `origin/main`; the fix is on an **unmerged branch**, so re-enriching now would either re-describe pre-fix main (no-op) or premature unmerged code. **Exact staleness recorded for the release scan:** `lineage/odd-platform/understanding/odd-platform__java__service__service__PolicyServiceImpl.md` lines **31** (facet `error_class_misrepresented` — now FIXED), **78**, **91**, **109** (all say "IllegalArgumentException → 500 not 400"), and the **F-006** reflection facet `error_class_misrepresented`. These correctly describe *current main* (which still 500s until GATE-2 merge). No dedicated sidecar exists for `PolicyJSONValidator`/`PermissionServiceImpl`.
 5. **Principal sufficiency + local jacoco patch-coverage 98% (G-C13)** — ✅ **verified locally** (not discovered in CI). From the full-build jacoco XML: every changed executable line is covered (`ci>0`) — `PolicyJSONValidator` :32 + :35 (the two `BadUserRequestException` throws), `PermissionServiceImpl` :51 (the `IllegalStateException`). PolicyJSONValidator has zero missed lines; the PermissionServiceImpl "missed" lines are pre-existing OTHER methods, not my diff. CI gate `Madrapps/jacoco-report min-coverage-changed-files: 98` satisfied. Sufficiency: 3 meaningful RED→GREEN tests, no control lost (a typed-exception swap), no existing functionality harmed (full suite green).
@@ -325,3 +329,18 @@ push + draft PR in Phase E use the same App path.
 - Unit `PermissionServiceImplTest` (missing extractor → `IllegalStateException`, stays 5xx) — **GREEN on fix** ✅; **RED on base** ✅ (pre-fix throws `IllegalArgumentException`).
 - In-process integration `PolicyValidationErrorContractTest` (`POST /api/policies` invalid → 400 USR001, detail in body) — **GREEN on fix** ✅ (2/2, BaseIntegrationTest+WebTestClient); **RED on base** ✅ (got `< 500 INTERNAL_SERVER_ERROR`).
 - RED-on-base proof method: reverted the 2 source files to `origin/main`, ran the 3 classes → `7 tests completed, 6 failed` (`validPolicyPasses` is a guard, green on both), fix auto-restored. Both buckets proven.
+
+## Phase E — draft PR (GATE 2 entry)
+
+- **Branch pushed** via the App (same-name refspec, `main` untouched, push-safety asserted `@{u}` != origin/main): `contrib/CTRIB-035-illegalargument-exception-contract` @ `a4a34e98`.
+- **DRAFT PR #1807** — https://github.com/opendatadiscovery/odd-platform/pull/1807 (`draft:true`, open, `Closes #1762`, base `main`, `Milestone: 0.29.0`, `Docs: none`). Body = `contributor/CTRIB-035-pr-body.md`.
+- **Scope comment** (G-C5, posted before any code): https://github.com/opendatadiscovery/odd-platform/issues/1762#issuecomment-4796326456.
+- Status = `pr-draft`. A **separate `/review` session** flips it to `review-ready`; the human reviews + merges at **GATE 2** (the bot is the PR author and cannot self-approve — the required approval is the gate). The CTRIB never self-marks `merged`.
+
+### Deferred follow-ups (G-C5 — logged on disk, not narrated)
+- `issues/odd-platform/PLT-246.md` — ingestion-metric extractor `IllegalArgumentException → 500` paths (machine input, ~10 sites under `service/ingestion/metric/...`): same error-contract class as #1762, separate surface.
+- `issues/odd-platform/PLT-247.md` — OpenAPI does not declare error responses on any endpoint (platform-wide spec-completeness gap).
+
+## Acceptance criteria (1–17) — implementer self-check (the gate authority is `/review`, separate session)
+
+1 plan-before-code ✓ (GATE-1 `b963c30` precedes the fix `a4a34e98`) · 2 reproduced ✓ (Phase B live 500; durable RED proof) · 3 diff bounded ✓ (= GATE-1 scope: 2 source + 3 tests; exclusions logged) · 4 unit injects the failing condition ✓ (real validator throws; real missing-extractor) · 5 pins N/A (no characterization pin) · 6 docs stated + page READ ✓ (none + why) · 7 ontology — DEFERRED-justified (release scan; exact staleness recorded) · 8 not self-`done` ✓ (status `pr-draft`) · 9 ADR ✓ (authored before code per GATE 1; G-C7 did not hard-fire) · 10 injection N/A · 11 DoD ✓ (full unit build + FULL regression green-for-change + docs read + ontology decided) · 12 milestone 0.29.0 ✓ (docs routing none, no train item) · 13 design-before-build ✓ (reuse BadUserRequestException; ADR-check ADR-0007; impact checklist; PO/SRE lens) · 14 Principal sufficiency ✓ (patch-coverage verified local; 3 meaningful tests; no control lost) · 15 test-change integrity N/A (all tests ADDED, none changed) · 16 product critique ✓ (G-C16 options matrix at GATE 1; divergence surfaced + scope comment posted) · 17 = 16.

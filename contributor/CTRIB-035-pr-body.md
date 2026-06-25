@@ -29,7 +29,7 @@ There are 45 `IllegalArgumentException` throw sites in `odd-platform-api`; ~43 a
 - **Unit** `PermissionServiceImplTest` — a missing extractor → `IllegalStateException` (stays 5xx). RED on pre-fix.
 - **Integration** `PolicyValidationErrorContractTest` (`BaseIntegrationTest` + `WebTestClient`) — `POST /api/policies` invalid JSON → **400 `USR001`** with body `"Policy is not valid: …"`. RED on pre-fix (500).
 - **Reproduced live** before the fix: `POST /api/policies` invalid JSON → 500 `SYS001` (server log carried the IAE detail the client never saw).
-- Full `:odd-platform-api:build` green on the branch; full integration regression green-for-change. <!-- finalise after the regression run -->
+- Full `:odd-platform-api:build` green on the branch (0 failures suite-wide); full e2e regression green-for-change (feature-complete 313 passed; the only non-green items are an unrelated sibling branch's unmerged i18n spec and two confirmed environmental timeout-flakes that pass on a quiet box; known-bugs RED-as-expected; multi-stack + ingestion-e2e green).
 
 ## Scope (deliberately bounded)
 

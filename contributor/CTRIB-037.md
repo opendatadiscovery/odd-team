@@ -5,7 +5,7 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1794
 title: "DQ Dashboard does not correctly account for run statuses (incl. RUNNING): Test Results Breakdown + Table Health"
 class: bug
 milestone: "0.29.0"            # G-C11 PASS — open, semver, due 2026-06-27; latest release 0.28.0 (2026-06-17) → unreleased behaviour → release/0.29.0 docs train
-status: pr-draft              # Phase D DONE (DoD met; ontology /enrich justified-deferred). Branch committed @d86790b4, NOT pushed (external write gated). Next: push + scope comment + draft PR → SEPARATE /review → human GATE 2.
+status: review-ready          # /review (review-ctrib037, separate session) ACCEPTED 2026-06-25 → pr-draft → review-ready. Branch PUSHED @d86790b4 (PR #1809). Reviewer's OWN FULL regression GREEN-for-change on a FRESH ref:d86790b4 SUT (e55ca255): unit BUILD SUCCESSFUL 6m42s + feature-complete 313/4-all-change-independent + multi-stack 9/0 + ingestion-e2e 6/0 + known-bugs 3-RED-expected/0-unexpected-green; IT-144 GREEN. Human GATE-2 (approve+merge PR #1809) → pending-release; 0.29.0 release-review owns done. See "## Review (2026-06-25, session: review-ctrib037)".
 reproduced: "contributor/CTRIB-037.md §Phase B (live on ctrib037repro :18161, image 005dee4b = main f4cf0693 DQ-identical); raw captures scratchpad/dash-*.json"
 adr_required: false           # G-C7 does NOT fire — see "Architectural-significance check"
 plan_approved_by: "RamanDamayeu"   # GATE 1 — AskUserQuestion + explicit override message 2026-06-25
@@ -470,3 +470,122 @@ shows the **cyan Running** slice (in-flight runs counted). Both defects' fixes v
 - **Then:** a SEPARATE `/review` session (reject-by-default; flips `pr-draft` → `review-ready`) → human **GATE 2**
   (approve + merge → `pending-release`; the 0.29.0 release-review owns `done` + the deferred `/enrich` + Gate-8
   live-site for DOC-488).
+
+## Review (2026-06-25, session: review-ctrib037, opus-4-8, max effort)
+
+- **Result**: **ACCEPTED** → `pr-draft` → `review-ready`.
+
+Separate session (implement ran in prior sessions through `022bea7`) — self-review gate satisfied. PR **#1809**
+head == the reviewed **`d86790b4`** (19 files, +382/−56 — exact match via the GitHub API). 2-minute bounce did
+NOT fire: the DoD claims unit + FULL regression GREEN-for-change at SUT `c99275c9 ← d86790b4`, and integration
+run-log entries exist on that digest. I rebuilt my **own** SUT fresh from `ref:d86790b4` (image `e55ca255`,
+independent of the implementer's `c99275c9`) and re-ran the FULL regression + the CI-replica unit build.
+
+- **Acceptance criteria (17 contributor criteria — `pillars/contributor/gates.md`)**: ALL PASS.
+  - 1 code-after-plan PASS · 2 reproduction PASS (Phase B live repro of both defects + the 1a NPE discovery) ·
+    3 scope-bounded PASS (diff == the GATE-1 plan) · 4 unit injects failing condition PASS (mapper test NPEs on
+    base) · 5 pins N/A · 6 docs-decision PASS (dashboard.md updated on release/0.29.0, page READ) · 7 ontology
+    DEFERRED-justified (see G-C10) · 8 ends review-ready PASS (this flip) · 9 ADR N/A (G-C7 doesn't fire) ·
+    10 injection N/A · 11 DoD PASS (own regression) · 12 milestone-train PASS · 13 design-before-build PASS ·
+    14 sufficiency PASS · 15 private-advisory N/A · 16 test-change-integrity N/A (no test changed) · 17 product
+    analysis PASS (exemplary Phase C.1 — Option-A/B fork surfaced to the maintainer, who chose A by override).
+
+- **Quality Bar**:
+  - **Gate 1 — PASS**: the new `lastRunWithStatus` helper DEDUPLICATES the 4 previously-inline CTEs; no parallel
+    copy. via `git show d86790b4` `ReactiveDataQualityRunsRepositoryImpl`.
+  - **Gate 2 — N/A**: no alias; "Unknown" is a new health *state*, documented as such, not a synonym.
+  - **Gate 3 — PASS**: the in-flight + cascade behaviour captured as prose in dashboard.md; the BROKEN-vs-FAILED
+    definitional gap (the root of the cross-surface divergence) logged as **DOC-489**.
+  - **Gate 4 — PASS** (footer verified): `Consumer-read:` lists `insertLastRuns` (the only writer) + all 5
+    last-run readers + the mapper. The 3 SIDE-EFFECT readers VERIFIED SAFE — `getSLA`→`mapLastRunDto` calls
+    `QualityRunStatus.valueOf("RUNNING")` which does **not** throw (RUNNING is in the enum,
+    `opendatadiscovery-specification/specification/entities.yaml:550`), then `SLACalculator` filters
+    SUCCESS|FAILED; `mapTestReport` excludes RUNNING from `total`; `getLatestRunsMap` is string-based +
+    #1793-tolerant. via read + grep; empirically confirmed by IT-057 + IT-058 GREEN.
+  - **Gate 5 — N/A**: no SDK builder in scope.
+  - **Gate 6 — PASS**: every functional claim → code; dashboard.md updated; DOC-488/489 logged.
+  - **Gate 7 — PASS**: modification of the existing canonical dashboard page; no new page, no SUMMARY change.
+  - **Gate 8 — PENDING-RELEASE (0.29.0)**: dashboard.md on `release/0.29.0` @ `aa5e21a`; branch-verifiable
+    sub-checks pass (valid frontmatter, ≤200-char description, tree-relative link to `test-run-history.md`);
+    DOC-488 records the post-merge URL `https://docs.opendatadiscovery.org/features/data-quality/dashboard`.
+    **NOTE**: `aa5e21a` is committed locally but NOT pushed to `origin/release/0.29.0` (stacked behind
+    ctrib036's `a0f4656` — **DOC-487**; must land before the 0.29.0 release gate). via `git log origin/release/0.29.0`.
+  - **Gate 9 — PASS**: `Sources:` cites the docs dashboard page (OLD published content — the correct basis for
+    the pre-0.29.0 behaviour), the spec (`DataEntityRun.required=[status]`, `DataEntityRunStatus`,
+    `TablesHealthDashboard` — verified in components.yaml), `V0_0_45` (column names verified), and #1793. The
+    `QualityRunStatus` enum independently verified. via WebFetch + grep + read.
+  - **Gate 10 — N/A**: code change + an update to the canonical doc home; no embedded fragment.
+  - **Gate 11 — PASS**: mechanical grep on dashboard.md = zero workspace-internal terms / code identifiers —
+    pure operator language. via grep.
+  - **G-C1** reproduce — PASS · **G-C2** running-system — PASS (own regression below) · **G-C3** GATE-1 — PASS
+    (Option A by maintainer override) · **G-C4** GATE-2 — human-owned; PR #1809 open, **NOT merged**
+    (it is **non-draft** — maintainer manual-open; the enforcement is branch protection + author-cannot-self-
+    approve, not the draft flag) · **G-C5** scope — PASS (diff == plan; the public scope comment on #1794 is
+    drafted [§C.9] but UNPOSTED — gated on maintainer write-authorization; the PR body itself publicly states the
+    Defect-1a expansion, so scope IS public; post the comment at GATE-2) · **G-C6** clarify — PASS (none) ·
+    **G-C7** hard-stops — PASS (additive migration / no auth / additive contract → correctly does not fire) ·
+    **G-C8** — PASS · **G-C9** both buckets — PASS (2 Testcontainers unit + IT-144 mandatory user-facing e2e;
+    RED-on-base proven) · **G-C10** — PASS docs; ontology `/enrich` **DEFERRED-justified** (lineage/** contended
+    by co-stream P-001 residue; same accepted bar as CTRIB-028..034; scheduled at the 0.29.0 release substrate
+    scan) · **G-C11** — PASS (issue #1794 carries milestone 0.29.0; verified via issue API) · **G-C12** design —
+    PASS · **G-C13** sufficiency — PASS (own unit BUILD SUCCESSFUL incl. checkstyle + jacoco; 2 NEW Testcontainers
+    test classes ran GREEN; the diff-cover patch-coverage gate re-runs in PR CI — `mergeable_state: unstable`) ·
+    **G-C14** — N/A · **G-C15** test-change — N/A (both tests NEW; verified no existing test modified/deleted) ·
+    **G-C16** product — PASS.
+
+- **Outbound URL sweep**: the docs page (`docs.opendatadiscovery.org/features/data-quality/dashboard`) is the OLD
+  published content, correctly cited as the Source basis; the NEW content's live verification is PENDING-RELEASE
+  (DOC-488). No broken links in the change. 1 URL WebFetched; 0 mismatches; 0 broken.
+
+- **Banned-phrase check**: none used.
+
+- **Regressions**: **NONE (GREEN-for-change)**. Reviewer's OWN FULL regression on a SUT freshly built from
+  `ref:d86790b4` (image `e55ca255`, independent of the implementer's `c99275c9`):
+  - **Unit (CI-replica, `:odd-platform-api:build`)**: **BUILD SUCCESSFUL in 6m42s** — `DataEntityTaskRunMapperImplTest`
+    (3) + `ReactiveDataQualityTableHealthTest` (2: the Error>Warning>Unknown>Healthy cascade + insert-in-flight)
+    ran GREEN; checkstyleMain + checkstyleTest clean; jacocoTestReport ran.
+  - **feature-complete: 313 passed / 4 failed / 2 skipped** — all 4 change-independent: **IT-144 GREEN** (the fix);
+    ALL DQ-surface specs GREEN (IT-057 SLA YELLOW→RED, IT-058 per-dataset report+SLA, IT-059 RUNNING run-history,
+    IT-130/131). The 4 fails = 2× `i18n-main-search-placeholder` es+ua (**IT-143 = #1776/CTRIB-036's UNMERGED fix**,
+    absent on this branch off `f4cf0693`; my locale diff added ONLY the "Unknown" key — verified) + 2× owner-
+    association **TST-054** flakes (`direct-bind-create` F-172 + `remove-user-owner-mapping:123` F-173 — the
+    documented render/affordance-timeout cluster, 1.0m timeouts; my diff has ZERO owner-association overlap).
+  - **known-bugs: 3 failed (the expected RED pins IT-004/006/007) / 0 unexpected GREEN** — **IT-004
+    `quality-dashboard-unknown-status` STILL RED** ("palette.runStatus['WARNING'] undefined …
+    DataQualityContent.tsx:47-48"), empirically proving the scope boundary held (§C.5 — the out-of-enum palette
+    crash is a DIFFERENT bug, untouched; no accidental fix, no new break).
+  - **multi-stack: 9 passed / 0 failed.** **ingestion-e2e: 6 passed / 0 failed.**
+
+- **Navigation**: folded a living-pointer fix — `navigation/domains/data-quality.md` Documentation section now
+  references the dedicated `data-quality/` doc pages (dashboard / test-run-history / sla-statuses /
+  test-results-import) and drops the stale "Not documented: DQ dashboard page" claim (the page has existed on
+  docs main; this change updates it). (review-ctrib036 living-pointer precedent.)
+
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: the `data-quality/**` subtree (dashboard, test-run-history, sla-statuses,
+    test-results-import, the data-quality.md index) + the dashboard cross-references (Features.md §Data Quality
+    Dashboard, entity-detail-page.md DQ panels). Broader-tree rotation continues in subsequent reviews.
+  - **Findings**: none surfaced this run — the subtree is COHERENT with the change ("three breakdown rings" = the
+    3 pie charts, unchanged by a 4th *slice*; `test-run-history.md:62`'s RUNNING-500 fix is #1793's run-LIST
+    endpoint, a different 0.29.0 fix — no contradiction; `sla-statuses.md` correctly omits RUNNING from SLA).
+
+- **Upstream issues logged**: none.
+
+- **Notes** (each verified):
+  - The 5-consumer blast radius (the highest-risk part of this change) is SAFE both statically (`QualityRunStatus`
+    includes RUNNING → no `getSLA` 500) and empirically (IT-057 + IT-058 GREEN). VERIFIED via read + the regression.
+  - Migration `V0_0_93` is the next free version (90/91/92/93), no collision; `last_task_run_oddrn`/`oddrn`/
+    `start_time` column names match `V0_0_45`. VERIFIED via ls + grep.
+  - Generated clients (api-contract + ui generated-sources) are build-generated (gitignored) → the 19-file diff
+    is complete; the GREEN builds prove regeneration produced `setUnknownTables`/`unknownTables`. VERIFIED via
+    `git check-ignore` + the builds.
+  - The now-`required` `unknown_tables` is ALWAYS populated (the `unionAll` emits all 4 health rows incl.
+    0-counts), so no strict-client break. VERIFIED via read of the query + mapper.
+  - i18n: all 7 locales carry a genuine translation of "Unknown" (br "Desconhecido", ch "未知", es "Desconocido",
+    fr "Inconnu", hy "Անհայտ", ua "Невідомо"), not an en placeholder. VERIFIED via grep.
+  - **Handoff for GATE-2 (human)**: (a) post the drafted scope comment to #1794 [§C.9]; (b) push docs `aa5e21a`
+    to `origin/release/0.29.0` before the 0.29.0 release gate [DOC-487]; (c) the deferred `/enrich` (F-032) + the
+    Gate-8 live-site for DOC-488 run at the 0.29.0 release-review.
+
+`pr-draft` → `review-ready`. Human **GATE-2** (approve + merge PR #1809) owns the flip to `pending-release`; the
+**0.29.0 release-review** owns `done`. The contributor never self-`done`s.

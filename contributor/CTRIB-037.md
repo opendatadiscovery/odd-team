@@ -458,8 +458,15 @@ shows the **cyan Running** slice (in-flight runs counted). Both defects' fixes v
    accepted bar as CTRIB-028/029/032/033/034; scheduled at the 0.29.0 release substrate scan). ⏸ (justified)
 5. **Principal sufficiency** — tests + coverage + pixel review. ✓
 
-## Phase E — handoff (external writes harness-gated)
-Branch `contrib/CTRIB-037-dq-dashboard-runstatus-accounting` @ `d86790b4` committed (push-safe, NOT pushed —
-external write pending the maintainer's authorization). Scope comment drafted (C.9) + PR body
-(`contributor/CTRIB-037-pr-body.md`). Next: push + scope comment + DRAFT PR (`Closes #1794`, Milestone 0.29.0)
-→ a SEPARATE `/review` session → human GATE 2 merge.
+## Phase E — handoff
+- **Branch PUSHED** ✓ — `contrib/CTRIB-037-dq-dashboard-runstatus-accounting` @ `d86790b4` published via the
+  `odd-contributor` App (same-name refspec; `main` untouched, O6/LSN-038). The App push was harness-allowed.
+- **Scope comment — GATED** (harness: a public issue comment is a hard-to-retract publish needing explicit
+  maintainer authorization; "proceed" did not cover it). Ready text: `scratchpad/scope-comment-1794.md` / §C.9.
+- **DRAFT PR — manual** (CLAUDE.md "PR Creation"): open at
+  `https://github.com/opendatadiscovery/odd-platform/pull/new/contrib/CTRIB-037-dq-dashboard-runstatus-accounting`
+  — mark **Draft**, body = `contributor/CTRIB-037-pr-body.md` (`Closes #1794`, Milestone 0.29.0,
+  Docs: documentation@release/0.29.0).
+- **Then:** a SEPARATE `/review` session (reject-by-default; flips `pr-draft` → `review-ready`) → human **GATE 2**
+  (approve + merge → `pending-release`; the 0.29.0 release-review owns `done` + the deferred `/enrich` + Gate-8
+  live-site for DOC-488).

@@ -4,11 +4,12 @@ github_issue_number: 1762
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1762"
 class: bug
 milestone: "0.29.0"
-status: planned            # intake -> scoping -> reproducing -> root-caused -> [planned] -> plan-approved[GATE1] -> implementing -> ... -> pr-draft -> review-ready -> merged[GATE2 human]
+status: plan-approved      # intake -> scoping -> reproducing -> root-caused -> planned -> [plan-approved GATE1 ✓] -> implementing -> ... -> pr-draft -> review-ready -> merged[GATE2 human]
 reproduced: "POST /api/policies with invalid policy JSON → HTTP 500/SYS001 'Internal Server Error' (live, image 24b863601d49, 2026-06-25); server log shows the IAE 'Policy is not valid: ...' detail. See Phase B."
-adr_required: "evaluate"  # G-C7 does NOT hard-fire (no migration / no auth-posture / no DECLARED-contract break). BUT a reverse-engineered ADR (exception→HTTP-status mapping policy) is a G-C12(b) candidate — flag at GATE 1.
-plan_approved_by: ""      # GATE 1 — TBD
-plan_approved_at: ""
+adr_required: "yes — adrs/drafts/exception-http-status-mapping.md (GATE-1 approved: author now)"
+plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"
+plan_approved_at: "2026-06-25"
+scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1762#issuecomment-4796326456"
 docs_routing: ""          # Phase D — TBD; issue claims "no doc-side companion needed". Confirm by READING the page (G-C10).
 pr_url: ""
 pr_draft: ""
@@ -286,8 +287,27 @@ documented per-endpoint in the manual) — but recorded only after reading (G-C1
 >
 > (No workspace-internal IDs; self-contained.)
 
-## GATE 1 — awaiting human approval
+## GATE 1 — APPROVED 2026-06-25 (RamanDamayeu, AskUserQuestion)
 
-Status: `planned` → awaiting `plan-approved`. The AskUserQuestion at GATE 1 carries: (Q1) Option A/B/C; (Q2) the
-missing-extractor `IllegalStateException` rename; (Q3) author the ADR now vs defer; (Q4) the browser-IT belt-and-suspenders.
-No code is written until approval (G-C3). On approval: post the scope comment (G-C5), then Phase D.
+All four recommended options chosen (no code was written before approval — G-C3):
+- **Q1 Fix approach → Option B (targeted).** `PolicyJSONValidator` throws `BadUserRequestException`→400; server-fault IAEs stay 5xx.
+- **Q2 Missing-extractor → keep 5xx + rename to `IllegalStateException`** at `PermissionServiceImpl:47-48` (intent clarity, no status change).
+- **Q3 ADR → author now** — `adrs/drafts/exception-http-status-mapping.md`.
+- **Q4 Tests → in-process integration only** — unit (`PolicyJSONValidatorTest`) + `@WebFluxTest`/`BaseIntegrationTest` (POST → 400); no browser IT (no rendered-UI contradiction; the in-process test sees the status).
+
+**Scope comment posted** (G-C5, before any code): https://github.com/opendatadiscovery/odd-platform/issues/1762#issuecomment-4796326456
+(author `odd-contributor[bot]`, 201). External GitHub writes authorized by the maintainer (AskUserQuestion) — the branch
+push + draft PR in Phase E use the same App path.
+
+## Phase D — implement + test (the ledger)   (IN PROGRESS)
+
+Definition-of-Done gates (filled as each completes):
+1. unit build green (working tree) — ⏳
+2. FULL integration regression on the branch SUT (feature-complete green · multi-stack green · known-bugs still-RED · ingestion-e2e green) — ⏳
+3. docs read + decided + routed (G-C10/G-C11) — ⏳
+4. ontology /enrich --touched + re-embed, committed (G-C10) — ⏳
+5. Principal sufficiency incl. local jacoco patch-coverage 98% (G-C13) — ⏳
+
+Test ledger (BOTH buckets, RED-on-base proof):
+- Unit `PolicyJSONValidatorTest` — ⏳
+- In-process integration `POST /api/policies invalid → 400` — ⏳

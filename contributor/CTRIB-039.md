@@ -4,11 +4,11 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: planned             # intake -> scoping -> planned (ADR proposed; awaiting GATE 1). No code (G-C3 + G-C7).
+status: implementing        # GATE 1 APPROVED 2026-06-26 (stacked slice-PRs; ADR approved; first slice S1). S1 in worktree ../odd-platform-ctrib039.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
-plan_approved_by:           # GATE 1 — PENDING
-plan_approved_at:
+plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
+plan_approved_at: "2026-06-26"
 docs_routing: "release/1.0.0 (unreleased behaviour → the documentation train, G-C11). Ships in the docs slice."
 pr_url:
 pr_draft:
@@ -161,3 +161,67 @@ as data: I verified it against source and **diverge on one point** — `AssetKin
 
 _Status stays `planned` until GATE-1 approval; then `plan-approved` → S1 implementation in a dedicated worktree
 (ctrib039 namespace), no code before that._
+
+---
+
+## GATE 1 — APPROVED (2026-06-26)
+
+Maintainer (RamanDamayeu) via `AskUserQuestion`: **(1) Delivery = stacked slice-PRs under #1815** (each slice its
+own PR; only the final slice `Closes #1815`); **(2) First slice = S1 (backend foundation + write API)**. The
+foundation ADR (`adrs/drafts/favorites-recently-viewed-foundation.md`, incl. the §11.4 → 3-kind `AssetKind`
+resolution) is approved. Proceeding to S1 in worktree `../odd-platform-ctrib039`, branch
+`contrib/CTRIB-039-favorites-foundation-write-api` (non-main-tracked; push.default=current — O6/LSN-038).
+
+## Phase D — S1 implementation (backend foundation + write API)
+
+### Files (worktree `../odd-platform-ctrib039`)
+| Layer | File | Notes |
+|---|---|---|
+| spec | `odd-platform-specification/openapi.yaml` | 3 paths: `PUT`/`DELETE /api/favorites/{asset_kind}/{asset_id}`, `POST /api/favorites/status` (tag `favorite`) |
+| spec | `odd-platform-specification/components.yaml` | `AssetKind` (3-kind enum), `AssetRef`, `AssetRefList` |
+| migration | `odd-platform-api/.../db/migration/V0_0_94__create_favorite.sql` | `favorite` table + the full-4-tuple unique index (UPSERT target) + the partial active-order index |
+| identity | `auth/CurrentUserIdentityResolver.java` | the shared helper (ADR D1); `getCurrentUser().switchIfEmpty(sentinel)` |
+| dto | `dto/AssetRefDto.java` | repo query-key record |
+| repo | `repository/reactive/ReactiveFavoriteRepository[Impl].java` | set-state UPSERT / soft-delete / scoped batch read (JOOQ) |
+| service | `service/FavoriteService[Impl].java` | identity-from-context orchestration; subset mapping |
+| controller | `controller/FavoriteController.java` | implements generated `FavoriteApi`; 204 / 200 |
+| tests | `auth/CurrentUserIdentityResolverTest`, `service/FavoriteServiceImplTest`, `controller/FavoriteControllerTest` (unit, Mockito+StepVerifier) + `repository/reactive/ReactiveFavoriteRepositoryImplTest` (Testcontainers) | |
+
+### Verified (running-system / source, not assumed)
+- **Codegen green:** `:odd-platform-api-contract:openApiGenerate` (spec valid) + `:odd-platform-api:compileJava`
+  (JOOQ `jooqDockerGenerate` applied `V0_0_94` → `FAVORITE`/`FavoritePojo`; all 7 production files compile).
+- **§11.4 resolution grounded in code:** `V0_0_86:8,13` `lookup_tables.data_entity_id FK → data_entity(id)` ⇒
+  `AssetKind` = 3 kinds (LOOKUP_TABLE folds into DATA_ENTITY).
+- **Auth posture (G-C7) clean WITHOUT a security change:** `AuthorizationCustomizer:29-30` +
+  `LoginFormSecurityConfiguration:57` — `/api/favorites/**` is neither whitelisted nor a SECURITY_RULE, so it
+  inherits `.authenticated()` (LOGIN_FORM/OAUTH2) and `permitAll`+sentinel (DISABLED). No new policy type (ADR D6).
+- **TS client is build-generated + gitignored** (0 tracked) ⇒ S1's committed diff carries NO generated client code.
+
+### Test ledger
+- **Inner-loop (the 4 favorites classes): GREEN** (`:odd-platform-api:test --tests *Favorite* *CurrentUserIdentity*`,
+  1m58s). The R2DBC query log confirms the real SQL: the `on conflict (oidc_username, provider, asset_kind,
+  asset_id) do update set deleted_at=…, created_at=…` UPSERT, the `deleted_at is null`-guarded soft-delete, and
+  the identity+ref-scoped SELECT.
+- **Checkstyle (main+test): GREEN** (`maxWarnings=0`).
+- **Full unit CI-replica build (`:odd-platform-api:build`): GREEN** (7m6s; 157 test result files, **0
+  failures / 0 errors** across the whole suite; checkstyle clean; assemble OK). **Local patch-coverage
+  (G-C13): 100% line+instruction** on every measured changed file (`CurrentUserIdentityResolver`,
+  `FavoriteServiceImpl`, `FavoriteController`, `AssetRefDto`) — the repo impl sits in the jacoco-excluded
+  `repository/**` (Testcontainers-covered). No CI surprise.
+- **Committed to the branch:** `77998156 feat(favorites): backend foundation + write API (#1815)` — worktree
+  clean ⇒ the regression SUT == this commit (DoD provenance).
+- **Full integration regression (`run-regression.sh ctrib039`): RUNNING** (background; flock acquired; SUT
+  built from `77998156`; suites feature-complete / known-bugs / multi-stack / ingestion-e2e) — pass/fail
+  counts recorded from the run-logs on completion.
+
+### Scope held (G-C5)
+S1 touches only the backend write-path foundation. List endpoint → S2; all FE + i18n → S3; docs + "Asset" term +
+housekeeping orphan sweep + ontology refresh → S4; Recently-Viewed → PLT-250. No adjacent changes folded in.
+
+### Docs (G-C10) + ontology routing for S1
+- **Docs: none in S1.** The favorites endpoints have **no user-facing surface** until the FE slice (S3); the
+  user-facing docs (`Features.md` + the **"Asset"** term in `main-concepts.md`) ship in **S4** on the
+  documentation `release/1.0.0` train (G-C11). The OpenAPI contract (the API SoT) IS updated here in S1.
+- **Ontology: deferred to S4** (justified, per CTRIB-029 precedent): the favorites controller/service/repo are
+  **new** nodes needing a substrate re-scan (beyond `/enrich --touched`), and the surface is incomplete until S3.
+  `/enrich` runs once the feature exists, against a clean lineage tree.

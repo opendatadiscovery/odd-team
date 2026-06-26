@@ -1,6 +1,7 @@
 # feat(favorites): backend foundation + write API — Favorites (#1815, slice 1/4)
 
-**Part of #1815** — Favorites. This is **slice 1 of 4** (stacked PRs; the final slice will `Closes #1815`).
+**Part of #1815** — Favorites. This is **slice 1 of 4** (stacked PRs); this PR does **not** close the issue —
+only the final slice does.
 It ships the **shared backend foundation** that PRD-0001 Favorites *and* the sibling Recently-Viewed (PLT-250)
 reuse: the identity resolver, the polymorphic asset model, the `favorite` persistence, and the idempotent
 star/un-star + batch-status write API. No list endpoint and no frontend in this slice (see *Scope*).

@@ -32,7 +32,7 @@
 
 **Open items for the maintainer (decisions, surfaced once):**
 1. ~~**DOC-475 fix-forward (CRITICAL)**~~ — ✅ DONE 2026-06-26 (PR #104 → main via #107; git + live-site verified). No critical items remain.
-2. **PLT-243** — file the (already-public) reference-data RBAC-bypass upstream and/or schedule the fix.
+2. ~~**PLT-243** — file the reference-data RBAC-bypass upstream~~ — ✅ FILED 2026-06-26 as public issue [#1814](https://github.com/opendatadiscovery/odd-platform/issues/1814). Remaining: the upstream fix (one-line `/column/`→`/columns/` SecurityConstants correction) is owned by odd-platform maintainers.
 3. **DOC-468** — author the ML entity-types reference on docs main (released feature, no doc).
 4. **Train + milestone housekeeping** — delete the merged `release/0.29.0` train; the GitHub milestone object can be formally closed (all 16 issues already closed).
 

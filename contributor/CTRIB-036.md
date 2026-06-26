@@ -5,7 +5,7 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1776
 class: bug
 scope: frontend
 milestone: "0.29.0"            # OPEN + semver, due 2026-06-27 — G-C11 PASS
-status: review-ready          # /review (session review-ctrib036) ACCEPTED 2026-06-25 — pr-draft → review-ready. Every gate PASS with cited evidence; the reviewer's OWN FE-bucket confirmation regression on a SUT freshly built from 773098a5 is GREEN-for-change (feature-complete 316 pass; the lone fail = IT-144, ctrib037's UNMERGED #1794 test, expected-RED on a CTRIB-036-only SUT; IT-106 flake did NOT recur; IT-143 es+ua GREEN), known-bugs 3-RED-expected/0-unexpected-green. Human GATE-2 (approve+merge DRAFT PR #1808) owns the flip to pending-release; the 0.29.0 release gate owns done. NON-BLOCKING FINDING: docs a0f4656 not yet pushed to origin/release/0.29.0 (entangled with ctrib037's stacked aa5e21a) — must land before the 0.29.0 release gate (DOC-487; release-train-merge backstops). GATE 1 APPROVED 2026-06-25 (RamanDamayeu): Scope=Option1; Tests=FE-only bucket.
+status: done   # 0.29.0 release-review (review-release-029): PR merged into 0.29.0 (tag f12b8fbc); full unit+IT regression GREEN-for-release on published:0.29.0 + real-instance verified on the ghcr image. Release record: state/PROGRESS.md.
 reproduced: "STATIC-DEFINITIVE — 6 broken catalog values read + single-hop render path confirmed LIVE-REACHABLE (Overview.tsx:47 no-prop mount -> MainSearchInput:63->71 placeholder). Running-system render-RED scheduled as the mandatory Phase-D integration IT's first run on ODD_SUT=ref:main (G-C9/LSN-031)."
 adr_required: false           # G-C7 does NOT fire (FE-only; no migration / auth-posture / wire-contract change)
 plan_approved_by: RamanDamayeu

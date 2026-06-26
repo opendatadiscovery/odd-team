@@ -4,7 +4,7 @@ github_issue_number: 1725
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1725
 class: bug
 security_sensitive: false
-status: pending-release   # 2026-06-25 RESCOPED (GATE-1 approved): #1790 (the 500 fix) is MERGED (verified live) and rides 0.29.0; #1725 is being closed for the reported 500. The Sonatype-blocked consumer-model path (send ML_MODEL_ARTIFACT/_INSTANCE) is split to issues/odd-platform/PLT-248 + SPC-004. See the RESCOPE section. (Prior PAUSED banner superseded.)
+status: done   # 0.29.0 release-review (review-release-029): PR merged into 0.29.0 (tag f12b8fbc); full unit+IT regression GREEN-for-release on published:0.29.0 + real-instance verified on the ghcr image. Release record: state/PROGRESS.md.
 milestone: "0.29.0"   # CONFIRMED at intake — issue carries an OPEN, semver-titled milestone 0.29.0 (due 2026-06-22). G-C11 PASS.
 reproduced: "live 2026-06-18 against the running probe SUT (odd-platform:odd-team-sut @ 2026-06-17, built from main; AUTH_TYPE=DISABLED, http://localhost:18080). POST /ingestion/entities {type:ML_MODEL, data_consumer:{inputs:[...]}} -> HTTP 500 {code:SYS001}; platform log: `java.lang.IllegalArgumentException: No enum constant org.opendatadiscovery.oddplatform.dto.DataEntityTypeDto.ML_MODEL`. Control: same payload type=ML_MODEL_ARTIFACT -> HTTP 400 {code:USR001,'Failed to read HTTP message'} (the ingestion contract REJECTS ML_MODEL_ARTIFACT at deserialization — confirms you cannot just 'send the artifact subtype'). Full evidence in the Reproduction log."
 adr_required: "TRUE — the components.yaml output-enum change is a public wire-contract change (G-C7). SATISFIED by the APPROVED ADR adrs/drafts/ml-entity-taxonomy.md (adopted at GATE 1, 2026-06-18)."

@@ -4,7 +4,7 @@ github_issue_number: 1803
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1803"
 class: bug
 milestone: "0.29.0"
-status: review-ready       # /review ACCEPTED 2026-06-25 (was STALE at `planned`; implement reached pr-draft hand-off — see Review §). intake -> ... -> plan-approved[GATE1] -> pr-draft -> [review-ready] -> merged[GATE2 human]
+status: done   # 0.29.0 release-review (review-release-029): PR merged into 0.29.0 (tag f12b8fbc); full unit+IT regression GREEN-for-release on published:0.29.0 + real-instance verified on the ghcr image. Release record: state/PROGRESS.md.
 reproduced: "live browser repro 2026-06-24 — both defects REPRODUCED on cached buggy SUT 353a5b06 (odd-minimal :18130). See Phase B."
 adr_required: no           # G-C7 does NOT fire (FE-only; no migration / no auth-posture change / no wire-contract change)
 plan_approved_by: "RamanDamayeu (AskUserQuestion GATE 1)"

@@ -5,7 +5,7 @@ github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1794
 title: "DQ Dashboard does not correctly account for run statuses (incl. RUNNING): Test Results Breakdown + Table Health"
 class: bug
 milestone: "0.29.0"            # G-C11 PASS — open, semver, due 2026-06-27; latest release 0.28.0 (2026-06-17) → unreleased behaviour → release/0.29.0 docs train
-status: review-ready          # /review (review-ctrib037, separate session) ACCEPTED 2026-06-25 → pr-draft → review-ready. Branch PUSHED @d86790b4 (PR #1809). Reviewer's OWN FULL regression GREEN-for-change on a FRESH ref:d86790b4 SUT (e55ca255): unit BUILD SUCCESSFUL 6m42s + feature-complete 313/4-all-change-independent + multi-stack 9/0 + ingestion-e2e 6/0 + known-bugs 3-RED-expected/0-unexpected-green; IT-144 GREEN. Human GATE-2 (approve+merge PR #1809) → pending-release; 0.29.0 release-review owns done. See "## Review (2026-06-25, session: review-ctrib037)".
+status: done   # 0.29.0 release-review (review-release-029): PR merged into 0.29.0 (tag f12b8fbc); full unit+IT regression GREEN-for-release on published:0.29.0 + real-instance verified on the ghcr image. Release record: state/PROGRESS.md.
 reproduced: "contributor/CTRIB-037.md §Phase B (live on ctrib037repro :18161, image 005dee4b = main f4cf0693 DQ-identical); raw captures scratchpad/dash-*.json"
 adr_required: false           # G-C7 does NOT fire — see "Architectural-significance check"
 plan_approved_by: "RamanDamayeu"   # GATE 1 — AskUserQuestion + explicit override message 2026-06-25

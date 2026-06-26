@@ -1,4 +1,4 @@
-# Last updated 2026-06-26 — **RELEASE REVIEW `0.29.0` (session `review-release-029`, max-effort)** → release VERIFIED as a code+test+doc+ontology bundle; **23 items flipped `done`, 1 BLOCKED (CRITICAL), 1 re-targeted**; 2 fast-follows logged.
+# Last updated 2026-06-26 — **RELEASE REVIEW `0.29.0` (session `review-release-029`, max-effort)** → release VERIFIED as a code+test+doc+ontology bundle; **24 items `done` (DOC-475 resolved post-review via PR #104→#107), 0 blocked, 1 re-targeted**; 2 fast-follows logged.
 
 ## Release record — odd-platform 0.29.0 (2026-06-26)
 
@@ -25,13 +25,13 @@
 
 **Check 7 — close-out:**
 - **DONE (23):** CTRIB-021, CTRIB-028..037 (11 — PRs #1798–#1809 all in the released delta, GATE-2 merged, regression+real-instance verified); DOC-470/471/472/474/478/479/480/481/484/485/487/488 (12 — live-verified).
-- **BLOCKED (1):** DOC-475 (CRITICAL — see its `## Release-review verdict`; fix-forward = merge docs PR #104 / cherry-pick `0032ef3` to docs main).
+- **BLOCKED → RESOLVED (1):** DOC-475 — maintainer merged docs PR #104 → main (#107) on 2026-06-26; git + live-site confirm the entity-detail page now describes the fixed behaviour ("importance-ordered across the truncation cap" + "Showing 20 of N"). Flipped `done`. (Unblocks DOC-476 cross-link reword.)
 - **RE-TARGETED (1):** DOC-468 → docs-main fix-forward (ML entity-types reference for the shipped #1790).
 - **Fast-follows logged:** DOC-491 (lookup-tables count drift, LOW), TST-055 (activity-user-filter flake, MEDIUM).
 - **Train branch:** `release/0.29.0` is fully merged to docs main (no commits ahead) → SAFE to delete; **NOT deleted autonomously** (outward-facing action on a public repo) — recommend the maintainer delete `origin/release/0.29.0` (and the local branch after switching off it) or authorize it.
 
 **Open items for the maintainer (decisions, surfaced once):**
-1. **DOC-475 fix-forward (CRITICAL)** — the published entity-detail page is wrong for 0.29.0; merge PR #104 / cherry-pick `0032ef3` to docs main, then re-run live-site.
+1. ~~**DOC-475 fix-forward (CRITICAL)**~~ — ✅ DONE 2026-06-26 (PR #104 → main via #107; git + live-site verified). No critical items remain.
 2. **PLT-243** — file the (already-public) reference-data RBAC-bypass upstream and/or schedule the fix.
 3. **DOC-468** — author the ML entity-types reference on docs main (released feature, no doc).
 4. **Train + milestone housekeeping** — delete the merged `release/0.29.0` train; the GitHub milestone object can be formally closed (all 16 issues already closed).

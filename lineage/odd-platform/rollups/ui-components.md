@@ -1,6 +1,6 @@
 # ui_components rollup
 
-Total nodes: 537. Total edges: 537.
+Total nodes: 538. Total edges: 538.
 
 Auto-derived from `lineage/{repo}/nodes.jsonl`. One node per `*.tsx` file under `odd-platform-ui/src/components/` with a top-level default export.
 
@@ -12,8 +12,8 @@ Grouping: by the first directory level under `components/` (13 groups).
 |---|---|---|---|---|
 | `(other)` | 1 | 0 | 1 | 0 |
 | `Activity` | 5 | 3 | 2 | 0 |
-| `Alerts` | 5 | 0 | 4 | 0 |
-| `DataEntityDetails` | 176 | 16 | 65 | 5 |
+| `Alerts` | 5 | 4 | 4 | 0 |
+| `DataEntityDetails` | 177 | 18 | 65 | 5 |
 | `DataModelling` | 20 | 1 | 0 | 0 |
 | `DataQuality` | 5 | 0 | 0 | 0 |
 | `Directory` | 10 | 0 | 0 | 0 |
@@ -21,7 +21,7 @@ Grouping: by the first directory level under `components/` (13 groups).
 | `MasterData` | 5 | 0 | 0 | 0 |
 | `Overview` | 15 | 0 | 4 | 0 |
 | `Search` | 13 | 0 | 9 | 0 |
-| `Terms` | 38 | 1 | 15 | 0 |
+| `Terms` | 38 | 1 | 16 | 0 |
 | `shared` | 185 | 7 | 17 | 0 |
 
 ## (other) (1)
@@ -31,20 +31,20 @@ Grouping: by the first directory level under `components/` (13 groups).
 ## Activity (5)
 
 - `odd-platform-ui/src/components/Activity/Activity.tsx` — **Activity** (arrow-function, 17 loc, 3 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/Activity/ActivityResults/ActivityItem/ActivityItem.tsx` — **ActivityItem** (arrow-function, 215 loc, 18 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/Activity/ActivityResults/ActivityItem/ActivityItem.tsx` — **ActivityItem** (arrow-function, 223 loc, 18 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Activity/ActivityResults/ActivityResults.tsx` — **ActivityResults** (arrow-function, 84 loc, 5 child JSX, rq×1, redux×2)
 - `odd-platform-ui/src/components/Activity/ActivityResults/ActivityTabs/ActivityTabs.tsx` — **ActivityTabs** (arrow-function, 66 loc, 1 child JSX, rq×1)
-- `odd-platform-ui/src/components/Activity/Filters/Filters.tsx` — **Filters** (arrow-function, 112 loc, 10 child JSX, rq×1, redux×2)
+- `odd-platform-ui/src/components/Activity/Filters/Filters.tsx` — **Filters** (arrow-function, 119 loc, 10 child JSX, rq×1, redux×2)
 
 ## Alerts (5)
 
-- `odd-platform-ui/src/components/Alerts/Alerts.tsx` — **Alerts** (arrow-function, 28 loc, 4 child JSX, redux×2)
-- `odd-platform-ui/src/components/Alerts/AlertsList/AlertItem/AlertItem.tsx` — **AlertItem** (arrow-function, 187 loc, 9 child JSX, redux×2)
-- `odd-platform-ui/src/components/Alerts/AlertsList/AlertsList.tsx` — **AlertsList** (arrow-function, 99 loc, 7 child JSX, redux×2)
-- `odd-platform-ui/src/components/Alerts/AlertsRoutes/AlertsRoutes.tsx` — **AlertsRoutes** (arrow-function, 20 loc, 4 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/Alerts/AlertsTabs/AlertsTabs.tsx` — **AlertsTabs** (arrow-function, 51 loc, 1 child JSX, redux×1)
+- `odd-platform-ui/src/components/Alerts/Alerts.tsx` — **Alerts** (arrow-function, 48 loc, 6 child JSX, rq×1, redux×2)
+- `odd-platform-ui/src/components/Alerts/AlertsList/AlertItem/AlertItem.tsx` — **AlertItem** (arrow-function, 194 loc, 10 child JSX, redux×2)
+- `odd-platform-ui/src/components/Alerts/AlertsList/AlertsList.tsx` — **AlertsList** (arrow-function, 70 loc, 7 child JSX, rq×1, redux×2)
+- `odd-platform-ui/src/components/Alerts/AlertsTabs/AlertsTabs.tsx` — **AlertsTabs** (arrow-function, 65 loc, 1 child JSX, rq×1)
+- `odd-platform-ui/src/components/Alerts/Filters/Filters.tsx` — **Filters** (arrow-function, 101 loc, 7 child JSX, rq×1, redux×2)
 
-## DataEntityDetails (176)
+## DataEntityDetails (177)
 
 - `odd-platform-ui/src/components/DataEntityDetails/DataCollaboration/Channels/Channels.tsx` — **Channels** (arrow-function, 19 loc, 2 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DataCollaboration/CreateMessageForm/CreateMessageForm.tsx` — **CreateMessageForm** (arrow-function, 111 loc, 6 child JSX, redux×2)
@@ -60,13 +60,14 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/DataEntityDetails/DataCollaboration/MessagesList/Message/MessageSkeleton.tsx` — **MessageSkeleton** (arrow-function, 31 loc, 4 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DataCollaboration/MessagesList/Message/MessageStatus/MessageStatus.tsx` — **MessageStatus** (arrow-function, 22 loc, 1 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DataCollaboration/MessagesList/MessagesList.tsx` — **MessagesList** (arrow-function, 74 loc, 7 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/DataEntityDetails/DataEntityActivity/ActivityResults/ActivityItem/ActivityItem.tsx` — **ActivityItem** (arrow-function, 188 loc, 15 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/DataEntityDetails/DataEntityActivity/ActivityResults/ActivityItem/ActivityItem.tsx` — **ActivityItem** (arrow-function, 196 loc, 15 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityActivity/ActivityResults/ActivityResults.tsx` — **ActivityResults** (arrow-function, 80 loc, 4 child JSX, rq×1, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityActivity/DataEntityActivity.tsx` — **DataEntityActivity** (arrow-function, 11 loc, 3 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/DataEntityDetails/DataEntityActivity/Filters/Filters.tsx` — **Filters** (arrow-function, 76 loc, 9 child JSX, rq×1)
-- `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/DataEntityAlertItem/DataEntityAlertItem.tsx` — **DataEntityAlertItem** (arrow-function, 137 loc, 9 child JSX, redux×1)
+- `odd-platform-ui/src/components/DataEntityDetails/DataEntityActivity/Filters/Filters.tsx` — **Filters** (arrow-function, 79 loc, 9 child JSX, rq×1)
+- `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/DataEntityAlertItem/DataEntityAlertItem.tsx` — **DataEntityAlertItem** (arrow-function, 155 loc, 10 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/DataEntityAlertItem/DataEntityAlertsSkeleton.tsx` — **DataEntityAlertsSkeleton** (arrow-function, 29 loc, 3 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/DataEntityAlerts.tsx` — **DataEntityAlerts** (arrow-function, 84 loc, 10 child JSX, redux×2)
+- `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/DataEntityAlerts.tsx` — **DataEntityAlerts** (arrow-function, 109 loc, 11 child JSX, rq×1, redux×2)
+- `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/Filters/Filters.tsx` — **Filters** (arrow-function, 62 loc, 6 child JSX, rq×1)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/NotificationSettings/AlertTypeRange/AlertTypeRange.tsx` — **AlertTypeRange** (arrow-function, 153 loc, 7 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityAlerts/NotificationSettings/NotificationSettings.tsx` — **NotificationSettings** (arrow-function, 133 loc, 6 child JSX, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityDetails.tsx` — **DataEntityDetails** (arrow-function, 121 loc, 9 child JSX, redux×2)
@@ -74,7 +75,7 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityDetailsRoutes/DataEntityDetailsRoutes.tsx` — **DataEntityDetailsRoutes** (arrow-function, 151 loc, 10 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityDetailsSkeleton/DataEntityDetailsSkeleton.tsx` — **DataEntityDetailsSkeleton** (arrow-function, 26 loc, 2 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityDetailsTabs/DataEntityDetailsTabs.tsx` — **DataEntityDetailsTabs** (arrow-function, 135 loc, 1 child JSX, rq×1, redux×1)
-- `odd-platform-ui/src/components/DataEntityDetails/DataEntityGroup/DataEntityGroupForm/DataEntityGroupForm.tsx` — **DataEntityGroupForm** (arrow-function, 191 loc, 11 child JSX, redux×2)
+- `odd-platform-ui/src/components/DataEntityDetails/DataEntityGroup/DataEntityGroupForm/DataEntityGroupForm.tsx` — **DataEntityGroupForm** (arrow-function, 194 loc, 11 child JSX, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityGroup/DataEntityGroupForm/EntityItem/EntityItem.tsx` — **EntityItem** (arrow-function, 33 loc, 6 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityQueryExamples/AssignEntityQueryExampleForm.tsx` — **AssignEntityQueryExampleForm** (arrow-function, 78 loc, 5 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DataEntityQueryExamples/DataEntityDetailsQueryExamples.tsx` — **DataEntityDetailsQueryExamples** (arrow-function, 57 loc, 9 child JSX, no-state-libs)
@@ -106,7 +107,7 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldOverview.tsx` — **DatasetFieldOverview** (arrow-function, 93 loc, 11 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldOverviewEnums/DatasetFieldOverviewEnums.tsx` — **DatasetFieldOverviewEnums** (arrow-function, 96 loc, 7 child JSX, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldStats/DatasetFieldStats.tsx` — **DatasetFieldStats** (arrow-function, 101 loc, 5 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldTags/DatasetFieldTags.tsx` — **DatasetFieldTags** (arrow-function, 105 loc, 9 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldTags/DatasetFieldTags.tsx` — **DatasetFieldTags** (arrow-function, 103 loc, 9 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldTags/TagsEditForm/TagsEditForm.tsx` — **TagsEditForm** (arrow-function, 115 loc, 7 child JSX, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldTags/TagsEditForm/TagsEditFormAutocomplete/TagsEditFormAutocomplete.tsx` — **TagsEditFormAutocomplete** (arrow-function, 144 loc, 6 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldTerms/AssignFieldTermForm/AssignFieldTermForm.tsx` — **AssignFieldTermForm** (arrow-function, 34 loc, 1 child JSX, no-state-libs)
@@ -179,11 +180,11 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewExpectations/OverviewExpectations.tsx` — **OverviewExpectations** (arrow-function, 87 loc, 6 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGeneral/OverviewGeneral.tsx` — **OverviewGeneral** (arrow-function, 93 loc, 8 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGeneral/OwnersSection/OwnersSection.tsx` — **OwnersSection** (arrow-function, 91 loc, 11 child JSX, redux×1)
-- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGeneral/OwnersSection/OwnershipDeleteForm/OwnershipDeleteForm.tsx` — **OwnershipDeleteForm** (arrow-function, 52 loc, 5 child JSX, redux×1)
+- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGeneral/OwnersSection/OwnershipDeleteForm/OwnershipDeleteForm.tsx` — **OwnershipDeleteForm** (arrow-function, 54 loc, 5 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGeneral/OwnersSection/OwnershipForm/OwnershipForm.tsx` — **OwnershipForm** (arrow-function, 148 loc, 10 child JSX, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/AddDataEntityToGroupForm/AddDataEntityToGroupForm.tsx` — **AddDataEntityToGroupForm** (arrow-function, 109 loc, 5 child JSX, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/GroupItem/GroupItem.tsx` — **GroupItem** (arrow-function, 48 loc, 6 child JSX, redux×1)
-- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/OverviewGroups.tsx` — **OverviewGroups** (arrow-function, 101 loc, 10 child JSX, redux×1)
+- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewGroups/OverviewGroups.tsx` — **OverviewGroups** (arrow-function, 109 loc, 10 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewMetadata/MetadataItem/MetadataItem.tsx` — **MetadataItem** (arrow-function, 172 loc, 13 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewMetadata/OverviewMetadata.tsx` — **OverviewMetadata** (arrow-function, 125 loc, 9 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewMetrics/OverviewMetrics.tsx` — **OverviewMetrics** (arrow-function, 80 loc, 5 child JSX, no-state-libs)
@@ -200,11 +201,11 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewStats/OverviewRelationshipStats/RelationshipKey.tsx` — **RelationshipKey** (arrow-function, 44 loc, 4 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewStats/OverviewStats.tsx` — **OverviewStats** (arrow-function, 85 loc, 7 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewStats/OverviewTransformerStats/OverviewTransformerStats.tsx` — **OverviewTransformerStats** (arrow-function, 127 loc, 8 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTags/OverviewTags.tsx` — **OverviewTags** (arrow-function, 110 loc, 11 child JSX, redux×1)
+- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTags/OverviewTags.tsx` — **OverviewTags** (arrow-function, 121 loc, 11 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTags/TagsEditForm/TagsEditForm.tsx` — **TagsEditForm** (arrow-function, 119 loc, 7 child JSX, redux×2)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTags/TagsEditForm/TagsEditFormAutocomplete/TagsEditFormAutocomplete.tsx` — **TagsEditFormAutocomplete** (arrow-function, 147 loc, 6 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTerms/AssignEntityTermForm/AssignEntityTermForm.tsx` — **AssignEntityTermForm** (arrow-function, 34 loc, 1 child JSX, redux×2)
-- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTerms/OverviewTerms.tsx` — **OverviewTerms** (arrow-function, 103 loc, 10 child JSX, redux×1)
+- `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTerms/OverviewTerms.tsx` — **OverviewTerms** (arrow-function, 111 loc, 10 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewTerms/TermItem/TermItem.tsx` — **TermItem** (arrow-function, 58 loc, 8 child JSX, redux×1)
 - `odd-platform-ui/src/components/DataEntityDetails/QualityTestRunsHistory/TestRunItem/TestRunItem.tsx` — **TestRunItem** (arrow-function, 60 loc, 7 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/DataEntityDetails/QualityTestRunsHistory/TestRunSkeletonItem/TestRunSkeletonItem.tsx` — **TestRunSkeletonItem** (arrow-function, 21 loc, 2 child JSX, no-state-libs)
@@ -270,12 +271,12 @@ Grouping: by the first directory level under `components/` (13 groups).
 ## Management (59)
 
 - `odd-platform-ui/src/components/Management/CollectorsList/CollectorForm/CollectorForm.tsx` — **CollectorForm** (arrow-function, 141 loc, 7 child JSX, redux×2)
-- `odd-platform-ui/src/components/Management/CollectorsList/CollectorItem/CollectorItem.tsx` — **CollectorItem** (arrow-function, 98 loc, 12 child JSX, redux×1)
+- `odd-platform-ui/src/components/Management/CollectorsList/CollectorItem/CollectorItem.tsx` — **CollectorItem** (arrow-function, 99 loc, 12 child JSX, redux×1)
 - `odd-platform-ui/src/components/Management/CollectorsList/CollectorItem/CollectorItemToken/CollectorItemToken.tsx` — **CollectorItemToken** (arrow-function, 52 loc, 7 child JSX, redux×1)
 - `odd-platform-ui/src/components/Management/CollectorsList/CollectorSkeletonItem/CollectorSkeletonItem.tsx` — **CollectorSkeletonItem** (arrow-function, 36 loc, 4 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Management/CollectorsList/CollectorsList.tsx` — **CollectorsListView** (arrow-function, 115 loc, 13 child JSX, redux×2)
 - `odd-platform-ui/src/components/Management/DataSourcesList/DataSourceForm/DataSourceForm.tsx` — **DataSourceForm** (arrow-function, 160 loc, 7 child JSX, redux×2)
-- `odd-platform-ui/src/components/Management/DataSourcesList/DataSourceItem/DataSourceItem.tsx` — **DataSourceItem** (arrow-function, 121 loc, 15 child JSX, redux×1)
+- `odd-platform-ui/src/components/Management/DataSourcesList/DataSourceItem/DataSourceItem.tsx` — **DataSourceItem** (arrow-function, 122 loc, 15 child JSX, redux×1)
 - `odd-platform-ui/src/components/Management/DataSourcesList/DataSourceItem/DataSourceItemToken/DataSourceItemToken.tsx` — **DataSourceItemToken** (arrow-function, 52 loc, 7 child JSX, redux×1)
 - `odd-platform-ui/src/components/Management/DataSourcesList/DataSourceSkeletonItem/DataSourceSkeletonItem.tsx` — **DataSourceSkeletonItem** (arrow-function, 36 loc, 5 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Management/DataSourcesList/DataSourcesList.tsx` — **DataSourcesListView** (arrow-function, 114 loc, 13 child JSX, redux×2)
@@ -333,7 +334,7 @@ Grouping: by the first directory level under `components/` (13 groups).
 
 - `odd-platform-ui/src/components/MasterData/LookupTableForm.tsx` — **LookupTableForm** (arrow-function, 141 loc, 8 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/MasterData/LookupTables.tsx` — **LookupTables** (arrow-function, 84 loc, 10 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/MasterData/LookupTables/LookupTablesList.tsx` — **LookupTablesList** (arrow-function, 64 loc, 7 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/MasterData/LookupTables/LookupTablesList.tsx` — **LookupTablesList** (arrow-function, 71 loc, 7 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/MasterData/LookupTables/LookupTablesListItem.tsx` — **LookupTablesListItem** (arrow-function, 79 loc, 9 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/MasterData/LookupTables/LookupTablesSkeleton.tsx` — **LookupTablesSkeleton** (arrow-function, 28 loc, 4 child JSX, no-state-libs)
 
@@ -373,10 +374,10 @@ Grouping: by the first directory level under `components/` (13 groups).
 
 ## Terms (38)
 
-- `odd-platform-ui/src/components/Terms/TermDetails/Overview/Overview.tsx` — **Overview** (arrow-function, 81 loc, 8 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/Terms/TermDetails/Overview/Overview.tsx` — **Overview** (arrow-function, 87 loc, 8 child JSX, redux×1)
 - `odd-platform-ui/src/components/Terms/TermDetails/Overview/OverviewGeneral/OverviewGeneral.tsx` — **OverviewGeneral** (arrow-function, 105 loc, 12 child JSX, redux×2)
 - `odd-platform-ui/src/components/Terms/TermDetails/Overview/OverviewSkeleton/OverviewSkeleton.tsx` — **OverviewSkeleton** (arrow-function, 113 loc, 4 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/Terms/TermDetails/Overview/OverviewTags/OverviewTags.tsx` — **OverviewTags** (arrow-function, 100 loc, 11 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/Terms/TermDetails/Overview/OverviewTags/OverviewTags.tsx` — **OverviewTags** (arrow-function, 98 loc, 11 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/Overview/OverviewTags/TagsEditForm/TagsEditForm.tsx` — **TagsEditForm** (arrow-function, 236 loc, 11 child JSX, redux×2)
 - `odd-platform-ui/src/components/Terms/TermDetails/Overview/TermDefinition/TermDefinition.tsx` — **TermDefinition** (arrow-function, 48 loc, 5 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/Overview/TermLinkedTerms/LinkedTermTermForm/LinkedTermTermForm.tsx` — **LinkedTermTermForm** (arrow-function, 43 loc, 1 child JSX, no-state-libs)
@@ -387,15 +388,15 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/Terms/TermDetails/TermDetailsHeader/TermDetailsHeader.tsx` — **TermDetailsHeader** (arrow-function, 94 loc, 12 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermDetailsRoutes/TermDetailsRoutes.tsx` — **TermDetailsRoutes** (arrow-function, 48 loc, 9 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermDetailsSkeleton/TermDetailsSkeleton.tsx` — **TermDetailsSkeleton** (arrow-function, 26 loc, 2 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/Terms/TermDetails/TermDetailsTabs/TermDetailsTabs.tsx` — **TermDetailsTabs** (arrow-function, 58 loc, 1 child JSX, redux×1)
+- `odd-platform-ui/src/components/Terms/TermDetails/TermDetailsTabs/TermDetailsTabs.tsx` — **TermDetailsTabs** (arrow-function, 55 loc, 1 child JSX, redux×1)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedColumnsList/LinkedColumn/LinkedColumn.tsx` — **LinkedColumn** (arrow-function, 92 loc, 10 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedColumnsList/LinkedColumnsList.tsx` — **LinkedColumnsList** (arrow-function, 92 loc, 10 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedColumnsList/LinkedColumnsList.tsx` — **LinkedColumnsList** (arrow-function, 91 loc, 10 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedColumnsList/LinkedColumnsListSkeleton/LinkedColumnsListSkeleton.tsx` — **LinkedColumnsListSkeleton** (arrow-function, 43 loc, 4 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedEntitiesList/LinkedEntitiesList.tsx` — **LinkedEntitiesList** (arrow-function, 145 loc, 13 child JSX, redux×2)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedEntitiesList/LinkedEntitiesListSkeleton/LinkedEntitiesListSkeleton.tsx` — **LinkedEntitiesListSkeleton** (arrow-function, 43 loc, 4 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedEntitiesList/LinkedEntity/LinkedEntity.tsx` — **LinkedEntity** (arrow-function, 108 loc, 9 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedTermsList/LinkedTerm/LinkedTerm.tsx` — **LinkedTerm** (arrow-function, 39 loc, 6 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedTermsList/LinkedTermsList.tsx` — **LinkedTermsList** (arrow-function, 97 loc, 11 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedTermsList/LinkedTermsList.tsx` — **LinkedTermsList** (arrow-function, 114 loc, 11 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermLinkedTermsList/LinkedTermsListSkeleton/LinkedTermsListSkeleton.tsx` — **LinkedTermsListSkeleton** (arrow-function, 22 loc, 4 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermQueryExamples/AssignTermQueryExampleForm.tsx` — **AssignTermQueryExampleForm** (arrow-function, 77 loc, 5 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/Terms/TermDetails/TermQueryExamples/TermQueryExamples.tsx` — **TermQueryExamples** (arrow-function, 58 loc, 9 child JSX, no-state-libs)
@@ -430,11 +431,11 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/shared/elements/Activity/ActivityFields/OwnerActivityField/OwnerWithTitle/OwnerWithTitle.tsx` — **OwnerWithTitle** (arrow-function, 26 loc, 3 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/Activity/ActivityFields/StringActivityField/StringActivityField.tsx` — **StringActivityField** (arrow-function, 58 loc, 4 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/Activity/ActivityFields/TermActivityField/TermActivityField.tsx` — **TermActivityField** (arrow-function, 106 loc, 7 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/CalendarFilter/CalendarFilter.tsx` — **CalendarFilter** (arrow-function, 38 loc, 1 child JSX, rq×1)
-- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/MultipleFilter/MultipleFilter.tsx` — **MultipleFilter** (arrow-function, 64 loc, 3 child JSX, rq×1, redux×1)
-- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/MultipleFilter/MultipleFilterAutocomplete/MultipleFilterAutocomplete.tsx` — **MultipleFilterAutocomplete** (arrow-function, 191 loc, 5 child JSX, rq×1, redux×1)
+- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/CalendarFilter/CalendarFilter.tsx` — **CalendarFilter** (arrow-function, 54 loc, 1 child JSX, rq×1)
+- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/MultipleFilter/MultipleFilter.tsx` — **MultipleFilter** (arrow-function, 78 loc, 3 child JSX, rq×1, redux×1)
+- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/MultipleFilter/MultipleFilterAutocomplete/MultipleFilterAutocomplete.tsx` — **MultipleFilterAutocomplete** (arrow-function, 195 loc, 5 child JSX, rq×1, redux×1)
 - `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/MultipleFilter/SelectedFilterOption/SelectedFilterOption.tsx` — **SelectedFilterOption** (arrow-function, 50 loc, 5 child JSX, rq×1)
-- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/SingleFilter/SingleFilter.tsx` — **SingleFilter** (arrow-function, 83 loc, 3 child JSX, rq×1)
+- `odd-platform-ui/src/components/shared/elements/Activity/ActivityFilterItems/SingleFilter/SingleFilter.tsx` — **SingleFilter** (arrow-function, 96 loc, 3 child JSX, rq×1)
 - `odd-platform-ui/src/components/shared/elements/Activity/ActivityResultsItemSkeleton/ActivityResultsItemSkeleton.tsx` — **ActivityResultsItemSkeleton** (arrow-function, 12 loc, 2 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/Activity/ActivityResultsList/ActivityResultsList.tsx` — **ActivityResultsList** (arrow-function, 90 loc, 10 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/AlertIcon/AlertIcon.tsx` — **AlertIcon** (arrow-function, 69 loc, 5 child JSX, no-state-libs)
@@ -484,7 +485,7 @@ Grouping: by the first directory level under `components/` (13 groups).
 - `odd-platform-ui/src/components/shared/elements/Button/Button.tsx` — **Button** (arrow-function, 85 loc, 5 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/Checkbox/Checkbox.tsx` — **Checkbox** (identifier-reference, 8 loc, 1 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/CollapsibleInfoContainer/CollapsibleInfoContainer.tsx` — **CollapsibleInfoContainer** (arrow-function, 47 loc, 3 child JSX, no-state-libs)
-- `odd-platform-ui/src/components/shared/elements/ConfirmationDialog/ConfirmationDialog.tsx` — **ConfirmationDialog** (arrow-function, 73 loc, 5 child JSX, no-state-libs)
+- `odd-platform-ui/src/components/shared/elements/ConfirmationDialog/ConfirmationDialog.tsx` — **ConfirmationDialog** (arrow-function, 91 loc, 5 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/CopyButton/CopyButton.tsx` — **CopyButton** (arrow-function, 70 loc, 5 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/DataEntityDetailsPreview/DataEntityDetailsPreview.tsx` — **DataEntityDetailsPreview** (arrow-function, 179 loc, 11 child JSX, no-state-libs)
 - `odd-platform-ui/src/components/shared/elements/DatasourceLogo/DatasourceLogo.tsx` — **DatasourceLogo** (arrow-function, 53 loc, 1 child JSX, no-state-libs)

@@ -1,6 +1,6 @@
 # config_prefixes rollup
 
-Total prefixes: 14. @ConfigurationProperties classes: 9. @Value consumers: 75.
+Total prefixes: 14. @ConfigurationProperties classes: 9. @Value consumers: 76.
 Auto-derived from `lineage/{repo}/nodes.jsonl` + `edges.jsonl`. Each top-level YAML namespace in `application.yml` is one node; consumer classes (config-properties-class) and `@Value` readers (config-key-consumer) edge into their top-level prefix via `configures` edges.
 
 ## attachment
@@ -23,7 +23,7 @@ YAML anchor: `odd-platform-api/src/main/resources/application.yml#attachment` �
 
 ## auth
 
-YAML anchor: `odd-platform-api/src/main/resources/application.yml#auth` — no `@docs`. Classes: 2. Consumers: 17.
+YAML anchor: `odd-platform-api/src/main/resources/application.yml#auth` — no `@docs`. Classes: 2. Consumers: 18.
 
 **@ConfigurationProperties classes**
 - `ODDLDAPProperties` (`@ConfigurationProperties("auth.ldap")`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/ODDLDAPProperties.java`
@@ -31,6 +31,7 @@ YAML anchor: `odd-platform-api/src/main/resources/application.yml#auth` — no `
 
 **@Value consumers**
 - `IngestionDataEntitiesFilter.@ConditionalOnProperty` reads `${auth.ingestion.filter.enabled}` (default `havingValue=true`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionDataEntitiesFilter.java:20`
+- `IngestionAuthenticationFilter.@ConditionalOnProperty` reads `${auth.ingestion.filter.enabled}` (default `havingValue=true`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionAuthenticationFilter.java:49`
 - `LoginFormSecurityConfiguration.credentialString` reads `${auth.login-form-credentials}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LoginFormSecurityConfiguration.java:70`
 - `LoginFormSecurityConfiguration.redirectURIString` reads `${auth.login-form-redirect}` — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LoginFormSecurityConfiguration.java:41`
 - `S2sTokenProvider.s2sEnabled` reads `${auth.s2s.enabled}` (default `false`) — `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/S2sTokenProvider.java:12`

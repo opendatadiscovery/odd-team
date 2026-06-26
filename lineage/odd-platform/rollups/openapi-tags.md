@@ -1,6 +1,6 @@
 # openapi-tags rollup
 
-Total tags: 35. Total tag→method edges: 195.
+Total tags: 35. Total tag→method edges: 198.
 Auto-derived from `lineage/{repo}/nodes.jsonl` + `edges.jsonl`. Edges join on operationId == controller method name (OpenAPI generator convention).
 
 ## activity (3 operations, 3 bound to controllers)
@@ -9,10 +9,12 @@ Auto-derived from `lineage/{repo}/nodes.jsonl` + `edges.jsonl`. Edges join on op
 - `GET /api/activity/counts` → `getActivityCounts`
 - `GET /api/activity/users` → `getActivityUsers`
 
-## alert (5 operations, 5 bound to controllers)
+## alert (7 operations, 7 bound to controllers)
 
 - `GET /api/alerts` → `getAllAlerts`
+- `GET /api/alerts/counts` → `getAlertCounts`
 - `GET /api/alerts/dependents` → `getDependentEntitiesAlerts`
+- `GET /api/alerts/list` → `getAlertsList`
 - `GET /api/alerts/my` → `getAssociatedUserAlerts`
 - `GET /api/alerts/totals` → `getAlertTotals`
 - `PUT /api/alerts/{alert_id}/status` → `changeAlertStatus`
@@ -37,7 +39,7 @@ Auto-derived from `lineage/{repo}/nodes.jsonl` + `edges.jsonl`. Edges join on op
 
 ## dataConsumer (0 operations, 0 bound to controllers)
 
-## dataEntity (40 operations, 40 bound to controllers)
+## dataEntity (41 operations, 41 bound to controllers)
 
 - `GET /api/dataentities/classes` → `getDataEntityClasses`
 - `GET /api/dataentities/my` → `getMyObjects`
@@ -51,6 +53,7 @@ Auto-derived from `lineage/{repo}/nodes.jsonl` + `edges.jsonl`. Edges join on op
 - `PUT /api/dataentities/{data_entity_id}/alert_config` → `updateAlertConfig`
 - `GET /api/dataentities/{data_entity_id}/alerts` → `getDataEntityAlerts`
 - `GET /api/dataentities/{data_entity_id}/alerts/counts` → `getDataEntityAlertsCounts`
+- `GET /api/dataentities/{data_entity_id}/alerts/list` → `getDataEntityAlertsList`
 - `GET /api/dataentities/{data_entity_id}/channels` → `getChannels`
 - `POST /api/dataentities/{data_entity_id}/data_entity_group` → `addDataEntityDataEntityGroup`
 - `DELETE /api/dataentities/{data_entity_id}/data_entity_group/{data_entity_group_id}` → `deleteDataEntityFromDataEntityGroup`

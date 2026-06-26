@@ -1,6 +1,6 @@
 # controllers rollup
 
-Total controllers: 36. Total controller-methods: 204.
+Total controllers: 36. Total controller-methods: 207.
 Auto-derived from `lineage/{repo}/nodes.jsonl`. HTTP method/path metadata lives on each controller-method via the openapi_tags axis join (operationId == method name).
 
 ## ActivityController implements ActivityApi
@@ -13,13 +13,15 @@ Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controll
 
 ## AlertController implements AlertApi
 
-Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/AlertController.java` (5 methods)
+Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/AlertController.java` (7 methods)
 
-- `changeAlertStatus` (line 20) — no `@docs`
-- `getAlertTotals` (line 29) — no `@docs`
-- `getAllAlerts` (line 35) — no `@docs`
-- `getAssociatedUserAlerts` (line 43) — no `@docs`
-- `getDependentEntitiesAlerts` (line 51) — no `@docs`
+- `changeAlertStatus` (line 26) — no `@docs`
+- `getAlertCounts` (line 86) — no `@docs`
+- `getAlertTotals` (line 37) — no `@docs`
+- `getAlertsList` (line 69) — no `@docs`
+- `getAllAlerts` (line 43) — no `@docs`
+- `getAssociatedUserAlerts` (line 51) — no `@docs`
+- `getDependentEntitiesAlerts` (line 59) — no `@docs`
 
 ## AlertManagerController
 
@@ -68,48 +70,49 @@ Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controll
 
 ## DataEntityController implements DataEntityApi
 
-Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DataEntityController.java` (40 methods)
+Path: `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DataEntityController.java` (41 methods)
 
-- `addDataEntityDataEntityGroup` (line 332) — no `@docs`
-- `addDataEntityTerm` (line 149) — no `@docs`
-- `createDataEntityGroup` (line 83) — no `@docs`
-- `createDataEntityMetadataFieldValue` (line 118) — no `@docs`
-- `createDataEntityTagsRelations` (line 243) — no `@docs`
-- `createOwnership` (line 165) — no `@docs`
-- `createQueryExampleToDatasetRelationshipNew` (line 437) — no `@docs`
-- `deleteDataEntityFromDataEntityGroup` (line 342) — no `@docs`
-- `deleteDataEntityMetadataFieldValue` (line 129) — no `@docs`
-- `deleteOwnership` (line 174) — no `@docs`
-- `deleteQueryExampleToDatasetRelationshipNew` (line 448) — no `@docs`
-- `deleteTermFromDataEntity` (line 158) — no `@docs`
-- `getAlertConfig` (line 405) — no `@docs`
-- `getChannels` (line 374) — no `@docs`
-- `getDataEntitiesUsage` (line 368) — no `@docs`
-- `getDataEntityActivity` (line 351) — no `@docs`
-- `getDataEntityAlerts` (line 315) — no `@docs`
-- `getDataEntityAlertsCounts` (line 323) — no `@docs`
-- `getDataEntityClasses` (line 225) — no `@docs`
-- `getDataEntityDetails` (line 139) — no `@docs`
-- `getDataEntityDownstreamLineage` (line 255) — no `@docs`
-- `getDataEntityGroupsChildren` (line 100) — no `@docs`
-- `getDataEntityGroupsItems` (line 108) — no `@docs`
-- `getDataEntityGroupsLineage` (line 275) — no `@docs`
-- `getDataEntityMessages` (line 383) — no `@docs`
-- `getDataEntityMetrics` (line 424) — no `@docs`
-- `getDataEntityUpstreamLineage` (line 265) — no `@docs`
-- `getDomains` (line 431) — no `@docs`
-- `getMessages` (line 394) — no `@docs`
-- `getMyObjects` (line 283) — no `@docs`
-- `getMyObjectsWithDownstream` (line 291) — no `@docs`
-- `getMyObjectsWithUpstream` (line 299) — no `@docs`
-- `getPopular` (line 307) — no `@docs`
-- `updateAlertConfig` (line 413) — no `@docs`
-- `updateDataEntityGroup` (line 91) — no `@docs`
-- `updateOwnership` (line 183) — no `@docs`
-- `updateStatus` (line 193) — no `@docs`
-- `upsertDataEntityInternalDescription` (line 202) — no `@docs`
-- `upsertDataEntityInternalName` (line 232) — no `@docs`
-- `upsertDataEntityMetadataFieldValue` (line 213) — no `@docs`
+- `addDataEntityDataEntityGroup` (line 345) — no `@docs`
+- `addDataEntityTerm` (line 150) — no `@docs`
+- `createDataEntityGroup` (line 84) — no `@docs`
+- `createDataEntityMetadataFieldValue` (line 119) — no `@docs`
+- `createDataEntityTagsRelations` (line 244) — no `@docs`
+- `createOwnership` (line 166) — no `@docs`
+- `createQueryExampleToDatasetRelationshipNew` (line 450) — no `@docs`
+- `deleteDataEntityFromDataEntityGroup` (line 355) — no `@docs`
+- `deleteDataEntityMetadataFieldValue` (line 130) — no `@docs`
+- `deleteOwnership` (line 175) — no `@docs`
+- `deleteQueryExampleToDatasetRelationshipNew` (line 461) — no `@docs`
+- `deleteTermFromDataEntity` (line 159) — no `@docs`
+- `getAlertConfig` (line 418) — no `@docs`
+- `getChannels` (line 387) — no `@docs`
+- `getDataEntitiesUsage` (line 381) — no `@docs`
+- `getDataEntityActivity` (line 364) — no `@docs`
+- `getDataEntityAlerts` (line 316) — no `@docs`
+- `getDataEntityAlertsCounts` (line 324) — no `@docs`
+- `getDataEntityAlertsList` (line 333) — no `@docs`
+- `getDataEntityClasses` (line 226) — no `@docs`
+- `getDataEntityDetails` (line 140) — no `@docs`
+- `getDataEntityDownstreamLineage` (line 256) — no `@docs`
+- `getDataEntityGroupsChildren` (line 101) — no `@docs`
+- `getDataEntityGroupsItems` (line 109) — no `@docs`
+- `getDataEntityGroupsLineage` (line 276) — no `@docs`
+- `getDataEntityMessages` (line 396) — no `@docs`
+- `getDataEntityMetrics` (line 437) — no `@docs`
+- `getDataEntityUpstreamLineage` (line 266) — no `@docs`
+- `getDomains` (line 444) — no `@docs`
+- `getMessages` (line 407) — no `@docs`
+- `getMyObjects` (line 284) — no `@docs`
+- `getMyObjectsWithDownstream` (line 292) — no `@docs`
+- `getMyObjectsWithUpstream` (line 300) — no `@docs`
+- `getPopular` (line 308) — no `@docs`
+- `updateAlertConfig` (line 426) — no `@docs`
+- `updateDataEntityGroup` (line 92) — no `@docs`
+- `updateOwnership` (line 184) — no `@docs`
+- `updateStatus` (line 194) — no `@docs`
+- `upsertDataEntityInternalDescription` (line 203) — no `@docs`
+- `upsertDataEntityInternalName` (line 233) — no `@docs`
+- `upsertDataEntityMetadataFieldValue` (line 214) — no `@docs`
 
 ## DataEntityRunController implements DataEntityRunApi
 

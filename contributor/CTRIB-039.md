@@ -4,14 +4,14 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: implementing        # GATE 1 APPROVED 2026-06-26 (stacked slice-PRs; ADR approved; first slice S1). S1 in worktree ../odd-platform-ctrib039.
+status: review-ready        # S1 DoD met (all 5 gates green); DRAFT PR #1817 open. /review owns the done flip; GATE 2 = human merge. Contributor never self-merges.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
 plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
 plan_approved_at: "2026-06-26"
 docs_routing: "release/1.0.0 (unreleased behaviour → the documentation train, G-C11). Ships in the docs slice."
-pr_url:
-pr_draft:
+pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1817
+pr_draft: true
 stream_id: ctrib039
 ---
 
@@ -210,9 +210,14 @@ resolution) is approved. Proceeding to S1 in worktree `../odd-platform-ctrib039`
   `repository/**` (Testcontainers-covered). No CI surprise.
 - **Committed to the branch:** `77998156 feat(favorites): backend foundation + write API (#1815)` — worktree
   clean ⇒ the regression SUT == this commit (DoD provenance).
-- **Full integration regression (`run-regression.sh ctrib039`): RUNNING** (background; flock acquired; SUT
-  built from `77998156`; suites feature-complete / known-bugs / multi-stack / ingestion-e2e) — pass/fail
-  counts recorded from the run-logs on completion.
+- **Full integration regression (`run-regression.sh ctrib039`): GREEN-for-change** (SUT `9ee98020` ←
+  `77998156`; flock 22:22–22:35). **feature-complete 318 passed / 1 failed · multi-stack 9/9 ·
+  ingestion-e2e 15/15 · known-bugs 3 failed / 3 = EXPECTED-RED, 0 unexpected-GREEN.** The 1 feature-complete
+  failure = `dataset-structure-tag-filter.spec.ts` (**IT-146 / F-047 / #1679 / CTRIB-038**) — the SIBLING
+  stream's spec for an UNMERGED feature (Dataset-Structure tag/type column filter), **verified not-favorites**
+  (`grep favorit|/api/favorites|AssetKind` = 0; the failure is a Structure-tab column-filter locator) and
+  absent from my SUT (main + favorites only) ⇒ NOT a favorites regression (ctrib038 owns its spec — O10
+  route-around). My additive change introduced ZERO regressions; every previously-green spec stayed green.
 
 ### Scope held (G-C5)
 S1 touches only the backend write-path foundation. List endpoint → S2; all FE + i18n → S3; docs + "Asset" term +
@@ -225,3 +230,22 @@ housekeeping orphan sweep + ontology refresh → S4; Recently-Viewed → PLT-250
 - **Ontology: deferred to S4** (justified, per CTRIB-029 precedent): the favorites controller/service/repo are
   **new** nodes needing a substrate re-scan (beyond `/enrich --touched`), and the surface is incomplete until S3.
   `/enrich` runs once the feature exists, against a clean lineage tree.
+
+## GATE 2 — handoff (DRAFT PR open; human review + merge)
+
+S1 implemented; **all five DoD gates green** (full unit build · full integration regression green-for-change ·
+docs decided · ontology deferred-justified · 100% patch coverage). Status → **`review-ready`** — the contributor
+never self-merges; `/review` (separate session) owns the `done`/merge tail; **GATE 2 = the human merge**.
+
+- **Draft PR:** [#1817](https://github.com/opendatadiscovery/odd-platform/pull/1817) — `draft: true`, base `main`,
+  head `contrib/CTRIB-039-favorites-foundation-write-api` @ `77998156`. **Part of #1815 (slice 1/4) — does NOT
+  `Closes`** (the final slice will). Push verified main-untouched (remote `main` still `f12b8fbc`).
+- **Scope comment on #1815:** [issuecomment-4813301618](https://github.com/opendatadiscovery/odd-platform/issues/1815#issuecomment-4813301618)
+  — the stacked-slice plan; the public thread reflects the actual PR scope (G-C5).
+- **Next (maintainer):** run `/review CTRIB-039` (separate session — the 10 Quality-Bar gates + the contributor
+  gates), then **review + merge PR #1817** (the bot cannot self-approve — G-C4). On merge, S1 → `pending-release`
+  (milestone 1.0.0); the favorites user docs publish at the 1.0.0 release gate (slice 4).
+- **Then:** slice 2 (`GET /api/favorites/list`), slice 3 (frontend), slice 4 (docs + housekeeping) — each a fresh
+  `/contribute` continuation under #1815 on the ctrib039 namespace.
+- **Resources released:** heavy-e2e flock released (run-regression teardown); ctrib039 stack down; the worktree
+  `../odd-platform-ctrib039` + the branch remain for slice 2.

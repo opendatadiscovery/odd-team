@@ -1,3 +1,5 @@
+# Last updated 2026-06-26 — **Feature design — release 1.0.0 kickoff**: PRD-0001 (`prds/0001-favorites-and-recently-viewed.md`, Favorites + Recently Viewed) authored — grounded in odd-platform `main`; Product/SME consult (`lineage/odd-platform/sme-consultations/2026-06-26-favorites-recently-viewed-prd.md`) + SRE/security review folded in. Split into 2 upstream issue drafts: **PLT-249** (Favorites — ships the shared foundation) + **PLT-250** (Recently Viewed — depends on PLT-249), both `status: draft`, `suggested_milestone: 1.0.0`. Filing stays a manual human action.
+
 # Last updated 2026-06-26 — **RELEASE REVIEW `0.29.0` (session `review-release-029`, max-effort)** → release VERIFIED as a code+test+doc+ontology bundle; **24 items `done` (DOC-475 resolved post-review via PR #104→#107), 0 blocked, 1 re-targeted**; 2 fast-follows logged.
 
 ## Release record — odd-platform 0.29.0 (2026-06-26)

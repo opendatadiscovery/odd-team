@@ -4,14 +4,14 @@ github_issue_number: 1679
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1679
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: plan-approved       # GATE 1 PASSED 2026-06-26 — full plan + "this plan is the design" (no PRD)
+status: pr-draft            # Phase D DoD met; DRAFT PR #1818 open. Hand to /review (separate session) → review-ready → human GATE 2. Never self-review-ready/merged.
 reproduced: "Phase B — running-system understanding captured below (feature, not bug: confirmed current state + data availability)"
 adr_required: no            # G-C7 does NOT fire; see "Architectural-significance check"
 plan_approved_by: "maintainer (Raman) — GATE 1 via AskUserQuestion, 2026-06-26"
 plan_approved_at: "2026-06-26"
 docs_routing: "release/1.0.0"   # per-column-annotation.md subsection; unreleased behaviour rides the 1.0.0 train (G-C11)
-pr_url:
-pr_draft:
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1818"
+pr_draft: true
 stream_id: ctrib038
 ---
 
@@ -193,6 +193,14 @@ For a feature the "reproduce" step is: confirm the current state and confirm the
 **DoD status (ctrib039 freed its window at 22:40; box uncontended):**
 1. ✅ **feature-complete GREEN on the branch SUT** — rebuilt @ c37ca11b (digest `879ad194`, run #3): **318 passed / 1 failed**, the 1 = IT-146 itself (now fixed, below); every other UI spec incl. all `TagItem` consumers GREEN. The `owner-association-history` fail seen in run #1 was a confirmed pre-existing flake (passed in run #3). **known-bugs 3-RED-expected, 0 unexpected-green** (run #1; zero code overlap with this FE change).
 2. ✅ **IT-146 GREEN on the branch SUT** (`879ad194`, c37ca11b) — `1 passed (3.0s)`. The run-#3 IT-146 failure was the type chips collapsing behind "Show N hidden" on a narrow header (pre-existing `TruncateMarkup` viewport behaviour); fixed in the spec (expand the collapsed chips first) — a **spec-only** fix, re-run against the same cached SUT, GREEN. (This also empirically confirmed the `styled(Box)` `data-qa` renders — the collapse was the only issue.)
-3. ✅ **RED proof — structurally VERIFIED + formal run in progress.** `git show origin/main` confirms `main` has **no** `DatasetStructureTagFilters` component, **0** `selectedTag/FieldTypes` atoms, **0** `data-qa` hooks → IT-146's feature-locators match nothing → it cannot pass on `main`. With the GREEN above, the test is provably non-tautological. The formal `ODD_SUT=ref:main` build + IT-146 run is executing (expected RED at the tag-chip assertion) for the artifact.
+3. ✅ **RED proof — CONFIRMED (formal run + structural).** `ODD_SUT=ref:main` SUT built from `main @ f12b8fbc` (digest `eebb93b0`); IT-146 ran **RED**: `1 failed (8.5s)` at **line 120** — `expect(piiChip).toBeVisible()` failed, `[data-qa="dataset-structure-tag-filter"]` matched nothing. The baseline (columns render) PASSED; only the **feature** assertion failed → the test catches the feature's absence, it is not a tautology (GREEN on the branch / RED on main). Corroborated structurally: `git show origin/main` → no `DatasetStructureTagFilters`, 0 filter atoms, 0 `data-qa` hooks.
 4. 🔀 **`lineage/` probe drift LEFT in place** (not reverted) — it is shared/incidental from both my and ctrib039's IT-002→P-001 probes; ctrib039's session may still be active (its entry is non-terminal), so per O10 I route around it. My G-C10 decision is "no ontology refresh" (FE-presentation only), and all my commits are explicit-path — they never sweep the drift.
-5. ⏭ **Push branch + open DRAFT PR** (next) → `/review` (separate session) → human GATE 2. Status flips `pr-draft` → `review-ready` only after the RED-proof run confirms (no unrun-gate handoff).
+5. ✅ **Branch pushed + DRAFT PR open.** Branch `contrib/CTRIB-038-dataset-structure-tag-filter` @ c37ca11b pushed via the `odd-contributor` App (same-name refspec, token not persisted; `main` untouched, O6/LSN-038). **DRAFT PR [#1818](https://github.com/opendatadiscovery/odd-platform/pull/1818)** (`draft: true`, author `odd-contributor[bot]`, `Closes #1679`, `Milestone: 1.0.0`). The bot is the PR author → it cannot self-approve → GATE 2 is human-enforced (G-C4).
+
+## Phase E — draft PR + handoff (GATE 2)
+
+- **GitHub interactions (all via `odd-contributor[bot]`):** acknowledgement+scope comment [issuecomment-4812827590](https://github.com/opendatadiscovery/odd-platform/issues/1679#issuecomment-4812827590) · branch `contrib/CTRIB-038-dataset-structure-tag-filter` @ c37ca11b · DRAFT PR [#1818](https://github.com/opendatadiscovery/odd-platform/pull/1818).
+- **Status: `pr-draft`.** Per the contributor model the implementer does NOT self-flip `review-ready` (the `/implement`-can't-self-`done` rule). **Next: a separate `/review` session** runs reject-by-default over the 10 Quality-Bar gates + the contributor gates (it can re-run the IT-146 GREEN + RED in ~2 min against the cached SUTs), flips `pr-draft → review-ready`, then the **human GATE 2** approves + merges PR #1818.
+- **DoD (all five, actually-run, at the committed SHA c37ca11b):** (1) FE unit GREEN — `filtering.test.ts` 14/14 + `tsc --noEmit` + `eslint` clean (the odd-platform-api Java unit build is **not exercised** by this FE-only change — zero Java touched — and both jib SUT builds compiled the full image incl. Java successfully; the 98% jacoco patch-coverage gate has no changed Java files → N/A). (2) Integration GREEN — IT-146 on the branch SUT (`879ad194`) + feature-complete 318-pass + known-bugs 3-RED-expected; RED proof on `ref:main` (`eebb93b0`) confirmed. (3) Docs read + routed (DOC-492, release/1.0.0). (4) Ontology — no refresh warranted (recorded). (5) Principal sufficiency — meaningful unit + e2e coverage, no control lost (reused `TagItem` + `useStructure`), no existing functionality harmed (feature-complete GREEN); a UI change reviewed via the e2e + the captured failure screenshots during debugging.
+- **Follow-ups logged on disk:** PLT-205 addendum (pre-existing i18n parity-guard RED on `main`, not this change). Confirmed flake: `owner-association-history` (TST-054 family) passed on re-run.
+- **Parallel-stream hygiene:** all my stacks/images torn down (ctrib038 SUT image `879ad194` kept for `/review`'s cheap re-run; ctrib038base RED-proof image removed). The `lineage/` probe drift is left in place (shared/incidental; ctrib039's territory; my commits are explicit-path). ctrib039 freed the heavy-e2e flock at 22:40; it is free now.

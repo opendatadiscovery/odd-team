@@ -301,6 +301,16 @@ implementation". S2 branch `contrib/CTRIB-039-favorites-list-api` (off `577593ae
 - **Verified (not assumed):** Term visibility — `getTermRefDto` filters `TERM.DELETED_AT IS NULL` (`:188`);
   QE soft-delete — `query_example.deleted_at` (V0_0_84) + an explicit `deletedAt==null` filter; DE visibility —
   `getDimensionsByIds` is `includeDeleted(true)` ⇒ an explicit `STATUS≠DELETED`/`HOLLOW=false` post-filter.
-- **Full `:odd-platform-api:build`:** RUNNING (background). **Full integration regression:** PENDING (after).
+- **Full `:odd-platform-api:build`: GREEN-for-change.** Favorites tests all pass (resolver 7/7 incl. the
+  defensive-dedup test, service 6/6, controller 4/4, repo 7/7); **all other tests pass**. **Local patch-coverage
+  (G-C13): 100% line** on every changed measured file (`FavoriteAssetResolver`, `FavoriteServiceImpl`,
+  `FavoriteController`). The build's only failure is the pre-existing **`PrometheusMetricsIngestionTest` flake** —
+  verified NOT mine: it **passes in isolation** (BUILD SUCCESSFUL alone), the lone `favorit` match in its log is
+  the `V0_0_94` migration line (`0.0.94 - create favorite`), and the 500 is a connection error (`Error Code: 0`)
+  under full-suite load. Metrics ingestion shares no code with favorites.
+- **Rebase:** S2 rebased onto current `origin/main` `de6992c1` (S1 + #1679 tag-filter both merged) → branch
+  `50f57fda`, clean (no overlap — #1679 is FE-only). The regression SUT now includes #1679, so feature-complete
+  runs without the IT-146 sibling-spec gap S1 saw.
+- **Full integration regression (`run-regression.sh ctrib039`): RUNNING** (background; SUT from `50f57fda`).
 - **Docs (G-C10): none in S2** (no user surface until S3; rides S4). **Ontology: deferred to S4** (the new
   resolver node refreshes with the feature surface).

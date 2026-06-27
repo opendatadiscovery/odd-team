@@ -3,9 +3,8 @@
 Part of #1679.
 Milestone: 1.0.0.
 
-> **Stacked on the #1679 column-filter feature.** Base this PR on
-> `contrib/CTRIB-038-dataset-structure-tag-filter` (the filter lives only there, not on `main` yet).
-> GitHub auto-retargets it to `main` when that PR merges. Merge the filter PR first, then this one.
+> Follow-up to the #1679 column-filter feature (PR #1818, now merged to `main`). Targets `main`.
+> Found by a maintainer using the running UI after the filter shipped.
 
 ## What & why
 
@@ -28,8 +27,9 @@ snapshot**, stayed frozen until a remount. A new `SyncAtoms` component re-syncs 
 active filter/search survives the refresh.
 
 **Defect 2.** Added `Filter by type` / `Filter by tag` hint labels (the same `texts.hint` style as the
-existing "columns" label) before the respective chip rows. Two new strings, translated across all 7
-locales.
+existing "columns" label), and gave each filter its **own full-width row** below the header summary so the
+type chips are no longer squeezed against the search box (they previously collapsed behind a "Show N hidden"
+truncation). Two new strings, translated across all 7 locales.
 
 No backend, API, OpenAPI, contract, or migration change.
 

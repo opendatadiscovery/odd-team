@@ -7,7 +7,7 @@
 | **Repos** | `odd-platform` (code), `documentation` (release-train gated), `odd-team` (ontology) |
 | **Author** | ODD Team (maintainer) |
 | **Date** | 2026-06-26 |
-| **Consultations** | Product/SME — `lineage/odd-platform/sme-consultations/2026-06-26-favorites-recently-viewed-prd.md`; SRE/Security — session note 2026-06-26 (folded into §6/§7 below) |
+| **Consultations** | Product/SME — `lineage/odd-platform/sme-consultations/2026-06-26-favorites-recently-viewed-prd.md`; SRE/Security — session note 2026-06-26 (folded into §6/§7 below); **post-S3 PO+SRE critique** — `lineage/odd-platform/sme-consultations/2026-06-27-favorites-s3-po-sre-critique.md` (→ completion spec **PRD-0002**) |
 | **Splits into** | **Issue A — Favorites** (§9) → draft `issues/odd-platform/PLT-249.md` · **Issue B — Recently Viewed** (§10) → draft `issues/odd-platform/PLT-250.md`. Both ride a **shared foundation** (§5) built once in PLT-249; PLT-250 depends on PLT-249. |
 
 ---

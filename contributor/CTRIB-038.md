@@ -4,7 +4,7 @@ github_issue_number: 1679
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1679
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: pr-draft            # Phase D DoD met; DRAFT PR #1818 open. Hand to /review (separate session) → review-ready → human GATE 2. Never self-review-ready/merged.
+status: review-ready        # /review ACCEPTED 2026-06-27 (session review-ctrib038, separate from implement). Human GATE 2 (approve+merge PR #1818) owns merged. Never self-merged.
 reproduced: "Phase B — running-system understanding captured below (feature, not bug: confirmed current state + data availability)"
 adr_required: no            # G-C7 does NOT fire; see "Architectural-significance check"
 plan_approved_by: "maintainer (Raman) — GATE 1 via AskUserQuestion, 2026-06-26"
@@ -204,3 +204,68 @@ For a feature the "reproduce" step is: confirm the current state and confirm the
 - **DoD (all five, actually-run, at the committed SHA c37ca11b):** (1) FE unit GREEN — `filtering.test.ts` 14/14 + `tsc --noEmit` + `eslint` clean (the odd-platform-api Java unit build is **not exercised** by this FE-only change — zero Java touched — and both jib SUT builds compiled the full image incl. Java successfully; the 98% jacoco patch-coverage gate has no changed Java files → N/A). (2) Integration GREEN — IT-146 on the branch SUT (`879ad194`) + feature-complete 318-pass + known-bugs 3-RED-expected; RED proof on `ref:main` (`eebb93b0`) confirmed. (3) Docs read + routed (DOC-492, release/1.0.0). (4) Ontology — no refresh warranted (recorded). (5) Principal sufficiency — meaningful unit + e2e coverage, no control lost (reused `TagItem` + `useStructure`), no existing functionality harmed (feature-complete GREEN); a UI change reviewed via the e2e + the captured failure screenshots during debugging.
 - **Follow-ups logged on disk:** PLT-205 addendum (pre-existing i18n parity-guard RED on `main`, not this change). Confirmed flake: `owner-association-history` (TST-054 family) passed on re-run.
 - **Parallel-stream hygiene:** all my stacks/images torn down (ctrib038 SUT image `879ad194` kept for `/review`'s cheap re-run; ctrib038base RED-proof image removed). The `lineage/` probe drift is left in place (shared/incidental; ctrib039's territory; my commits are explicit-path). ctrib039 freed the heavy-e2e flock at 22:40; it is free now.
+
+## Review (2026-06-27, session: review-ctrib038)
+
+- **Result**: ACCEPTED → `pr-draft` → `review-ready`. Human GATE 2 (approve + merge PR #1818) owns `merged`.
+- **Reviewed commit**: `c37ca11b` (== live DRAFT PR #1818 head, verified via GitHub API: `state=open`, `draft=true`, `merged=false`, author `odd-contributor[bot]`, base `main`, body `Closes #1679`). Tested code == PR code.
+- **Live reconcile (trust the tree, O4/O8/O9)**: `origin/main` advanced `f12b8fbc → 577593ae` since the Phase-E record — the **legitimate merge of CTRIB-039 PR #1817** (favorites BE foundation), NOT unreviewed code (the record's "remote main still f12b8fbc" was stale). CTRIB-038 forked at `f12b8fbc` (1 commit behind); the favorites merge touched only `odd-platform-api/**` + `odd-platform-specification/**` → **zero overlap** with CTRIB-038's FE files → the GATE-2 rebase onto current main is clean.
+- **2-minute precondition**: did NOT bounce — an integration run-log exists at the reviewed SHA's build (`879ad194` ← `c37ca11b`): IT-146 GREEN + the base RED recorded. (Gap found + closed below: the implementer's feature-complete green was *inferred* across runs, never one coherent measured green run — this review provides it.)
+
+- **Acceptance criteria (PROBES 1–17)**:
+  - [x] 1 code-after-plan — GATE 1 approved 2026-06-26 before Phase D — PASS
+  - [x] 2 reproduction logged — Phase B running-system confirmation (`DataSetField.tags` in the structure payload) — PASS
+  - [x] 3 diff bounded by the plan — exactly 12 FE files; all 5 scope-exclusions honored (no BE/API/openapi/migration; no tag-write path; no nested-struct; no URL persistence; no Compare view) — PASS
+  - [x] 4 unit injects the new behaviour — `filtering.test.ts` 14/14, asserts new pure logic absent on base — PASS
+  - [x] 5 pins re-grounded — N/A (no characterization pin touched)
+  - [x] 6 docs decision stated + routed — DOC-492, page READ, `release/1.0.0` train (G-C11) — PASS
+  - [x] 7 ontology committed-or-justified — "no refresh" + why (FE-presentation only; no FE sidecar) — PASS
+  - [x] 8 ends `review-ready`, not self-`done`/`merged` — PASS
+  - [x] 9 ADR before code — N/A (G-C7 does not fire; verified zero BE/openapi/migration in the diff)
+  - [x] 10 prompt-injection discarded — issue body is legitimate; treated as quoted data — PASS
+  - [x] 11 Definition of Done met (full unit + FULL integration on the branch image + docs + ontology) — PASS (reviewer's own measured run below)
+  - [x] 12 milestone train — issue #1679 milestone `1.0.0` open+semver; unreleased-behaviour doc on the 1.0.0 train — PASS
+  - [x] 13 design-before-build — reuse-scan (TagItem/useStructure) + ADR-check + impact checklist (i18n all-7-locales) + PO/SRE lens — PASS
+  - [x] 14 principal sufficiency — enough+meaningful tests; FE has no jacoco gate (Java-only); no control lost; no functionality harmed (319-green) — PASS
+  - [x] 15 private-advisory — N/A (public feature issue, not a GHSA)
+  - [x] 16 test-change integrity — N/A (all tests net-new; suites.yaml additive; no existing test changed)
+  - [x] 17 change-request product analysis — issue WHAT product-critiqued (options A–D incl. reshape/rescope/revoke); recommended A; **precedent VERIFIED** (`catalog-overview.md:23` ships the same one-click tag-filter chip pattern) — PASS
+
+- **Quality Bar / contributor gates**:
+  - **G-C1 reproduce-first** — PASS (feature → Phase B running-system + data-availability confirmation; corroborated by the BE mapper read below)
+  - **Gate 1 no-duplicates** — PASS (reuses shared `TagItem` as `TopTagsList` does — verified `TopTagsList.tsx:39` uses `<TagItem onClick label important count cursorPointer>`; new filtering logic is not a parallel copy)
+  - **Gate 4 / 9 consumer-read + provenance** — PASS via read: footer's `DataSetField.ts` (`tags?: Array<Tag>` l.154, `type: DataSetFieldType` l.100→`.type` enum, `internalName?` l.94 — so `field.type.type` is correct), `DatasetFieldApiMapper.java:22` (`uses = {TagMapper.class,…}` → BE populates field tags), `useStructure.ts` (the existing client-side search filter, the extension point), `TopTagsList.tsx` (the reused pattern). i18n parity: `Clear All` + `No results` present in **all 7 locales**; **zero** locale files in the diff.
+  - **G-C5 bounded scope** — PASS (three-dot diff = the 12 planned FE files, +469/−83; no scope creep)
+  - **G-C7 / Gate 5 (SDK/unset-param)** — N/A (no SDK builder; no API/contract/migration change at all)
+  - **G-C9 both buckets** — PASS (unit `filtering.test.ts` 14/14 traced by hand: aggregation counts, important→count-desc→name ordering, single/multi-tag OR, type, tag×type AND, tag×search AND, identity-by-reference, no-mutation, empty-result; integration IT-146 user-facing → mandatory, present, real-boundary)
+  - **G-C10 ontology+docs** — PASS (docs DOC-492 routed+read; ontology "no refresh" honest — grep confirms no sidecar's subject is DatasetStructure/TagItem/useStructure; the working-tree `getDataEntityDetails`/`getPopular`/`feature-flows`/`P-001` drift is incidental IT-002 probe residue, reverted)
+  - **G-C11 milestone** — PASS (issue carries `1.0.0` open+semver). Non-blocking: the PR-object milestone is null (the `Milestone: 1.0.0` body line + the issue milestone satisfy G-C11; setting the PR milestone is cosmetic).
+  - **G-C12 design-before-build** — PASS (reuse-scan honest; conforms to the existing Jotai client-side-filter pattern, no new ADR; impact checklist complete)
+  - **G-C13 principal sufficiency** — PASS (the only non-trivial logic — the pure filter — is exhaustively unit-covered; the user surface is e2e-covered; `TagItem` gains an additive optional `selected` prop, no existing caller affected — verified the styled `$selected` path resolves real theme keys: `backgrounds.secondary` l.96, `tag.{main,important}.{normal,hover}.border`)
+  - **G-C15 test-change integrity** — N/A (all tests ADDED; `git show 2ab966f` = new `filtering.test.ts` + new `IT-146` spec/protocol + additive `suites.yaml`; no assertion weakened, nothing skipped/deleted)
+  - **G-C16 product analysis** — PASS (premise critiqued independent of the issue's suggested fix; SME/PO consulted; the issue's ask is product-right and mirrors a shipped ODD pattern)
+  - **Gate 8 publishing** — N/A-for-code now (PR is `draft`, not merged → no live odd-platform surface to verify). The behaviour doc (DOC-492) is release-gated → **PENDING-RELEASE** on the `1.0.0` train; its live-site Gate 8 runs at the 1.0.0 release gate (`playbooks/release-train-merge.md`).
+  - **Gate 10 content-homing** — PASS (DOC-492 targets the canonical Structure-tab home `per-column-annotation.md`, placed after "Where to find it")
+  - **Gate 11 audience isolation** — PASS (DOC-492's published-facing markdown is operator language only — "Structure tab", "filter chips", "tag facet", "Clear All"; zero workspace-internal terms)
+
+- **RED proof (RED→GREEN discriminator)** — CONFIRMED, *stronger* than the implementer's: on **current** `origin/main` (`577593ae`) the `DatasetStructureTagFilters` dir, `lib/filtering.ts`, and **both** `data-qa` locator hooks (`dataset-structure-{tag,type}-filter`) are **absent (0)** → IT-146's locators match nothing → RED by construction on current main, not only the `f12b8fbc` base the implementer tested. Corroborated by the recorded formal run (base `eebb93b0` → IT-146 FAIL) + this review's GREEN on the fix.
+
+- **Regression — reviewer's OWN measured run (MEASURED, not inferred)**: independent rebuild `ODD_SUT=working` ← the clean `c37ca11b` worktree → `odd-platform:odd-team-sut-revctrib038` digest **`27402798`** (NOT the implementer's cached `879ad194` — the review-ctrib029 lesson), isolated namespace `revctrib038` (ports 18100/15500), heavy-e2e flock-serialized, torn down `-v`:
+  - **feature-complete: 319 passed (5.7m) + api-probe P-001 PASS = FULLY GREEN** — IT-146 (`dataset-structure-tag-filter`) GREEN, plus every other `TagItem` consumer + the Structure-tab specs (IT-023 display, IT-039 ingest) GREEN → the shared-component change broke nothing. This is the single coherent green run the implementer only *inferred* (317-ex-IT-146 + IT-146-in-isolation).
+  - **known-bugs: 3 failed = the 3 EXPECTED-RED pins** (IT-004 PLT-052 · IT-006 TEST-GAP-1013 · IT-007 LSN-001/PLT-086), **0 unexpected GREEN** → no un-flipped fix.
+  - **multi-stack + ingestion-e2e**: reviewer-accepted **FE-only skip** — the change touches zero auth/storage/notification/collector code; the Structure tab + all `TagItem` consumers are already exercised GREEN in feature-complete; matches the maintainer-approved CTRIB-031 FE-only-skip precedent.
+- **Unit (FE)**: `filtering.test.ts` 14/14 + project `tsc --noEmit` + `eslint` clean (per the ledger; the odd-platform-api Java unit build is genuinely not exercised — zero Java touched; the 98% jacoco patch-coverage gate has no changed Java files → N/A).
+- **Outbound URL sweep**: the only live URL in scope is `catalog-overview.md:23` (the DOC-492 cross-link + G-C16 precedent) — VERIFIED via `git show origin/main` (the "one-click filter chips … pre-filters the catalog" claim is present and accurate).
+- **Banned-phrase check**: none used.
+- **Regressions**: none (319-green; the 3 known-bugs RED are the expected quarantine).
+- **Navigation**: consistent — no `navigation/domains/*.md` pointer shifted (FE-only client-side change; no new bean factory / SDK builder / endpoint).
+- **Upstream issues logged**: none.
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: the `data-discovery/**` change-cluster read end-to-end against `origin/main` — `per-column-annotation.md` (the DOC-492 home), `catalog-overview.md` (the tag-filter precedent). Full-tree baseline 2026-06-08 (DOC-336..439); recent reviews partitioned per subtree; the `integrations/**` + `configuration-and-deployment/**` subtrees remain queued for a future `/review`.
+  - **Findings**: none surfaced this run. The cluster is coherent; `per-column-annotation.md` is the correct home for the incoming "Filtering the column list" section (after "Where to find it"); the existing empty-array-clears tag-write caveat (`:80`) the CTRIB-038 scope-exclusion references is accurate; the precedent claim is verbatim-correct.
+- **Non-blocking GATE-2 handoffs (human merge)**:
+  1. **Rebase** `c37ca11b` onto current `origin/main` (`577593ae`) before merge — trivial (zero file overlap with the merged #1817 favorites slice).
+  2. **PR milestone** is null — optionally set it to `1.0.0` (cosmetic; the issue milestone + body line satisfy G-C11).
+  3. **Run-log hygiene (implementer)**: the 2026-06-26 run-logs left the runner/evidence placeholders unfilled, and the `879ad194` feature-complete entry recorded `e2e:FAIL` (the pre-spec-fix run) with no corrected green entry — this review's clean 319-green measurement on `27402798` supersedes it. Evidence-hygiene only; the code is correct.
+  4. **DOC-492** stays `pending-release` on the 1.0.0 train; its live-site Gate 8 runs at the 1.0.0 release gate.
+- **Notes**: All gates PASS with cited evidence. The fix is well-architected (pure, immutable filtering logic; honest reuse of `TagItem`/`useStructure`; additive shared-component prop), exhaustively tested both buckets, correctly scoped, correctly routed (docs + ontology), and regression-clean on an independent rebuild — VERIFIED via read + GitHub API + own measured 319-green regression + structural RED proof. Review committed exactly: this verdict + `state/active-streams.yaml` + `state/PROGRESS.md` (explicit paths). `lineage/**` probe drift reverted to HEAD; reviewer run-logs left untracked.

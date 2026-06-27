@@ -4669,3 +4669,41 @@ committed; the unowned P-001 residue stays untracked (O10). Flock + isolated sta
 final `pr-draft → review-ready` flip (a light confirm + the deferred full-tree editorial audit); human GATE-2 merges
 PR #1801. Committed (explicit paths): `integration-tests/suites.yaml` + `contributor/CTRIB-031.md` (`061e09e`) ·
 the 2 run-log annotations · `contributor/CTRIB-031.md` (results + status) · `state/active-streams.yaml` · this record.
+
+---
+
+### 2026-06-27 — /review CTRIB-039 slice S3 (favorites frontend) → ACCEPTED (session review-ctrib039)
+
+Separate-session `/review` of CTRIB-039 **slice S3** (the whole favorites frontend, DRAFT PR #1821, head
+`8c6c4a9d`). **Result: ACCEPTED.** PR #1821 is a DRAFT and `8c6c4a9d` is not on `origin/main` (top `934b60a7`) ⇒
+GATE 2 not yet occurred; **status stays `review-ready`** (human GATE-2 merges #1821 → `pending-release` 1.0.0 →
+`/review release:1.0.0` owns `done`).
+
+- **Scope (G-C5)**: bounded **FE-only** — 38 files, +924/−17, all under `odd-platform-ui/src/`; zero
+  backend/migration/OpenAPI/generated-client. S4 (docs + "Asset" term + housekeeping + ontology) held out.
+- **Independent rebuild (review-ctrib029 lesson — NOT the cited digest)**: `ODD_SUT=ref:8c6c4a9d` →
+  `odd-team-sut-revctrib039` digest **`03c0aa24`** (implementer's was `df0d7186`). **GREEN-for-change**:
+  feature-complete **321/0** (IT-148 favorites star→see loop GREEN, #125), multi-stack **9/0**, ingestion-e2e
+  **15/0**, known-bugs **3-RED-expected / 0-unexpected-green** (IT-007/006/004 pins).
+- **IT-148 RED proof**: on the `934b60a7` image (`revctrib040` `d7083974`, backend merged / no S3 FE) IT-148
+  FAILS at step 1 (`[data-qa="favorite-star"]` not visible) ⇒ the e2e genuinely requires the FE, not vacuous.
+- **FE unit (my node-24 run)**: vitest **86/87** (the 1 RED = pre-existing `LinkedTermsList.tsx:63` i18n-parity
+  offender = **TST-056**, not favorites, not in the diff; the parity test reports exactly that one ⇒ S3 adds
+  zero new offenders) + favorites **9/9** + eslint clean. i18n 7-locale parity GREEN (653 keys each) + genuinely
+  translated.
+- **Gates**: Gate-4/5/10/11 N/A (pure FE, no docs); G-C9 PASS (9 unit meaningful incl. the RED-on-naive
+  no-clobber test + IT-148 real-ingestion full loop); G-C15 N/A (both test files ADDED, none changed); G-C2/G-C5/
+  G-C10/G-C13 PASS.
+- **One non-blocking Gate-1/G-C12 finding**: `FavoriteStar` inlines the **byte-identical** SVG path of the
+  existing `shared/icons/StarIcon.tsx` instead of reusing it (contra the plan's reuse-scan). Not a blocking
+  duplicate (FavoriteStar is a legit new component; only the path *data* is duplicated; reuse has blast radius via
+  `OwnerEntitiesList`) → logged as an S4/fast-follow cleanup in the CTRIB record; the GATE-2 merger decides
+  de-dup-now vs fast-follow.
+- **Editorial audit**: owner-read of the favorites-adjacent subtree (`main-concepts.md` + `catalog-overview.md`)
+  — both clean. **Forward-looking finding**: the S3 surface spans the Catalog-Overview home page (new panel),
+  detail-header/search-row stars, and a new tab, but the S4 docs slice as scoped lists only `Features.md` + the
+  "Asset" term ⇒ S4 must also cover `catalog-overview.md` + a favorites page (Gate 6 code↔doc). Logged in the
+  CTRIB record's S4 follow-ups.
+- **Review hygiene**: `lineage/**` probe drift `git checkout`-reverted (after both the regression and the RED
+  proof); both stacks torn down `-v`; flock released. Committed (explicit paths): `contributor/CTRIB-039.md`
+  (verdict + status comment) · `state/active-streams.yaml` (reviewer stream) · this record.

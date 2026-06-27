@@ -4,7 +4,7 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: review-ready        # S1 #1817 + S2 #1819 MERGED. S3 (whole favorites FE) DoD MET → DRAFT PR #1821 (review-ready; /review + human GATE 2 = tail). S4 (docs + "Asset" term + housekeeping sweep) remains.
+status: review-ready        # S1 #1817 + S2 #1819 MERGED. S3 (whole favorites FE): /review ACCEPTED 2026-06-27 (session review-ctrib039 — independent rebuild ref:8c6c4a9d green-for-change; IT-148 GREEN-on-fix/RED-on-base; 1 non-blocking StarIcon-reuse finding). Stays review-ready → human GATE 2 merges DRAFT PR #1821 → pending-release (1.0.0). S4 (docs + "Asset" term + housekeeping sweep) remains.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
 plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
@@ -465,3 +465,59 @@ human GATE 2 = the tail.
 - **Resources released:** heavy-e2e flock released (run-regression teardown) + the throwaway pixel stack
   torn down; the worktree `../odd-platform-ctrib039` + the branch remain for S4. Incidental P-001 lineage
   probe drift reverted (not committed).
+
+## Review (2026-06-27, session: review-ctrib039) — slice S3
+
+- **Result**: **ACCEPTED** — slice S3 (favorites frontend). Every S3 deliverable + Quality-Bar/contributor gate PASS with cited evidence, one **non-blocking** Gate-1/G-C12 reuse finding logged for fast-follow. Reviewed `8c6c4a9d` (== `origin/contrib/CTRIB-039-favorites-frontend` head == ctrib039 worktree HEAD). **GATE 2 has NOT occurred**: PR #1821 is a **DRAFT** and `8c6c4a9d` is **not** on `origin/main` (top `934b60a7`) — the human review+merge is pending. **Disposition: status stays `review-ready`** (the contributor `pr-draft → review-ready` hand-off; the implementer self-advanced the label, the substance — handed off with a draft PR — is correct and this review legitimises it). Human GATE-2 (review + merge PR #1821 — the bot cannot self-approve, G-C4) owns the next step; on merge S3 → `pending-release` (milestone 1.0.0); `/review release:1.0.0` owns the `done` flip after live-site + real-instance verification at the release gate.
+
+- **S3 deliverables (the plan's acceptance set)**:
+  - [x] `<FavoriteStar>` — reusable, WCAG (aria-pressed + fill-vs-outline shape, not colour-alone), optimistic + rollback, stop-propagation so a row star doesn't navigate. PASS — `FavoriteStar.tsx:30-86`; vitest 3/3 (aria-pressed render + optimistic click).
+  - [x] Redux slice/thunks/selectors over the generated `FavoriteApi`; batch-hydrate fill-unknowns no-clobber. PASS — `favorites.slice.ts:30-44`; the no-clobber unit test is genuinely RED on a naive "asked→false-for-all" impl (verified by reading the guard `if (favoritedByKey[key] === undefined)`).
+  - [x] Stars on DataEntity / Term / QueryExample detail headers + data-entity search rows (one-call batch hydrate). PASS — 4 header/row wirings verified; `Results.tsx:83-95` batch-hydrates all visible rows in ONE `getFavoriteStatus`.
+  - [x] Main-page Favorites panel, **outside the owner gate** (every audience), above the Owner block. PASS — `Overview.tsx`: `<FavoritesPanel />` inserted before the `isShowOwnerAssociation` conditional.
+  - [x] Top-level Favorites tab (`/favorites` route + nav after Catalog) + Asset-type facet. PASS — `App.tsx` lazy route + `ToolbarTabs.tsx` + `Favorites.tsx` + `FavoritesAssetTypeFilter.tsx`.
+  - [x] i18n all 7 locales. PASS — 653 keys each, 0 missing / 0 orphan vs en; genuinely translated (not English pass-through).
+  - [x] vitest (FavoriteStar + slice) + the mandatory Playwright IT-148. PASS — 9/9 + IT-148 GREEN-on-fix / RED-on-base, both reproduced by me.
+
+- **Quality Bar / contributor gates** (each ends in its evidence):
+  - **Gate 1 / G-C12 (no duplicates / reuse) — PASS with a logged finding** via read: the FE reuses `PageWithLeftSidebar`, `Checkbox`/`FormControlLabel`, `ToolbarTabs`, `EmptyContentPlaceholder`, the route-builder + locale conventions. **Finding (non-blocking):** `FavoriteStar.tsx`'s inlined `STAR_PATH` constant is the **byte-identical** `d=` of the existing `components/shared/icons/StarIcon.tsx` (same `viewBox='0 0 17 16'`), instead of reusing it — contradicting the approved plan's reuse-scan ("StarIcon — reused"). It does **not** rise to a blocking duplicate: `FavoriteStar` is a legitimately new component (toggle + optimistic state + self-hydrate + a11y that `StarIcon` lacks); only the path *data* is duplicated, and reuse is non-trivial because `StarIcon` hardcodes `fill='#091E42'` and is consumed by `OwnerEntitiesList` (changing it has blast radius). Logged as an S4/fast-follow cleanup. The maintainer (GATE-2 merger) may require the de-dup before merge or accept-and-fast-follow.
+  - **Gate 4 (consumer-read) — N/A** via read: pure-FE change, no `@Value`/SDK builder. The thunks call the generated `FavoriteApi` client; the call signatures match (`addFavorite`/`removeFavorite`/`getFavoritesList`/`getFavoriteStatus`).
+  - **Gate 5 — N/A** (no SDK builder in scope; FE-only).
+  - **Gate 9 (provenance) — PASS** via read+grep: the commit claim "translates every favorites string into all 7 catalogs" is TRUE — es/fr/ua/hy/ch/br carry real translations (e.g. ua `Обране`, ch `收藏`, hy `Ընտրանի`), not English copies. No banned phrases used.
+  - **Gate 10 (content-type homing) — N/A** (no doc content in S3; docs are the approved S4 slice). **Gate 11 (audience isolation) — N/A** via grep: the change touches **no** `documentation/docs/**` file.
+  - **G-C2 (verify the running system, not the diff) — PASS**: independent rebuild + full regression (see Regressions).
+  - **G-C5 (scope bounded by the approved plan) — PASS** via diff: 38 files, +924/−17, **all** under `odd-platform-ui/src/` — zero backend / migration / OpenAPI / generated-client. S4's scope (docs + "Asset" term + housekeeping sweep + ontology) held out.
+  - **G-C9 (test integrity, both buckets) — PASS**: unit 9/9 meaningful (the no-clobber test is RED on the naive impl); **IT-148 is an ADDED real-ingestion full-loop e2e** (seeds a real TABLE, drives real `PUT`/`DELETE /api/favorites/*` with `waitForResponse … r.ok()`, asserts star/panel/tab/removal) — GREEN on `8c6c4a9d`, RED on `934b60a7` (star not found). Not vacuous.
+  - **G-C10 (docs + ontology move with code) — PASS (honest deferral)**: docs none-in-S3 (the favorites user docs are the S4 deliverable on the existing `release/1.0.0` train); ontology deferred to S4 (the new FE nodes refresh with the full surface). Recorded, not asserted-unread.
+  - **G-C13 (Principal sufficiency) — PASS**: tests are enough + meaningful (the slice's load-bearing no-clobber logic + the full star→see→unstar e2e); pixel-reviewed by the implementer; FE-bucket has no separate patch-coverage gate.
+  - **G-C15 (test-change integrity) — N/A**: both new test files are **ADDED**, not changed; no existing test weakened, skipped, or re-pinned.
+
+- **Regressions**: **none**. My **OWN independent rebuild** from the reviewed commit (`ODD_SUT=ref:8c6c4a9d` → `odd-platform:odd-team-sut-revctrib039`, digest **`03c0aa24`** — distinct from the implementer's `df0d7186`; the review-ctrib029 "never trust a cited digest" gap is closed):
+  - **FE unit (vitest, node 24, run by me)**: full suite **86 passed / 1 failed (87)**; favorites **9/9 GREEN** (slice 6 + FavoriteStar 3). The single RED is the **pre-existing** `i18n-key-parity` offender `LinkedTermsList.tsx:63` "Unknown Error" (from #1798/CTRIB-028, a Terms file **not in the S3 diff** — tracked as **TST-056**); the parity test reports **exactly that one** offender ⇒ S3 introduced **zero** new unwrapped-literal offenders. `eslint` clean on every favorites file.
+  - **feature-complete: 321 passed / 0 failed** — FULLY GREEN incl. **IT-148** (favorites star→see loop, test #125, 4.4s) + IT-146/IT-147 (#1818/#1820).
+  - **multi-stack: 9 passed · ingestion-e2e: 15 passed** — GREEN (run in full, not FE-skipped).
+  - **known-bugs: 3 failed = exactly the 3 expected-RED pins** (IT-007 PLT-086 attachment-ephemeral, IT-006 F-042 error-boundary, IT-004 PLT-052 DQ-unknown-status), **0 unexpected-green**.
+  - **IT-148 RED proof (independent)**: against the `934b60a7` image (cached `odd-team-sut-revctrib040` `d7083974`; favorites backend merged, **no S3 FE**) IT-148 **FAILS at step 1** — `expect(locator('[data-qa="favorite-star"]')).toBeVisible()` → element not found. Confirms the test genuinely requires the FE; RED-on-base survives.
+  - **i18n**: 7-locale parity GREEN (653 keys each, 0 missing/0 orphan).
+
+- **Navigation**: consistent — no `navigation/domains/*` file references the favorites FE (FE-presentation granularity; CTRIB-038/040 precedent; no pointer shifted).
+
+- **Banned-phrase check**: none used.
+
+- **Upstream issues logged**: none (the change **is** the upstream code; no upstream-code discovery).
+
+- **Doc-product editorial findings** (audit per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused owner-read of the favorites-adjacent published subtree — `main-concepts.md` (full) + `data-discovery/catalog-overview.md` (full). Both **clean** (no contradiction/drift/dead-link; the Popular-inflation + `exclude_from_search` caveats + the Catalog-Overview-vs-Overview-tab hint are exemplary). The rest of the published tree carries recent coverage (release-review-029 2026-06-26; review-ctrib040 `data-discovery/**`). Next subtree queued for the following `/review`.
+  - **Findings**:
+    - **DOC follow-up (forward-looking, non-blocking)** — the favorites S3 surface spans the **Catalog Overview home page** (a new panel — `catalog-overview.md` documents that page's sections top-to-bottom), the **entity detail headers + search rows** (star), and a **new top-level Favorites tab** — but the CTRIB-039 **S4 docs slice as scoped lists only `Features.md` + the "Asset" term in `main-concepts.md`**. S4 risks under-documenting the surface; it should also update `catalog-overview.md` (a Favorites-panel section), cover the detail-header/search-row stars, and add a dedicated favorites feature page, so the published manual covers every user-visible favorites surface (Gate 6 code↔doc coverage). Recorded in the S4 follow-up below.
+
+- **Notes** (load-bearing notes end in VERIFIED):
+  - **Footer**: the S3 commits carry `Co-authored-by` trailers and **no** `Sources:`/`Consumer-read:` footer — matching the accepted precedent for contributor **code** commits (S1 #1817, S2 #1819, CTRIB-040 #1820, CTRIB-038 #1818 are all the same); the `Sources` footer is a documentation-pillar device for prose claims, N/A to a code diff. VERIFIED via `git log` of the merged slices.
+  - **GATE 2 not yet occurred**: PR #1821 DRAFT; `8c6c4a9d` not on `origin/main`. VERIFIED via `git ls-remote` + `origin/main` log (top `934b60a7`).
+  - **Minor non-blocking observations** (folded into the S4 follow-up, not separate items): (a) the batch-hydrate no-clobber guard is **asymmetric** — `asked→false` is fill-unknowns (protects an optimistic star from a stale hydrate) but the `favorited→true` loop is unconditional, so a stale in-flight hydrate could re-set `true` over an optimistic un-star (narrow; self-heals on next hydrate). (b) `Favorites/lib.ts favoriteAssetName` falls back to a hardcoded English `Query Example #${id}` for a definition-less QE (consistent with the pre-existing untranslated QE detail title; rare path). VERIFIED via read of `favorites.slice.ts:38-43` + `Favorites/lib.ts:13-26`.
+  - **Review side-effects reverted**: `lineage/**` probe drift `git checkout`-reverted (after both the main regression and the RED proof); both review stacks (`revctrib039` via run-regression teardown, `revrb039base` manually `down -v`) torn down; heavy-e2e flock released. This review commits exactly the verdict + `state/PROGRESS.md` + the `review-ctrib039` stream entry (explicit paths).
+
+### Review follow-ups (non-blocking; tracked here for the S4 / fast-follow continuation)
+1. **FavoriteStar reuse cleanup (Gate-1/G-C12)** — replace the inlined `STAR_PATH` constant with the existing shared `StarIcon` (`shared/icons/StarIcon.tsx`, byte-identical path), driving fill/outline via props (or MUI `Star`/`StarBorder`), so the favorites star is not a verbatim duplicate of the shared icon. Low priority; the contributor's own FE.
+2. **S4 doc coverage (Gate 6)** — when authoring the favorites docs on `release/1.0.0`, cover every user-visible surface: `catalog-overview.md` (the new Favorites panel section), `Features.md`, the "Asset" term in `main-concepts.md`, the detail-header/search-row stars, and a dedicated favorites feature page.
+3. **(optional) batch-hydrate symmetry** — consider guarding the `favorited→true` hydrate loop against clobbering an optimistic un-star, or document the eventual-consistency window. Minor.

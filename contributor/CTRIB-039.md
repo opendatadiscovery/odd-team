@@ -356,3 +356,20 @@ non-main-tracked). FE env materialized (node_modules + generated-sources current
 5. **Tests:** vitest (FavoriteStar + the slice) + a **Playwright e2e** (star → it appears in the panel → unstar →
    gone) — MANDATORY (user-facing, G-C9).
 6. **DoD:** FE build (`pnpm build`) + the full integration regression + the draft PR.
+
+### Progress (committed on the branch, every commit `tsc --noEmit` clean)
+- `ba90e3b7` — Redux foundation + `<FavoriteStar>` (self-hydrating, optimistic toggle + rollback).
+- `b92067b1` — the data-entity detail-header star.
+- `929dc41a` — the main-page Favorites panel (+ the `favoritesPath` route).
+⇒ **The complete star→see loop works for the dominant kind (DataEntity)** — star a data entity from its
+detail header, see it in the main-page panel, unstar it — all type-checked.
+
+### Honest remainder (the heaviest part — NOT yet a draft PR; the S3 DoD is NOT met)
+- The **top-level Favorites tab** (`App.tsx` route + `AppMenuItem` nav + the tab page + the facet sidebar +
+  the new Asset-type facet).
+- The star on **Term / QueryExample detail headers + search/list rows** (with a batch hydrate).
+- **i18n ×6** — the English strings used so far → `en/es/fr/ua/hy/ch`.
+- **vitest** (FavoriteStar + the slice) + the **mandatory Playwright e2e** (G-C9 — user-facing).
+- **DoD:** `pnpm build` + the full integration regression + the **draft PR**.
+S3 is a `tsc`-clean partial on `contrib/CTRIB-039-favorites-frontend`; branch + FE env + patterns + route
+builders + nav are all mapped and ready to resume.

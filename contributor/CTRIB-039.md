@@ -373,3 +373,48 @@ detail header, see it in the main-page panel, unstar it — all type-checked.
 - **DoD:** `pnpm build` + the full integration regression + the **draft PR**.
 S3 is a `tsc`-clean partial on `contrib/CTRIB-039-favorites-frontend`; branch + FE env + patterns + route
 builders + nav are all mapped and ready to resume.
+
+## Phase D — S3 COMPLETE (resumed 2026-06-27)
+
+The S3 remainder above is **done**. Continued on `contrib/CTRIB-039-favorites-frontend` (4 new commits),
+then **rebased the whole 7-commit branch onto current `origin/main 934b60a7`** (a concurrent session
+reviewed+merged **CTRIB-040 #1820** mid-session — trust-the-tree; the only overlap was the 7 locale JSONs,
+git auto-merged cleanly, all 7 valid JSON @ 653 keys carrying both #1820's and the favorites keys).
+
+### What shipped (new commits, every one tsc+eslint clean)
+| Commit | Deliverable |
+|---|---|
+| `4b2b939f` | Stars on **Term** + **QueryExample** detail headers + **data-entity search rows**; `FavoriteStar` promoted to the shared barrel; **authoritative batch status hydrate** — `fetchFavoritesStatus` returns `{asked,favorited}`, the slice resolves asked→false (fill-unknowns, never clobbering an optimistic toggle) so a list hydrates all rows in ONE call |
+| `89dd870a` | **Top-level Favorites tab** (`/favorites` route + nav entry after Catalog) + the **Asset-type facet** (fixed 3-option checkbox group, bound to the list endpoint's `asset_types`) + the tab page (PageWithLeftSidebar layout, load-more) + `FavoritesListItem`; shared display helpers (`components/Favorites/lib.ts`) extracted from the panel (no duplication; panel now links Query Examples too); FavoriteStar aria-label localized + a `data-qa="favorite-star"` e2e hook |
+| `34efd1db` | **i18n — 10 new keys × all 7 locales** (en/es/fr/ua/hy/ch/br; the S3 plan's "×6" omitted `br`). Reuses existing "Query Examples"/"Term"/"Show more". Verified against the `i18n-key-parity` guard (#1751): en-completeness + catalog parity GREEN |
+| `4fcfaac5` | **vitest** — favorites slice (6: add/remove/list/the batch-hydrate no-clobber, RED on a naive "asked→false-for-all") + FavoriteStar (3: aria-pressed render + optimistic click). 9/9 GREEN on node 24 |
+
+Plus odd-team: **IT-148** (`favorites-star-see-loop.spec.ts` + protocol; registered in feature-complete +
+ui-e2e) — the G-C9 user-facing e2e: seed an ingested TABLE, star from its header, see it on the main-page
+panel + the `/favorites` tab, un-star, confirm gone. GREEN on the S3 SUT; RED-by-construction on `ref:main`
+(backend merged, no star/panel/tab). Scope EXCLUSIONS held (G-C5): no backend change, S4 still owns
+docs + the "Asset" term + the housekeeping orphan sweep + the ontology refresh.
+
+### Design notes (G-C12 reuse, no churn)
+- Reused `FavoriteStar`, `PageWithLeftSidebar`, the `Checkbox`/`FormControlLabel` idiom (mirrored
+  `StatusSettingsForm`), `ToolbarTabs`, `fetchFavoritesList`, the `divider` theme token, the locale-key
+  convention. Net-new only where justified: the tab page, the facet, the list item, the shared lib.
+- The Asset-type facet is the **only** facet (the S2 list endpoint supports `asset_types` only; the 4
+  cross-kind facets were deferred at S2 — additive, no contract break).
+
+### DoD gates (S3) — evidence
+1. **Unit (FE)**: `tsc --noEmit` GREEN · `eslint` GREEN · **`vite build` GREEN** (21.5s; the chunk-size
+   warning is pre-existing) · **full vitest 86 passed / 1 failed** — the 1 RED is the **pre-existing**
+   `i18n-key-parity` offender `LinkedTermsList.tsx:63` (introduced by #1798/CTRIB-028, byte-identical on
+   `origin/main`, NOT favorites) → logged **TST-056**. Favorites adds zero new failures. (node 24 via
+   `node:24-slim`; the host has only node 18, which runs tsc/eslint but not vite/vitest.)
+2. **Integration regression** (`run-regression.sh ctrib039`, SUT `df0d7186` ← worktree `8c6c4a9d`):
+   _RUNNING at handoff-draft time — result appended below._
+3. **Docs** (G-C10): none in S3 (the user docs are the S4 deliverable on the `release/1.0.0` train).
+4. **Ontology**: deferred to S4 (the new FE nodes refresh with the full surface; the regression's P-001
+   probe drift in `lineage/**` is reverted, not committed — reviewer convention).
+5. **Principal review** (G-C13): screenshot pixel-review pending (below).
+
+### Regression result
+_(appended when `run-regression.sh ctrib039` completes — feature-complete incl. IT-148 + IT-146/147,
+multi-stack, known-bugs (expected-RED), ingestion-e2e.)_

@@ -174,4 +174,15 @@ Implementation may proceed (Phase D). RED-proof base = `ODD_SUT=ref:c37ca11b` (t
   - GATE 2 verified via remote refs — `origin/main 934b60a7` = squash of PR #1820; `git diff b69ea1e6..934b60a7` EMPTY → byte-identical to the reviewed head. VERIFIED via git.
   - The shipped header deviates from the GATE-1 ASCII mockup (type chips on their own full-width row) — the maintainer-directed pixel-review refinement; the rendered reality (truncation) defeated the inline-label mockup. VERIFIED via the Header diff.
   - i18n: 7/7 parity; each string in the correct language + the locale's established Tag/Type vocabulary (fr "Balise"→"Filtrer par balise", es/br "Etiqueta"→"Filtrar por etiqueta", ua "Тег"→"за тегом", hy "Թեգ"→"ըստ թեգի" genitive, ch "标签"→"按标签过滤"). No LSN-036-class leak. VERIFIED via grep of each locale's existing vocab.
-  - Review side-effects reverted: `lineage/**` probe drift `git checkout`-reverted; heavy-e2e flock released; revctrib040 stack torn down `-v`. Commit = this verdict + the status flip + PROGRESS.md + the review-ctrib040 stream entry + the two DOC-492 corrections (explicit paths only).
+  - Review side-effects reverted: `lineage/**` probe drift `git checkout`-reverted; heavy-e2e flock released; revctrib040 stack torn down `-v`.
+
+### Post-verdict correction (2026-06-27, maintainer-directed) — Gate 8 was applied wrong
+
+My Gate 8 above recorded `PENDING-RELEASE` against **DOC-492's backlog draft**, treating "the `release/1.0.0` train isn't cut yet" as acceptable deferral. **That was wrong.** Per `adrs/drafts/release-train-doc-gating.md` Decision 5 and `pillars/documentation/authoring.md`, a release-gated doc is **authored on the `release/{version}` train immediately** — the agent **creates the train lazily off `origin/main`** on the first gated item (only the issue *milestone* is maintainer authority, not the doc train branch). Leaving release-tied doc content only in the DOC backlog risks it being lost among items that may never ship. The CTRIB-038/040 runs skipped the authoring, and this review accepted the drift.
+
+**Corrected:**
+- Created `release/1.0.0` off `origin/main` in `../documentation` and **authored** the "Filtering the column list" section onto `per-column-annotation.md` (version-stamped *Available since 1.0.0*) + reconciled the page intro. Commit **`documentation@release/1.0.0 4d928eb`**, pushed to `origin/release/1.0.0` (same-name refspec; `main` untouched, LSN-034). Branch-verifiable Gate 8 sub-checks pass (link target resolves, description 182≤200, frontmatter parses). Gate 8 is now correctly `PENDING-RELEASE (1.0.0)` **against the train commit** — live verification at the 1.0.0 release gate (`https://docs.opendatadiscovery.org/features/data-discovery/per-column-annotation`).
+- DOC-492 updated to a tracker pointing at the train commit (the "bot never self-cuts a release train" note removed as false).
+- **Skills hardened so this can't recur:** `/review` Gate 8, the `/contribute` Definition-of-Done, and `pillars/documentation/gates.md` Gate 8 now FAIL a release-gated doc that lives only as a backlog draft with no train commit (case-law: `review-ctrib040`).
+
+The code verdict (ACCEPTED → `pending-release`) is unchanged — this corrects the **doc-routing** half of Gate 8, which is now genuinely on the train rather than merely drafted.

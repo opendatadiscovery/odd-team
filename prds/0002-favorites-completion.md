@@ -6,6 +6,7 @@
 | **Target** | odd-platform **release 1.0.0** (same train as PRD-0001) |
 | **Parent** | **PRD-0001 §5** (`prds/0001-favorites-and-recently-viewed.md`) — this PRD **completes** the shared foundation §5 specified; it does not expand scope |
 | **Issue** | [opendatadiscovery/odd-platform#1815](https://github.com/opendatadiscovery/odd-platform/issues/1815) — Favorites. Slices S1 (#1817), S2 (#1819), S3 (#1821, review-ready) shipped the skeleton; this PRD defines the slices that finish it |
+| **Posted** | Requirements summary posted to the issue thread (operator language, public refs only) — [#1815#issuecomment-4822201796](https://github.com/opendatadiscovery/odd-platform/issues/1815#issuecomment-4822201796), via `odd-contributor[bot]`, 2026-06-27 |
 | **Author** | ODD Team (maintainer feedback, 2026-06-27) |
 | **Consultations** | post-S3 PO + SRE critique — `lineage/odd-platform/sme-consultations/2026-06-27-favorites-s3-po-sre-critique.md` |
 | **Why this exists** | A running-UI review of S3 found the favorites surface **half-built against PRD-0001 §5 itself** (S2 deferred the 4 cross-kind facets; S3 shipped a fixed checkbox where §5.6/§5.7 specified a grouped multi-select, and a 3-field row where §5.6 specified the shared rich row renderer) **plus** refinements the running UI revealed (icon collision, list-row stars, FTS). The S3 code review verified correctness but did not run the end-to-end Product-Owner/SRE lens — the gap this PRD closes. |

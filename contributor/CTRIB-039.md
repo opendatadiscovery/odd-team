@@ -4,7 +4,7 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: review-ready        # S1 MERGED (#1817). S2 DoD met → DRAFT PR #1819 (review-ready). /review owns done; GATE 2 = human merge.
+status: implementing        # S1 #1817 + S2 #1819 BOTH MERGED. S3 (whole favorites frontend) in progress on contrib/CTRIB-039-favorites-frontend (maintainer chose whole-FE-in-one-PR).
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
 plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
@@ -330,3 +330,29 @@ S2 DoD met (unit GREEN-for-change @ 100% patch cov · regression GREEN · docs n
   maintainer at handoff, not silently absorbed.
 - **Next (maintainer):** `/review CTRIB-039` (S2) then review + merge #1819. Then slice 3 (frontend) + slice 4
   (docs + "Asset" term + housekeeping orphan sweep).
+
+## Phase D — S3 (favorites frontend) — IN PROGRESS
+
+**S1 #1817 + S2 #1819 BOTH MERGED.** S3 branch `contrib/CTRIB-039-favorites-frontend` (off main `66c472e2`,
+non-main-tracked). FE env materialized (node_modules + generated-sources current — the `FavoriteApi` / `AssetKind`
+/ `FavoriteAssetList` TS client is present). **Scope: whole FE in one PR** (maintainer's choice via AskUserQuestion).
+
+### Foundation — DONE (committed `ba90e3b7`; `tsc --noEmit` clean, 0 errors)
+- Redux: `favoriteApi` (lib/api); `favorites.actions` (add/remove/list/status); `favorites.thunks`
+  (`handleResponseAsyncThunk` over the FavoriteApi client); `favorites.slice` (`favoritedByKey` status map + the
+  list + pageInfo); `favorites.selectors` (`getIsAssetFavorited`, `getFavoritesList`); `FavoritesState`;
+  `redux/lib/favorites.ts` (`assetRefKey` / `favoriteAssetKey`); registered in the root reducer.
+- `<FavoriteStar>` (`components/shared/elements`): gold-filled / outlined star toggle (WCAG: filled-vs-outline
+  shape + `aria-pressed`, not colour-alone); optimistic, slice-backed toggle + rollback.
+
+### Remaining layers (this PR)
+1. Wire `<FavoriteStar>` into the **detail headers** (DataEntity / Term / QueryExample) + **list/search rows**
+   (with a batch `getFavoriteStatus` hydrate so rows render their stars correctly).
+2. The **main-page Favorites panel** in `Overview.tsx` (5 items, "View all", empty state; OUTSIDE the owner gate,
+   ABOVE the Owner block).
+3. The **top-level Favorites tab**: a route + `AppMenuItem` nav entry + the tab page (reusing the Search/Alerts
+   facet+list layout) + the facet sidebar (reuse `components/Search/Filters/*`) + the new **Asset-type** facet.
+4. **i18n** strings in all 6 locales (en/es/fr/ua/hy/ch).
+5. **Tests:** vitest (FavoriteStar + the slice) + a **Playwright e2e** (star → it appears in the panel → unstar →
+   gone) — MANDATORY (user-facing, G-C9).
+6. **DoD:** FE build (`pnpm build`) + the full integration regression + the draft PR.

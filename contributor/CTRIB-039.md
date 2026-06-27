@@ -4,7 +4,7 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: review-ready        # S1 DoD met (all 5 gates green); DRAFT PR #1817 open. /review owns the done flip; GATE 2 = human merge. Contributor never self-merges.
+status: implementing        # S1 MERGED (PR #1817 → main 577593ae). S2 (favorites list API) in progress on contrib/CTRIB-039-favorites-list-api.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
 plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
@@ -249,3 +249,58 @@ never self-merges; `/review` (separate session) owns the `done`/merge tail; **GA
   `/contribute` continuation under #1815 on the ctrib039 namespace.
 - **Resources released:** heavy-e2e flock released (run-regression teardown); ctrib039 stack down; the worktree
   `../odd-platform-ctrib039` + the branch remain for slice 2.
+
+## Phase D — S2 (favorites list API) — IN PROGRESS
+
+**S1 MERGED** (PR #1817 squash-merged → `origin/main 577593ae`). Continuing per the maintainer's "continue with
+implementation". S2 branch `contrib/CTRIB-039-favorites-list-api` (off `577593ae`, `--no-track`, non-main-tracked).
+
+### Scope (S2) — decision recorded
+- **IN:** `GET /api/favorites/list?asset_types=&page=&size=` → a **polymorphic `FavoriteAssetList`** resolving
+  favorited assets across **all 3 kinds** (DATA_ENTITY + TERM + QUERY_EXAMPLE), ordered `favorited_at DESC`,
+  paginated (size capped ~100), with **visibility by reuse** (soft-/hard-deleted + hollow assets drop out — ADR
+  D3), and the **`asset_types`** filter (cheap — `asset_kind` is a `favorite` column).
+- **DEFERRED (documented; additive — a follow-up or fold into S3's facet UI):** the 4 cross-kind facets
+  (`namespace_ids` / `datasource_ids` / `tag_ids` / `owner_ids`). They are tab-only refinements with per-kind
+  applicability complexity (query examples carry no namespace/datasource; the PRD's "exclude that kind" rule), and
+  the main-page panel (S3) calls `size=5` with no facets. Adding them later does not break the contract.
+- **OUT (later slices):** all FE (S3); docs + "Asset" term + housekeeping orphan sweep (S4).
+
+### Design (ADR D3/D4-grounded; reuse-scan done — no new ref shapes)
+- **Response:** `FavoriteAssetList { items: [FavoriteAsset], page_info }`; `FavoriteAsset { asset_kind,
+  data_entity?: DataEntityRef, term?: TermRef, query_example?: QueryExampleRef }` — exactly one per-kind ref is
+  set; the FE switches on `asset_kind`. **Reuses the existing `DataEntityRef`/`TermRef`/`QueryExampleRef`.**
+- **Read path (order-then-semi-join; no denormalization):** (1) the `favorite` query → the ordered, paginated
+  page of `(asset_kind, asset_id)` (the `asset_types` filter pushed in); (2) per-kind resolve the page's ids →
+  refs **with visibility** — DATA_ENTITY via `ReactiveDataEntityRepository.getDimensionsByIds` **+ a
+  `STATUS≠DELETED`/`HOLLOW=false` post-filter** (getDimensionsByIds is `includeDeleted(true)`) →
+  `DataEntityMapper.mapRef`; TERM via `getTermRefDto` (respects soft-delete) → `TermMapper.mapToRef`;
+  QUERY_EXAMPLE via the query-example repo → `QueryExampleMapper.mapToQueryExampleRef`; (3) reassemble in the
+  favorited order, dropping unresolved (deleted) ids — visibility inherited.
+- **No new architectural decision** — additive read endpoint per the approved ADR D4; G-C7 does not re-fire.
+
+### Tests
+- **Unit** (service): per-kind assembly; the DATA_ENTITY visibility post-filter (deleted/hollow excluded);
+  favorited-order preservation; empty-page short-circuit; `size` cap.
+- **Integration** (Testcontainers): `getFavoritedPage` ordering/pagination/asset_kind-filter + `countFavorites`
+  (active-only, filter-aware), against a real DB.
+
+### Implementation (committed `2c526306`)
+| Layer | File | Note |
+|---|---|---|
+| spec | `openapi.yaml` + `components.yaml` | `GET /api/favorites/list`; `FavoriteAsset` (discriminator + per-kind ref) + `FavoriteAssetList` |
+| repo | `ReactiveFavoriteRepository[Impl]` | `getFavoritedPage` (ordered `created_at DESC, id DESC`; paginated; asset_kind filter) + `countFavorites` |
+| resolver | `service/FavoriteAssetResolver.java` (NEW) | order-then-semi-join; per-kind resolve + visibility; reassemble in favorited order |
+| service | `FavoriteService[Impl]` | `getFavoritesList` — identity → page+count → resolve → `FavoriteAssetList`; size cap 100 |
+| controller | `FavoriteController` | `getFavoritesList` → 200 |
+| tests | `FavoriteAssetResolverTest` (NEW) + extended `FavoriteServiceImplTest` / `FavoriteControllerTest` / `ReactiveFavoriteRepositoryImplTest` | |
+
+### Gates (S2)
+- **Inner-loop favorites tests: GREEN** — resolver 6/6, service 6/6, controller 4/4, repo 7/7 (Testcontainers).
+  **Checkstyle (main+test) clean.**
+- **Verified (not assumed):** Term visibility — `getTermRefDto` filters `TERM.DELETED_AT IS NULL` (`:188`);
+  QE soft-delete — `query_example.deleted_at` (V0_0_84) + an explicit `deletedAt==null` filter; DE visibility —
+  `getDimensionsByIds` is `includeDeleted(true)` ⇒ an explicit `STATUS≠DELETED`/`HOLLOW=false` post-filter.
+- **Full `:odd-platform-api:build`:** RUNNING (background). **Full integration regression:** PENDING (after).
+- **Docs (G-C10): none in S2** (no user surface until S3; rides S4). **Ontology: deferred to S4** (the new
+  resolver node refreshes with the feature surface).

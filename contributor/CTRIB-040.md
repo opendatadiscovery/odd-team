@@ -4,7 +4,7 @@ github_issue_number: 1679
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1679
 class: bug + ux-enhancement
 milestone: "1.0.0"          # G-C11 — inherits #1679's open+semver milestone (verified at CTRIB-038 intake)
-status: pr-draft            # DoD MET; DRAFT PR #1820 OPEN (bot). Hand to /review (separate session) → review-ready → human GATE 2. Never self-review-ready/merged.
+status: pending-release     # /review ACCEPTED 2026-06-27 (review-ctrib040). GATE 2 already done: PR #1820 MERGED (origin/main 934b60a7, byte-identical to b69ea1e6). Milestone 1.0.0 → /review release:1.0.0 owns the done flip.
 reproduced: "maintainer live report (2 defects) + code-definitive root cause (below); formal artifact = the IT RED-on-base e2e (Phase D)"
 adr_required: no            # G-C7 does NOT fire (FE-only; no migration / auth / public-contract change)
 plan_approved_by: "maintainer (Raman) — GATE 1 via AskUserQuestion, 2026-06-27"
@@ -127,3 +127,51 @@ Implementation may proceed (Phase D). RED-proof base = `ODD_SUT=ref:c37ca11b` (t
 - **Confirmation rebuild on the pushed SHA `b69ea1e6` (digest `5154c0d8`, = current main 66c472e2 + my FE) — FULLY GREEN:** feature-complete **320 passed (5.2m)** (IT-147 GREEN; zero failures), known-bugs **3-RED-expected** (IT-004/006/007). The literal DoD evidence at the committed/pushed SHA — confirms the FE-byte-identical reasoning and that the orthogonal favorites BE (#1817/#1819 now on the base) did not regress anything.
 - **Next:** a separate `/review` session (reject-by-default; can re-run IT-147 GREEN + RED against the cached SUTs in ~2 min) flips `pr-draft → review-ready` → **human GATE 2** approves + merges PR #1820.
 - **Stream hygiene:** the ctrib040 SUT images kept for `/review`'s cheap re-run; the RED-proof + screenshot stacks torn down `-v`; `lineage/**` probe drift reverted to HEAD (G-C10 no-refresh).
+
+## Review (2026-06-27, session: review-ctrib040)
+
+- **Result**: **ACCEPTED** — every acceptance criterion + Quality-Bar/contributor gate PASS with cited evidence. **GATE 2 already occurred**: the maintainer merged DRAFT PR #1820 before this review ran — `origin/main 934b60a7` (squash of #1820; parent `66c472e2`; author `odd-contributor[bot]`), and `git diff b69ea1e6..934b60a7` is **EMPTY** (the merged tree is byte-identical to the reviewed head). The review ran all gates in full regardless (a defect here would be fix-forward — the code is already public on `main`; none found). **Disposition: `pr-draft` → `pending-release`** (milestone 1.0.0; `/review release:1.0.0` owns the `done` flip after live-site + real-instance verification at the release gate), matching every prior merged-with-milestone CTRIB item.
+
+- **Acceptance criteria / plan deliverables**:
+  - [x] Defect 1 (reactivity — filter reflects an in-page column tag-add, no reload) — PASS. `SyncAtoms.tsx` re-syncs the 5 server-data atoms (`useSetAtom`+`useEffect`, per-prop), leaving the user-interaction atoms untouched. Unit RED→GREEN reproduced by me; IT-147 GREEN on my rebuild.
+  - [x] Defect 2 (discoverability — labelled chips) — PASS. `DatasetStructureHeader.tsx` adds `Filter by type` / `Filter by tag` `texts.hint` labels; type chips moved to their own full-width row (the maintainer's anti-truncation refinement — verified in the diff: the `DatasetStructureTypeCounts` Grid moved below row 1).
+  - [x] Scope FE-only, bounded (G-C5) — PASS. Diff = 11 files, +242/−10 (Header + Provider + SyncAtoms[+test] + 7 locales). Zero backend / API / OpenAPI / migration / generated-client.
+  - [x] Tests both buckets (G-C9) — PASS (see Regressions).
+  - [x] i18n all 7 locales — PASS (see Notes).
+  - [x] Docs routed (G-C10) — PASS (DOC-492, release/1.0.0).
+
+- **Quality Bar / contributor gates**:
+  - Gate 1 — PASS via read: `SyncAtoms` is a new sole-purpose component reusing jotai's standard `useSetAtom`+`useEffect`; `HydrateAtoms` (the only other atom writer) hydrates once-only — no parallel/duplicate re-sync path.
+  - Gate 4 (consumer-read) — PASS via grep+read: the `Consumer-read:` footer's files match the code — `getDatasetStructure` derives the root from `fieldById` (`datasetStructure.selectors.ts:70`); `updateDataSetFieldTags.fulfilled` writes `fieldById[id].tags` (`datasetStructure.slice.ts:158`); `getDatasetFieldTags` reads `fieldById` live (`selectors.ts:98`); `useHydrateAtoms` once-only (`HydrateAtoms.tsx:12`). Root-cause (redux live+correct, atom frozen) confirmed → the fix targets the real cause.
+  - Gate 5 — N/A (no SDK builder in scope; FE-only).
+  - Gate 9 (provenance) — PASS via fetch+read+grep: redux root-cause confirmed against code; doc precedent `catalog-overview.md` "Top tags" = "one-click filter chips … pre-filters the catalog" supports the labelled-filter rationale. Outbound sweep: 1 external URL (DOC-492 post_merge) — un-prefixed slug 404s; corrected to the `/features/`-prefixed live URL (DOC-492 metadata, not a CTRIB-040 defect). No banned phrases.
+  - Gate 10 — PASS via read: footer has 0 `Spec:`/`Config:` lines; the doc content is feature-behaviour on the feature's page (`per-column-annotation.md`). No misplaced reference content.
+  - Gate 11 — PASS / N/A via grep: the change touched **no** `documentation/docs/**` file (DOC-492 is workspace-tracked drafted content); a bonus grep of the four adjacent data-discovery pages shows no workspace-term leak (the "pillars" hits are operator-language "governance pillars").
+  - G-C15 (test-change integrity) — PASS via read+run: `SyncAtoms.test.tsx` is an ADDED test; expected value ('gdpr' appears) traces to intent, not current output; assertions not weakened; the RED-on-base SURVIVES (I reproduced the failure on the neutralized base).
+  - Gate 8 — **PENDING-RELEASE (1.0.0)** via fetch: the behaviour is unreleased; live verification scheduled at the 1.0.0 release gate. Recorded URL + phrases: `https://docs.opendatadiscovery.org/features/data-discovery/per-column-annotation` → "Filtering the column list" / "Filter by type" / "Filter by tag". The live page resolves (200) and correctly does NOT yet show the filter (release-gating intact). Code is merged to odd-platform `main` (934b60a7); it ships in 1.0.0.
+
+- **Regressions**: **none**. My OWN independent rebuild from the **merged** commit (`ODD_SUT=ref:934b60a7` → `odd-team-sut-revctrib040`, a fresh build — NOT the implementer's cited digest, closing the review-ctrib029 gap):
+  - **Unit (vitest, node 24.13.0, run by me)**: `SyncAtoms.test.tsx` **2/2 GREEN** on the fix; with `<SyncAtoms>` neutralized (= the c37ca11b base) test 1 **FAILS** at `toHaveTextContent('gdpr')` (the once-hydrated atom stays frozen). RED proof reproduced, then reverted clean (worktree clean at b69ea1e6).
+  - **FE-unit parity guard (`i18n-key-parity.test.ts`, run by me): 16/17 pass.** All 7 locales pass "exactly en.json's keys (no missing/orphan)" → CTRIB-040's two new keys are **parity-clean**; "every `t('literal')` key exists in en.json" + the JSX-`t(...)` checks also pass. The **only** failure is the **pre-existing** `LinkedTermsList.tsx:63 message:'Unknown Error'` (introduced by CTRIB-028/#1798, a Terms component CTRIB-040 never touched) — already tracked as **TST-056** (logged by the concurrent CTRIB-039 stream). The full FE-unit suite therefore carries a main-RED **unrelated to this change**; it is **not** a CTRIB-040 defect, and CTRIB-040 does not worsen it.
+  - **feature-complete: 320 passed (5.9m) — FULLY GREEN** (api:PASS e2e:PASS). IT-147 #57 PASS ("a tag added in-page appears in the filter without reload; the chips are labelled filters"); IT-146 #60 (the #1679 filter), IT-023, IT-039 PASS. The owner-association specs that flaked on the implementer's `c66f23f3` run (TST-054) **passed cleanly** here.
+  - **known-bugs: 3 failed = the 3 expected-RED pins** (PLT-052 quality-dashboard, error-boundary-containment, attachment-local-durability); 0 unexpected-green.
+  - **multi-stack + ingestion-e2e**: reviewer-assessed FE-only skip (orthogonal client-side presentation change; CTRIB-031/CTRIB-038 precedent; the Structure tab + Provider are driven by feature-complete's IT-023/039/146/147).
+  - IT-147 RED-on-base: structurally certain (labels + `SyncAtoms` absent on c37ca11b) + recorded in the committed IT-147 run-log (`879ad194` → e2e:FAIL).
+
+- **Navigation**: consistent — no `navigation/domains/*` file references the Structure-overview FE lib (FE-presentation granularity; matches the CTRIB-038 precedent; no pointer shifted).
+
+- **Banned-phrase check**: none used.
+
+- **Upstream issues logged**: none (no upstream-code discovery — the change IS the upstream code).
+
+- **Doc-product editorial findings** (audit per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: focused owner-read of `data-discovery/**` (the change's subtree — `per-column-annotation.md` full + `tagging`/`catalog-overview`/`search` scan + Gate-11 grep). The rest of the published tree carries recent coverage (release-review-029 partition 2026-06-26; review-ctrib038 data-glossary). Next subtree queued for the following `/review`.
+  - **Findings**:
+    - Folded onto **DOC-492** (not a standalone DOC-NNN — DOC-492 already owns + will edit this page): `per-column-annotation.md:9` lead-in says "three load-bearing write-path caveats plus two latent UI hazards", but the body carries **four** hint blocks, only **one** a UI hazard — "two UI hazards" over-counts by one, independent of this change. DOC-492's authoring step now carries the reconciliation + the "name the filtering surface" instruction.
+    - **DOC-492 metadata fix (applied this pass)**: `post_merge_urls` recorded the un-prefixed slug that 404s live; corrected to the `/features/`-prefixed URL so the 1.0.0 release-gate live verification won't false-fail.
+
+- **Notes**:
+  - GATE 2 verified via remote refs — `origin/main 934b60a7` = squash of PR #1820; `git diff b69ea1e6..934b60a7` EMPTY → byte-identical to the reviewed head. VERIFIED via git.
+  - The shipped header deviates from the GATE-1 ASCII mockup (type chips on their own full-width row) — the maintainer-directed pixel-review refinement; the rendered reality (truncation) defeated the inline-label mockup. VERIFIED via the Header diff.
+  - i18n: 7/7 parity; each string in the correct language + the locale's established Tag/Type vocabulary (fr "Balise"→"Filtrer par balise", es/br "Etiqueta"→"Filtrar por etiqueta", ua "Тег"→"за тегом", hy "Թեգ"→"ըստ թեգի" genitive, ch "标签"→"按标签过滤"). No LSN-036-class leak. VERIFIED via grep of each locale's existing vocab.
+  - Review side-effects reverted: `lineage/**` probe drift `git checkout`-reverted; heavy-e2e flock released; revctrib040 stack torn down `-v`. Commit = this verdict + the status flip + PROGRESS.md + the review-ctrib040 stream entry + the two DOC-492 corrections (explicit paths only).

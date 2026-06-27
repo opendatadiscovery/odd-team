@@ -4,13 +4,13 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: implementing        # S1 #1817 + S2 #1819 BOTH MERGED. S3 (whole favorites frontend) in progress on contrib/CTRIB-039-favorites-frontend (maintainer chose whole-FE-in-one-PR).
+status: review-ready        # S1 #1817 + S2 #1819 MERGED. S3 (whole favorites FE) DoD MET → DRAFT PR #1821 (review-ready; /review + human GATE 2 = tail). S4 (docs + "Asset" term + housekeeping sweep) remains.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
 plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
 plan_approved_at: "2026-06-26"
 docs_routing: "release/1.0.0 (unreleased behaviour → the documentation train, G-C11). Ships in the docs slice."
-pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1819   # S2 (slice 2/4) DRAFT. S1 #1817 MERGED → main 577593ae.
+pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1821   # S3 (slice 3/4) DRAFT. S1 #1817 + S2 #1819 MERGED. (S2 was #1819; S1 #1817.)
 pr_draft: true
 stream_id: ctrib039
 ---
@@ -415,6 +415,53 @@ docs + the "Asset" term + the housekeeping orphan sweep + the ontology refresh.
    probe drift in `lineage/**` is reverted, not committed — reviewer convention).
 5. **Principal review** (G-C13): screenshot pixel-review pending (below).
 
-### Regression result
-_(appended when `run-regression.sh ctrib039` completes — feature-complete incl. IT-148 + IT-146/147,
-multi-stack, known-bugs (expected-RED), ingestion-e2e.)_
+### Regression result — GREEN-for-change (SUT `df0d7186` ← worktree `8c6c4a9d`; flock 21:27–21:41)
+- **feature-complete: 321 passed / 0 failed** (5.9m) — incl. **IT-148** (favorites star→see loop, test #125,
+  4.3s GREEN) + IT-146/IT-147 (#1820, now in the SUT). **Zero regressions** — every previously-green spec
+  stayed green.
+- **multi-stack: 9 passed** (3.2m) · **ingestion-e2e: 15 passed** (2.3m).
+- **known-bugs: 3 failed = the EXPECTED-RED pins** (PLT-086 attachment-ephemeral / F-042 error-boundary /
+  PLT-052 DQ-WARNING-render), **0 unexpected-green**.
+- Provenance: the run-log records `favorites-star-see-loop.spec.ts` against digest `df0d7186`, built from
+  worktree `8c6c4a9d` == my branch HEAD (clean). The incidental P-001 probe drift in `lineage/**` was
+  reverted (not committed) — the favorites ontology refresh is S4.
+
+### Pixel review (G-C13) — PASS
+Drove the favorites surfaces on the SUT (`:18100`) + screenshotted (a throwaway spec, deleted): the gold
+star on the data-entity detail header (well-placed by the name); the main-page panel (item link + star +
+"View all"); the Favorites tab (the active nav tab + the Asset-type facet sidebar + a list row with name +
+muted kind label + star); the empty state (centered icon + "Star an asset to pin it here."). No
+contrast/legibility/wrapping/empty-state defects. (Minor, non-blocking: the panel is full-width, so a single
+favorite looks sparse — the right-edge star column is intentional for the 5-item panel; a candidate refinement.)
+
+### S3 DoD — MET (all five gates actually run, at the committed SHA `8c6c4a9d`)
+1. FE unit: tsc + eslint + **vite build** GREEN · vitest **86/87** (the 1 RED pre-existing → TST-056). ✓
+2. Full integration regression GREEN-for-change (above). ✓
+3. Docs: none in S3 (S4 owns the user docs + the "Asset" term, on the `release/1.0.0` train). ✓
+4. Ontology: deferred to S4 (probe drift reverted). ✓
+5. Principal review + pixel review PASS. ✓
+
+Status → **`review-ready`** (the contributor never self-merges). DRAFT PR + `/review` (separate session) +
+human GATE 2 = the tail.
+
+## GATE 2 — handoff (S3 DRAFT PR open; human review + merge)
+
+- **Draft PR:** [#1821](https://github.com/opendatadiscovery/odd-platform/pull/1821) — `draft: true`, base
+  `main` (`934b60a7`), head `contrib/CTRIB-039-favorites-frontend` @ `8c6c4a9d`. **Part of #1815 (slice
+  3/4) — does NOT close** (live-verified: the case-law trap "does NOT **close** #1815" was caught by the
+  Gate-8/live-body check and PATCHed to "does not close the issue"; the live body now has zero
+  closing-keyword+#N). Pushed via the `odd-contributor` App (1-hr token, redacted, never persisted); the
+  push went to the same-name branch — `main` untouched (O6/LSN-038).
+- **No new #1815 comment** — the 4-slice plan was posted at S1; GitHub cross-references #1821 on #1815. The
+  scope is unchanged from the approved decomposition (no scope-narrowing comment needed).
+- **DoD: all five gates actually-run at `8c6c4a9d`** — FE unit (tsc/eslint/vite-build/vitest 86-of-87, the
+  1 RED pre-existing → TST-056) · full regression GREEN-for-change (fc 321/0 incl. IT-148, ms 9/9, ie 15/15,
+  kb 3-RED-expected) · docs none-in-S3 · ontology S4 · pixel-review PASS.
+- **Next (maintainer):** run `/review CTRIB-039` (separate session — the 10 Quality-Bar gates + the
+  contributor gates), then review + merge **PR #1821** (the bot cannot self-approve — G-C4). On merge, S3 →
+  `pending-release` (milestone 1.0.0); the favorites user docs publish at the 1.0.0 release gate (slice S4).
+- **Then:** slice 4 (docs + the "Asset" term in `main-concepts.md` + the housekeeping orphan sweep +
+  the ontology `/enrich` over the now-complete favorites surface) — a fresh `/contribute` continuation.
+- **Resources released:** heavy-e2e flock released (run-regression teardown) + the throwaway pixel stack
+  torn down; the worktree `../odd-platform-ctrib039` + the branch remain for S4. Incidental P-001 lineage
+  probe drift reverted (not committed).

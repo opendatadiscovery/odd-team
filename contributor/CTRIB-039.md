@@ -4,13 +4,13 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: implementing        # S1 MERGED (PR #1817 → main 577593ae). S2 (favorites list API) in progress on contrib/CTRIB-039-favorites-list-api.
+status: review-ready        # S1 MERGED (#1817). S2 DoD met → DRAFT PR #1819 (review-ready). /review owns done; GATE 2 = human merge.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
 plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
 plan_approved_at: "2026-06-26"
 docs_routing: "release/1.0.0 (unreleased behaviour → the documentation train, G-C11). Ships in the docs slice."
-pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1817
+pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1819   # S2 (slice 2/4) DRAFT. S1 #1817 MERGED → main 577593ae.
 pr_draft: true
 stream_id: ctrib039
 ---
@@ -311,6 +311,22 @@ implementation". S2 branch `contrib/CTRIB-039-favorites-list-api` (off `577593ae
 - **Rebase:** S2 rebased onto current `origin/main` `de6992c1` (S1 + #1679 tag-filter both merged) → branch
   `50f57fda`, clean (no overlap — #1679 is FE-only). The regression SUT now includes #1679, so feature-complete
   runs without the IT-146 sibling-spec gap S1 saw.
-- **Full integration regression (`run-regression.sh ctrib039`): RUNNING** (background; SUT from `50f57fda`).
+- **Full integration regression (`run-regression.sh ctrib039`): GREEN** (SUT `3161c67e` ← `50f57fda`; flock
+  08:53–09:05). **feature-complete 319/0 · multi-stack 9/9 · ingestion-e2e 15/15 · known-bugs 3-RED-expected /
+  0-unexpected-green.** The rebase onto main (incl. #1679) eliminated S1's IT-146 sibling gap — feature-complete
+  is now fully green. **ZERO regressions from S2.**
 - **Docs (G-C10): none in S2** (no user surface until S3; rides S4). **Ontology: deferred to S4** (the new
   resolver node refreshes with the feature surface).
+
+### GATE 2 (S2) — handoff (DRAFT PR open; human review + merge)
+S2 DoD met (unit GREEN-for-change @ 100% patch cov · regression GREEN · docs none/S4 · ontology S4). Status →
+**`review-ready`** (the contributor never self-merges; `/review` owns the tail; GATE 2 = the human merge).
+- **Draft PR:** [#1819](https://github.com/opendatadiscovery/odd-platform/pull/1819) — `draft: true`, base `main`
+  (`de6992c1`), head `contrib/CTRIB-039-favorites-list-api` @ `50f57fda`. **Part of #1815 (slice 2/4) — does NOT
+  `Closes`** (auto-close keyword absent, verified). Push verified main-untouched.
+- **No new #1815 comment** — the 4-slice plan was posted at S1 (issuecomment-4813301618); GitHub cross-references
+  #1819 on #1815. The **facet deferral** (the 4 cross-kind facets vs. S1's comment that listed them under slice 2)
+  is stated in the PR body — an additive follow-up (a thin S2b, or fold into S3's facet UI). Surfaced to the
+  maintainer at handoff, not silently absorbed.
+- **Next (maintainer):** `/review CTRIB-039` (S2) then review + merge #1819. Then slice 3 (frontend) + slice 4
+  (docs + "Asset" term + housekeeping orphan sweep).

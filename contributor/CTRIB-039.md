@@ -668,3 +668,52 @@ Recommended = **two rows of three columns**: **row 1** = Favorites · Recently-V
 
 ### D. The rest of PRD-0002 Group B (the API-contract slices)
 The 4 cross-kind facets (`namespace_ids/datasource_ids/tag_ids/owner_ids` + the exclude-a-kind rule), `entity_class_ids` + the flattened type taxonomy, and FTS over favorites — plus the `DOC-493` docs refresh for the completed surface. **#1815 closes only when Group B (MUST) lands (PRD-0002 §7)** — the final slice carries `Closes #1815`.
+
+---
+
+## Phase D — S5 (Group B / Description column) — resume 2026-06-28 (session: ctrib039gb)
+
+**Resume trigger:** `/contribute CTRIB-039` continuing the "## HANDOFF" §A (the immediate next slice). Stream `ctrib039gb` (`state/active-streams.yaml`). One CTRIB per issue (#1815).
+
+**Live state (trust-the-tree, O4/O8/O9):** odd-platform `origin/main @ da2932e1` = S1#1817 · S2#1819 · S3#1821 · S4#1822 · S4b#1824 ALL MERGED. WIP branch `contrib/CTRIB-039-favorites-group-b @ 6295a925` (off da2932e1, pushed, `@{u}` UNSET/not-main-tracked, push.default=current) carries only `M components.yaml` (the `FavoriteAsset.description` spec field). Worktree `../odd-platform-ctrib039-s4` is on that branch, clean. **G-C11 PASS (re-verified live):** #1815 OPEN, milestone `1.0.0` OPEN/semver/due 2026-07-31 (`GET /issues/1815` + `/milestones`; 7 open / 1 closed).
+
+**Scope (this slice) = HANDOFF §A — the Favorites Description column.** GATE 1 already APPROVED 2026-06-28 (AskUserQuestion "Build the backend slice now"; contract change). The `FavoriteAsset.description` design home is locked by the approved-and-pushed WIP spec (cross-kind, server-resolved).
+
+### Change-request product analysis (G-C16)
+The change request is the maintainer's own PRD-0002 completion + running-UI review; the Description column closes the residual the S4 reuse-scan flagged (a favorited row shows name/type/namespace/updated but not the asset's description). No divergence between the ask and the product-right shape. One internal product call (recorded, not asked): **QE has no description** — its name already IS its definition and a raw SQL query truncated to two lines would be noise; matches the spec field.
+
+### Design-before-build (G-C12) — all file:line verified on the branch @ 6295a925 / main @ da2932e1
+**(a) Reuse-scan:**
+| Need | Reuse | New (justified) |
+|---|---|---|
+| parse `[[ns:name]]` | the canonical `TermServiceImpl.PATTERN` (`\[\[([^:]*?):([^\]]*?)\]\]`, `:67`) | — (reuse the regex) |
+| batch-resolve mentions → terms | `ReactiveTermRepository.getByNameAndNamespace(List<TermBaseInfoDto>)` (`:26`) — ALREADY EXISTS, ONE query | — |
+| DE description source | `DataEntityDimensionsDto.getDataEntity()` (a `DataEntityPojo`) already fetched by the resolver's `getDimensionsByIds`; `getInternalDescription()` / `getExternalDescription()` both present — **zero extra query** | — |
+| Term definition | `TermRefDto.getTerm().getDefinition()` (already fetched per term) | — |
+| FE render | `components/shared/elements/Markdown` (its `TermLink` styles `<a href*=terms>` as a term link) + `react-truncate-markup` (`^5.1.2`, already a dep) | a small per-kind description cell in `FavoritesListItem` |
+
+**(b) The server-side-vs-FE-side resolution decision (the crux — documented, not asked):** the platform's canonical term-mention rendering is **FE-side** — `InternalDescription.tsx:59` → `useTermWiki.transformDescriptionToMarkdown`, which resolves each `[[ns:name]]` by a **lazy client-side `fetchTerm` per mention** (`useTermWiki.ts`). That per-mention fetch is fine on a single detail page but is a **client-side N+1 across a favorites LIST** (many rows × many mentions), and the favorites payload carries no per-row linked-terms, so an FE-side rewrite would need a heavier contract. Therefore favorites resolves **server-side** — batch ALL the page's mentions in ONE `getByNameAndNamespace(List)` query and emit ready-to-render Markdown `[name](/terms/{id}/overview)` (the exact `termDetailsPath(id)` output — `BASE_PATH=/terms`, default sub-path `overview`), which the FE `Markdown` `TermLink` already styles. Trade-off (accepted): the resolver emits a FE route string — the one place the backend does so — mitigated by a format constant + a unit test pinning it + a comment cross-referencing `termsRoutes.ts`. It is a list-surface optimization, not an architecture change; **ADR D3 ("resolve live from refs, no denormalization") still holds** — nothing is persisted, the description is computed per request from the already-fetched dtos. *(Conforms to the GATE-1-approved WIP spec, which already chose server-side; recorded here so the reviewer sees the why — per the velocity doctrine, not re-surfaced as a fresh decision.)*
+
+**(c) ADR-check:** conforms to `adrs/drafts/favorites-recently-viewed-foundation.md` D3 + D4 (the read-endpoint shape is unchanged; only an optional response field is added). **G-C7 does NOT fire** — additive optional field, no migration, no auth-posture change, no breaking contract change.
+
+**(d) Impact-dimension checklist:**
+- **OpenAPI → generated clients:** `FavoriteAsset.description` (already on the spec) → **regen Java + TS clients** (Java contract via `openApiGenerate`; the TS client is build-generated + gitignored → no tracked diff).
+- **i18n:** one new header key "Description" × all 7 locales (en/es/fr/ua/hy/ch/br), if not already present.
+- **Consumers of a changed signature:** `FavoriteAssetResolver.resolve` gains a term-batch step; its only caller `FavoriteServiceImpl.getFavoritesList` is unchanged. FE `favoriteAssetDescription` repurposed to `asset.description` — consumers = the new cell + its unit test.
+- **Migrations:** none. **Docs:** `release/1.0.0` train (DOC-493). **Ontology:** decision at DoD (thin BE field; FE-presentation otherwise).
+
+### The plan — slice A deliverables
+- **Spec:** keep `FavoriteAsset.description` (refine the doc text if needed). Regen Java + TS clients.
+- **Backend (`FavoriteAssetResolver`):** after resolving the per-kind refs, compute each item's raw description (DE internal-else-external · Term definition · QE none); collect every `[[ns:name]]` across the page; ONE `getByNameAndNamespace(List)` lookup; rewrite each mention → `[name](/terms/{id}/overview)`; set `FavoriteAsset.description`. Unknown mentions (no matching term) are left as-is (mirrors the FE's unresolved-mention behaviour). A `TERM_LINK` format constant + a `termsRoutes.ts` cross-reference comment.
+- **FE:** re-balance `FAVORITES_TABLE_COLS` to 5 columns summing to 12 (add `de`); add a "Description" header (`Favorites.tsx`); add a Description cell (`FavoritesListItem.tsx`) rendering `asset.description` via `<Markdown>` inside `<TruncateMarkup lines={2}>` with an ellipsis; repurpose `favoriteAssetDescription(asset) → asset.description`.
+- **Tests:** `FavoriteAssetResolverTest` (DE internal-else-external; the `[[..]]` → `/terms/{id}/overview` rewrite; QE none; unknown-mention left as-is) + update `lib.test.ts` to the `asset.description` semantics + extend **IT-148** (a favorited DE/Term row shows its description + a working term link; assertions from a captured real DOM). RED-on-base (da2932e1 has no field/column), GREEN-on-fix.
+- **Docs (G-C10):** read the favorites page on the `release/1.0.0` train; add the Description column to the surface description or record no-change+why; DOC-493 (`milestone:1.0.0`).
+- **Ontology:** decision at DoD.
+
+### Scope EXCLUSIONS (G-C5) — deliberately NOT this slice
+- **B** — DE Namespace + Updated-at (same `DataEntityDimensionsDto`, but a separate design decision: enrich `DataEntityRef` vs `FavoriteAsset`; the maintainer listed it separately). The natural next slice.
+- **C** — the 2×3 Recommended layout. **D** — the 4 cross-kind facets + `entity_class_ids` + the flattened taxonomy + FTS.
+- **Closing keyword** stays off this PR — #1815 closes on the final Group-B slice (PRD-0002 §7).
+
+### GATE 1 — already approved (no re-ask)
+§A is GATE-1 APPROVED (2026-06-28, "Build the backend slice now"). The design conforms to that approval + the pushed WIP spec; the server-side-resolution rationale above is documented (velocity doctrine — not re-surfaced). Proceeding to Phase D in `../odd-platform-ctrib039-s4`.

@@ -74,18 +74,26 @@ sentinel, so the stand seeds and asserts against that one bucket.
    Enter); confirm its row carries a `[data-qa="favorite-star"]`; click it → `PUT /api/favorites/TERM/{id}`
    2xx; navigate to `/favorites` and confirm the term is listed. (`DELETE` to clean up.)
 
-**Automated rail:** `integration-tests/run-suite.sh IT-148`. RED proof:
-`ODD_SUT=ref:main integration-tests/run-suite.sh IT-148` — on `main` (924d49de, the S1+S2 backend + the
-S3 frontend SKELETON, but BEFORE the S4 completion) the panel/tab read "Favorites" not "Favorites
-(shared)", the facet is a checkbox group (no combobox), and the Dictionary rows carry no star — so the
-run fails.
+**Group B — Description column (separate test, #1815):**
+9. **Description (#1815 Group B):** seed `IT148FavTerm` (`IT019-ns`) and set the entity's
+   `internal_description` to mention it (`[[IT019-ns:IT148FavTerm]]`); star the entity; navigate to
+   `/favorites` and confirm the **Description** cell (`[data-qa="favorite-description"]`) shows the text
+   and renders the `[[…]]` mention as a term link (`a[href*="/terms/"]`) — the server resolves the
+   mention into `FavoriteAsset.description`. (`DELETE` + null the description to clean up.)
+
+**Automated rail:** `integration-tests/run-suite.sh IT-148` (or the full `run-regression.sh`). RED proof
+for Group B: `ODD_SUT=ref:main integration-tests/run-suite.sh IT-148` — on `main` (da2932e1, the S4+S4b
+completion merged but BEFORE Group B) there is **no Description column** (no `[data-qa="favorite-description"]`),
+so test 9 fails; tests 1-8 (the S4 surface) pass on da2932e1.
 
 ## 5. What it checks — assertions
 
 - **PASS** when: the star toggles pressed/un-pressed on click; the starred asset appears on both the
   main-page panel and the Favorites tab; un-starring removes it from the panel; **(S4)** the
   panel/tab are labelled "Favorites (shared)" under DISABLED auth (A8), the tab facet is the platform
-  combobox (A1), and a Dictionary list row can be starred and then appears on the tab (A4).
+  combobox (A1), and a Dictionary list row can be starred and then appears on the tab (A4);
+  **(Group B)** a favorited asset's **Description** cell renders the description text and shows its
+  `[[Namespace:Term]]` mentions as term links.
 - **FAIL** (regression signature) when: the star affordance is absent, or a starred asset does not
   appear on the panel/tab, or un-starring leaves it shown; **(S4)** the surface is unlabelled under
   DISABLED, the facet is a checkbox group, or the list rows carry no star — i.e. the `ref:main`

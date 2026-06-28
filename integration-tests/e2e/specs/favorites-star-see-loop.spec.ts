@@ -11,12 +11,12 @@ import { ingestEntities, tableEntity } from '../helpers/ingest';
  * the completion surface: the platform multi-select facet (A1), list-row stars (A4), and the
  * DISABLED-auth shared-bucket label (A8).
  *
- * RED on `ref:main` (924d49de — S1+S2 backend + the S3 frontend SKELETON merged, BEFORE the S4
- * completion):
- *  - the main-page panel + the Favorites tab read "Favorites", not "Favorites (shared)" (no A8 label);
- *  - the Favorites-tab asset-type facet is a fixed checkbox group, not the platform combobox (A1);
- *  - the Dictionary (term search) list rows carry no favorite star (A4).
- * GREEN on the S4 working tree.
+ * RED-on-base by construction:
+ *  - tests 1-3 (the S4 completion surface) were RED on 924d49de (pre-S4) and are GREEN since S4+S4b
+ *    merged (origin/main da2932e1): the "Favorites (shared)" label (A8), the platform combobox facet
+ *    (A1), and the Dictionary list-row star (A4).
+ *  - test 4 (the Group-B Description column, #1815) is RED on da2932e1 — there is no Description column
+ *    yet, so [data-qa="favorite-description"] does not exist — and GREEN on the Group-B working tree.
  *
  * Seeding: REAL ingestion of one TABLE data entity + one searchable Term. Auth DISABLED (odd-minimal
  * default) -> the favorites identity is the shared sentinel, so the test seeds and asserts against
@@ -154,5 +154,44 @@ test.describe('Favorites — the star -> see loop + completion surface (#1815 / 
 
     // Cleanup — keep the shared sentinel bucket deterministic for re-runs.
     await request.delete(`/api/favorites/TERM/${termId}`);
+  });
+
+  test('the Favorites tab Description column renders the asset description with term links (#1815 Group B)', async ({
+    page,
+    request,
+  }) => {
+    const id = await setup(request);
+    // Seed the term the description will mention, then give the entity an internal description that
+    // mentions it. The server resolves [[Namespace:Term]] to a /terms link in FavoriteAsset.description,
+    // which the Description column renders via Markdown. (Group B is absent on ref:main: no Description
+    // column at all, so [data-qa="favorite-description"] does not exist -> RED on base.)
+    await seedSearchableTerm(TERM); // IT148FavTerm in namespace IT019-ns
+    await dbQuery('UPDATE data_entity SET internal_description = $1 WHERE id = $2', [
+      `IT148DESCMARKER orders. See [[IT019-ns:${TERM}]] for context.`,
+      id,
+    ]);
+
+    // Star it (setup() already cleared any prior favorite for a deterministic start).
+    const put = favoriteWrite(page, 'PUT', FAV_DE);
+    await page.goto(`/dataentities/${id}/overview`);
+    await star(page).click();
+    await put;
+
+    // The Favorites tab's Description cell shows the description text, and the term mention is a link.
+    await page.goto('/favorites');
+    const descCell = page.locator('[data-qa="favorite-description"]').first();
+    await expect(descCell, 'the Description cell is present').toBeVisible({ timeout: 10_000 });
+    await expect(descCell).toContainText('IT148DESCMARKER');
+    await expect(
+      descCell.locator('a[href*="/terms/"]'),
+      'the [[Namespace:Term]] mention renders as a term link'
+    ).toBeVisible();
+
+    // G-C12 pixel gate: capture the rendered Description column for the maintainer's review.
+    await page.screenshot({ path: 'test-results/it148-description-column.png', fullPage: true });
+
+    // Cleanup — restore the shared sentinel bucket + the entity for re-runs.
+    await request.delete(`/api/favorites/DATA_ENTITY/${id}`);
+    await dbQuery('UPDATE data_entity SET internal_description = NULL WHERE id = $1', [id]);
   });
 });

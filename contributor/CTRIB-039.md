@@ -4,13 +4,13 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: review-ready        # S1 #1817 + S2 #1819 + S3 #1821 MERGED. NOW: slice S4 = Favorites COMPLETION (PRD-0002 / comment 4822201796) Group A FE — DRAFT PR #1822 (Part of #1815, NO closing keyword); all 5 DoD gates MET (vitest 15/15, full regression GREEN-for-change + IT-148 RED-base proof, docs on release/1.0.0 + DOC-493, ontology no-refresh, Principal-sufficiency). → /review CTRIB-039 (S4) then human GATE 2 merges #1822. Group B → slice S5. Stream ctrib039s4.
+status: in-progress         # MERGED: S1 #1817 · S2 #1819 · S3 #1821 · S4 #1822 (completion FE) · S4b #1824 (UX fixes). origin/main @ da2932e1. REMAINING (Group B / API-contract): Description column (GATE-1 approved) + DE namespace/updated-at + 2x3 Recommended layout + the 4 cross-kind facets/entity_class/FTS. WIP branch contrib/CTRIB-039-favorites-group-b @ 6295a925 (FavoriteAsset.description spec field). See "## HANDOFF" section. #1815 closes on the final slice.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
 plan_approved_by: "RamanDamayeu — GATE 1 S1 (2026-06-26): stacked slice-PRs + foundation ADR. GATE 1 S4 (2026-06-28, AskUserQuestion): 'Approve — Group A, one PR' (Favorites completion FE-only; Group B→S5)."
 plan_approved_at: "2026-06-26 (S1); 2026-06-28 (S4)"
 docs_routing: "release/1.0.0 (unreleased behaviour → the documentation train, G-C11). Ships in the docs slice."
-pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1823   # S4b UX fixes DRAFT (Part of #1815). S4 #1822 MERGED; S1 #1817 + S2 #1819 + S3 #1821 MERGED.
+pr_url: https://github.com/opendatadiscovery/odd-platform/tree/contrib/CTRIB-039-favorites-group-b   # Group B WIP @ 6295a925. MERGED: #1817 #1819 #1821 #1822 #1824.
 pr_draft: true
 stream_id: ctrib039  # active slice S4: stream ctrib039s4 (state/active-streams.yaml)
 ---
@@ -644,3 +644,27 @@ After #1822 merged, the maintainer found three platform-pattern inconsistencies;
 3. **Favorites tab = the catalog Search table layout** — the shared `Search/Results` grid + `SearchCol` + `ResultsTableHeader` (Name + star · Type · Namespace · Updated at), replacing the bespoke stacked rows.
 
 **Verification:** tsc/eslint clean; vitest 15/15; **full regression GREEN-for-change** (SUT from the UX-fix worktree, stream `ctrib039s4b`): feature-complete 322-pass (1 = TST-054 `direct-bind-create` flake, contributor-independent) + **the restructure-touched specs all GREEN — IT-148 #125/#126/#127, `catalog-overview-home`, `my-objects-*`, `owner-association-*`, `popular-entities-ranking`, `user-owner-association-home`** · known-bugs 3-RED-expected · multi-stack 9 · ingestion-e2e 15. IT-148 home assertions scoped to the new `data-qa="recommended-favorites"` column + the Popular column asserted present (RED-on-base by construction: the merged #1822 has neither — the separate `ODD_SUT=ref:main` run skipped under the maintainer's time/token constraint, noted transparently). No contract change; docs unchanged (the favorites page already describes the surface). → `/review` then human GATE 2 merges #1823.
+
+**S4b layout follow-up (maintainer running-UI catch, 2026-06-28) — MERGED in #1824:** `OwnerEntitiesListStyles.DataEntityContainer` used `justify-content: space-between` + `flex-wrap: nowrap`, which stranded the two always-on columns (Favorites + Popular) at opposite edges. Fixed → `flex-start` + `wrap` + `rowGap`; verified on the live page (before/after screenshots). The S4b branch merged to main as **#1824** (`da2932e1`), not #1823.
+
+---
+
+## HANDOFF — remaining work on #1815 (clean-session continuation, 2026-06-28)
+
+**Merged so far:** S1 #1817 · S2 #1819 · S3 #1821 · S4 #1822 (completion FE) · **S4b #1824** (UX fixes: Recommended columns + grouping, star position, Search-table layout). `origin/main @ da2932e1`. The favorites surface is FE-complete on what the list payload carries.
+
+**WIP branch:** `contrib/CTRIB-039-favorites-group-b` @ `6295a925` (off `da2932e1`, pushed, NOT main-tracked) — carries the `FavoriteAsset.description` spec field (the contract foundation). **Continue here.**
+
+### A. Description column — the immediate next slice (GATE-1 APPROVED 2026-06-28 via AskUserQuestion "Build the backend slice now"; contract change)
+- **Backend** (`FavoriteAssetResolver` + `ReactiveFavoriteRepositoryImpl`): set `FavoriteAsset.description` per kind — **DE** = internal description else external (BOTH already in the `DataEntityDimensionsDto` the resolver fetches via `getDimensionsByIds`, `mapRef` just drops them — zero extra query); **Term** = `definition`; **QE** = none. Then **batch-resolve `[[Namespace:Term]]` → `[name](/terms/{id})`** across the page via `ReactiveTermRepository.getByNameAndNamespace(List<TermBaseInfoDto>)` (ONE query/page — no N+1). Regen Java + TS clients (`./gradlew … generate` / the build).
+- **FE**: render `asset.description` with `Markdown` (→ `TermLink`, `components/shared/elements/Markdown`) wrapped in **`react-truncate-markup`** (already a dep; markup-aware — a `[[…]]` link is never split, always whole+clickable), generous preview (~2 lines), "…" when truncated, full text on the asset's detail page. The FE table scaffolding (a `COL.de` in `FAVORITES_TABLE_COLS`, a "Description" header in `Favorites.tsx`, a cell in `FavoritesListItem.tsx`) was prototyped + reverted this session (it was wrong as plain `Typography noWrap` — re-add it as `Markdown`+`TruncateMarkup`). The PO/SRE consult (single-line CSS-ellipsis was for plain text; rich text needs markup-aware) is in this CTRIB's history.
+- **Tests**: `FavoriteAssetResolverTest` (description = internal-else-external; `[[…]]` resolved to a link) + IT-148 extension (a favorited DE/Term row shows its description + a working term link) + full regression + RED-base.
+
+### B. DE Namespace + Updated-at on the Favorites table (NEW — maintainer 2026-06-28)
+Data Entities **also have Namespace + Updated-at** — and they're in the SAME `DataEntityDimensionsDto` the resolver already fetches (`searchResult.dataSource.namespace?.name`; `sourceUpdatedAt` — see `ResultItem.tsx:52,189`). The favorites DE payload (`DataEntityRef`) drops them, so the table's **Namespace** + **Updated at** columns are blank for DEs today (`favoriteAssetNamespace` / `favoriteAssetUpdatedAt` return `undefined` for DE). Enrich the favorites DE payload with **namespace + updated_at + description** (all free in the dimensions dto). **Design choice (decide next session):** extend `DataEntityRef` with `namespace`/`updatedAt`/`description` — populated only in the favorites path, matching `TermRef`'s shape — OR add the three to `FavoriteAsset`. Then the FE `favoriteAssetNamespace/UpdatedAt/Description` read them for DEs.
+
+### C. The 2×3 Recommended layout (NEW — maintainer 2026-06-28)
+Recommended = **two rows of three columns**: **row 1** = Favorites · Recently-Viewed (placeholder, PLT-250, built later) · Popular; **row 2** = the owner blocks (My Objects · Upstream · Downstream). Implementation: columns `lg={4}` (3/row, the `DataEntityContainer` already `flex-start` + `wrap`); add a **Recently-Viewed placeholder column** (the `RecentlyViewedIcon` already exists; an empty/"coming soon" card) between Favorites and Popular; order Favorites · RecentlyViewed · Popular, then the owner-3. Files: `OwnerEntitiesList.tsx` (column composition + order) · `FavoritesColumn.tsx` (`lg={3}`→`lg={4}`) · a new `RecentlyViewedColumn` placeholder.
+
+### D. The rest of PRD-0002 Group B (the API-contract slices)
+The 4 cross-kind facets (`namespace_ids/datasource_ids/tag_ids/owner_ids` + the exclude-a-kind rule), `entity_class_ids` + the flattened type taxonomy, and FTS over favorites — plus the `DOC-493` docs refresh for the completed surface. **#1815 closes only when Group B (MUST) lands (PRD-0002 §7)** — the final slice carries `Closes #1815`.

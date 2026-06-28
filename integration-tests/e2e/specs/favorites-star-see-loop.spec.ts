@@ -42,6 +42,9 @@ async function setup(request: APIRequestContext): Promise<number> {
 
 const star = (page: Page) => page.locator('[data-qa="favorite-star"]');
 const nameLink = (page: Page) => page.getByRole('link', { name: NAME, exact: true });
+// Favorites is now a column inside the always-visible Recommended section (alongside Popular), so the
+// home-page favorite assertions are scoped to that column — the page also shows the Popular column.
+const favColumn = (page: Page) => page.locator('[data-qa="recommended-favorites"]');
 const favoriteWrite = (page: Page, method: 'PUT' | 'DELETE', path: RegExp) =>
   page.waitForResponse(
     r => path.test(r.url()) && r.request().method() === method && r.ok()
@@ -65,11 +68,15 @@ test.describe('Favorites — the star -> see loop + completion surface (#1815 / 
     await put;
     await expect(star(page)).toHaveAttribute('aria-pressed', 'true');
 
-    // 3. The main-page Favorites panel now lists the asset. Under DISABLED auth the panel is labelled
-    //    "Favorites (shared)" (A8) — the set is instance-wide, so the title is non-possessive.
+    // 3. The home-page Recommended section is always visible and shows the Favorites + Popular columns
+    //    for every audience (Popular was owner-gated before — RED on base). The Favorites column lists
+    //    the asset, and under DISABLED auth it is labelled "Favorites (shared)" (A8), non-possessively.
     await page.goto('/');
+    await expect(page.getByText('Popular', { exact: true })).toBeVisible();
     await expect(page.getByText('Favorites (shared)')).toBeVisible();
-    await expect(nameLink(page)).toBeVisible();
+    await expect(
+      favColumn(page).getByRole('link', { name: NAME, exact: true })
+    ).toBeVisible();
 
     // 4. The top-level Favorites tab lists it too, and is likewise labelled "(shared)" (A8).
     await page.goto('/favorites');
@@ -84,9 +91,11 @@ test.describe('Favorites — the star -> see loop + completion surface (#1815 / 
     await del;
     await expect(star(page)).toHaveAttribute('aria-pressed', 'false');
 
-    // 6. It is gone from the main-page panel.
+    // 6. It is gone from the home-page Favorites column.
     await page.goto('/');
-    await expect(nameLink(page)).toHaveCount(0);
+    await expect(
+      favColumn(page).getByRole('link', { name: NAME, exact: true })
+    ).toHaveCount(0);
   });
 
   test('the Favorites tab uses the platform multi-select facet (A1), not a checkbox group', async ({

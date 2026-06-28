@@ -10,7 +10,7 @@ adr_required: yes           # G-C7 FIRES — new public API + persistence model 
 plan_approved_by: "RamanDamayeu — GATE 1 S1 (2026-06-26): stacked slice-PRs + foundation ADR. GATE 1 S4 (2026-06-28, AskUserQuestion): 'Approve — Group A, one PR' (Favorites completion FE-only; Group B→S5)."
 plan_approved_at: "2026-06-26 (S1); 2026-06-28 (S4)"
 docs_routing: "release/1.0.0 (unreleased behaviour → the documentation train, G-C11). Ships in the docs slice."
-pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1822   # S4 (Group A FE) DRAFT — Part of #1815, NO closing keyword. S1 #1817 + S2 #1819 + S3 #1821 MERGED.
+pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1823   # S4b UX fixes DRAFT (Part of #1815). S4 #1822 MERGED; S1 #1817 + S2 #1819 + S3 #1821 MERGED.
 pr_draft: true
 stream_id: ctrib039  # active slice S4: stream ctrib039s4 (state/active-streams.yaml)
 ---
@@ -634,3 +634,13 @@ Branch `contrib/CTRIB-039-favorites-completion-fe` (same-name-tracked, push.defa
 3. **Docs** — authored + committed on the documentation **`release/1.0.0`** train (`72e244d`): new `favorites.md` + catalog-overview Favorites section + the "Asset" term + SUMMARY; paired **DOC-493** (`pending-release`, milestone 1.0.0, post-merge URLs). Publishes at the 1.0.0 release gate (G-C11).
 4. **Ontology (G-C10)** — **no refresh** (FE-presentation only; the favorites feature-flow nodes describe the backend write/list API, which S4 does not change — CTRIB-038/040/S3 precedent). The `lineage/**` drift present (`feature-flows.yaml` + the getPopular/getDataEntityDetails sidecars + `2026-06-28-P-001.yaml`) is the regression's incidental **P-001 probe** run, not authored ontology work → reverted (not committed).
 5. **Principal sufficiency (G-C13)** — enough + meaningful tests (the per-kind row logic + the facet + the full e2e completion surface); FE has no separate patch-coverage gate; pixel/running-UI review via the SUT — **the e2e drives the real rendered facet, list-row star, shared-label, and rich rows** (the running surface, not just a green unit). *(A static screenshot can be attached at GATE 2 if the maintainer wants it.)*
+
+## Slice S4b — UX fixes (maintainer running-UI review of #1822 → DRAFT PR #1823)
+
+After #1822 merged, the maintainer found three platform-pattern inconsistencies; fixed FE-only off `5c92b4fa`, branch `contrib/CTRIB-039-favorites-ux-fixes`, **DRAFT PR [#1823](https://github.com/opendatadiscovery/odd-platform/pull/1823)** (Part of #1815, no closing keyword):
+
+1. **Recommended always visible** — Favorites + Popular as same-sized columns for every audience; My Objects/Upstream/Downstream added when owner-bound; the full-width Favorites band removed (it is now a column, the size of Popular). Overview renders Recommended unconditionally; `OwnerAssociation` is now form-only.
+2. **Consistent star position** — right after the name on every list row (Dictionary + Query-Example moved to match the Data-Entity search row).
+3. **Favorites tab = the catalog Search table layout** — the shared `Search/Results` grid + `SearchCol` + `ResultsTableHeader` (Name + star · Type · Namespace · Updated at), replacing the bespoke stacked rows.
+
+**Verification:** tsc/eslint clean; vitest 15/15; **full regression GREEN-for-change** (SUT from the UX-fix worktree, stream `ctrib039s4b`): feature-complete 322-pass (1 = TST-054 `direct-bind-create` flake, contributor-independent) + **the restructure-touched specs all GREEN — IT-148 #125/#126/#127, `catalog-overview-home`, `my-objects-*`, `owner-association-*`, `popular-entities-ranking`, `user-owner-association-home`** · known-bugs 3-RED-expected · multi-stack 9 · ingestion-e2e 15. IT-148 home assertions scoped to the new `data-qa="recommended-favorites"` column + the Popular column asserted present (RED-on-base by construction: the merged #1822 has neither — the separate `ODD_SUT=ref:main` run skipped under the maintainer's time/token constraint, noted transparently). No contract change; docs unchanged (the favorites page already describes the surface). → `/review` then human GATE 2 merges #1823.

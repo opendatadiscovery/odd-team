@@ -44,6 +44,9 @@ sentinel, so the stand seeds and asserts against that one bucket.
   `//e2e-it148/ds/tables/it148_tbl` (`it148_tbl`), via real ingestion (`POST /ingestion/entities`).
 - **Clean start:** `DELETE /api/favorites/DATA_ENTITY/{id}` once (idempotent) so the star begins
   un-pressed deterministically across re-runs.
+- **S4 add (A4):** a searchable Term (`seedSearchableTerm('IT148FavTerm')` — seeds the FTS
+  `term_search_entrypoint` so it surfaces in the Dictionary list) + `DELETE /api/favorites/TERM/{id}`
+  clean start, for the list-row-star check.
 
 ## 3. Readiness check
 
@@ -57,22 +60,36 @@ sentinel, so the stand seeds and asserts against that one bucket.
    renders and is NOT pressed (`aria-pressed="false"`).
 2. Click the star. Confirm a `PUT /api/favorites/DATA_ENTITY/{id}` returns 2xx and the star is now
    pressed (`aria-pressed="true"`).
-3. Navigate to `/`. Confirm the **Favorites** panel heading renders and lists `it148_tbl` (a link).
-4. Navigate to `/favorites`. Confirm `it148_tbl` is listed.
+3. Navigate to `/`. Confirm the **Favorites (shared)** panel heading renders (DISABLED auth → the set
+   is an instance-wide shared bucket, labelled non-possessively — **A8**) and lists `it148_tbl` (a link).
+4. Navigate to `/favorites`. Confirm the tab is titled **Favorites (shared)** (A8) and lists `it148_tbl`.
 5. Navigate back to `/dataentities/{id}/overview` (star pressed). Click it. Confirm a
    `DELETE /api/favorites/DATA_ENTITY/{id}` returns 2xx and the star is un-pressed.
 6. Navigate to `/`. Confirm `it148_tbl` is **gone** from the Favorites panel.
 
+**S4 completion surface (separate tests):**
+7. **Facet (A1):** navigate to `/favorites`; confirm the asset-type facet is the platform multi-select
+   **combobox** (`role=combobox`), not the S3 fixed checkbox group.
+8. **List-row star (A4):** navigate to `/termsearch`, search `IT148FavTerm` (fill "Search terms…" +
+   Enter); confirm its row carries a `[data-qa="favorite-star"]`; click it → `PUT /api/favorites/TERM/{id}`
+   2xx; navigate to `/favorites` and confirm the term is listed. (`DELETE` to clean up.)
+
 **Automated rail:** `integration-tests/run-suite.sh IT-148`. RED proof:
-`ODD_SUT=ref:main integration-tests/run-suite.sh IT-148` — on `main` (66c472e2, the S1+S2 backend but
-NO S3 frontend) there is no star affordance, no panel and no `/favorites` route, so the run fails.
+`ODD_SUT=ref:main integration-tests/run-suite.sh IT-148` — on `main` (924d49de, the S1+S2 backend + the
+S3 frontend SKELETON, but BEFORE the S4 completion) the panel/tab read "Favorites" not "Favorites
+(shared)", the facet is a checkbox group (no combobox), and the Dictionary rows carry no star — so the
+run fails.
 
 ## 5. What it checks — assertions
 
 - **PASS** when: the star toggles pressed/un-pressed on click; the starred asset appears on both the
-  main-page panel and the Favorites tab; un-starring removes it from the panel.
+  main-page panel and the Favorites tab; un-starring removes it from the panel; **(S4)** the
+  panel/tab are labelled "Favorites (shared)" under DISABLED auth (A8), the tab facet is the platform
+  combobox (A1), and a Dictionary list row can be starred and then appears on the tab (A4).
 - **FAIL** (regression signature) when: the star affordance is absent, or a starred asset does not
-  appear on the panel/tab, or un-starring leaves it shown — i.e. the `ref:main` baseline by construction.
+  appear on the panel/tab, or un-starring leaves it shown; **(S4)** the surface is unlabelled under
+  DISABLED, the facet is a checkbox group, or the list rows carry no star — i.e. the `ref:main`
+  (924d49de) baseline by construction.
 
 ## 6. Result log
 
@@ -80,5 +97,7 @@ Appends to `integration-tests/run-log/{YYYY-MM-DD}-IT-148.md` (and the suite log
 Fields: `date · stack_commit · runner · outcome · evidence · notes`.
 
 ## Cross-references
-- Source: #1815 / PRD-0001 (Favorites + Recently Viewed); CTRIB-039 (S1 write API, S2 list API, S3 FE).
-- Related ITs: IT-146/IT-147 (the sibling Dataset-Structure filter e2e harness this mirrors).
+- Source: #1815 / PRD-0001 + PRD-0002 (Favorites completion); CTRIB-039 (S1 write API, S2 list API,
+  S3 FE skeleton, **S4 completion FE — facet/list-stars/rich-rows/shared-label**, A1/A4/A5/A8).
+- Related ITs: IT-146/IT-147 (the sibling Dataset-Structure filter e2e harness this mirrors);
+  IT-019 (the `/termsearch` Dictionary-list flow the A4 step reuses).

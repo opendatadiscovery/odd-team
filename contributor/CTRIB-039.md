@@ -4,11 +4,11 @@ github_issue_number: 1815
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1815
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: planned             # S1 #1817 + S2 #1819 + S3 #1821 ALL MERGED to main @ 924d49de (S3 /review ACCEPTED 2026-06-27 → since squash-merged; pending-release 1.0.0 for docs). NOW: slice S4 = Favorites COMPLETION (PRD-0002 / comment 4822201796), Group A FE-only — PLAN written (## Phase D — S4), awaiting GATE 1. Group B (contract) → slice S5. Stream ctrib039s4.
+status: implementing        # S1 #1817 + S2 #1819 + S3 #1821 ALL MERGED to main @ 924d49de (pending-release 1.0.0 for docs). NOW: slice S4 = Favorites COMPLETION (PRD-0002 / comment 4822201796), Group A FE-only — GATE 1 APPROVED 2026-06-28 (one PR); implementing. Group B (contract) → slice S5. Stream ctrib039s4.
 reproduced: "Phase B (feature) — integration points verified against odd-platform main @ f12b8fbc; see '## Phase B'."
 adr_required: yes           # G-C7 FIRES — new public API + persistence model + identity/auth handling. ADR: adrs/drafts/favorites-recently-viewed-foundation.md
-plan_approved_by: "RamanDamayeu — GATE 1 (AskUserQuestion): stacked slice-PRs under #1815; foundation ADR approved; first slice = S1"
-plan_approved_at: "2026-06-26"
+plan_approved_by: "RamanDamayeu — GATE 1 S1 (2026-06-26): stacked slice-PRs + foundation ADR. GATE 1 S4 (2026-06-28, AskUserQuestion): 'Approve — Group A, one PR' (Favorites completion FE-only; Group B→S5)."
+plan_approved_at: "2026-06-26 (S1); 2026-06-28 (S4)"
 docs_routing: "release/1.0.0 (unreleased behaviour → the documentation train, G-C11). Ships in the docs slice."
 pr_url: https://github.com/opendatadiscovery/odd-platform/pull/1821   # S3 — now MERGED (924d49de). S1 #1817 + S2 #1819 also merged. S4 PR (Group A FE): TBD post-GATE-1.
 pr_draft: true
@@ -593,4 +593,33 @@ The change-request **is** the maintainer's own completion spec (PRD-0002 + comme
 - **Ontology:** `/enrich --touched` over the favorites FE nodes once lineage/** is clean; commit + re-embed.
 
 ### GATE 1 — decisions surfaced to the maintainer (2026-06-28)
-Self-decided (one-sentence calls, recorded not asked): (i) **continue CTRIB-039** as slice S4 (one-CTRIB-per-issue), not a new CTRIB-041; (ii) **A8 included** in S4 (cheap, SHOULD); (iii) the **B3-evaporation** re-scope is noted for S5, not acted on now. Surfaced for approval (AskUserQuestion): the **S4 = Group A scope + PR granularity**. Awaiting `plan_approved_by`/`plan_approved_at` — **no odd-platform code until approved (G-C3).**
+Self-decided (one-sentence calls, recorded not asked): (i) **continue CTRIB-039** as slice S4 (one-CTRIB-per-issue), not a new CTRIB-041; (ii) **A8 included** in S4 (cheap, SHOULD); (iii) the **B3-evaporation** re-scope is noted for S5, not acted on now. Surfaced for approval (AskUserQuestion): the **S4 = Group A scope + PR granularity**.
+
+**GATE 1 — APPROVED (2026-06-28).** RamanDamayeu selected **"Approve — Group A, one PR"** (AskUserQuestion): S4 ships all 8 FE-only items (A1-A8) as **one DRAFT PR** `contrib/CTRIB-039-favorites-completion-fe`; Group B → slice S5. **No new scope comment** posted — the FE-first/BE-second split is already public in comment 4822201796 and S4 = exactly that "frontend group", so the issue thread already reflects S4's scope (also respects the G-C6 one-comment rate-limit). Proceeding to Phase D implementation.
+
+### Phase D — S4 implementation (worktree `../odd-platform-ctrib039-s4` off `924d49de`)
+
+Branch `contrib/CTRIB-039-favorites-completion-fe` (same-name-tracked, push.default=current, NOT main-tracked — `@{u}` unset; LSN-038). 7 commits, **22 files, +393/−122, all `odd-platform-ui/src`** (G-C5 — zero backend/OpenAPI/migration/generated-client):
+
+- **A1** `FavoritesAssetTypeFilter.tsx` — the S3 checkbox group → the platform multi-select-facet pattern (MUI `Autocomplete` resets-on-pick + removable chips + "Clear All", the catalog `Filters.tsx` shape; `MultipleFilterItem` itself is search-slice-bound so a thin favorites wrapper drives local `selectedKinds`). Input carries `aria-label` (A7). Conforms to ADR D8.
+- **A2** `Overview/FavoritesPanel/FavoritesPanel.tsx` — reshaped to the My-Objects **column form-factor** (reuses the shared `DataEntityList` styles: `DataEntityListContainer` card + `SectionCaption`), star caption, own always-on band outside the owner gate.
+- **A3** icon system — new `PopularIcon` (trending) + `RecentlyViewedIcon` (clock) SvgIcons (`@mui/icons-material` not a dep → custom `shared/icons` pattern); `OwnerEntitiesList.tsx:102` Popular `<StarIcon/>` → `<PopularIcon/>`; `StarIcon.tsx` is now the single source of the star path (`STAR_ICON_PATH`, `currentColor`); `FavoriteStar.tsx` reuses it (removes the byte-identical duplicate — **review follow-up #1 closed**).
+- **A4** list-row stars — `<FavoriteStar>` on `TermSearchResultItem` (Dictionary list) + `QueryExamplesListItem` (standalone list, opt-in `showFavorite` prop so the linked-QE tables are unaffected), each batch-hydrated in `TermSearchResults`/`QueryExamplesList` (the `Results.tsx:85-95` pattern).
+- **A5** `FavoritesListItem.tsx` — rich rows from the refs the payload already carries (ADR D3): DE class-chips + status, Term namespace + definition, QE query; per-kind degrade. New lib helpers `favoriteAssetNamespace` / `favoriteAssetDescription`. **(Finding: `DataEntityRef` lacks namespace/created-at → the data-entity row's namespace/created/description still need B3/S5; A5 ships what the refs carry — a real richness gain FE-only.)**
+- **A6** `Favorites.tsx` — explicit loading (skeleton) / error (retry) states beside the empty state.
+- **A8** `Favorites.tsx` + `FavoritesPanel.tsx` — under `auth.type=DISABLED`, "Favorites **(shared)**" + the don't-run-disabled-auth caveat (`useAppInfo().authType`).
+- **i18n** — 4 new keys (`Favorites (shared)`, `Couldn't load your favorites.`, `Try again`, the caveat) across ALL 7 locales (en/es/fr/ua/hy/ch/br); parity preserved (657 each).
+
+### Verification (run, not reasoned)
+
+- **tsc `--noEmit`** (full project): clean. **eslint** (changed files): clean (prettier `--fix` applied). Local env: the worktree's `node_modules`/`generated-sources` are gitignored → symlinked/copied from the shared `../odd-platform` checkout (same commit) for the local typecheck/lint.
+- **vitest (unit, node 24 via docker — vite 7 needs node ≥20)**: **15/15 pass** — new `Favorites/__tests__/lib.test.ts` (3, per-kind resolution, RED-on-base: the helpers are new) + `FavoritesAssetTypeFilter/__tests__/…test.tsx` (3, chips + Clear All) + the existing slice (6) + FavoriteStar (3). The facet test wraps the render in the MUI `ThemeProvider` (the shared harness only provides the styled-components one — no existing test renders a custom `Button`).
+- **Integration (G-C9) — IT-148 EXTENDED** (`integration-tests/e2e/specs/favorites-star-see-loop.spec.ts` + protocol): the existing star→see loop now asserts the A8 "(shared)" label; **+2 tests**: A1 (the tab facet is a `combobox`, not a checkbox group) and A4 (star a Term from the `/termsearch` Dictionary row → it appears on `/favorites`). Assertions from captured real shapes (`role=combobox`, `[data-qa="favorite-star"]`, `/api/favorites/TERM/{id}`). **GREEN on the working-tree SUT** (`odd-platform:odd-team-sut-ctrib039s4`, digest `a55c387a`) — feature-complete tests **#125/#126/#127 PASS**. RED-on-base by construction (924d49de has no combobox, no "(shared)" label, no Dictionary-row star); the `ODD_SUT=ref:main` proof runs after the flock frees.
+
+### DoD ledger (the five gates)
+
+1. **Full unit build / vitest** — GREEN (15/15; tsc + eslint clean). *(The odd-platform CI runs vitest in its node-24 step; reproduced here via docker.)*
+2. **FULL integration regression** (`run-regression.sh ctrib039s4`, SUT `a55c387a` ← worktree, flock-serialized): **feature-complete 322 passed / 1 failed** — the 1 = **TST-054** `direct-bind-create` F-172 (the documented owner-association affordance-timeout flake, **contributor-independent / delta-0 on `ref:main`**, unrelated to favorites) ⇒ **GREEN-for-change**, IT-148 #125-127 GREEN. **known-bugs 3-RED** (the expected pins, 0 unexpected-green). **multi-stack + ingestion-e2e — running** (results pending). RED-base IT-148 proof — pending the flock.
+3. **Docs** — authored + committed on the documentation **`release/1.0.0`** train (`72e244d`): new `favorites.md` + catalog-overview Favorites section + the "Asset" term + SUMMARY; paired **DOC-493** (`pending-release`, milestone 1.0.0, post-merge URLs). Publishes at the 1.0.0 release gate (G-C11).
+4. **Ontology (G-C10)** — **no refresh** (FE-presentation only; the favorites feature-flow nodes describe the backend write/list API, which S4 does not change — CTRIB-038/040/S3 precedent). The `lineage/**` drift present (`feature-flows.yaml` + the getPopular/getDataEntityDetails sidecars + `2026-06-28-P-001.yaml`) is the regression's incidental **P-001 probe** run, not authored ontology work → reverted (not committed).
+5. **Principal sufficiency (G-C13)** — enough + meaningful tests (the per-kind row logic + the facet + the full e2e completion surface); FE has no separate patch-coverage gate; pixel/running-UI review via the SUT — **the e2e drives the real rendered facet, list-row star, shared-label, and rich rows** (the running surface, not just a green unit). *(A static screenshot can be attached at GATE 2 if the maintainer wants it.)*

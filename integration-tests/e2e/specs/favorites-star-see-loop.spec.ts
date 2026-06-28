@@ -1,31 +1,34 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { seedIngestionDataSource, entityByOddrn } from '../helpers/db';
+import { seedIngestionDataSource, entityByOddrn, seedSearchableTerm, dbQuery } from '../helpers/db';
 import { ingestEntities, tableEntity } from '../helpers/ingest';
 
 /**
- * IT-148 — Favorites: the star -> see loop (#1815 / CTRIB-039 S3).
+ * IT-148 — Favorites: the star -> see loop + the completion surface (#1815 / CTRIB-039 S3+S4).
  *
  * Protocol: integration-tests/protocols/IT-148-favorites-star-see-loop.md
  * Gates: validates F (Favorites) — a user can star any viewable asset and find it again on the
- * main-page panel and the Favorites tab; un-starring removes it everywhere, without a reload.
+ * main-page panel and the Favorites tab; un-starring removes it everywhere, without a reload. S4 adds
+ * the completion surface: the platform multi-select facet (A1), list-row stars (A4), and the
+ * DISABLED-auth shared-bucket label (A8).
  *
- * THE CLAIM: starring an asset from its detail header (a) flips the star to pressed, (b) surfaces the
- * asset on the main-page Favorites panel AND the top-level Favorites tab, and (c) un-starring removes
- * it from both — all driven by the slice, no reload.
+ * RED on `ref:main` (924d49de — S1+S2 backend + the S3 frontend SKELETON merged, BEFORE the S4
+ * completion):
+ *  - the main-page panel + the Favorites tab read "Favorites", not "Favorites (shared)" (no A8 label);
+ *  - the Favorites-tab asset-type facet is a fixed checkbox group, not the platform combobox (A1);
+ *  - the Dictionary (term search) list rows carry no favorite star (A4).
+ * GREEN on the S4 working tree.
  *
- * RED on `ref:main` (66c472e2, the S1+S2 backend merged but BEFORE the S3 frontend): there is no
- * favorite-star affordance, no Favorites panel and no `/favorites` route, so every step below fails.
- * GREEN on the S3 working tree.
- *
- * Seeding: REAL ingestion of one TABLE data entity (no columns needed — favorites act on the entity
- * itself). Auth DISABLED (odd-minimal default) -> the favorites identity is the shared sentinel, so
- * the test seeds and asserts against that one bucket. Collision-free band: 2148.
+ * Seeding: REAL ingestion of one TABLE data entity + one searchable Term. Auth DISABLED (odd-minimal
+ * default) -> the favorites identity is the shared sentinel, so the test seeds and asserts against
+ * that one bucket. Collision-free band: 2148.
  */
 const DS_ID = 2148;
 const DS = '//e2e-it148/ds';
 const E = `${DS}/tables/it148_tbl`;
 const NAME = 'it148_tbl';
-const FAV_PATH = /\/api\/favorites\/DATA_ENTITY\/\d+(\?|$)/;
+const TERM = 'IT148FavTerm';
+const FAV_DE = /\/api\/favorites\/DATA_ENTITY\/\d+(\?|$)/;
+const FAV_TERM = /\/api\/favorites\/TERM\/\d+(\?|$)/;
 
 async function setup(request: APIRequestContext): Promise<number> {
   await seedIngestionDataSource(DS_ID, DS, 'it148-ds');
@@ -39,12 +42,12 @@ async function setup(request: APIRequestContext): Promise<number> {
 
 const star = (page: Page) => page.locator('[data-qa="favorite-star"]');
 const nameLink = (page: Page) => page.getByRole('link', { name: NAME, exact: true });
-const favoriteWrite = (page: Page, method: 'PUT' | 'DELETE') =>
+const favoriteWrite = (page: Page, method: 'PUT' | 'DELETE', path: RegExp) =>
   page.waitForResponse(
-    r => FAV_PATH.test(r.url()) && r.request().method() === method && r.ok()
+    r => path.test(r.url()) && r.request().method() === method && r.ok()
   );
 
-test.describe('Favorites — the star -> see loop (#1815 / CTRIB-039)', () => {
+test.describe('Favorites — the star -> see loop + completion surface (#1815 / CTRIB-039)', () => {
   test('star an asset -> it shows on the main panel + the Favorites tab; un-star -> it is gone', async ({
     page,
     request,
@@ -57,24 +60,26 @@ test.describe('Favorites — the star -> see loop (#1815 / CTRIB-039)', () => {
     await expect(star(page)).toHaveAttribute('aria-pressed', 'false');
 
     // 2. Star it — the star flips to pressed.
-    const put = favoriteWrite(page, 'PUT');
+    const put = favoriteWrite(page, 'PUT', FAV_DE);
     await star(page).click();
     await put;
     await expect(star(page)).toHaveAttribute('aria-pressed', 'true');
 
-    // 3. The main-page Favorites panel now lists the asset.
+    // 3. The main-page Favorites panel now lists the asset. Under DISABLED auth the panel is labelled
+    //    "Favorites (shared)" (A8) — the set is instance-wide, so the title is non-possessive.
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Favorites', exact: true })).toBeVisible();
+    await expect(page.getByText('Favorites (shared)')).toBeVisible();
     await expect(nameLink(page)).toBeVisible();
 
-    // 4. The top-level Favorites tab lists it too.
+    // 4. The top-level Favorites tab lists it too, and is likewise labelled "(shared)" (A8).
     await page.goto('/favorites');
+    await expect(page.getByRole('heading', { name: 'Favorites (shared)' })).toBeVisible();
     await expect(nameLink(page)).toBeVisible();
 
     // 5. Un-star it from the detail header.
     await page.goto(`/dataentities/${id}/overview`);
     await expect(star(page)).toHaveAttribute('aria-pressed', 'true');
-    const del = favoriteWrite(page, 'DELETE');
+    const del = favoriteWrite(page, 'DELETE', FAV_DE);
     await star(page).click();
     await del;
     await expect(star(page)).toHaveAttribute('aria-pressed', 'false');
@@ -82,5 +87,63 @@ test.describe('Favorites — the star -> see loop (#1815 / CTRIB-039)', () => {
     // 6. It is gone from the main-page panel.
     await page.goto('/');
     await expect(nameLink(page)).toHaveCount(0);
+  });
+
+  test('the Favorites tab uses the platform multi-select facet (A1), not a checkbox group', async ({
+    page,
+  }) => {
+    // The facet renders regardless of whether anything is favorited (it lives in the sidebar).
+    await page.goto('/favorites');
+    // A1: the asset-type facet is the platform autocomplete (a combobox). The S3 skeleton rendered a
+    //     fixed checkbox group with no combobox, so this is absent on ref:main.
+    await expect(page.getByRole('combobox')).toBeVisible();
+  });
+
+  test('star a Term from the Dictionary list row (A4) -> it appears on the Favorites tab', async ({
+    page,
+    request,
+  }) => {
+    await seedSearchableTerm(TERM);
+    const rows = await dbQuery<{ id: number }>(
+      'SELECT id FROM term WHERE name = $1 LIMIT 1',
+      [TERM]
+    );
+    expect(rows[0], 'the seeded term must exist').toBeTruthy();
+    const termId = rows[0].id;
+    await request.delete(`/api/favorites/TERM/${termId}`); // deterministic clean start
+
+    // Open the Dictionary (term search) and surface the seeded term's row.
+    await page.goto('/termsearch');
+    const input = page.getByPlaceholder('Search terms...');
+    const results = page.waitForResponse(
+      r =>
+        /\/api\/terms\/search\/[0-9a-f-]+\/results/.test(r.url()) &&
+        r.request().method() === 'GET' &&
+        r.ok()
+    );
+    await input.fill(TERM);
+    await input.press('Enter'); // TermSearchInput searches on Enter only
+    await results;
+
+    const termRow = page.locator('a', { hasText: TERM }).first();
+    await expect(termRow, 'the searched term row must be visible').toBeVisible({
+      timeout: 10_000,
+    });
+
+    // A4: the list row now carries a favorite star (the S3 Dictionary rows had none).
+    const rowStar = termRow.locator('[data-qa="favorite-star"]');
+    await expect(rowStar).toBeVisible();
+
+    // Star it from the list row — its stop-propagation keeps the row link from navigating.
+    const put = favoriteWrite(page, 'PUT', FAV_TERM);
+    await rowStar.click();
+    await put;
+
+    // It now shows on the Favorites tab.
+    await page.goto('/favorites');
+    await expect(page.getByText(TERM).first()).toBeVisible({ timeout: 10_000 });
+
+    // Cleanup — keep the shared sentinel bucket deterministic for re-runs.
+    await request.delete(`/api/favorites/TERM/${termId}`);
   });
 });

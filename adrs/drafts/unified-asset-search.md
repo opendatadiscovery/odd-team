@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed (draft, rev 2)** — design for issue [#1825](https://github.com/opendatadiscovery/odd-platform/issues/1825). No code until approved (G-C7 + G-C3). |
+| **Status** | **Agreed direction (draft, rev 2)** — approved by the maintainer 2026-06-29 as the plan to proceed; each slice is still refined + GATE-1-approved before code (G-C7 + G-C3). Design for issue [#1825](https://github.com/opendatadiscovery/odd-platform/issues/1825). |
 | **Date** | 2026-06-29 (rev 2 — maintainer steer: 1.0.0 may rework core engines; performance + UX as first-class; choose rework when benefit > migration drawback; lineage depth a per-direction parameter). |
 | **Repo** | `opendatadiscovery/odd-platform` |
 | **Design source** | `prds/0003-unified-asset-search.md` (PRD-0003). This ADR fixes the *architectural* decisions. |

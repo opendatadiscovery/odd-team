@@ -28,7 +28,7 @@ Search overhaul (PRD-0003)  ── spine ──►  P1 core → P2 filters → P
 | **L1** | **New issue — the Search overhaul** | GitHub `odd-platform` | You | ☑ **[#1825](https://github.com/opendatadiscovery/odd-platform/issues/1825)** (2026-06-29, ms 1.0.0) |
 | **L2** | Comment on **#1815**: completion folds into #1825; star/API/panel stay; tab → Favorites filter | GitHub #1815 | Me (bot) | ☑ [issuecomment-4832457367](https://github.com/opendatadiscovery/odd-platform/issues/1815#issuecomment-4832457367) |
 | **L3** | Comment on **#1816**: foundation + panel now; tab → date/time Search filter | GitHub #1816 | Me (bot) | ☑ [issuecomment-4832457502](https://github.com/opendatadiscovery/odd-platform/issues/1816#issuecomment-4832457502) |
-| **L4** | **Search ADR** (rev 2 — **unified index** D1, performance-first, per-direction lineage depth D4, no-breaking-core D9) | `adrs/drafts/unified-asset-search.md` | Me | ☑ **drafted** — pending your review |
+| **L4** | **Search ADR** (rev 2 — **unified index** D1, performance-first, per-direction lineage depth D4, no-breaking-core D9) | `adrs/drafts/unified-asset-search.md` | Me | ☑ **agreed** 2026-06-29 — the proceeding direction |
 | — | PRD-0003 + this roadmap | workspace | Me | ☑ done |
 
 ## Sequence — where we start → next steps

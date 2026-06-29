@@ -1,6 +1,6 @@
 # Roadmap — Unified Asset Search + Favorites + Recently Viewed
 
-**Strategy (one line):** overhaul the main `/search` into one faceted, cross-kind **Asset** search (PRD-0003); **Favorites** and **Recently Viewed** become *filters* on it, not separate tabs; the only standalone Recently-Viewed work is its **view-tracking foundation + home panel** (#1816), which also unblocks the search's **Popular** filter.
+**Strategy (one line):** overhaul the main `/search` into one faceted, cross-kind **Asset** search (PRD-0003); **Favorites** and **Recently Viewed** become *filters* on it, not separate tabs; the only standalone Recently-Viewed work is its **view-tracking foundation + home panel** (#1816). *(Popular is a separate, already-built `view_count` metric — not part of #1816; see below.)*
 
 Source PRDs: `prds/0001-favorites-and-recently-viewed.md` · `prds/0002-favorites-completion.md` (Group B superseded) · **`prds/0003-unified-asset-search.md`** (the spine).
 
@@ -9,15 +9,16 @@ Source PRDs: `prds/0001-favorites-and-recently-viewed.md` · `prds/0002-favorite
 - **Search overhaul (PRD-0003)** is the spine. Phases: **P1** polymorphic core → **P2** the scope filters → **P3** columns/highlights → **P4** (later).
 - **Favorites (#1815):** the foundation is **already merged** (S1–S4b: star + write API + list API + FE skeleton). The Group-B completion is **superseded** — Favorites *finishes* by becoming the **Favorites filter** in Search **P2**. The in-progress Description slice is **parked** (local only).
 - **Recently Viewed (#1816):** build only what survives — the **view-tracking foundation** (`recently_viewed` table + tracking write-path + read API) **+ the home panel**. **Defer the tab** → it becomes the **Recently-viewed filter** in Search **P2**.
-- **The keystone:** #1816's view-tracking table is **load-bearing for two Search P2 filters** — Recently-viewed *and* cross-kind **Popular** (terms/QE have no view count without it). It's independent + cheap (reuses the merged favorites foundation), so **build it early**.
+- **#1816 readies the Recently-viewed P2 filter** (`recently_viewed` **timestamps** — recency, *when* last opened) and delivers the home panel. It's independent + cheap (reuses the merged favorites foundation), so it's a good **early parallel track**.
+- **Popular is separate and already exists.** The **Popular** filter ranges over the **existing `view_count`** (frequency — *how many* views; the "Popular" block metric), used **as-is**, DE-scoped. **No dependency on #1816.** *My Popular / Global Popular* is a possible later split, out of scope now. (Recency ≠ frequency.)
 
 ```
 Search overhaul (PRD-0003)  ── spine ──►  P1 core → P2 filters → P3 columns/highlights
                                                   │
    P2 absorbs the filters, fed by:               │
      • Favorites filter   ◄── favorite table (#1815, MERGED)
-     • Recently-viewed    ◄── recently_viewed (#1816 foundation)  ┐ both need
-     • Popular (x-kind)   ◄── view counts (#1816 foundation)      ┘ #1816 → build early
+     • Recently-viewed    ◄── recently_viewed TIMESTAMPS (#1816 foundation — build early)
+     • Popular            ◄── existing view_count (already built, used as-is; DE-scoped)
 ```
 
 ## What to log / create
@@ -35,7 +36,7 @@ Search overhaul (PRD-0003)  ── spine ──►  P1 core → P2 filters → P
 | Step | What | Who drives | Finishes / unblocks |
 |---|---|---|---|
 | **0** | Log L1 (+ post L2/L3) | You | the public record reflects the pivot |
-| **1** | **#1816 foundation** — `/contribute #1816`, refined scope (recently_viewed table + view tracking + read API + home panel; **no tab**). GATE-1 plan for your approval → build. | Me → your gates | the Recently-viewed **and** cross-kind Popular search filters |
+| **1** | **#1816 foundation** — `/contribute #1816`, refined scope (recently_viewed *timestamp* tracking + read API + home panel; **no tab**). GATE-1 plan for your approval → build. | Me → your gates | the **Recently-viewed** search filter + the home panel *(Popular is separate — existing `view_count`)* |
 | **2** | **Search ADR** (L4) | Me → your approval | the Search build |
 | **3** | **Search P1** — polymorphic core + Asset-type filter (DE class split) + cross-kind result row + retire the class tabs | Me, sliced → your gates | the search foundation |
 | **4** | **Search P2** — the scope filters (**Favorites** · **My data** · **Popular** · **Recently-viewed**) + retire the My-Objects + `/favorites` tabs + rewire the home "See all" deep-links | Me, sliced → your gates | **Favorites + Recently-viewed FINISH here** |

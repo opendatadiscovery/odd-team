@@ -77,6 +77,13 @@ seeds and asserts against that one bucket.
    list carry a Recently-viewed column. RED on `ref:main` by construction (S2 rendered the marker inline,
    no column).
 
+**Detail-header absolute time (test 3, #1816 / CTRIB-043):**
+7. Open an asset's detail page (records it; `lastViewedAt` becomes ~now). Confirm the detail-header marker
+   (`[data-qa="recently-viewed-tag"]`) shows an **absolute timestamp with an explicit UTC offset** (e.g.
+   "Viewed 29 Jun 2026, 12:34 UTC+00:00") in the user's browser timezone — NOT a relative "Viewed 0 seconds
+   ago" (which is meaningless on a record-on-open page and resets on every refresh). RED on `ref:main` by
+   construction (the header renders the relative form, no offset). The list surfaces keep the relative form.
+
 **Automated rail:** `integration-tests/run-suite.sh IT-149` (or the full `run-regression.sh`). RED proof:
 `ODD_SUT=ref:main integration-tests/run-suite.sh IT-149` — on `main` (9097c548, the S1 backend merged but
 no frontend) opening the detail page fires no record POST and there is no panel, so step 1 (the record

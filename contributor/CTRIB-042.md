@@ -5,7 +5,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1816
 title: "Recently Viewed — recency as a dedicated list column (DE / Terms / Query Examples)"
 class: feature-followup
 milestone: "1.0.0"
-status: pr-draft            # GATE 1 approved; DoD met; DRAFT PR #1828 (follow-up to #1816). /review -> GATE 2.
+status: blocked             # list-column change PASSES all gates (POST-MERGE df70e7a0); flipped to blocked per maintainer 2026-06-29 — a detail-marker UX defect blocks the RV feature; fix = CTRIB-043 (this session).
 reproduced: "UX defect on the merged S2 (#1827): the list-surface recency marker is inline in the DE name cell (truncates the name) + only on Data Entities"
 adr_required: false         # presentation refactor; conforms to the shipped RV foundation
 tracking: "maintainer-directed follow-up to #1816 (CTRIB-040 precedent); no new GitHub issue; PR refs #1816"
@@ -97,3 +97,53 @@ No refresh — presentation-only change (no new/changed backend node); same defe
 ## Status
 
 `implementing` → (regression + RED proof) → DRAFT PR (refs #1816) → `/review` (separate session) → GATE 2.
+
+## Review (2026-06-29, session: review-ctrib042)
+
+- **Result**: the list-column change **PASSES every gate** on independent verification. The ITEM is flipped
+  to **`blocked`** per the maintainer's 2026-06-29 directive — a maintainer-found UX defect on the
+  **detail-page** recency marker (below) blocks the Recently-Viewed feature from reaching `done`. The fix
+  ships this session as **[[CTRIB-043]]** (`contributor/CTRIB-043.md`).
+- **POST-MERGE**: PR #1828 was already squash-merged to `origin/main` as **df70e7a0** (author
+  `odd-contributor[bot]`, parent 3cbb3b85). `git diff 0e5cc70c df70e7a0` is EMPTY → the reviewed branch is
+  byte-identical to merged main. All gates run in full; any defect is fix-forward.
+
+- **Acceptance criteria**:
+  - [x] Dedicated "Recently viewed" column on the Data Entity search list — PASS (`ResultItem.tsx:245-251` new `rv` `SearchCol`; inline tag removed from the name cell; `TableHeader.tsx` `rv` header; `SearchResultsSkeleton` matched) — verified via diff + IT-149 spec 265 GREEN on my rebuild.
+  - [x] Same column on the Terms (Dictionary) list — PASS (`TermSearchResults.tsx` header + `TermSearchResultItem.tsx` `colsm` cell).
+  - [x] Same column on the standalone Query Examples list; linked QE tables untouched — PASS (`QueryExamplesListHeader.showRecentlyViewed` + `QueryExamplesListItem.showFavorite` gating; `QueryExamplesList.tsx` passes BOTH; `TermQueryExamples`/`DataEntityDetailsQueryExamples` pass NEITHER → never desyncs).
+  - [x] The asset name keeps full width — PASS (`gridSizes` `nm=2.68` unchanged in **all 12 variants**; `rv:1.0` carved from `nd(-0.40)/ow(-0.30)/gr(-0.30)`; every variant column-sum preserved exactly).
+  - [x] i18n all 7 locales — PASS (each locale +1 `"Recently viewed"` key, real translations, not en-fallbacks).
+  - [x] RED→GREEN integration test — PASS (IT-149 test 2 GREEN on the fix [my run, spec 265]; RED on 3cbb3b85 per the implementer run-log + by-inspection — the column header cannot render on the inline-marker base).
+
+- **Quality Bar / contributor gates**:
+  - Gate 1 — PASS (reuses `RecentlyViewedTag`; no parallel component) via diff.
+  - Gate 4 — PASS (`Consumer-read:` footer files match the diff) via read.
+  - Gate 6 — PASS (DOC-494 reflects the column) via `git show`.
+  - Gate 7 — PASS (`recently-viewed.md` in `docs/SUMMARY.md:17`; the 3 doc-link targets exist on the train) via `git cat-file`.
+  - Gate 8 — **PENDING-RELEASE (1.0.0)**: DOC-494 `7cb1773` is an ancestor of `origin/release/1.0.0` (authored on the train, not a backlog draft — the review-ctrib040 failure mode avoided). Post-merge live check at the 1.0.0 gate — URL `https://docs.opendatadiscovery.org/data-discovery/recently-viewed`, phrase "dedicated **Recently viewed** column".
+  - Gate 9 — PASS (`Sources:` = maintainer feedback on #1816 + merged #1827) via read.
+  - Gate 11 — PASS (no workspace-internal terms in the published doc) via grep.
+  - G-C2 (FULL regression, own independent rebuild of df70e7a0, digest `ca38d7bd`) — PASS: **feature-complete 325 pass / 1 fail** — the 1 fail is the co-stream `ctrib039gb` IT-148 test-4 (`favorites-star-see-loop.spec.ts:159` "the Favorites tab Description column … **#1815 Group B**"), which asserts UNMERGED Group-B behaviour and fails on any non-Group-B SUT (independent of CTRIB-042, confirmed by the failing test's own title). **IT-149 BOTH tests GREEN** (spec 264 open→see loop, 265 the list column). `catalog-search`/`term-search`/`query-examples-crud-search`/`search-class-tab-filter`/`search-result-row-click` all GREEN — the grid rebalance regressed nothing. **known-bugs 3-RED-expected / 0-unexpected-GREEN** (attachment-durability LSN-001, error-boundary, quality-dashboard PLT-052).
+  - G-C9 / G-C15 (test integrity) — PASS: the IT-149 change is **purely additive** (test 1 byte-unchanged; a `search()` helper + test 2 added); no assertion weakened, no matcher widened, no mock swapped; the new test's RED survives on `3cbb3b85`.
+  - G-C5 (bounded) — PASS (16 files, all `odd-platform-ui/src`).
+  - G-C10 — PASS docs (DOC-494 on the train, content accurate); ontology no-refresh (presentation-only) honest.
+  - G-C12 (design-before-build / PO-SRE lens) — PASS: reuses `RecentlyViewedTag` (no new component); the column form-factor is maintainer-directed (GATE 1) and platform-consistent (the per-row `null`-when-empty marker mirrors the favorite-star pattern); trailing position per GATE 1.
+- **multi-stack / ingestion-e2e**: reviewer-assessed **FE-only skip** (pure search-table presentation; no collector/ingestion/multi-datasource path touched) — precedent CTRIB-031/038/040; the implementer's run-logs show both PASS.
+- **Outbound URL sweep**: the 3 doc cross-links (`search.md`, `business-glossary.md`, `query-examples.md`) resolve on the train (Gate 7); live GitBook verification deferred to the 1.0.0 release gate (Gate 8 PENDING-RELEASE).
+- **Banned-phrase check**: none used.
+- **Regressions**: none attributable to CTRIB-042.
+- **Navigation**: consistent (no `navigation/domains` pointer shift; FE-only).
+- **The blocker (maintainer-directed, 2026-06-29)**: the **detail-page** recency marker shows a meaningless
+  "Viewed 0 seconds ago" — the detail page records-on-open, so `lastViewedAt ≈ now` and the relative form is
+  always ~0, resetting on every refresh. Root cause: `RecentlyViewedTag` renders relative time everywhere.
+  Fix = **CTRIB-043** (absolute open time — browser tz + explicit UTC offset, UTC fallback — on the 3 detail
+  headers; the list columns + home panel keep the relative form, where recency genuinely varies).
+- **Doc-product editorial audit**: scoped this run to the data-discovery cluster (`recently-viewed`,
+  `favorites`, `catalog-overview`, `search`) given the session's pivot to the maintainer-directed CTRIB-043
+  fix — no new coherence findings in that cluster (the RV page reads coherently; the Popular-vs-recency hint
+  and the DISABLED-auth shared-bucket warning are correct admonitions). Full-tree audit **deferred to the
+  next `/review`** (partition noted) — NOT VERIFIED for the rest of the tree this session.
+- **Disposition**: `pr-draft` → **`blocked`**. The list-column change is correct and already on `origin/main`;
+  the Recently-Viewed feature advances to `pending-release` (1.0.0) once CTRIB-043 lands and the maintainer is
+  satisfied. Every note ends VERIFIED-via or NOT-VERIFIED as marked.

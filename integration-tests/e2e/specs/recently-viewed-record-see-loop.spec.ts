@@ -146,4 +146,38 @@ test.describe('Recently Viewed — open -> see loop + cross-surface recency + re
 
     await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`); // cleanup
   });
+
+  test('the detail header shows the absolute open time (tz + explicit offset), not a relative "0 ago" (#1816 / CTRIB-043)', async ({
+    page,
+    request,
+  }) => {
+    const id = await setup(request);
+
+    // Open the asset — record-on-open sets lastViewedAt = now, so the header value is ALWAYS ~now.
+    const recorded = recordOnOpen(page);
+    await page.goto(`/dataentities/${id}/overview`);
+    await recorded;
+
+    // The detail-header marker must show an ABSOLUTE timestamp with an explicit UTC offset (e.g.
+    // "Viewed 29 Jun 2026, 12:34 UTC+00:00"). On ref:main the header renders the relative
+    // "Viewed 0 seconds ago" — meaningless here (it resets on every refresh) — so the offset is absent
+    // -> RED by construction; the fix makes it GREEN.
+    const tag = page.locator('[data-qa="recently-viewed-tag"]').first();
+    await expect(tag, 'the recency marker shows on the detail header').toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      tag,
+      'an absolute timestamp with an explicit UTC offset, not a relative "x ago"'
+    ).toContainText(/UTC[+-]\d{2}:\d{2}/, { timeout: 10_000 });
+    await expect(tag, 'the meaningless relative "x ago" form is gone').not.toContainText('ago');
+
+    // G-C12 pixel gate: capture the rendered detail-header timestamp for the maintainer's review.
+    await page.screenshot({
+      path: 'test-results/it149-detail-absolute-time.png',
+      fullPage: true,
+    });
+
+    await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`); // cleanup
+  });
 });

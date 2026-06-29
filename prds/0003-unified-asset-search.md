@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft for review → **to be logged as a NEW GitHub issue** on `opendatadiscovery/odd-platform` (this PRD is its requirements; the issue is then decomposed into slices). |
+| **Status** | **Logged as [#1825](https://github.com/opendatadiscovery/odd-platform/issues/1825)** (2026-06-29, milestone 1.0.0) — to be decomposed into slices. This PRD is its requirements + design rationale. Pivot announced on the sibling issues: [#1815 comment](https://github.com/opendatadiscovery/odd-platform/issues/1815#issuecomment-4832457367), [#1816 comment](https://github.com/opendatadiscovery/odd-platform/issues/1816#issuecomment-4832457502). |
 | **Target** | odd-platform — **milestone TBD by the maintainer** (release planning is maintainer authority; see §9 — this likely lands on its own *before* the Favorites completion). |
 | **Blocks** | **PRD-0002 Group B / #1815 (Favorites completion).** This overhaul **supersedes** the bespoke Favorites tab, its facets, and its planned full-text search — Favorites is *finished* by becoming a **filter** on this search, not by building a parallel surface. The Favorites Group-B work is paused until this lands (nothing is pushed). |
 | **Relates** | **PLT-250 (Recently Viewed)** — becomes a datetime filter on this search, not a tab. **PRD-0001/0002** — the `favorite` table + the star + the write API are reused as a search filter (not retired). |

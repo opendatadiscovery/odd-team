@@ -25,9 +25,9 @@ Search overhaul (PRD-0003)  ── spine ──►  P1 core → P2 filters → P
 
 | # | Artifact | Where | Owner | Status |
 |---|---|---|---|---|
-| **L1** | **New issue — the Search overhaul** (paste-ready body = PRD-0003 §"GitHub issue") | GitHub `odd-platform` | **You** | ☐ to log |
-| **L2** | Comment on **#1815**: Group B superseded → folded into the Search overhaul; star/API/skeleton stay; tab → filter | GitHub #1815 | You *(I can draft)* | ☐ |
-| **L3** | Comment on **#1816**: scope refined → foundation + panel now; tab → Search filter | GitHub #1816 | You *(I can draft)* | ☐ |
+| **L1** | **New issue — the Search overhaul** | GitHub `odd-platform` | You | ☑ **[#1825](https://github.com/opendatadiscovery/odd-platform/issues/1825)** (2026-06-29, ms 1.0.0) |
+| **L2** | Comment on **#1815**: completion folds into #1825; star/API/panel stay; tab → Favorites filter | GitHub #1815 | Me (bot) | ☑ [issuecomment-4832457367](https://github.com/opendatadiscovery/odd-platform/issues/1815#issuecomment-4832457367) |
+| **L3** | Comment on **#1816**: foundation + panel now; tab → date/time Search filter | GitHub #1816 | Me (bot) | ☑ [issuecomment-4832457502](https://github.com/opendatadiscovery/odd-platform/issues/1816#issuecomment-4832457502) |
 | **L4** | **Search ADR** — federated-aggregator vs unified-index; the polymorphic contract; lineage-filter depth; column persistence | `adrs/drafts/` | **Me** | ☐ next design step |
 | — | PRD-0003 + this roadmap | workspace | Me | ☑ done |
 
@@ -35,7 +35,7 @@ Search overhaul (PRD-0003)  ── spine ──►  P1 core → P2 filters → P
 
 | Step | What | Who drives | Finishes / unblocks |
 |---|---|---|---|
-| **0** | Log L1 (+ post L2/L3) | You | the public record reflects the pivot |
+| **0** | ☑ **Done** — #1825 logged; scope comments posted on #1815 + #1816 | You + bot | the public record reflects the pivot |
 | **1** | **#1816 foundation** — `/contribute #1816`, refined scope (recently_viewed *timestamp* tracking + read API + home panel; **no tab**). GATE-1 plan for your approval → build. | Me → your gates | the **Recently-viewed** search filter + the home panel *(Popular is separate — existing `view_count`)* |
 | **2** | **Search ADR** (L4) | Me → your approval | the Search build |
 | **3** | **Search P1** — polymorphic core + Asset-type filter (DE class split) + cross-kind result row + retire the class tabs | Me, sliced → your gates | the search foundation |

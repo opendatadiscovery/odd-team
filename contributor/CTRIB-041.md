@@ -183,3 +183,24 @@ Each exclusion is tracked here (and, on GATE-1 approval, summarized in a public 
 - GATE-1 scope comment posted on #1816 → [issuecomment-4832923391](https://github.com/opendatadiscovery/odd-platform/issues/1816#issuecomment-4832923391) (odd-contributor[bot]; reflects the approved foundation scope above).
 
 **Next:** Phase D — S1 (backend foundation) in the isolated worktree `../odd-platform-ctrib041`.
+
+## Phase D — S1 (backend foundation) — COMPLETE → DRAFT PR #1826
+
+**Branch:** `contrib/CTRIB-041-recently-viewed-foundation` @ `3eb3b0ff` (off `origin/main` da2932e1; same-name-tracked, never main — O6/LSN-038). **DRAFT PR:** [#1826](https://github.com/opendatadiscovery/odd-platform/pull/1826) (`Part of #1816`, draft, auto-close-check CLEAN). Worktree `../odd-platform-ctrib041`; SUT tag `odd-platform:odd-team-sut-ctrib041`.
+
+**Files (21):** spec `components.yaml` (+RecentlyViewedAsset/List/Ref) + `openapi.yaml` (+4 paths); migration `V0_0_95__create_recently_viewed.sql`; `service/AssetRefResolver` (new shared core) + `FavoriteAssetResolver` (now adapter) + `RecentlyViewedAssetResolver` (new); `repository/reactive/ReactiveRecentlyViewedRepository(+Impl)`; `service/RecentlyViewedService(+Impl)`; `controller/RecentlyViewedController`; `housekeeping/job/RecentlyViewedHousekeepingJob` + `config/HousekeepingTTLProperties` + `application.yml`; 7 test classes.
+
+**Test ledger (DoD):**
+- **Unit / full CI replica** — `:odd-platform-api:build` GREEN @ `3eb3b0ff` (`scripts/run-platform-tests.sh`): test + checkstyleMain + checkstyleTest + jacocoTestReport + assemble. **Changed-file coverage 100% line** on every new class (AssetRefResolver 46/46, RecentlyViewedServiceImpl 35/35, RecentlyViewedController 7/7, RecentlyViewedAssetResolver 20/20, FavoriteAssetResolver 15/15, RecentlyViewedHousekeepingJob 27/27; repo impl exercised by its 8-method integration test, excluded from the jacoco report set). G-C13 met locally.
+- **Integration / FULL e2e regression** — `run-regression.sh ctrib041`, SUT `6e4a0148` ← worktree `3eb3b0ff`:
+  - `feature-complete` **323 pass / 1 fail** = GREEN-FOR-CHANGE. The 1 fail is `favorites-star-see-loop.spec.ts:159` "Favorites tab **Description column** … (#1815 **Group B**)" — a co-stream spec (odd-team `6c62efe`) for an **unmerged** platform feature: `data-qa="favorite-description"` is **absent on main + my SUT** (present only on the unmerged `contrib/CTRIB-039-favorites-group-b`), so it is deterministically RED on any non-Group-B SUT (the documented co-stream "unmerged-fix spec" pattern). My diff touches NO favorites FE / NO spec; the **core favorites IT-148** (tests 125/126/127, star→see loop) **GREEN** — the AssetRefResolver refactor preserves favorites.
+  - `known-bugs` **3 fail = expected-RED / 0 unexpected-green**; `multi-stack` **9 pass**; `ingestion-e2e` **15 pass**.
+- **RED proof** — S1 has no new e2e (IT-149 ships in S2). The RV backend's RED→GREEN is at the unit/integration-test level: the `recently_viewed` table + the repository/service/controller/housekeeping tests do not exist on `ref:main` (RED by construction) and pass on the branch.
+
+**Docs (G-C10):** none in S1 — no user-visible surface yet; the user-facing Recently Viewed docs ship with the S2 frontend on the documentation `release/1.0.0` train (paired DOC item at S2 DoD).
+
+**Ontology (G-C10):** deferred to S2 DoD — the feature spans S1+S2; refresh `/enrich --touched` the new RV nodes (+ a "Recently Viewed" concept + feature-flow) once the full feature exists and `lineage/**` is clean+unclaimed (currently dirty with unowned prior-run P-001 probe drift → route-around, O10).
+
+**Principal sufficiency (G-C13):** enough + meaningful tests (incl. the principal-scoped-delete security test + DISABLED shared-bucket); 100% changed-file line coverage; no control lost; existing favorites behaviour preserved (regression green-for-change). No UI in S1 (the pixel review applies to S2).
+
+**Status:** S1 = `pr-draft` → `/review` (separate session) → `review-ready` → human GATE-2 merge. CTRIB stays open (closes when #1816 closes on the final slice). **Proceeding to S2 (frontend)** per the maintainer's "continue with S2 once the regression passes."

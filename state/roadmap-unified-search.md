@@ -28,7 +28,7 @@ Search overhaul (PRD-0003)  ── spine ──►  P1 core → P2 filters → P
 | **L1** | **New issue — the Search overhaul** | GitHub `odd-platform` | You | ☑ **[#1825](https://github.com/opendatadiscovery/odd-platform/issues/1825)** (2026-06-29, ms 1.0.0) |
 | **L2** | Comment on **#1815**: completion folds into #1825; star/API/panel stay; tab → Favorites filter | GitHub #1815 | Me (bot) | ☑ [issuecomment-4832457367](https://github.com/opendatadiscovery/odd-platform/issues/1815#issuecomment-4832457367) |
 | **L3** | Comment on **#1816**: foundation + panel now; tab → date/time Search filter | GitHub #1816 | Me (bot) | ☑ [issuecomment-4832457502](https://github.com/opendatadiscovery/odd-platform/issues/1816#issuecomment-4832457502) |
-| **L4** | **Search ADR** — federated aggregator (D1) + polymorphic Asset result + filters-as-facets + lineage depth + persistence | `adrs/drafts/unified-asset-search.md` | Me | ☑ **drafted** 2026-06-29 — pending your review |
+| **L4** | **Search ADR** (rev 2 — **unified index** D1, performance-first, per-direction lineage depth D4, no-breaking-core D9) | `adrs/drafts/unified-asset-search.md` | Me | ☑ **drafted** — pending your review |
 | — | PRD-0003 + this roadmap | workspace | Me | ☑ done |
 
 ## Sequence — where we start → next steps
@@ -38,7 +38,7 @@ Search overhaul (PRD-0003)  ── spine ──►  P1 core → P2 filters → P
 | **0** | ☑ **Done** — #1825 logged; scope comments posted on #1815 + #1816 | You + bot | the public record reflects the pivot |
 | **1** | **#1816 foundation** — **in a separate `/contribute #1816` session** (recently_viewed *timestamp* tracking + read API + home panel; **no tab**) | Separate session → your gates | the **Recently-viewed** search filter + the home panel *(Popular is separate — existing `view_count`)* |
 | **2** | ☑ **Search ADR drafted** (`adrs/drafts/unified-asset-search.md`) — pending your review/approval | Me → your approval | the Search build |
-| **3** | **Search P1** — polymorphic core + Asset-type filter (DE class split) + cross-kind result row + retire the class tabs | Me, sliced → your gates | the search foundation |
+| **3** | **Search P1** — the **unified search core** (`asset_search_entrypoint` index + incremental maintenance + the polymorphic ranked query) + Asset-type filter + cross-kind row + retire class tabs; **keep `/api/search` working** | Me, sliced → your gates | the search engine + a latency baseline |
 | **4** | **Search P2** — the scope filters (**Favorites** · **My data** · **Popular** · **Recently-viewed**) + retire the My-Objects + `/favorites` tabs + rewire the home "See all" deep-links | Me, sliced → your gates | **Favorites + Recently-viewed FINISH here** |
 | **5** | **Search P3** — highlight parity across kinds + the result-column "constructor" | Me, sliced → your gates | the power-user layer |
 | **6** | **Cleanup** — retire the parked Description slice; docs shift "tab → filter"; ontology refresh | Me → your gate | closure |

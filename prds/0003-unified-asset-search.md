@@ -66,7 +66,9 @@ The `/search` **class tabs** and the **My Objects tab** are removed — their fu
 - The catalog-overview **Favorites** panel's **"See all" → `/search?favorites=yes`** (not a `/favorites` tab). Likewise **My Objects / Upstream / Downstream** → `/search` with **My data** pre-set, and **Popular** → its scoped search.
 - The bespoke **`/favorites` tab is removed** (superseding S3/S4/S4b's tab + the in-progress Description column). The home panels stay as 5-item widgets.
 
-## 5. Technical direction (recommended — to be confirmed in the ADR)
+## 5. Technical direction → **resolved in the ADR (rev 2): the unified index**
+
+> **Resolution:** `adrs/drafts/unified-asset-search.md` (D1) re-weighed this for 1.0.0 — performance-first (search is the most-used feature) + core-engine rework permitted when benefit > migration drawback — and chose a **unified cross-kind index** (one ranked query; true cross-kind relevance; correct pagination), maintained alongside the per-kind ones for backward-compat (no breaking change to the core). The federated option below is the documented **rejected fallback**.
 
 **Federated aggregator over the existing per-kind entrypoints** (vs a new unified index): a new search path fans the query + filters out to each kind's existing FTS entrypoint, merges + ranks into the polymorphic `Asset` result, and computes facets as the **shared** dimensions (kind-specific facets surface when that kind is in scope).
 - *Why:* reuses all four existing indexes + per-kind ranking/highlights; **no migration**; the result is the `Asset` union Favorites already defines; kind-extensible.

@@ -5,12 +5,12 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1816
 title: "Recently Viewed — recency-tracking foundation + main-page panel"
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open, semver, due 2026-07-31
-status: planned             # intake -> scoping -> ... -> planned ; GATE 1 PENDING (no code yet, G-C3)
+status: implementing        # GATE 1 APPROVED 2026-06-29 (+ scope additions); Phase D (S1) underway
 reproduced: "baseline (feature absent) — see Phase B"
 adr_required: false         # conforms to the approved+shipped foundation ADR (G-C7 does NOT re-fire) — see Phase A §G-C7
 adr: adrs/drafts/favorites-recently-viewed-foundation.md   # D1-D8 already cover Recently Viewed
-plan_approved_by: null
-plan_approved_at: null
+plan_approved_by: "RamanDamayeu (maintainer) — GATE-1 AskUserQuestion 2026-06-29"
+plan_approved_at: "2026-06-29"
 docs_routing: "release/1.0.0"   # unreleased behaviour -> documentation train (G-C11)
 pr_url: null
 pr_draft: null
@@ -156,5 +156,30 @@ Each exclusion is tracked here (and, on GATE-1 approval, summarized in a public 
 >
 > **Deferred** (tracked, not dropped): the standalone *tab* and its facet sidebar are superseded by the unified Search recency filter (#1825) — this foundation is exactly what that filter reads; per-row remove / "clear all" / the operator hide-flag are a thin fast-follow. Per-user identity `(username, provider)`, principal-scoped reads, and the DISABLED shared bucket follow the shipped Favorites foundation.
 
-## GATE 1 — PENDING
-No code, no branch, no GitHub write until the maintainer approves the plan + the decomposition (G-C3). On approval: post the scope comment, then Phase D (S1 first).
+## GATE 1 — APPROVED (2026-06-29, maintainer RamanDamayeu, via AskUserQuestion)
+
+**Decomposition:** approved — **2 slices (BE → FE)**, stacked on `main`.
+
+**Scope ADDITIONS the maintainer attached (now in scope — they expand "the panel" into a complete recency capability):**
+
+1. **Per-row remove is IN, and principal-scoped (security).** `DELETE /api/recently-viewed/{asset_kind}/{asset_id}` resolves identity from the security context and scopes the delete to `(oidc_username, provider)` — **a user can remove only their own rows, never another user's**. Under `auth.type=DISABLED` removal operates on the shared sentinel bucket (global shared). This is **explicitly unit-tested** (user A's delete cannot touch user B's row; DISABLED → shared). (Retention housekeeping TTL+newest-N also stays IN — Q2 options 1 **and** 2.)
+2. **Cross-surface recency UX (new).** Show the **"recently viewed at"** value **+ a remove control** on **(a)** the asset's **detail/overview page** and **(b)** the **list/row surfaces** — rendered only when that asset is in the current user's RV set. ⇒ needs a **batch status endpoint** `POST /api/recently-viewed/status` (refs → `[{asset_kind, asset_id, last_viewed_at}]`, principal-scoped), the RV analog of `POST /api/favorites/status`, so a list page / detail page hydrates recency in one call. (This pulls the batch-status endpoint back IN — it was excluded in the pre-approval draft.)
+3. **Search recency date-filter (relative + absolute), modeled on `/api/activity`.** The **filter UI** lands with the Search overhaul (**#1825**, deferred), but the **foundation read API supports it now**: `GET /api/recently-viewed/list` gains `viewed_after` / `viewed_before` (`string`/`date-time`, matching Activity's `begin_date`/`end_date` at `openapi.yaml:3488-3499`). Relative presets ("last 7 days") are an FE concern that #1825 computes into absolute bounds — not built here.
+
+**Updated scope EXCLUSIONS (deferred → #1825 / fast-follow):**
+- The standalone Recently-Viewed **tab** + its multi-facet sidebar → **Search #1825** (the read API here is its data source).
+- The recency **date-filter UI** (the Activity-style relative/absolute picker) → **Search #1825** (the API params ship now).
+- The **`recently-viewed.enabled` operator hide-flag** → fast-follow (defaults-on requirement met by shipping the surface).
+- The **"Clear all history"** bulk control → fast-follow (per-row remove is the MVP erasure control; operator-side `(username,provider)` erase hook is a noted fast-follow).
+
+**Build spec delta (folded into S1/S2):**
+- **S1 spec/API:** add `POST /api/recently-viewed/status` (batch) + `DELETE /api/recently-viewed/{asset_kind}/{asset_id}` (principal-scoped) + `viewed_after`/`viewed_before` on the list GET. `RecentlyViewedAsset` carries `last_viewed_at`.
+- **S1 backend:** repo gains `getRecentlyViewed(refs)` (batch status) + `removeRecentlyViewed(user,provider,kind,id)` (principal-scoped hard delete); service+controller expose status + remove; the principal-scoping security unit test is mandatory.
+- **S2 FE:** a reusable **recency affordance** (the "viewed at" value + remove) used on detail pages **and** list rows, hydrated by the batch status; IT-149 asserts the cross-surface display + self-only removal.
+
+**Write-path shape:** unchanged from the plan — identity in-chain → UPSERT → `204` (not literal `.subscribe()`; avoids the Reactor security-context footgun); maintainer did not object.
+
+**GitHub writes (this run):**
+- GATE-1 scope comment posted on #1816 → [issuecomment-4832923391](https://github.com/opendatadiscovery/odd-platform/issues/1816#issuecomment-4832923391) (odd-contributor[bot]; reflects the approved foundation scope above).
+
+**Next:** Phase D — S1 (backend foundation) in the isolated worktree `../odd-platform-ctrib041`.

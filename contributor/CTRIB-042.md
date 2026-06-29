@@ -78,9 +78,11 @@ components/styles + 7 locales). The RecentlyViewedTag component is unchanged.
   catalog-search, term-search, query-examples-crud-search, search-class-tab-filter, search-result-row-click
   all GREEN (the CTRIB-004 shared-surface guard). known-bugs 3-RED-expected/0-unexpected-green; multi-stack 9;
   ingestion-e2e 15.
-- **RED proof:** IT-149 list-column test on `ODD_SUT=ref:main` (3cbb3b85) — RUNNING; the "Recently viewed"
-  column header is absent on the merged-S2 inline placement, so test 265 is RED on base while test 264 stays
-  GREEN (run-confirmed result appended on completion).
+- **RED proof — run-confirmed:** IT-149 on `ODD_SUT=ref:main` (3cbb3b85) → **1 passed / 1 failed**: test 1
+  (open->see loop) PASSED (S2's panel/detail/remove are on main); test 2 (the list-column) **FAILED** —
+  `getByText('Recently viewed')` (the column header) not found, because on the merged-S2 base the marker is
+  inline with no column. So the new test is RED on base, GREEN on the fix (regression test 265) — it
+  discriminates the column, not neutered.
 
 ## Docs (G-C10)
 

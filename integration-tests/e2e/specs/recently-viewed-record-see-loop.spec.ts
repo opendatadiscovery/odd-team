@@ -1,5 +1,11 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { seedIngestionDataSource, entityByOddrn, seedSearchableEntity } from '../helpers/db';
+import {
+  seedIngestionDataSource,
+  entityByOddrn,
+  seedSearchableEntity,
+  seedEntityAlert,
+  ENTITY_ID,
+} from '../helpers/db';
 import { ingestEntities, tableEntity } from '../helpers/ingest';
 
 /**
@@ -178,6 +184,75 @@ test.describe('Recently Viewed — open -> see loop + cross-surface recency + re
       fullPage: true,
     });
 
+    await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`); // cleanup
+  });
+
+  test('the Recently Viewed home column highlights a data entity with open alerts, like Popular (#1816 / CTRIB-044)', async ({
+    page,
+    request,
+  }) => {
+    // An entity with an OPEN alert, recorded into the recently-viewed history.
+    await seedEntityAlert();
+    await request.post(`/api/recently-viewed/DATA_ENTITY/${ENTITY_ID}`);
+
+    // On the home Recommended section the Recently Viewed column flags the alerted row with the SAME
+    // marker the Popular column uses (a red alert background + an alert icon). On ref:main the home
+    // columns carry no alert marker -> RED by construction; the fix makes it GREEN.
+    await page.goto('/');
+    await expect(
+      page.locator('[data-qa="recommended-recently-viewed"] [data-qa="recommended-alert"]'),
+      'the Recently Viewed column flags the alerted entity (the Popular treatment)'
+    ).toBeVisible({ timeout: 15_000 });
+
+    await page.screenshot({
+      path: 'test-results/it149-recommended-alert-highlight.png',
+      fullPage: true,
+    });
+    await request.delete(`/api/recently-viewed/DATA_ENTITY/${ENTITY_ID}`); // cleanup
+  });
+
+  test('the Search list scrolls horizontally with the Name pinned, keeping the Recently-viewed remove control reachable on a narrow screen (#1816 / CTRIB-044)', async ({
+    page,
+    request,
+  }) => {
+    await page.setViewportSize({ width: 900, height: 820 });
+    const id = 2211;
+    const NAME = 'IT149ScrollColEntity';
+    await seedSearchableEntity(id, NAME);
+    await request.post(`/api/recently-viewed/DATA_ENTITY/${id}`);
+
+    await page.goto('/search');
+    await search(page, NAME);
+    await expect(page.getByText('Recently viewed').first()).toBeVisible({ timeout: 10_000 });
+
+    // The table floors at a min-width and the container scrolls horizontally — it does NOT compress every
+    // column into the narrow viewport (which clipped the Recently-viewed cell). On ref:main the columns
+    // compress to fit and the container is not scrollable -> RED by construction.
+    const scrollable = await page
+      .locator('#results-list')
+      .evaluate(el => el.scrollWidth > el.clientWidth + 100);
+    expect(scrollable, 'the search list is horizontally scrollable at 900px wide').toBe(true);
+
+    // Scroll fully right: the Name column stays pinned (sticky-left) and the row's recency remove control
+    // is reachable in its own column.
+    await page.locator('#results-list').evaluate(el => {
+      el.scrollLeft = el.scrollWidth;
+    });
+    await page.waitForTimeout(300);
+    await expect(
+      page.getByText('Name').first(),
+      'the Name column stays pinned while the table scrolls right'
+    ).toBeVisible();
+    const row = page
+      .locator('[data-testid="search-result-item"]')
+      .filter({ hasText: NAME })
+      .first();
+    await expect(
+      row.locator('[data-qa="recently-viewed-remove"]'),
+      'the Recently-viewed remove control is reachable after scrolling right'
+    ).toBeVisible({ timeout: 10_000 });
+
+    await page.screenshot({ path: 'test-results/it149-list-hscroll.png', fullPage: true });
     await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`); // cleanup
   });
 });

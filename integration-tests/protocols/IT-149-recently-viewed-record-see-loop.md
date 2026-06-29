@@ -84,6 +84,20 @@ seeds and asserts against that one bucket.
    ago" (which is meaningless on a record-on-open page and resets on every refresh). RED on `ref:main` by
    construction (the header renders the relative form, no offset). The list surfaces keep the relative form.
 
+**Recommended alert highlight (test 4, #1816 / CTRIB-044):**
+8. Seed a data entity with an OPEN alert and record-view it. On the home page (`/`) confirm the Recommended
+   **Recently Viewed** column flags that row with the SAME marker the **Popular** column uses — a red alert
+   background + an alert icon (`[data-qa="recommended-alert"]`). RED on `ref:main` by construction (the
+   Favorites/Recently-Viewed columns carry no alert marker; only Popular does).
+
+**List horizontal scroll + pinned Name (test 5, #1816 / CTRIB-044):**
+9. At a narrow viewport (900px) search the catalog. Confirm the results container (`#results-list`) is
+   horizontally scrollable (`scrollWidth > clientWidth`) rather than compressing every column into view, the
+   **Name** column stays pinned to the left while the table scrolls right, and the row's recency remove control
+   (`[data-qa="recently-viewed-remove"]`) is reachable in its own column. The Dictionary term list and the
+   Query Examples list use the same single-scroll-container pattern. RED on `ref:main` by construction (the
+   columns compress to fit; the container is not scrollable).
+
 **Automated rail:** `integration-tests/run-suite.sh IT-149` (or the full `run-regression.sh`). RED proof:
 `ODD_SUT=ref:main integration-tests/run-suite.sh IT-149` — on `main` (9097c548, the S1 backend merged but
 no frontend) opening the detail page fires no record POST and there is no panel, so step 1 (the record

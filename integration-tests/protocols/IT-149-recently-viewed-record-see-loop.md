@@ -70,6 +70,13 @@ seeds and asserts against that one bucket.
    `DELETE /api/recently-viewed/DATA_ENTITY/{id}` returns 2xx.
 5. Confirm `it149_tbl` is **gone** from the Recently Viewed panel (no reload).
 
+**List-surface column (test 2, #1816 / CTRIB-042):**
+6. Seed a searchable entity; open it (record); on `/search` confirm the **"Recently viewed" column header**
+   is present and the entity's results row shows the recency marker (`[data-qa="recently-viewed-tag"]`) in
+   its own column — NOT inline in the name cell. Likewise the Dictionary term list and the Query Examples
+   list carry a Recently-viewed column. RED on `ref:main` by construction (S2 rendered the marker inline,
+   no column).
+
 **Automated rail:** `integration-tests/run-suite.sh IT-149` (or the full `run-regression.sh`). RED proof:
 `ODD_SUT=ref:main integration-tests/run-suite.sh IT-149` — on `main` (9097c548, the S1 backend merged but
 no frontend) opening the detail page fires no record POST and there is no panel, so step 1 (the record

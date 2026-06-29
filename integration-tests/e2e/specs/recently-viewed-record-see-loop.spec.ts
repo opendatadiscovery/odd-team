@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { seedIngestionDataSource, entityByOddrn } from '../helpers/db';
+import { seedIngestionDataSource, entityByOddrn, seedSearchableEntity } from '../helpers/db';
 import { ingestEntities, tableEntity } from '../helpers/ingest';
 
 /**
@@ -40,6 +40,23 @@ const recordOnOpen = (page: Page) =>
   page.waitForResponse(
     r => RV_DE.test(r.url()) && r.request().method() === 'POST' && r.ok()
   );
+
+// Drive the main catalog search to a results table (mirrors IT-022): /search creates an empty session +
+// rewrites the URL, then Enter fires the PUT that really executes the query.
+async function search(page: Page, query: string): Promise<void> {
+  await page.waitForURL(/\/search\/[0-9a-f-]+/, { timeout: 15_000 });
+  const sessionId = new URL(page.url()).pathname.split('/').pop();
+  const box = page.getByPlaceholder('Search', { exact: true });
+  await box.fill(query);
+  const updated = page.waitForResponse(
+    r =>
+      new RegExp(`/api/search/${sessionId}$`).test(r.url().split('?')[0]) &&
+      r.request().method() === 'PUT' &&
+      r.ok()
+  );
+  await box.press('Enter');
+  await updated;
+}
 
 test.describe('Recently Viewed — open -> see loop + cross-surface recency + remove (#1816 / CTRIB-041)', () => {
   test('opening an asset records it -> home panel + detail recency tag; remove -> it is gone', async ({
@@ -90,5 +107,43 @@ test.describe('Recently Viewed — open -> see loop + cross-surface recency + re
 
     // Cleanup — keep the shared sentinel bucket deterministic for re-runs.
     await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`);
+  });
+
+  test('on the list surface the recency shows in a dedicated column, not inline in the name (#1816 / CTRIB-042)', async ({
+    page,
+    request,
+  }) => {
+    const id = 2150;
+    const NAME2 = 'IT149RvColEntity';
+    await seedSearchableEntity(id, NAME2);
+    await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`); // deterministic clean start
+
+    // Open it once so it enters the user's recently-viewed history.
+    const recorded = recordOnOpen(page);
+    await page.goto(`/dataentities/${id}/overview`);
+    await recorded;
+
+    // On the catalog search list, the recency is a dedicated column (header + the row's marker), NOT
+    // crammed inline next to the name. On ref:main the column does not exist -> RED by construction.
+    await page.goto('/search');
+    await search(page, NAME2);
+    await expect(
+      page.getByText('Recently viewed').first(),
+      'the Recently-viewed column header is present on the list'
+    ).toBeVisible({ timeout: 10_000 });
+    const row = page
+      .locator('[data-testid="search-result-item"]')
+      .filter({ hasText: NAME2 })
+      .first();
+    await expect(row, 'the entity row is listed').toBeVisible({ timeout: 10_000 });
+    await expect(
+      row.locator('[data-qa="recently-viewed-tag"]'),
+      'the recency marker renders in the row (its own column)'
+    ).toBeVisible({ timeout: 10_000 });
+
+    // G-C12 pixel gate: capture the rendered list column for the maintainer's review.
+    await page.screenshot({ path: 'test-results/it149-recency-list-column.png', fullPage: true });
+
+    await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`); // cleanup
   });
 });

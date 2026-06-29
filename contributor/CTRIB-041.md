@@ -5,15 +5,15 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1816
 title: "Recently Viewed — recency-tracking foundation + main-page panel"
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open, semver, due 2026-07-31
-status: implementing        # GATE 1 APPROVED 2026-06-29 (+ scope additions); Phase D (S1) underway
+status: pr-draft            # S1 MERGED (#1826 @ 9097c548); S2 frontend -> DRAFT PR #1827 (Closes #1816). /review (separate session) -> GATE 2.
 reproduced: "baseline (feature absent) — see Phase B"
 adr_required: false         # conforms to the approved+shipped foundation ADR (G-C7 does NOT re-fire) — see Phase A §G-C7
 adr: adrs/drafts/favorites-recently-viewed-foundation.md   # D1-D8 already cover Recently Viewed
 plan_approved_by: "RamanDamayeu (maintainer) — GATE-1 AskUserQuestion 2026-06-29"
 plan_approved_at: "2026-06-29"
 docs_routing: "release/1.0.0"   # unreleased behaviour -> documentation train (G-C11)
-pr_url: null
-pr_draft: null
+pr_url: "S1 #1826 (MERGED 2026-06-29 -> origin/main 9097c548) · S2 #1827 (DRAFT, Closes #1816)"
+pr_draft: true
 stream: ctrib041
 started: "2026-06-29"
 ---
@@ -204,3 +204,26 @@ Each exclusion is tracked here (and, on GATE-1 approval, summarized in a public 
 **Principal sufficiency (G-C13):** enough + meaningful tests (incl. the principal-scoped-delete security test + DISABLED shared-bucket); 100% changed-file line coverage; no control lost; existing favorites behaviour preserved (regression green-for-change). No UI in S1 (the pixel review applies to S2).
 
 **Status:** S1 = `pr-draft` → `/review` (separate session) → `review-ready` → human GATE-2 merge. CTRIB stays open (closes when #1816 closes on the final slice). **Proceeding to S2 (frontend)** per the maintainer's "continue with S2 once the regression passes."
+
+**S1 GATE 2 — MERGED.** The maintainer merged DRAFT PR #1826 (2026-06-29) → `origin/main` **9097c548** (squash). S2 was rebased onto the merged main (`contrib/CTRIB-041-recently-viewed-panel` reset to 9097c548; the RV FE client regenerated from the main spec).
+
+## Phase D — S2 (frontend) — COMPLETE → DRAFT PR #1827 (Closes #1816)
+
+**Branch:** `contrib/CTRIB-041-recently-viewed-panel` @ `feb0bafe` (off merged main 9097c548; same-name-tracked, never main). **DRAFT PR:** [#1827](https://github.com/opendatadiscovery/odd-platform/pull/1827) (`Closes #1816` — final slice; the tab is the separate #1825; draft, live-verified Closes present). Worktree `../odd-platform-ctrib041`; SUT tag `odd-platform:odd-team-sut-ctrib041`.
+
+**Files (33):** redux `recentlyViewed.{slice,thunks,selectors,actions}` + `lib/recentlyViewed.ts` + the slice `__tests__` + barrels (slices/thunks/selectors/actions index) + `interfaces/state.ts` (`RecentlyViewedState`) + `lib/api.ts` (`recentlyViewedApi`); `lib/hooks/useRecordRecentlyViewed.ts` + index; `components/shared/elements/RecentlyViewedTag/*` + index; `components/Overview/.../RecentlyViewedColumn/*` + `OwnerEntitiesList.tsx`; `components/RecentlyViewed/lib.ts`; the record-hook wiring in `DataEntityDetails` / `TermDetails` / `QueryExampleDetailsContainer`; the recency-tag wiring in `DataEntityDetailsHeader` / `TermDetailsHeader` / `ResultItem` (beside FavoriteStar); 7 locale JSONs.
+
+**Test ledger (DoD):**
+- **Unit FE** — `tsc --noEmit` clean · `eslint` clean (after prettier) · **`vitest` GREEN** (recentlyViewed.slice 6/6 + favorites.slice 6/6 = 12/12, under node 24). The FE has no jacoco gate (backend-only); the slice logic is covered by the slice test + IT-149.
+- **Integration / FULL e2e regression** — `run-regression.sh ctrib041`, SUT built from worktree `feb0bafe`:
+  - `feature-complete` **324 pass / 1 fail** = GREEN-FOR-CHANGE. **IT-149 (`recently-viewed-record-see-loop.spec.ts:45`) GREEN** (test 264 ✓). The 1 fail is the SAME co-stream Group-B favorites Description-column test (`favorites-star-see-loop.spec.ts:159`) — unmerged feature, not in this branch (S1 verdict unchanged).
+  - `known-bugs` **3 fail = expected-RED** (IT-007/IT-006/IT-004) / **0 unexpected-green**; `multi-stack` **9 pass**; `ingestion-e2e` **15 pass**.
+- **RED→GREEN proof for IT-149 (run-confirmed, both halves):** GREEN on the fix (feb0bafe, regression test 264 ✓); **RED on `ref:main`** (`ODD_SUT=ref:main run-suite.sh IT-149`, SUT 9097c548) → **1 failed**: `page.waitForResponse … timeout` at `recordOnOpen` — the record-on-open POST never fires (the entire RV frontend is absent on main). The test discriminates the feature (not neutered).
+
+**Docs (G-C10):** **AUTHORED + committed on the documentation `release/1.0.0` train** @ `aa7b651` — `data-discovery/recently-viewed.md` (new) + `catalog-overview.md` (a Recently Viewed section) + `SUMMARY.md`; paired **DOC-494** (`pending-release`, milestone 1.0.0, post-merge URLs). Recency-vs-Popular distinction stated; the deferred `enabled` flag is NOT documented (unbuilt). Live-site verify is scheduled at the 1.0.0 release gate.
+
+**Ontology (G-C10):** **DEFERRED — no refresh now + why.** `lineage/**` is dirty with unowned prior-run/regression P-001 probe drift (route-around, O10); `/enrich` is single-writer and cannot run on a dirty tree. RV is FE-presentation on the merged S1 backend; refresh the RV nodes (+ a "Recently Viewed" concept + feature-flow) at the next clean+unclaimed window / the 1.0.0 release ontology pass. Precedent: CTRIB-038/039/040 (FE-presentation deferral).
+
+**Principal sufficiency (G-C13):** enough + meaningful tests (the slice batch-hydrate test + the cross-surface IT-149 e2e, both run-proven RED→GREEN); the UI pixel review is captured (`test-results/it149-recently-viewed-panel.png`, G-C12 step 5) for the reviewer; reuse over duplication (Favorites lib + RecentlyViewedIcon); no control lost; existing favorites behaviour preserved (regression green-for-change). The cross-surface marker self-hydrates without clobbering optimistic state; recency is kept distinct from view-count Popular.
+
+**Status:** S2 = `pr-draft` → `/review` (separate session) → `review-ready` → human GATE-2 merge of #1827 (which closes #1816). The two slices: S1 #1826 MERGED; S2 #1827 DRAFT. Docs ride the 1.0.0 train (DOC-494, pending-release).

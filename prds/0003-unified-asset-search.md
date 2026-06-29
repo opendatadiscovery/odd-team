@@ -50,8 +50,9 @@ In addition to the shared facets that exist today (namespace, datasource, owner,
 - **Asset type** — `Term · Query Example · Data Entity`, where **Data Entity expands into its class categories** (Dataset, Transformer, Quality Test, …). The class split reuses the existing `ENTITY_CLASSES`/`TYPES` facet.
 - **Favorites** — `All · Yes · No` (single-select). Yes = in my favorites; No = not in my favorites (anti-join). Per-user; **instance-wide shared under `auth.type=DISABLED`** (label it).
 - **"My data"** *(name proposed; alts: "Relevance", "Ownership & lineage")* — multi-select: `All · My Objects · Upstream dependents · Downstream dependents`. My Objects = entities I own; Upstream/Downstream = the lineage neighbours of my owned set.
-- *(future, R2-f)* **Recently viewed** — a datetime-range filter (depends on PLT-250).
-- *AC:* each filter narrows the cross-kind result; filters compose; "All"/empty = unfiltered.
+- **Popular** — a **numeric range** filter on an asset's popularity (its view / "seen" count): a lower + upper bound presented as a **dual-handle slider**, and *(SHOULD)* over a **histogram of the value distribution** (the Booking/AirBnB price-range pattern, so the user sees where assets cluster before choosing the bounds). This introduces a **new facet *type*** — every facet today is categorical; Popular is the first **numeric-range facet** (a reusable pattern, later usable for row/column counts, staleness/freshness, …). **Cross-kind caveat:** data-entity popularity exists today (the "Popular" block / view count); **popularity for terms + query examples rides on the cross-kind view-tracking foundation in #1816** — so Popular is DE-only until that lands, then cross-kind for free.
+- *(future, R2-f)* **Recently viewed** — a datetime-range filter (depends on PLT-250 / #1816 — same view-tracking foundation as Popular).
+- *AC:* each filter narrows the cross-kind result; filters compose; "All"/empty = unfiltered; the Popular slider's range maps to a `seen_min`/`seen_max` filter on the popularity metric.
 
 ### R3 (MUST) — Retire the search-page tabs
 The `/search` **class tabs** and the **My Objects tab** are removed — their function moves into the **Asset type** and **My data** filters (R2). `/search` becomes pure faceted search (sidebar + results), no tabs.
@@ -72,7 +73,7 @@ The `/search` **class tabs** and the **My Objects tab** are removed — their fu
 - *Alternative (heavier):* one `asset_search_entrypoint` tsvector → true single-index ranking, at the cost of a migration + a re-indexing pipeline + reconciling the four existing entrypoints. **Decide in the ADR.**
 
 ## 6. Cross-cutting impact (Gate 0)
-- **OpenAPI / contract:** a polymorphic search result (`Asset` union); new filter params (`asset_kinds`, `entity_class_ids`, `favorites`, the `my_data` scope, future `viewed_after`); the result-column config. → **regenerate Java + TS clients.** A new public search contract → **ADR + careful versioning** (existing `/api/search` consumers).
+- **OpenAPI / contract:** a polymorphic search result (`Asset` union); new filter params (`asset_kinds`, `entity_class_ids`, `favorites`, the `my_data` scope, `seen_min`/`seen_max`, future `viewed_after`); a **numeric-range facet type** (the existing `FacetType` is categorical) + a **popularity-distribution endpoint** for the histogram; the result-column config. → **regenerate Java + TS clients.** A new public search contract → **ADR + careful versioning** (existing `/api/search` consumers).
 - **Backend:** the aggregator + the favorites join (reuse `CurrentUserIdentityResolver`) + the **My-data lineage × ownership × FTS** intersection (the heavy part, §7); cross-kind facet computation.
 - **Frontend:** `dataEntitySearch` slice → a polymorphic search slice; the sidebar filters; the result renderer (reuse the row + highlights); the **column-constructor** UI + persistence; remove the tabs; rewire the home "See all" links.
 - **Persistence (R4 columns):** per-user column config — local-state (per browser) vs server-persisted (per user). **Decide.**
@@ -85,6 +86,7 @@ The `/search` **class tabs** and the **My Objects tab** are removed — their fu
 ## 7. SRE / risk flags
 - **My-data filter cost (the heaviest part).** Upstream/Downstream = **lineage traversal from the owned set, intersected with the search** — define the **depth** (1-hop direct dependents [cheap, predictable] vs full transitive closure [powerful, can explode]); guard the query (closure size, timeouts).
 - **Cross-kind ranking** is approximate (merging four ranked lists vs one index) — acceptable for catalog search; consider kind-grouped or score-interleaved presentation.
+- **Popular-histogram distribution** must be computed over the *currently-filtered* result set so it stays meaningful as other filters narrow — a bucketed aggregate (`width_bucket`/range `GROUP BY`) that re-runs per query; cache/bound it so it doesn't dominate the search cost. The range filter (slider) is cheap; the live distribution is the part to watch.
 - **Highlight parity** is uneven at first (DE-rich, term/QE-thin).
 - **Auth degradation:** Favorites + My-data need a user identity → empty/shared under `auth.type=DISABLED`; label it, don't mislead.
 - **Contract migration:** the existing DE-only `/api/search` has consumers — version/migrate, don't silently break.
@@ -128,6 +130,7 @@ This overhaul **blocks the Favorites completion** (#1815 / PRD-0002 Group B): th
 >    - **Asset type** — Term · Query Example · Data Entity, where Data Entity expands into its classes (Dataset, Transformer, Quality Test, …).
 >    - **Favorites** — All / Yes / No.
 >    - **My data** — multi-select: All / My Objects / Upstream dependents / Downstream dependents.
+>    - **Popular** — a range filter on how often an asset has been seen (a lower/upper bound on the view count), shown as a slider over a histogram of the distribution (like a price-range filter).
 >    - *(later)* **Recently viewed** — a date/time-range filter.
 > 3. **Remove the Search page tabs** (the class tabs and the My Objects tab) — their job moves into the filters above.
 > 4. **One result table** with **search highlights** that show *why* each row matched (reuse the existing highlighting), and a **column constructor** — the user picks which fields the table shows, from every available attribute (shared fields plus kind-specific ones like a Quality Test's Suite URL); each chosen field shows for the kinds that have it.

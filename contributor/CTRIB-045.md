@@ -2,7 +2,7 @@
 id: CTRIB-045
 title: "Recently-viewed reachability — pin the recency column right + a usable horizontal scrollbar (CTRIB-044 follow-up)"
 issue: 1816
-status: pr-draft            # maintainer re-report on the merged #1830; DoD met + verified; DRAFT PR #1831 (Part of #1816). /review -> GATE 2.
+status: done                # MERGED #1831 @ 2f9734e1 (Part of #1816). GATE 2 complete (maintainer merge).
 target_repo: odd-platform
 milestone: "1.0.0"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1831 (DRAFT, Part of #1816; author odd-contributor[bot]; base main; off main 9fa5fea9)"

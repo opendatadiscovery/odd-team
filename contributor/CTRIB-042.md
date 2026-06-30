@@ -5,7 +5,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1816
 title: "Recently Viewed — recency as a dedicated list column (DE / Terms / Query Examples)"
 class: feature-followup
 milestone: "1.0.0"
-status: blocked             # list-column change PASSES all gates (POST-MERGE df70e7a0); flipped to blocked per maintainer 2026-06-29 — a detail-marker UX defect blocks the RV feature; fix = CTRIB-043 (this session).
+status: done                # list-column MERGED (#1828 @ df70e7a0); all gates PASS. The detail-marker UX defect was split out as CTRIB-043 (also merged, #1829) — it was not a defect in this item's deliverable.
 reproduced: "UX defect on the merged S2 (#1827): the list-surface recency marker is inline in the DE name cell (truncates the name) + only on Data Entities"
 adr_required: false         # presentation refactor; conforms to the shipped RV foundation
 tracking: "maintainer-directed follow-up to #1816 (CTRIB-040 precedent); no new GitHub issue; PR refs #1816"

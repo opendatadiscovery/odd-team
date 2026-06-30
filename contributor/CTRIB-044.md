@@ -5,7 +5,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1816
 title: "Recently Viewed / Recommended — alert-row highlight on Favorites+RV home columns; horizontal scroll + pinned Name column on the 3 list tables"
 class: feature-followup
 milestone: "1.0.0"
-status: pr-draft            # GATE 1 approved (maintainer 2026-06-29); DoD met + verified; DRAFT PR #1830 (Part of #1816). /review -> GATE 2.
+status: done                # MERGED #1830 @ 9fa5fea9 (Part of #1816). GATE 2 complete (maintainer merge).
 reproduced: "maintainer found in the running UI (2026-06-29): (1) the home Recommended Favorites + Recently Viewed columns do NOT highlight rows with open alerts the way Popular does; (2) on the DE / Term / Query-Example list views the Recently-viewed cell + its remove control clip on narrow screens with no way to reach them."
 adr_required: false         # presentation-only; conforms to the shipped RV/favorites/Popular surfaces
 tracking: "maintainer-directed follow-up to #1816 (CTRIB-042/043 precedent); no new GitHub issue; PR refs #1816 (already closed)"

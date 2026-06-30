@@ -20,28 +20,23 @@ const OTHER = 'IT022OtherEntity';
 const NOMATCH = 'ZZZNoSuchEntityZZZ';
 
 async function search(page: import('@playwright/test').Page, query: string): Promise<void> {
-  // HARDENED 2026-06-12 (TST-042 instance, caught in the maintainer's ui-e2e run):
-  // /search mounts by CREATING an empty session and only then rewriting the URL to
-  // /search/{id} (useCreateSearch navigates after the POST unwraps); the box's Enter
-  // dispatches updateDataEntitiesSearch({ searchId: storedSearchId }) — pressed BEFORE
-  // the session exists in redux it silently no-ops, and the UNFILTERED initial list
-  // stays rendered (the old any-ok results waiter was then satisfied by the empty
-  // session's own fetch). So: (1) wait for the URL rewrite — the deterministic "redux
-  // has the session" signal; (2) confirm the Enter's PUT /api/search/{id}
-  // (updateSearchFacets) resolved ok — the search REALLY executed. The callers' 10s
-  // DOM assertions absorb the post-PUT results render.
-  await page.waitForURL(/\/search\/[0-9a-f-]+/, { timeout: 15_000 });
-  const sessionId = new URL(page.url()).pathname.split('/').pop();
+  // ST-1 / ADR D10 (CTRIB-048): committing a query now navigates to the canonical /search?q=<query>
+  // (NO session id) and the page runs the search FROM the URL — replacing the old
+  // create-empty-session-then-PUT-to-/search/{id} flow, and DISSOLVING the TST-042 "Enter before the
+  // session exists" race (navigation no longer depends on a redux session). Wait for (1) the param URL
+  // — the deterministic "the committed query is in the URL" signal; (2) the results GET — the search
+  // REALLY executed. The callers' 10s DOM assertions absorb the results render.
   const box = page.getByPlaceholder('Search', { exact: true });
   await box.fill(query);
-  const updated = page.waitForResponse(
+  const results = page.waitForResponse(
     (r) =>
-      new RegExp(`/api/search/${sessionId}$`).test(r.url().split('?')[0]) &&
-      r.request().method() === 'PUT' &&
+      /\/api\/search\/[0-9a-f-]+\/results/.test(new URL(r.url()).pathname) &&
+      r.request().method() === 'GET' &&
       r.ok(),
   );
   await box.press('Enter'); // the main catalog search box searches on Enter
-  await updated;
+  await page.waitForURL(/\/search\?[^/]*q=/, { timeout: 15_000 });
+  await results;
 }
 
 test.describe('F-017 Catalog search — /search', () => {

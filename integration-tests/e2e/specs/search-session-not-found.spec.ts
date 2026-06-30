@@ -71,9 +71,11 @@ test.describe('F-017 search — deep-link to a non-existent/expired session (#17
     await expect(startNew, 'the expired state offers a start-a-new-search affordance').toBeVisible();
 
     await startNew.click();
-    // Recovery = a NEW session URL replaces the dead link and the expired state clears.
+    // Recovery (ST-1a / ADR D10, CTRIB-048): "Start new search" now navigates to the canonical clean
+    // /search (no session id — a fresh browse), replacing the dead /search/{missing} link; the expired
+    // state clears. (Pre-ST-1a this minted a new /search/{uuid} session URL — RED-on-base discriminator.)
     // Deliberately NOT asserting the results list (PLT-147 seed residue must not flake this).
-    await expect(page).toHaveURL(new RegExp(`/search/(?!${MISSING})[0-9a-f-]{36}`), { timeout: 15_000 });
+    await expect(page).toHaveURL(/\/search$/, { timeout: 15_000 });
     await expect(page.getByText('This search has expired')).toBeHidden();
   });
 

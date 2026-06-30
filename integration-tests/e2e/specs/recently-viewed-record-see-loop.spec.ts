@@ -47,21 +47,20 @@ const recordOnOpen = (page: Page) =>
     r => RV_DE.test(r.url()) && r.request().method() === 'POST' && r.ok()
   );
 
-// Drive the main catalog search to a results table (mirrors IT-022): /search creates an empty session +
-// rewrites the URL, then Enter fires the PUT that really executes the query.
+// Drive the main catalog search to a results table (mirrors IT-022): ST-1a / D10 (CTRIB-048) — committing a
+// query navigates to the canonical /search?q=<query> (no session id) and the page runs the search from the URL.
 async function search(page: Page, query: string): Promise<void> {
-  await page.waitForURL(/\/search\/[0-9a-f-]+/, { timeout: 15_000 });
-  const sessionId = new URL(page.url()).pathname.split('/').pop();
   const box = page.getByPlaceholder('Search', { exact: true });
   await box.fill(query);
-  const updated = page.waitForResponse(
+  const results = page.waitForResponse(
     r =>
-      new RegExp(`/api/search/${sessionId}$`).test(r.url().split('?')[0]) &&
-      r.request().method() === 'PUT' &&
+      /\/api\/search\/[0-9a-f-]+\/results/.test(new URL(r.url()).pathname) &&
+      r.request().method() === 'GET' &&
       r.ok()
   );
   await box.press('Enter');
-  await updated;
+  await page.waitForURL(/\/search\?[^/]*q=/, { timeout: 15_000 });
+  await results;
 }
 
 test.describe('Recently Viewed — open -> see loop + cross-surface recency + remove (#1816 / CTRIB-041)', () => {

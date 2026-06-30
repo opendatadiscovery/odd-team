@@ -90,13 +90,17 @@ seeds and asserts against that one bucket.
    background + an alert icon (`[data-qa="recommended-alert"]`). RED on `ref:main` by construction (the
    Favorites/Recently-Viewed columns carry no alert marker; only Popular does).
 
-**List horizontal scroll + pinned Name (test 5, #1816 / CTRIB-044):**
-9. At a narrow viewport (900px) search the catalog. Confirm the results container (`#results-list`) is
-   horizontally scrollable (`scrollWidth > clientWidth`) rather than compressing every column into view, the
-   **Name** column stays pinned to the left while the table scrolls right, and the row's recency remove control
-   (`[data-qa="recently-viewed-remove"]`) is reachable in its own column. The Dictionary term list and the
-   Query Examples list use the same single-scroll-container pattern. RED on `ref:main` by construction (the
-   columns compress to fit; the container is not scrollable).
+**Both-ends pinned, recency reachable without scrolling (test 5, #1816 / CTRIB-044 → CTRIB-045):**
+9. At a standard width (1280px, the lg breakpoint) search the catalog. The table floors at a min-width and
+   OVERFLOWS the results area (`#results-list` `scrollWidth > clientWidth`). The **Name** column is pinned to
+   the left edge and the **Recently viewed** column to the right edge, so the recency value + its remove
+   control (`[data-qa="recently-viewed-remove"]`) are **in the viewport without any horizontal scrolling** —
+   assert `toBeInViewport()`, NOT a programmatic `scrollLeft`. RED on `ref:main` (9fa5fea9) by construction:
+   the recency column is not pinned and overflows off the right edge.
+   - **Test-integrity note (CTRIB-045):** the original CTRIB-044 test scrolled the container programmatically
+     (`el.scrollLeft = el.scrollWidth`) before checking visibility — it was GREEN while the user-facing
+     affordance was broken (the scrollbar was a 4px near-white overlay nobody could find). Assert what the
+     user can see/reach, never what the DOM can be forced into.
 
 **Automated rail:** `integration-tests/run-suite.sh IT-149` (or the full `run-regression.sh`). RED proof:
 `ODD_SUT=ref:main integration-tests/run-suite.sh IT-149` — on `main` (9097c548, the S1 backend merged but

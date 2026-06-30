@@ -211,11 +211,13 @@ test.describe('Recently Viewed — open -> see loop + cross-surface recency + re
     await request.delete(`/api/recently-viewed/DATA_ENTITY/${ENTITY_ID}`); // cleanup
   });
 
-  test('the Search list scrolls horizontally with the Name pinned, keeping the Recently-viewed remove control reachable on a narrow screen (#1816 / CTRIB-044)', async ({
+  test('the Search list pins the Name + Recently-viewed columns on a narrow screen, so the recency value + its remove control are on-screen without horizontal scrolling (#1816 / CTRIB-044)', async ({
     page,
     request,
   }) => {
-    await page.setViewportSize({ width: 900, height: 820 });
+    // A standard-width screen (lg breakpoint). The catalog search table floors at a min-width wider than the
+    // results area here, so the trailing columns overflow — the pin is what keeps the recency cell on screen.
+    await page.setViewportSize({ width: 1280, height: 820 });
     const id = 2211;
     const NAME = 'IT149ScrollColEntity';
     await seedSearchableEntity(id, NAME);
@@ -225,34 +227,33 @@ test.describe('Recently Viewed — open -> see loop + cross-surface recency + re
     await search(page, NAME);
     await expect(page.getByText('Recently viewed').first()).toBeVisible({ timeout: 10_000 });
 
-    // The table floors at a min-width and the container scrolls horizontally — it does NOT compress every
-    // column into the narrow viewport (which clipped the Recently-viewed cell). On ref:main the columns
-    // compress to fit and the container is not scrollable -> RED by construction.
-    const scrollable = await page
+    // The table floors at a min-width and OVERFLOWS the narrow viewport — it does NOT compress every column
+    // into view (which clipped the recency cell). On ref:main there is no min-width so the columns compress
+    // and the container is not scrollable -> this assertion is RED by construction.
+    const overflow = await page
       .locator('#results-list')
-      .evaluate(el => el.scrollWidth > el.clientWidth + 100);
-    expect(scrollable, 'the search list is horizontally scrollable at 900px wide').toBe(true);
+      .evaluate(el => el.scrollWidth > el.clientWidth + 50);
+    expect(overflow, 'the list overflows at its min-width rather than compressing every column').toBe(
+      true
+    );
 
-    // Scroll fully right: the Name column stays pinned (sticky-left) and the row's recency remove control
-    // is reachable in its own column.
-    await page.locator('#results-list').evaluate(el => {
-      el.scrollLeft = el.scrollWidth;
-    });
-    await page.waitForTimeout(300);
-    await expect(
-      page.getByText('Name').first(),
-      'the Name column stays pinned while the table scrolls right'
-    ).toBeVisible();
+    // Despite that overflow, the Recently-viewed column is PINNED to the right edge (and Name to the left),
+    // so the recency value + its remove control are on-screen with NO horizontal scrolling — the maintainer
+    // does not have to find/drag a scrollbar to see them. This is the robust guarantee (CTRIB-044 follow-up).
     const row = page
       .locator('[data-testid="search-result-item"]')
       .filter({ hasText: NAME })
       .first();
     await expect(
       row.locator('[data-qa="recently-viewed-remove"]'),
-      'the Recently-viewed remove control is reachable after scrolling right'
-    ).toBeVisible({ timeout: 10_000 });
+      'the recency remove control is reachable (pinned right) without scrolling'
+    ).toBeInViewport({ timeout: 10_000 });
+    await expect(
+      page.getByText('Name').first(),
+      'the Name column is pinned to the left'
+    ).toBeInViewport();
 
-    await page.screenshot({ path: 'test-results/it149-list-hscroll.png', fullPage: true });
+    await page.screenshot({ path: 'test-results/it149-list-pinned.png', fullPage: true });
     await request.delete(`/api/recently-viewed/DATA_ENTITY/${id}`); // cleanup
   });
 });

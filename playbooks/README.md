@@ -63,6 +63,9 @@ When a retrospective adds new case-law that changes the procedure, update the pl
 | `deep-research.md` | active | added 2026-05-08 | drafting any proposal (ADR / pillar / skill) with ≥3 technical decisions; or about to write "open questions for human review" listing technical choices | CLAUDE.md ADR section; `feedback_research_dont_punt.md` (auto-memory); LSN-013 |
 | `pause-and-ask.md` | active (rev 2 — research-backed) | added 2026-05-08 | discrete-option decision needed → use Anthropic's `AskUserQuestion` tool per documented schema; banned: "your call" / "want me to..." / multi-option open-enders in narrative | CLAUDE.md "When to pause and ask the user"; `feedback_pause_and_ask_well.md` (auto-memory); LSN-014 (original miss), LSN-015 (intuition-authored rev 1 contradicted schema) |
 | `release-train-merge.md` | active | added 2026-06-11 | release `{version}` published (or milestone closed) with an open documentation train `release/{version}` / backlog items in `pending-release` | Gate 8 (`pillars/documentation/gates.md`); `/implement release:{version}` (half 1) + `/review release:{version}` (half 2); `adrs/drafts/release-train-doc-gating.md` |
+| `spec-gate.md` | active | added 2026-06-30 | before any design/plan on a feature/enhancement or an ambiguous-correct-behaviour bug (the WHAT is not yet falsifiable) | G-C17 (`pillars/contributor/gates.md`); `.claude/skills/contribute/SKILL.md` Phase A; LSN-040 |
+| `decompose-epic.md` | active | added 2026-06-30 | a request too big for one shippable PR (a vision/overhaul body, a core-engine rework across surfaces, a "to be decomposed" issue) | G-C18 (`pillars/contributor/gates.md`); `.claude/skills/contribute/SKILL.md` Phase A; LSN-040 |
+| `plan-contract.md` | active | added 2026-06-30 | any plan presented at a human plan-gate (every `/contribute` slice plan before GATE 1) | G-C19 (`pillars/contributor/gates.md`); `.claude/skills/contribute/SKILL.md` Phase C; `.claude/agents/plan-checker.md`; LSN-040 |
 
 ## Sub-protocol relationships
 
@@ -72,3 +75,6 @@ When a retrospective adds new case-law that changes the procedure, update the pl
 - `playbooks/follow-up-on-disk.md` invokes `playbooks/duplication-sweep.md` step 3 for the grep-backlog-first rule.
 - `playbooks/doc-product-editorial-read.md` invokes `playbooks/follow-up-on-disk.md` for every editorial finding surfaced (every finding is a tracked DOC-NNN, never narrated).
 - `playbooks/release-train-merge.md` invokes the `/implement` step-6.5 mechanical sweeps over the full train diff (half 1) and `playbooks/live-site-verification.md` across the train manifest's URL lists (half 2).
+- `playbooks/spec-gate.md` hands off to `playbooks/decompose-epic.md` when the understood WHAT is too big for one shippable slice (spec-gate then re-runs per slice).
+- `playbooks/decompose-epic.md` invokes `playbooks/deep-research.md` (ADR-first when the epic is architecturally significant — G-C7) and, per slice, `playbooks/design-before-build.md`.
+- `playbooks/plan-contract.md` requires `playbooks/spec-gate.md` + `playbooks/design-before-build.md` upstream and spawns the `.claude/agents/plan-checker.md` subagent (the fresh-context adversarial plan verifier) before the human plan-gate.

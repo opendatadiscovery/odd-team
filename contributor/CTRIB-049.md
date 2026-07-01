@@ -4,14 +4,14 @@ title: "ST-1b — Facets-in-URL search state (the facet half of ST-1; shareable 
 issue: "ST-1b sub-task of #1825 (Part of #1825; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: gate-1-pending          # Phase A/C complete (read-only): intake + G-C11 + spec-gate + design + must_haves + plan-check → GATE 1. NO code yet (G-C3).
+status: implementing            # GATE 1 APPROVED 2026-07-01 (approach: reducer race-fix; scope: ST-1b/ST-1c split). Phase D underway.
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 full-search-state-in-URL, D9 no-break) [maintainer-approved direction]"
 adr_required: false             # G-C7 does NOT fire: additive FE state↔URL, no migration / no auth-posture / no wire-contract break (D9). Covered by approved ADR D10 (the same basis as ST-1a).
 reproduced: "n/a (feature). Current behaviour VERIFIED in-tree @ f63d3915: ST-1a put only `q` in the URL; the 8 facets + myObjects live in the redux slice, PUT-synced to the session via the debounced effect (Search.tsx:97-118), NEVER in the URL — so a faceted search is not shareable/bookmarkable and back/forward does not navigate facet states."
-plan_approved_by: "PENDING — GATE 1"
-plan_approved_at: ""
+plan_approved_by: "maintainer — GATE 1 AskUserQuestion 2026-07-01 (approach: Proceed—fix in the reducer [create-per-URL-state + preserve-unsynced-across-REPLACE]; scope: Split ST-1b now / ST-1c next)"
+plan_approved_at: "2026-07-01"
 docs_routing: "release/1.0.0 train (unreleased facets-in-URL behaviour) — extends ST-1a's search.md rewrite (facets now ride the shareable URL); paired DOC item at Phase D"
 effort: large                   # a core FE search-state rewire (replaces the slice-reactive facet PUT with URL-driven updates) — held to reliable+stable
 pr_url: ""                      # Phase E
@@ -396,11 +396,56 @@ sites orphans that thunk + its `extraReducers` case + makes `isSearchUpdating` v
 (`follow-up-on-disk`); (W-r3-3) keep `Search.tsx:79` `if (isSearchCreating) return` (load-bearing — defers, not loses,
 a URL change during an in-flight create) — pin it in Task 2; (W-r3-4) the serializer/guard text now matches round-3.
 
+## Phase D — implementation (2026-07-01, GATE 1 APPROVED: reducer race-fix + ST-1b/ST-1c split)
+
+Built ST-1b on `contrib/CTRIB-049-search-url-facets` (worktree `../odd-platform-ctrib049` off `origin/main`
+`f63d3915`; LSN-038-safe — upstream unset, push.default=current, no push until GATE 2). **Commit `f89c9a65`
+(5 source files):**
+
+| File | Change |
+|---|---|
+| `lib/search/searchUrlState.ts` | EXTEND — `SearchUrlState` gains the 8 facets + `myObjects`; `searchStateToParams`/`paramsToSearchState` (de)serialise them id-keyed + fail-closed; new `searchUrlStateToFormData` (URL → the create request's selected filters) |
+| `redux/selectors/dataentitySearch.selectors.ts` | NEW `getSearchUrlState` — projects the slice's selected facets + query + myObjects → `SearchUrlState` (the mirror's source; the 5th file = the projection's natural home, a small addition to the plan's 4) |
+| `…/MainSearchInput/MainSearchInput.tsx` | the query commit merges q via the function updater `setQueryParams(prev => ({...prev, q}))` — preserves the active facet params (no clobber) |
+| `redux/slices/dataEntitySearch.slice.ts` | the **race-fix** — `updateSearchState`'s new-session branch carries pending-unsynced locals across the create REPLACE (so a rapid 2nd toggle is not lost) + `isFacetsStateSynced` reflects pending; same-session branch byte-unchanged |
+| `components/Search/Search.tsx` | the READER (create-per-URL-state = REPLACE, `lastAppliedStateRef`, `isSearchCreating` guard kept) + the MIRROR (repurposed the `!isFacetsStateSynced`-gated effect → debounced-trailing `navigate` of the full-state URL, normalised equality guard; covers all 4 dispatch sites incl. the Results class/My-Objects tabs); legacy `routerSearchId` branch untouched (D9) |
+
+**Tests — both buckets:**
+- **Unit (vitest, node 24 via a `node:24` container — local node is 18, too old for vite 7):** `searchUrlState.test.ts`
+  (11 — 5 ST-1a updated for the widened type + 6 ST-1b facets/myObjects/removal/fail-closed round-trips) +
+  `dataEntitySearch.slice.test.ts` (3 — NEW: the race-fix preserves an in-flight selection + a clean REPLACE +
+  preserves an in-flight deselect) + `useQueryParams.test.tsx` (4 — ST-1a, **unchanged**, confirms ST-1a's hook
+  intact). **18/18 GREEN.** `tsc --noEmit` clean; `eslint` clean (the lone `import/no-extraneous-dependencies`
+  "error" is a `generated-sources` **symlink** false-positive — an unchanged `Results.tsx` hits it too).
+- **Integration — NEW IT-151** `search-url-facets.spec.ts` (registered `suites.yaml` feature-complete + ui-e2e;
+  protocol `IT-151-search-url-facets.md`): class-tab → `entityClasses[]=` URL + refilter (round-1 write surface) ·
+  All-tab **removal** (round-2) · faceted-deep-link share · back/forward. **RED base = `ref:f63d3915`** (post-ST-1a,
+  pre-ST-1b — a class tab there only PUTs, never touches the URL). **Authored; the targeted RED/GREEN run is PENDING**
+  (the SUT is building in the full regression now).
+
+**FULL regression:** `run-regression.sh ctrib049` **RUNNING** (background) — builds the SUT from `f89c9a65`, runs
+feature-complete + multi-stack + known-bugs + ingestion-e2e under the flock. It validates **no-regression on the
+ST-1b SUT** (the core-search rewrite doesn't break the ~330 e2e suite incl. IT-150's ST-1a query cases). *(It began
+before the IT-151 registration, so it does not include IT-151 — that needs the separate targeted RED/GREEN run.)*
+
+**Remaining Phase-D (DoD not yet met — status stays `implementing`, NOT review-ready):**
+1. Assess the full regression (green-for-change) + run IT-151 targeted (**GREEN on the worktree SUT, RED on
+   `ref:f63d3915`**) — the ST-1b integration proof.
+2. **Docs (G-C10/G-C11):** READ `data-discovery/search.md` (ST-1a already rewrote it for `?q=`); add the
+   facets-in-URL note on the `release/1.0.0` train + a paired DOC item.
+3. **Ontology:** the search-flow sidecar refresh — **deferred to merge** (same as ST-1a; stale only on merge).
+4. **Principal sufficiency + pixel review** (a screenshot of the faceted URL as a user).
+
+**Phase E:** draft PR (`Part of #1825`, no closing keyword) → `/review` (separate session) → GATE 2.
+
 ## Status
 intake → G-C11 PASS (issue #1825 OPEN, milestone 1.0.0 OPEN/semver) → ST-1a-merged reconciled (`f63d3915`) →
 consumer-read (G-C4 — extended to the Java backend after round 2) → design-before-build (G-C12) → spec-gate **0.104**
 (PASS) → must_haves (G-C19) → **plan-check round 1: BLOCKER (orphaned class/My-Objects write) → reactive mirror** →
 **plan-check round 2: BLOCKER (merge-not-replace can't remove a facet) → create-per-URL-state (REPLACE)** →
 **plan-check round 3: PASSED, but escalated a reachable lost-update → fix preserves unsynced across REPLACE (now
-touches the core search-sync reducer; 4 files)** → **GATE 1 PENDING** — two decisions: (1) ST-1b/ST-1c split; (2) the
-core-reducer risk (proceed with the race-fix vs a lower-risk variant vs reconsider).
+touches the core search-sync reducer)** → **GATE 1 APPROVED 2026-07-01** (approach: reducer race-fix; scope: ST-1b/
+ST-1c split) → **Phase D: code + unit tests DONE + committed `f89c9a65` (5 files, 18/18 vitest green on node 24,
+tsc+eslint clean); IT-151 facet e2e authored + registered; FULL regression RUNNING (background)** → **remaining:
+assess regression + IT-151 targeted RED/GREEN + docs (release/1.0.0 train) + ontology (deferred-to-merge) + draft PR
+→ GATE 2**. Status `implementing` (DoD not yet met; NOT review-ready).

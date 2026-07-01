@@ -4,7 +4,7 @@ title: "ST-1b — Facets-in-URL search state (the facet half of ST-1; shareable 
 issue: "ST-1b sub-task of #1825 (Part of #1825; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: review-ready           # Phase D + DoD complete (green-for-change); DRAFT PR #1834 open; hand to /review (implementer does NOT self-done — G-C4).
+status: blocked                # /review 2026-07-01 (session review-ctrib049): REJECTED — BLOCKER B1 (isFacetsStateSynced stuck `false` after any sidebar-facet deselect/Clear-All OR any `statuses` select → the facet→URL mirror reverts a later back/forward or query-commit when search RTT > the 400ms debounce). See "## Review" below.
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 full-search-state-in-URL, D9 no-break) [maintainer-approved direction]"
@@ -474,3 +474,145 @@ ST-1c split) → **Phase D DONE** (5 files @ `f89c9a65`; unit 18/18 node 24; **f
 → **Phase E: branch pushed same-name; DRAFT PR #1834 OPEN (`Part of #1825`, no closing keyword)** → status
 **`review-ready`** → `/review` (separate session) → **GATE 2** (human merge; the bot cannot self-merge). Surfaced
 follow-ups: the docs-train push (maintainer-gated) + **ST-1c** (the W4 home/toolbar entry-point rewire).
+
+## Review (2026-07-01, session: review-ctrib049) — VERDICT: REJECTED → `blocked`
+
+Separate-session review, reject-by-default. Static verification against the reviewed commit `f89c9a65`
+(worktree `../odd-platform-ctrib049`), with the FE↔BE contract read **first-hand in the Java**, plus the
+tests / docs / gates. **One BLOCKER in the core search-sync reducer — a reachable, newly-introduced correctness
+defect the integration suite does not exercise.** The full independent e2e rebuild was intentionally NOT run
+(see Regressions) — the block stands on a static, Java-confirmed defect a local (RTT<400 ms) e2e cannot surface.
+
+### BLOCKER — B1: after any sidebar-facet **deselect / Clear-All** (or any **`statuses` select**), `isFacetsStateSynced` is stranded `false`; the facet→URL mirror then stays armed and **reverts a later back/forward or query-commit** when the search RTT exceeds the 400 ms debounce.
+
+**Mechanism — traced end-to-end, confirmed against the Java (not inferred):**
+1. The reader CREATEs a fresh session per distinct URL state, so `updateSearchState` takes the **new-session**
+   branch on every commit (`Search.tsx` reader effect; `dataEntitySearch.slice.ts:109-115`).
+2. `search()` echoes **only *selected*** filters for the 7 sidebar facets:
+   `SearchServiceImpl.search:76` (`removeUnselected`) → `getFacetsData:153` →
+   `FacetStateMapperImpl.mapDto:165-174` maps each sidebar facet from the removeUnselected (selected-only)
+   `state` (`FacetStateDto.removeUnselected:30-39`). `entityClasses` is the **exception** — echoed as a full
+   histogram (`mapDto:167`), which is exactly why the class tab is immune.
+3. A deselect / Clear-All leaves the option `{selected:false, syncedState:false}`
+   (`slice.ts` `changeDataEntitySearchFacet` / `clearDataEntitySearchFacets`). On the create response,
+   `carryPendingLocals` (`slice.ts:100-107`) keeps any `!syncedState && !(id in serverFacet)` option → the
+   deselected id (absent from the response) is carried forward as a phantom, and `hasPendingLocals`
+   (`slice.ts:117-121`) sets `isFacetsStateSynced=false`.
+4. No later create can clear it: `getSearchUrlState` (`dataentitySearch.selectors.ts` — only `selected` numeric
+   ids) omits the unselected option, so the mirror's normalised equality guard (`Search.tsx` `writeStateToUrl`:
+   `nextParams !== location.search…`) is satisfied and never re-fires → `synced` is stuck `false` **permanently**.
+5. A permanently-`false` `synced` keeps the mirror effect armed (`Search.tsx`: `if (!searchFacetsSynced)
+   writeStateToUrl()`). On a subsequent **back/forward** or **query commit**, if the create's RTT > 400 ms the
+   debounced writer fires first with the stale slice projection and `navigate()`s the URL back to the
+   pre-navigation state — **silently reverting the navigation** (violates must_have **R3** back/forward and
+   **R1** query-preserves-filters). Verified reachable by trace; the stuck *state* itself needs no latency.
+
+**Second trigger (no deselect, no latency to reach the stuck state) — `statuses` is never echoed.**
+`FacetStateMapperImpl.mapDto:165-174` maps entityClasses/datasources/types/owners/namespaces/tags/groups but
+**not `statuses`**, yet `statuses` is a live DE-search sidebar facet (`Search/Filters/Filters.tsx:65`
+`facetName='statuses'`) that the server *does* filter on (`FacetStateMapperImpl` `FORM_MAPPINGS` includes
+`getStatuses → STATUSES`; `removeUnselected` keeps it). So **selecting a Status** produces an unsynced local the
+server structurally never echoes → `hasPendingLocals` → `synced` stuck `false` immediately.
+
+**Newly introduced by ST-1b.** Pre-ST-1b the same-session PUT (`updateFacets` merge, carrying the `selected:false`
+delta) re-synced correctly and the old `updateSearchState` hard-set `isFacetsStateSynced:true`. The
+create-per-URL-state + `hasPendingLocals` rewrite is what strands `synced`. This is a regression of the prior
+deselect/synced behaviour, in the exact "core search → default to caution" area the round-3 escalation flagged.
+
+**Reachable + UNTESTED.** IT-151 exercises **only** `entityClasses` (the immune facet: class-tab write + All-tab
+"removal" + share + back/forward — `integration-tests/e2e/specs/search-url-facets.spec.ts`, 2 tests). The
+sidebar-deselect / Clear-All / `statuses` paths have **no** integration coverage; the slice unit test
+`…preserves an in-flight DESELECT…` (`dataEntitySearch.slice.test.ts`) asserts only `selected:false`, **not**
+`isFacetsStateSynced` (which the reducer leaves `false` — verified with the test's own fixtures:
+`created('session-2', [])` → tag carried, `synced=false`).
+
+**Fix direction (rework — re-run G-C19 plan-check; it re-touches the core reducer + the mirror):**
+`synced`/mirror-arming must not treat (a) a deselected option resolved by the server's omission, nor (b) a facet
+the server structurally never echoes (`statuses`), as an in-flight "pending local." Candidate approaches: disarm
+the mirror when `getSearchUrlState` already serialises to the current URL (arm on URL≠projection, not on
+per-option `syncedState`), or gate arming on an actual in-flight create; **and** either add `.statuses(...)` to
+`FacetStateMapperImpl.mapDto` (a pre-existing server response gap this change unmasks — this is contributor-pillar
+in-scope, the same odd-platform change owns it) or drop `statuses` from `SEARCH_FACET_PARAMS`. Add RED-on-base
+integration cases: (i) sidebar-facet (tag/owner) **deselect** → back/forward reproduces; (ii) a **status select**
+→ back/forward. These are the exact dimensions the current tests skip.
+
+### ⟶ Rework checklist (for the next `/contribute CTRIB-049` session — execute in order)
+- [ ] **Lock the RED first.** On the current SUT, select a **Status** filter (or chip-✕ **deselect** a tag), then
+  drive back/forward (or commit a query) — capture that `isFacetsStateSynced` stays `false` and the mirror reverts
+  the navigation. That RED is what the fix must turn GREEN. (Local RTT<400 ms hides the visible symptom — assert on
+  `isFacetsStateSynced` / the mirror re-fire, or throttle the search response, to make it deterministic.)
+- [ ] **Fix `synced` / mirror-arming** (`dataEntitySearch.slice.ts` + `Search.tsx`): stop treating a
+  server-omission-resolved **deselect**, or a **never-echoed facet**, as an in-flight pending local. Preferred: arm
+  the mirror on `getSearchUrlState(slice) !== current URL` (not on per-option `syncedState`); keep the round-3
+  in-flight-**selection** carry intact (don't reintroduce the lost-update).
+- [ ] **Resolve the `statuses` response gap** — pick one and state why: add `.statuses(...)` to
+  `FacetStateMapperImpl.mapDto` (`:165-174`, odd-platform-api — contributor-pillar in-scope), **or** drop `statuses`
+  from `SEARCH_FACET_PARAMS` (`searchUrlState.ts`). Then re-verify the invariant for **every** facet in
+  `SEARCH_FACET_PARAMS`: select → create-response echoes it (or is intentionally exempt) → `synced` returns true.
+- [ ] **Add 2 RED-on-base integration cases** (extend IT-151/IT-150, RED on `ODD_SUT=ref:f63d3915`, GREEN on the
+  fix): (i) sidebar-facet (tag/owner) **deselect** → back/forward reproduces; (ii) a **status select** → back/forward.
+- [ ] **Assert `isFacetsStateSynced`** in the slice unit test (the exact gap that let B1 through — test #3 checked
+  only `selected:false`).
+- [ ] **Re-run the G-C19 adversarial plan-check** (the reducer changed again) → GATE 1 if the approach shifts → full
+  regression on the fix SUT → re-submit to `/review`.
+
+### Acceptance criteria (must_haves / Spec)
+- R1 (facet→URL, query preserved) — **PARTIAL**: the `MainSearchInput` merge is correct (`useQueryParams`
+  `setQueryParams(fn)` parses `prev` live from `location.search`, verified `useQueryParams.ts`), but a
+  query-commit after a deselect/status-select can be reverted under latency (B1).
+- R2 (faceted deep-link reproduces) — PASS (`Search.tsx` reader → `searchUrlStateToFormData` → create;
+  IT-151 share test GREEN for the class facet).
+- R3 (back/forward navigates facet states) — **FAIL** for the deselect/Clear-All/`statuses` paths under
+  RTT>400 ms (B1). PASS for the select-only + class-tab paths.
+- R4 (recipient-scoped, ids-only, fail-closed) — PASS (`searchUrlState.ts` positive-integer filter; ids only;
+  inherited `/api/search` recipient scoping).
+- R5 (D9 legacy `/search/{sessionId}` + `/api/search` unchanged) — PASS (`Search.tsx` `routerSearchId` branch
+  byte-preserved; 0 Java diff on the search contract).
+- R6 (param parse fails closed) — PASS (`paramsToSearchState` try/catch → empty; unit tests cover
+  non-numeric/negative/zero/unknown).
+
+### Quality Bar
+- Gate 1 — PASS (extends `searchUrlState`/`useQueryParams`; no parallel state layer — verified no `useSearchParams` dup).
+- Gate 2 — N/A (no alias).
+- Gate 3 — N/A (code change; no doc admonition owed here).
+- Gate 4 — PASS (`Consumer-read:` footer present + accurate; the cited Java `SearchServiceImpl`/`FacetStateDto` verified first-hand).
+- Gate 5 — N/A (no SDK builder).
+- Gate 6 — **FINDING folded into B1**: DOC-497's authored prose asserts "back/forward step through your filter changes" — a claim the code does not reliably deliver until B1 is fixed (code↔doc alignment; not a separate doc defect — the doc describes the intended, correct behaviour).
+- Gate 7 — N/A (code; the doc edit is a 1-line replacement, SUMMARY/TOC unaffected).
+- Gate 8 — release-gated (milestone 1.0.0). Doc AUTHORED on `docs/CTRIB-049-search-url-facets @ 7259606`
+  (off train base `5b2bb04`; worktree `../documentation-ctrib049docs`; a clean 1-line `data-discovery/search.md`
+  edit) but **NOT on `origin/release/1.0.0`** (train head `5b2bb04` = ST-1a's merge; branch not pushed to origin
+  — maintainer-gated train push, the ST-1a/DOC-495 precedent). Would be **PENDING-RELEASE**; **superseded by the
+  code BLOCKER** (item cannot advance). Not independently blocking.
+- Gate 9 — PASS (every cited source verified: the Java merge/replace + mapDto read directly; the FE consumers read).
+- Gate 10 — N/A.
+- Gate 11 — PASS (no workspace-internal term in the authored `search.md` prose — grep clean).
+- G-C7 (ADR) — PASS (correctly not fired: additive FE state↔URL, D9/D10 conform; verified `routerSearchId`/`/api/search` untouched).
+- G-C11 (milestone open) — PASS (1.0.0 open/semver per intake).
+- G-C15 (changed tests) — PASS: the 5 changed `searchUrlState.test.ts` cases only widen the expected object to
+  the new `SearchUrlState` type; the query assertions are unchanged in substance, no matcher weakened, no `.skip`.
+  (The *new* integration coverage is insufficient — that is the B1 test gap, not a G-C15 hidden-bug.)
+
+- **Regressions**: independent full e2e rebuild **NOT run — intentional**. The verdict is BLOCKED on a static,
+  Java-confirmed correctness defect that a local e2e (RTT<400 ms; the implementer's IT-151 GREEN is on such a
+  stand) cannot exercise; re-confirming "green locally" on a commit going back for rework is low-value. Deferred
+  to the reworked commit's regression. (The implementer's own run-logged `feature-complete 331/2` +
+  `known-bugs 3-RED` are noted but not independently re-verified this pass.)
+- **Navigation**: consistent (`navigation/domains/search.md` still points at `Search.tsx` + `dataEntitySearch.slice.ts`; no files moved; FE change, no new bean factory/SDK builder).
+- **Upstream issues logged**: none (the `mapDto`-omits-`statuses` gap is contributor-pillar in-scope — folded into the B1 rework fix-list, not a hand-off).
+- **Doc-product editorial audit** (per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: bounded to `data-discovery/search.md` (the item's neighbourhood). Full-tree audit
+    deferred — sibling review-ctrib048 read the full tree 2026-06-30 (→ DOC-496, open). Partition noted; not skipped silently.
+  - **Findings**: none surfaced this run. `origin/main`'s live `search.md` still documents the pre-overhaul
+    `/search/{uuid}` session model (the ST-1a `?q=` rewrite rides the 1.0.0 train, not yet on main — correct
+    release-gating); internally coherent, no parallel-surface drift on main.
+- **Notes**: B1 mechanism VERIFIED via read of `SearchServiceImpl.java:76,153`, `FacetStateDto.java:30-39`,
+  `FacetStateMapperImpl.java:165-174`, `dataEntitySearch.slice.ts:100-121`, `Search.tsx` (reader+mirror),
+  `dataentitySearch.selectors.ts` (`getSearchUrlState`), and the two test files. `statuses`-not-echoed VERIFIED
+  via grep of `mapDto` + `Filters.tsx:65` + `FORM_MAPPINGS`. Reject-by-default satisfied: the failing gate (R3
+  back/forward) is cited with concrete evidence and a reachable failure scenario.
+
+**Disposition:** `review-ready` → **`blocked`**. Rework B1 (fix `synced`/mirror-arming for the deselect/Clear-All/
+`statuses` paths; resolve the `mapDto`-`statuses` gap; add the two RED-on-base integration cases), re-run the
+G-C19 plan-check (re-touches the core reducer), then re-submit to `/review`. Resources: review held no SUT/flock/
+lineage writes (read-only static review) — nothing to release; `lineage/**` untouched by this review.

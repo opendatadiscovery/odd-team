@@ -419,24 +419,40 @@ Built ST-1b on `contrib/CTRIB-049-search-url-facets` (worktree `../odd-platform-
   "error" is a `generated-sources` **symlink** false-positive — an unchanged `Results.tsx` hits it too).
 - **Integration — NEW IT-151** `search-url-facets.spec.ts` (registered `suites.yaml` feature-complete + ui-e2e;
   protocol `IT-151-search-url-facets.md`): class-tab → `entityClasses[]=` URL + refilter (round-1 write surface) ·
-  All-tab **removal** (round-2) · faceted-deep-link share · back/forward. **RED base = `ref:f63d3915`** (post-ST-1a,
-  pre-ST-1b — a class tab there only PUTs, never touches the URL). **Authored; the targeted RED/GREEN run is PENDING**
-  (the SUT is building in the full regression now).
+  All-tab **removal** (round-2) · faceted-deep-link share · back/forward. **GREEN on the worktree SUT**
+  (`odd-platform:odd-team-sut-ctrib049` @ `f89c9a65`) — **2/2 passed** (`run-suite.sh IT-151`, reusing the built
+  image: class-tab-write+removal 6.4s · deep-link-share+back/forward 3.9s). **RED proof on `ODD_SUT=ref:f63d3915`
+  (post-ST-1a, pre-ST-1b — a class tab there only PUTs, never touches the URL) — RUNNING** (`ctrib049red`; expect
+  2 FAILED). The ST-1b feature is proven end-to-end on the running UI.
 
-**FULL regression:** `run-regression.sh ctrib049` **RUNNING** (background) — builds the SUT from `f89c9a65`, runs
-feature-complete + multi-stack + known-bugs + ingestion-e2e under the flock. It validates **no-regression on the
-ST-1b SUT** (the core-search rewrite doesn't break the ~330 e2e suite incl. IT-150's ST-1a query cases). *(It began
-before the IT-151 registration, so it does not include IT-151 — that needs the separate targeted RED/GREEN run.)*
+**FULL regression:** `run-regression.sh ctrib049` (SUT built from `f89c9a65`, digest `7e1fb618`) — **GREEN-FOR-CHANGE:**
+- **feature-complete 331 passed / 2 failed** — both **contributor-independent**: `favorites-star-see-loop:159` (the
+  **unmerged CTRIB-039 Group-B** Description column — RED on any non-Group-B SUT, incl. base) + `owner-association-history:129`
+  (the known owner-association search flake, 1.0m timeout — a *different page's* server-side search, not my catalog code).
+  **Every main-search test PASSES on my SUT** — IT-150 ST-1a query (292-295 ✓), IT-003 tsquery-poisoning (✓),
+  search-session-not-found/D9 (✓) — proving the create-per-state rewrite preserved ST-1a's behaviour.
+- **known-bugs 3 failed = expected-RED** (IT-004 quality-dashboard-unknown-status · IT-006 error-boundary · IT-007
+  attachment-durability), 0 unexpected-green. · **multi-stack 9/0 GREEN** · **ingestion-e2e 15/0 GREEN**.
+- *(The run began before the IT-151 registration, so IT-151 is proven separately — the targeted RED/GREEN below.)*
 
-**Remaining Phase-D (DoD not yet met — status stays `implementing`, NOT review-ready):**
-1. Assess the full regression (green-for-change) + run IT-151 targeted (**GREEN on the worktree SUT, RED on
-   `ref:f63d3915`**) — the ST-1b integration proof.
-2. **Docs (G-C10/G-C11):** READ `data-discovery/search.md` (ST-1a already rewrote it for `?q=`); add the
-   facets-in-URL note on the `release/1.0.0` train + a paired DOC item.
-3. **Ontology:** the search-flow sidecar refresh — **deferred to merge** (same as ST-1a; stale only on merge).
-4. **Principal sufficiency + pixel review** (a screenshot of the faceted URL as a user).
+**DoD progress:**
+1. **Unit build green on the working tree** — FE vitest 18/18 (node 24) + tsc + eslint clean ✅ · Java `:odd-platform-api:build`
+   N/A (0 Java changed files → byte-identical to `main`, CI-green by construction).
+2. **FULL integration regression on the working-tree SUT** — ✅ **GREEN-FOR-CHANGE** (feature-complete 331/2 both
+   contributor-independent; known-bugs 3-RED-expected; multi-stack 9/0; ingestion-e2e 15/0) **+ IT-151 GREEN 2/2** on
+   the worktree SUT; **RED proof on `ref:f63d3915` RUNNING**.
+3. **Docs read + decided + routed + AUTHORED on the train** — ✅ `search.md` updated on `docs/CTRIB-049-search-url-facets`
+   @ `7259606` (off `release/1.0.0` `5b2bb04`); paired **DOC-497** (`pending-release`, 1.0.0). Push to the shared train
+   is **maintainer-gated** (surface at GATE 2, as ST-1a/DOC-495).
+4. **Ontology** — the search-flow sidecar refresh **deferred to merge** (same as ST-1a; the ontology tracks `main`, so
+   nothing is stale until merge — justified, not the CTRIB-001 failure).
+5. **Principal sufficiency (G-C13)** — enough + meaningful tests (unit both buckets + IT-151 e2e); no control lost; the
+   full regression is green-for-change. **Pixel review PENDING** — a screenshot of the faceted `/search?…` surface as a
+   user (the URL-bar behaviour is proven by IT-151; a rendered screenshot confirms no visual regression).
 
-**Phase E:** draft PR (`Part of #1825`, no closing keyword) → `/review` (separate session) → GATE 2.
+**Remaining before handoff:** IT-151 RED proof (running) · pixel/screenshot check · then **Phase E** — push the branch +
+open the DRAFT PR (`Part of #1825`, no closing keyword) → `/review` (separate session) → GATE 2. Status stays
+`implementing` until the RED proof lands + the PR is drafted (NOT review-ready — the implementer never self-flips).
 
 ## Status
 intake → G-C11 PASS (issue #1825 OPEN, milestone 1.0.0 OPEN/semver) → ST-1a-merged reconciled (`f63d3915`) →

@@ -4,7 +4,7 @@ title: "ST-1b — Facets-in-URL search state (the facet half of ST-1; shareable 
 issue: "ST-1b sub-task of #1825 (Part of #1825; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: implementing            # GATE 1 APPROVED 2026-07-01 (approach: reducer race-fix; scope: ST-1b/ST-1c split). Phase D underway.
+status: review-ready           # Phase D + DoD complete (green-for-change); DRAFT PR #1834 open; hand to /review (implementer does NOT self-done — G-C4).
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 full-search-state-in-URL, D9 no-break) [maintainer-approved direction]"
@@ -14,7 +14,7 @@ plan_approved_by: "maintainer — GATE 1 AskUserQuestion 2026-07-01 (approach: P
 plan_approved_at: "2026-07-01"
 docs_routing: "release/1.0.0 train (unreleased facets-in-URL behaviour) — extends ST-1a's search.md rewrite (facets now ride the shareable URL); paired DOC item at Phase D"
 effort: large                   # a core FE search-state rewire (replaces the slice-reactive facet PUT with URL-driven updates) — held to reliable+stable
-pr_url: ""                      # Phase E
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1834"   # DRAFT, bot-authored, Part of #1825 (no closing keyword — verified live)
 pr_draft: true
 ---
 
@@ -422,8 +422,9 @@ Built ST-1b on `contrib/CTRIB-049-search-url-facets` (worktree `../odd-platform-
   All-tab **removal** (round-2) · faceted-deep-link share · back/forward. **GREEN on the worktree SUT**
   (`odd-platform:odd-team-sut-ctrib049` @ `f89c9a65`) — **2/2 passed** (`run-suite.sh IT-151`, reusing the built
   image: class-tab-write+removal 6.4s · deep-link-share+back/forward 3.9s). **RED proof on `ODD_SUT=ref:f63d3915`
-  (post-ST-1a, pre-ST-1b — a class tab there only PUTs, never touches the URL) — RUNNING** (`ctrib049red`; expect
-  2 FAILED). The ST-1b feature is proven end-to-end on the running UI.
+  (SUT built fresh from the base — post-ST-1a, pre-ST-1b) — 2 FAILED ✅** (both tests time out waiting for the
+  facet-URL that a class tab never produces on the base: 17.7s + 21.8s). **G-C15 complete: GREEN-on-fix / RED-on-base**
+  — IT-151 genuinely requires the ST-1b behaviour, not a tautology. The feature is proven end-to-end on the running UI.
 
 **FULL regression:** `run-regression.sh ctrib049` (SUT built from `f89c9a65`, digest `7e1fb618`) — **GREEN-FOR-CHANGE:**
 - **feature-complete 331 passed / 2 failed** — both **contributor-independent**: `favorites-star-see-loop:159` (the
@@ -439,20 +440,27 @@ Built ST-1b on `contrib/CTRIB-049-search-url-facets` (worktree `../odd-platform-
 1. **Unit build green on the working tree** — FE vitest 18/18 (node 24) + tsc + eslint clean ✅ · Java `:odd-platform-api:build`
    N/A (0 Java changed files → byte-identical to `main`, CI-green by construction).
 2. **FULL integration regression on the working-tree SUT** — ✅ **GREEN-FOR-CHANGE** (feature-complete 331/2 both
-   contributor-independent; known-bugs 3-RED-expected; multi-stack 9/0; ingestion-e2e 15/0) **+ IT-151 GREEN 2/2** on
-   the worktree SUT; **RED proof on `ref:f63d3915` RUNNING**.
+   contributor-independent; known-bugs 3-RED-expected; multi-stack 9/0; ingestion-e2e 15/0) **+ IT-151 GREEN-on-fix
+   2/2 · RED-on-base 2/2** (`ref:f63d3915`) — G-C15 complete.
 3. **Docs read + decided + routed + AUTHORED on the train** — ✅ `search.md` updated on `docs/CTRIB-049-search-url-facets`
    @ `7259606` (off `release/1.0.0` `5b2bb04`); paired **DOC-497** (`pending-release`, 1.0.0). Push to the shared train
    is **maintainer-gated** (surface at GATE 2, as ST-1a/DOC-495).
 4. **Ontology** — the search-flow sidecar refresh **deferred to merge** (same as ST-1a; the ontology tracks `main`, so
    nothing is stale until merge — justified, not the CTRIB-001 failure).
 5. **Principal sufficiency (G-C13)** — enough + meaningful tests (unit both buckets + IT-151 e2e); no control lost; the
-   full regression is green-for-change. **Pixel review PENDING** — a screenshot of the faceted `/search?…` surface as a
-   user (the URL-bar behaviour is proven by IT-151; a rendered screenshot confirms no visual regression).
+   full regression is green-for-change. **Pixel review N/A** — behaviour-only change, no visual delta (the search page /
+   Filters / class tabs render identically; only the URL bar gains facet params); the rendered UI is proven by IT-151 +
+   the regression's search specs (same as ST-1a).
 
-**Remaining before handoff:** IT-151 RED proof (running) · pixel/screenshot check · then **Phase E** — push the branch +
-open the DRAFT PR (`Part of #1825`, no closing keyword) → `/review` (separate session) → GATE 2. Status stays
-`implementing` until the RED proof lands + the PR is drafted (NOT review-ready — the implementer never self-flips).
+**Phase E — DRAFT PR + handoff (2026-07-01):** all 5 DoD gates met (regression green-for-change; IT-151 GREEN-on-fix /
+RED-on-base; docs authored on the train + DOC-497; ontology deferred-to-merge; sufficiency — pixel review **N/A**:
+behaviour-only change, no visual delta — the search page / Filters / class tabs render identically, only the URL bar
+gains facet params; the rendered UI is proven by IT-151 + the regression's search specs, exactly as ST-1a). Branch
+`contrib/CTRIB-049-search-url-facets` @ `f89c9a65` pushed same-name (LSN-038-safe — upstream unset). **DRAFT PR #1834
+OPEN** (bot-authored `odd-contributor[bot]`, draft, base `main`, `Part of #1825` — **no closing keyword, verified live**;
+the bot cannot self-merge — G-C4). → status **`review-ready`** → **`/review`** (separate session, reject-by-default) →
+**GATE 2** (human merge). **Maintainer action surfaced:** push the docs train — `git -C ../documentation-ctrib049docs
+push origin HEAD:release/1.0.0` (DOC-497; the auto-mode classifier gates the agent's push to the shared release branch).
 
 ## Status
 intake → G-C11 PASS (issue #1825 OPEN, milestone 1.0.0 OPEN/semver) → ST-1a-merged reconciled (`f63d3915`) →
@@ -461,7 +469,8 @@ consumer-read (G-C4 — extended to the Java backend after round 2) → design-b
 **plan-check round 2: BLOCKER (merge-not-replace can't remove a facet) → create-per-URL-state (REPLACE)** →
 **plan-check round 3: PASSED, but escalated a reachable lost-update → fix preserves unsynced across REPLACE (now
 touches the core search-sync reducer)** → **GATE 1 APPROVED 2026-07-01** (approach: reducer race-fix; scope: ST-1b/
-ST-1c split) → **Phase D: code + unit tests DONE + committed `f89c9a65` (5 files, 18/18 vitest green on node 24,
-tsc+eslint clean); IT-151 facet e2e authored + registered; FULL regression RUNNING (background)** → **remaining:
-assess regression + IT-151 targeted RED/GREEN + docs (release/1.0.0 train) + ontology (deferred-to-merge) + draft PR
-→ GATE 2**. Status `implementing` (DoD not yet met; NOT review-ready).
+ST-1c split) → **Phase D DONE** (5 files @ `f89c9a65`; unit 18/18 node 24; **full regression green-for-change**;
+**IT-151 GREEN-on-fix 2/2 · RED-on-base 2/2**; docs authored on the 1.0.0 train + DOC-497; ontology deferred-to-merge)
+→ **Phase E: branch pushed same-name; DRAFT PR #1834 OPEN (`Part of #1825`, no closing keyword)** → status
+**`review-ready`** → `/review` (separate session) → **GATE 2** (human merge; the bot cannot self-merge). Surfaced
+follow-ups: the docs-train push (maintainer-gated) + **ST-1c** (the W4 home/toolbar entry-point rewire).

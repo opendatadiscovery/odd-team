@@ -4,7 +4,7 @@ title: "ST-1b — Facets-in-URL search state (the facet half of ST-1; shareable 
 issue: "ST-1b sub-task of #1825 (Part of #1825; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: review-ready           # RE-/REVIEW 2026-07-02 (review-ctrib049-2): ACCEPTED — all gates PASS; full regression INDEPENDENTLY green-for-change (feature-complete 336/1 contributor-independent · IT-151 4/4 incl. B1/T1+T2 · known-bugs 3-RED · multi-stack 9 · ingestion-e2e 15) + Java `:odd-platform-api:build` SUCCESSFUL @ 02f0ee60. GATE-2-ready → human merges PR #1834 (owns pending-release→done via /review release:1.0.0). GATE-2 (2026-07-02): maintainer RATIFIED the label-preserve scope-add (item #1); ST-1d residual (item #2) ships tracked-not-blocked. AWAITING the maintainer's own GitHub merge of PR #1834 (GATE 2 = human action, G-C4 — the bot cannot self-merge); on merge → pending-release 1.0.0. Verdict + ratification: "## Re-Review (2026-07-02, session: review-ctrib049-2)" + "## GATE-2 ratification (2026-07-02, maintainer)" below. History: B1 rework COMPLETE @ 02f0ee60 ((A) statuses echo + (B′) optimistic-vs-requested + label-preserve); REJECTED B1 2026-07-01 → rework sections below.
+status: pending-release        # MERGED (GATE 2) 2026-07-02 → squash `ab63b6d3` on odd-platform origin/main (PR #1834), FAITHFUL (`git diff 02f0ee60 ab63b6d3` empty — the merged tree == the reviewed commit). Release-gated (1.0.0) ⇒ pending-release; `/review release:1.0.0` owns pending-release→done after 1.0.0 ships + DOC-497 live-verifies. RE-REVIEW ACCEPTED (review-ctrib049-2, all gates PASS, independent regression green-for-change + Java build @ 02f0ee60) → maintainer RATIFIED label-preserve (item #1) → merged; ST-1d residual (item #2) shipped tracked-not-blocked. Follow-ups: DOC-497 (docs train push, maintainer-gated) · ST-1c (W4 entry-point rewire) · ST-1d (deep-link chip labels) · search-flow ontology refresh (now due — owned by the 1.0.0 release-gate refresh, same as ST-1a). Verdict/ratification/merge sections below.
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 full-search-state-in-URL, D9 no-break) [maintainer-approved direction]"
@@ -14,8 +14,9 @@ plan_approved_by: "maintainer — GATE 1 AskUserQuestion 2026-07-01 (approach: P
 plan_approved_at: "2026-07-01"
 docs_routing: "release/1.0.0 train (unreleased facets-in-URL behaviour) — extends ST-1a's search.md rewrite (facets now ride the shareable URL); paired DOC item at Phase D"
 effort: large                   # a core FE search-state rewire (replaces the slice-reactive facet PUT with URL-driven updates) — held to reliable+stable
-pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1834"   # DRAFT, bot-authored, Part of #1825 (no closing keyword — verified live)
-pr_draft: true
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1834"   # MERGED 2026-07-02 (GATE 2, human) → squash `ab63b6d3` on origin/main; was bot-authored draft, Part of #1825
+pr_draft: false
+merged_sha: "ab63b6d3"          # odd-platform origin/main squash of PR #1834; faithful to reviewed 02f0ee60 (diff empty)
 ---
 
 ## Context
@@ -1086,3 +1087,25 @@ review**; (2) a human **approving review**; (3) **squash-merge** to `main`. On m
 `pending-release` (1.0.0), and `/review release:1.0.0` owns the final `done` after the 1.0.0 release + DOC-497
 live-verification. Still pending in parallel: push the docs train (`release/1.0.0`) for **DOC-497**
 (maintainer-gated) so the paired doc publishes at the 1.0.0 release.
+
+## Merged (2026-07-02, GATE 2 — human) → `pending-release` (1.0.0)
+
+The maintainer merged **PR #1834** to odd-platform `main`. **Verified against the real remote** (`git -C ../odd-platform
+fetch` + `git log origin/main`): squash-merge **`ab63b6d3`** *"feat(search): parametrise search facets + My Objects in the
+URL — ST-1b of #1825 (#1834)"*, sitting directly on `f63d3915` (ST-1a). **Faithful to what was reviewed:** `git diff
+02f0ee60 ab63b6d3` is **empty** — the merged tree is byte-identical to the reviewed commit; no drift entered at merge.
+
+**Status reconciled `review-ready` → `pending-release`** (release-gated, milestone 1.0.0). The code is on `main`; it
+publishes with the **1.0.0** release. `/review release:1.0.0` owns the final `pending-release → done` after: (a) the
+1.0.0 tag ships, (b) the released image passes the release-review suites, and (c) **DOC-497** live-verifies on
+`docs.opendatadiscovery.org/data-discovery/search`.
+
+**Open follow-ups carried past the merge** (none block `pending-release`):
+- **DOC-497** (`pending-release`, 1.0.0) — the paired doc is authored on `docs/CTRIB-049-search-url-facets @ 7259606`;
+  the train push to `origin/release/1.0.0` is maintainer-gated.
+- **ST-1c** — retire the W4 session-navigators (`TopTagsList` / `DataEntitiesUsageInfo` / `ToolbarTabs` → param URL);
+  its own spec → plan → GATE 1.
+- **ST-1d** — resolve fresh-deep-link chip **labels** server-side (and honour the echo's `SearchFilter.required:[id,name]`).
+- **Search-flow ontology refresh** — now DUE (ST-1b is on `main`); deferred to the **1.0.0 release-gate ontology
+  refresh** (`playbooks/release-review.md` step 5, the ST-1a precedent — both ST-1a + ST-1b sidecars refresh to the
+  released tag together). Not a review/reconcile side-effect (re-enrichment is `/enrich`'s job, never a bookkeeping write).

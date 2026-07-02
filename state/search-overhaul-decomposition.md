@@ -76,6 +76,8 @@ All inherit **1.0.0** from the epic; the per-slice milestone split is **maintain
 **Tests.** unit (state⇄URL round-trip; unknown params ignored); integration e2e (share-link reproduces; deep-link + back/forward; legacy `/search/{sessionId}` still loads — D9) — extend `IT-022`/`IT-125`.
 **i18n.** none (no new strings).
 
+**Sub-slice ledger (ST-1a/1b GATE-1 splits + Phase-D discoveries).** **ST-1a** `?q=` — #1833, merged (`f63d3915`) · **ST-1b** facets + My Objects — PR #1834 (CTRIB-049) · **ST-1c (fast-follow, GATE-1-recorded):** rewire the W4 session-navigators (`TopTagsList` / `DataEntitiesUsageInfo` / `ToolbarTabs`) to the canonical param URL · **ST-1d (follow-up, discovered in the ST-1b B1 rework):** a FRESH faceted deep-link renders its filter chips **unlabelled** — the URL carries ids only and the server echoes back only the names the request carried (`name:null` on the wire; captured in `contributor/CTRIB-049.md` rework section). The interactive flow keeps labels via ST-1b's client-side label-preserving merge; recipient-side labels need the server to RESOLVE names in the facet echo (`FacetStateMapperImpl.mapDto` path — per-facet id→name lookups) or an FE hydrate-time resolution. Small, self-contained, user-visible polish for the share story.
+
 ### ST-2 — Sort contract + status-priority index (#1705) + global sort dropdown
 **Labels:** `kind: feature`, `scope: backend`, `scope: frontend` · **Parent:** #1825 · **Closes:** #1705 · **Realises:** ADR D12 · **Depends on:** ST-1 (the URL carries `sort`)
 

@@ -28,6 +28,24 @@ facet from the URL and broadens the results. Removal is the round-2 correctness 
 state** (`search()` = `removeUnselected` = REPLACE) — the URL is the complete, authoritative facet spec.
 If this FAILS, the shareable/removable faceted-search contract (ADR D10) is broken.
 
+**B1 rework (2026-07-01) — the SIDEBAR facets + `statuses`.** The class tab above is the *immune* facet (echoed
+as a full histogram). Two cases cover the non-immune sidebar facets, where the create-per-URL-state REPLACE
+originally stranded `isFacetsStateSynced` (blocking the `Results.tsx` re-fetch) and the `statuses` facet was
+never echoed:
+- **Sidebar-deselect reload:** deep-link a shareable link with a **tag** facet (dataset only), then **Clear All**
+  → the results must **broaden** (the group returns). On the buggy build the deselected tag is carried as a
+  phantom → `synced` stranded → the results never re-fetch (stuck), so the group never returns. A **Back** after
+  the deselect must land on the tagged state and stay there (no stale-mirror URL bounce).
+- **Status select + deep-link:** picking **STABLE** in the Statuses sidebar facet must reach the URL
+  (`statuses[]=3`), refilter server-side, and the **chip must stay labelled** after the create settles — the
+  URL-derived create echoes the request's names (`null` on the wire; captured live), so the reducer must keep
+  the label it already knows. A `/search?…&statuses[]=3` deep-link must reproduce the filtered result (results
+  must settle). On the buggy build the server never echoed `statuses`, so a status select stranded `synced` and
+  froze the results; the un-merged echo also blanked every sidebar chip label ~1s after selection.
+  *(A fresh deep-link renders its chips unlabelled until the server echoes resolved names — follow-up **ST-1d**,
+  `state/search-overhaul-decomposition.md` "Sub-slice ledger". The null echo also violates the spec's own
+  `SearchFilter.required: [id, name]` — ST-1d owns making the echo honour its contract.)*
+
 > The class tab renders as a MUI `role="tab"` with the literal label ("All", "Datasets", …) + a count hint
 > (`SearchResultsTabs.tsx`). `seedSearchableEntity(id,name)` seeds a DATA_SET; a non-DATA_SET class is seeded
 > inline via `dbQuery` (IT-068 precedent — `db.ts` has no class-parameterised seeder).
@@ -36,6 +54,9 @@ If this FAILS, the shareable/removable faceted-search contract (ADR D10) is brok
 - **Stack**: `odd-minimal` (AUTH_TYPE=DISABLED). Brought up by the runner.
 - **Seed data**: `seedSearchableEntity(21500,"it150facets_dataset")` (DATA_SET {1}) +
   `seedSearchableOfClass(21501,"it150facets_group","{8}",17)` (DATA_ENTITY_GROUP {8}). IT-151-specific ids.
+- **B1 seeds** (inline `dbQuery`): a **tag** linked to the dataset (21500) only — its id is read back at runtime,
+  never hardcoded; `data_entity.status` set to **STABLE (3)** on the dataset and **DEPRECATED (4)** on the group
+  (`DataEntityStatusDto`: STABLE=3, DEPRECATED=4), so `statuses[]=3` narrows to the dataset.
 
 ## 3. Readiness check
 - `curl -fsS http://localhost:18080/actuator/health` → `{"status":"UP"}`.
@@ -49,6 +70,16 @@ If this FAILS, the shareable/removable faceted-search contract (ADR D10) is brok
    dataset-filtered result reproduced.
 4. **Back/forward:** from the faceted URL, `goBack()` → the facet leaves the URL + the group returns;
    `goForward()` → the facet re-applies + the group is filtered out.
+5. **B1 — sidebar-deselect reload:** open `/search?q=it150facets&tags[]=<tagId>`; observe only the dataset (the
+   group has no tag); click **Clear All**; observe the URL drops `tags[]` AND the group **returns** (results
+   re-fetched). The URL must NOT revert back to the tag link afterwards. Then **Back** → the tagged URL + the
+   dataset-only result reproduce, and the URL is not bounced by a late mirror write.
+6. **B1 — status select + deep-link:** search `it150facets`; pick **STABLE** in the **Statuses** sidebar facet;
+   observe the URL gains `statuses[]=3`, the DEPRECATED group is filtered out, and — after the search settles
+   (~2 s) — the **STABLE chip is still labelled**. Then open `/search?q=it150facets&statuses[]=3` fresh; observe
+   the dataset-only result renders (the results settle). *Manual-only observation:* the status chip renders
+   present-but-unlabelled on the fresh load — the automated rail deliberately asserts the results-settle only;
+   deep-link chip rendering (presence + label) is **ST-1d** follow-up scope.
 
 **Automated rail**: `integration-tests/run-suite.sh IT-151` (Playwright `e2e/specs/search-url-facets.spec.ts`).
 
@@ -58,12 +89,28 @@ If this FAILS, the shareable/removable faceted-search contract (ADR D10) is brok
 - **Remove (PASS):** after the All tab, the URL no longer matches the facet regex AND the group row is visible.
 - **Share (PASS):** the faceted URL, loaded fresh, reproduces the dataset-only result.
 - **Back/forward (PASS):** back leaves the facet URL + broadens; forward re-applies the facet URL + narrows.
+- **B1 sidebar-deselect (PASS):** after Clear All, the group row is visible AND the URL no longer matches the tag
+  regex (and does not revert); Back lands on the tagged URL, the tag re-applies, and the URL stays put.
+  (FAIL on the B1 build: `synced` stranded → the group never returns.)
+- **B1 status select + deep-link (PASS):** the select puts `statuses[]=3` in the URL, filters out the group, and
+  the **STABLE** chip (Typography `title="STABLE"`) is still visible ~2 s after settle; the deep-link renders the
+  dataset-only result. (FAIL on the B1 build: the un-echoed status strands `synced` → the results freeze; FAIL
+  without the label-preserving merge: the chip blanks after the create response.)
 
-## 6. RED proof (the base, pre-ST-1b)
-`ODD_SUT=ref:main` (CTRIB-049 base, `f63d3915` — ST-1a merged, so `?q=` exists but facets do NOT): a class tab
-dispatches a PUT `/facets` that never touches the URL, so the facet-URL / share / back-forward / removal
-assertions FAIL — the facet-in-URL contract does not exist yet. GREEN on the working-tree SUT.
+## 6. RED proof (two bases)
+- **Feature base — `ODD_SUT=ref:main` (`f63d3915`, ST-1a merged, no facets in URL):** the whole facet-in-URL
+  contract is absent → every case FAILS. GREEN on the working-tree SUT.
+- **B1 base — `ODD_SUT=ref:f89c9a65` (ST-1b WITH B1):** the class-tab / share / back-forward cases pass (the
+  immune facet), but the two B1 cases FAIL — the sidebar-deselect leaves the results stuck (stranded `synced`,
+  the group never returns) and the status select/deep-link freezes the results (no echo → `synced` stranded).
+  GREEN only after the B1 fix (mapDto echoes `statuses` + the slice reconciles optimistic-vs-requested + the
+  label-preserving merge keeps the chip label across the name-less echo).
 
 ## 7. Result log
 - 2026-07-01 — authored for CTRIB-049 / ST-1b (#1825). RED proof base `ref:f63d3915` (post-ST-1a, pre-ST-1b).
   See run-log/ for the working-tree GREEN + the ref:main RED.
+- 2026-07-02 — B1-rework ladder (CTRIB-049 resume; fix commit `02f0ee60`): **GREEN on the fix SUT 4/4**
+  (incl. the 2 new B1 cases) · **RED on `ref:f89c9a65` 2 failed / 2 passed** — exactly the two B1 cases fail,
+  the immune class-tab cases pass · **RED on `ref:f63d3915` 4/4 failed** (no facet-URL contract on the feature
+  base). One earlier e2e:FAIL entry same day = the spec's own afterAll FK-ordering bug (tag link vs entity
+  DELETE) — fixed in the spec teardown, not a SUT defect. See run-log/2026-07-02-IT-151.md for digests.

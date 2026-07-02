@@ -4,7 +4,7 @@ title: "ST-1b — Facets-in-URL search state (the facet half of ST-1; shareable 
 issue: "ST-1b sub-task of #1825 (Part of #1825; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: blocked                # /review 2026-07-01 (session review-ctrib049): REJECTED — BLOCKER B1 (isFacetsStateSynced stuck `false` after any sidebar-facet deselect/Clear-All OR any `statuses` select → the facet→URL mirror reverts a later back/forward or query-commit when search RTT > the 400ms debounce). See "## Review" below.
+status: review-ready           # B1 rework COMPLETE 2026-07-02 @ 02f0ee60 ((A) statuses echo + (B′) optimistic-vs-requested + label-preserve merge; third defect found+fixed this session — GATE-2 ratification item). Full ladder + regression green-for-change; PR #1834 updated. → re-/review (separate session) → GATE 2. History: REJECTED B1 2026-07-01 → rework sections below.
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 full-search-state-in-URL, D9 no-break) [maintainer-approved direction]"
@@ -616,3 +616,308 @@ integration cases: (i) sidebar-facet (tag/owner) **deselect** → back/forward r
 `statuses` paths; resolve the `mapDto`-`statuses` gap; add the two RED-on-base integration cases), re-run the
 G-C19 plan-check (re-touches the core reducer), then re-submit to `/review`. Resources: review held no SUT/flock/
 lineage writes (read-only static review) — nothing to release; `lineage/**` untouched by this review.
+
+## Rework — B1 fix (2026-07-01, resume)
+
+Resumed on the `/review` REJECT. B1 re-root-caused **first-hand** against the reviewed commit `f89c9a65`
+(FE + Java read in full, not inferred). Finding: B1 is **more severe** than the review stated — the stranded
+`synced` is not only an RTT>400ms back/forward revert; it **deterministically blocks the results re-fetch**.
+
+### Root cause (verified @ f89c9a65)
+`isFacetsStateSynced` is load-bearing beyond the mirror:
+- **`Results.tsx:76-81`** fetches results ONLY when `searchFiltersSynced === true`; **`getSearchIsFetching`**
+  (`dataentitySearch.selectors.ts:90`) is `… || !isSynced`. A stranded `false` ⇒ **results never reload after
+  the trigger and the loader spins** — deterministic (no latency needed).
+- **`updateSearchState` new-session branch** (`slice.ts:96-127`): `carryPendingLocals` keeps any
+  `!syncedState && !(id in serverFacet)` option; `hasPendingLocals` then forces `synced=false`. The predicate
+  **cannot distinguish** a genuine in-flight SELECTION (round-3, `selected:true`) from (i) a resolved
+  DESELECTION (`selected:false`) or (ii) a `statuses` SELECTION the server structurally never echoes.
+
+Two triggers, both traced end-to-end:
+- **T1 — sidebar deselect / Clear-All.** `search()` echoes only *selected* filters for the 7 sidebar facets
+  (`SearchServiceImpl.search:76` `removeUnselected` → `getFacetsData:153` → `FacetStateMapperImpl.mapDto:164-174`).
+  A deselected id is absent → carried as a phantom `{selected:false, syncedState:false}` → `synced` stranded.
+  (`entityClasses` is immune — echoed as a full histogram `mapDto:167`, so IT-151's class-tab cases stayed green.)
+- **T2 — `statuses` select.** `mapDto:164-174` maps 7 facets but **omits `statuses`**, though `FORM_MAPPINGS:48`
+  *filters* on it and `FacetState.statuses` exists in the contract (`NOT_REQUIRED`). A selected status is never
+  echoed → shape-identical to a pending selection → carried → `synced` stranded immediately. (Also: a deep-link
+  `?statuses[]=S` filters correctly but the status chip never renders — `facetState.statuses` stays empty.)
+
+Newly introduced by ST-1b: pre-ST-1b the same-session PUT (`updateFacets` merge) carried the `selected:false`
+delta and the old `updateSearchState` hard-set `synced=true`; create-per-URL-state + `carryPendingLocals`
+strands it.
+
+### Design before build (G-C12)
+- **Reuse / subtract — no mirror rewrite.** The review floated "arm the mirror on URL≠projection"; unnecessary
+  and riskier. Once `synced` is correct, the EXISTING mirror (`Search.tsx:94-104`, already equality-guarded) and
+  the Results-fetch gate are correct. Fix the two true defects at their source; **Search.tsx / searchUrlState /
+  selectors / MainSearchInput stay byte-unchanged.**
+- **(A) BE — echo `statuses`.** `FacetStateMapperImpl.mapDto(entityClasses, state)` gains
+  `.statuses(getSearchFiltersForFacetType(state, FacetType.STATUSES))` (the same helper the other 7 use, `:185`).
+  **Additive fill of an existing `NOT_REQUIRED` contract field** (`components.yaml:1618` / generated
+  `FacetState.java:264,282` / FE `FacetState.ts:82`) — no spec change, no client regen, **G-C7 does not fire**.
+  Resolves T2 (statuses echoed → not a phantom; deep-link chip renders). Inert for TermSearch (separate `mapDto`);
+  strictly improves legacy-session load (`getFacets`).
+- **(B) FE — carry only genuine pending SELECTIONS.** `slice.ts`: `carryPendingLocals` predicate becomes
+  `option.selected && !option.syncedState && !(id in serverFacet)`; `hasPendingLocals` counts
+  `option.selected && !option.syncedState`. A resolved deselection is dropped (server-authoritative), never a
+  phantom. **Preserves** the round-3 in-flight-SELECTION carry (test #1) + the clean REPLACE (test #2).
+- **ADR-check:** conforms to D10 (URL is SoT) + D9 (legacy session + `/api/search` untouched). `adr_required`
+  stays false.
+- **Impact:** i18n none · generated clients none (statuses already both sides) · every `synced` consumer
+  (mirror + Results fetch-gate + `getSearchIsFetching`) *benefits* from correct `synced`, none change · migrations
+  none · docs — DOC-497's "back/forward step through your filter changes" claim becomes reliably true (re-verify
+  at DoD, no edit expected) · ontology — search-flow sidecar refresh stays deferred-to-merge.
+- **PO/SRE lens:** every sidebar facet + statuses become shareable / deselectable / back-forward-correct (not
+  just the class tab); statuses ids are catalog metadata (no PII); no perf change.
+
+### Scope change vs the approved plan → GATE-1 re-decision
+The 2026-07-01 GATE 1 approved "reducer race-fix; 5 FE files, **0 Java**, FE-only additive." The rework **adds
+1 Java file** (`FacetStateMapperImpl.java`, additive) — a change to the **search response**, the maintainer's
+explicit *"core search → default to caution"* area — plus the slice-reducer refinement. FE-only alternatives are
+worse: **dropping `statuses` from the URL BREAKS status filtering** (ST-1b routes *all* facet application through
+URL→create; the old slice-PUT path is gone), and tracking an "applied state" in the slice is more invasive AND
+leaves the deep-link-chip bug. The additive Java echo is the correct, minimal fix → **surfaced at GATE 1.**
+
+### must_haves delta (B1)
+```yaml
+truths:                         # user-observable; each verifiable on the running stack
+  - "Deselecting a sidebar filter (chip-✕) or Clear-All reloads the results (they broaden) — no stuck loader, no stale list"   # T1
+  - "Selecting a Status filter narrows the results and the status chip shows selected; /search?statuses[]=<id> reproduces it"    # T2
+  - "After a deselect / status change, a later Back/Forward or query commit is NOT reverted"                                     # T1/T2 (the review's cited symptom)
+  - "A rapid 2nd facet selection during an in-flight search is still not lost"                                                   # round-3 PRESERVED
+artifacts:
+  - path: "odd-platform-api/.../mapper/FacetStateMapperImpl.java"
+    provides: "mapDto(entityClasses, state) echoes statuses via getSearchFiltersForFacetType(state, FacetType.STATUSES)"
+    anchor: ".groups(getSearchFiltersForFacetType"
+  - path: "odd-platform-ui/src/redux/slices/dataEntitySearch.slice.ts"
+    provides: "carryPendingLocals + hasPendingLocals carry/count only selected:true pending locals"
+    anchor: "carryPendingLocals"
+  # NO change to Search.tsx / searchUrlState.ts / dataentitySearch.selectors.ts / MainSearchInput.tsx
+key_links:
+  - from: "any non-immune facet change (sidebar deselect / Clear-All / status select)"
+    to: "isFacetsStateSynced === true after the create response"
+    via: "(B) carry-selected-only drops resolved deselects; (A) mapDto echoes statuses so a selected status is in serverFacet"
+    breaks_if: "a selected:false phantom (T1) or a never-echoed statuses select (T2) is carried → synced stuck → Results.tsx never fetches + the mirror stays armed → revert"
+  - from: "a selected Status"
+    to: "the /api/search response facetState.statuses"
+    via: "FacetStateMapperImpl.mapDto .statuses(...)"
+    breaks_if: "mapDto omits statuses → deep-link chip missing + synced strand (T2)"
+  - from: "an in-flight 2nd selection during a create"
+    to: "carried across the new-session REPLACE (synced=false re-fires the mirror → create the newer state)"
+    via: "carryPendingLocals keeps selected:true unsynced not-in-serverFacet options"
+    breaks_if: "the selected filter is added to the predicate wrongly and drops a genuine pending selection → round-3 lost-update returns"
+```
+
+### Tasks
+1. **(B) slice** `dataEntitySearch.slice.ts`: add `option.selected &&` to `carryPendingLocals`'s `pickBy` predicate; make `hasPendingLocals` count `option.selected && !option.syncedState`. Same-session branch (`assignFacetStateWithNewFacets`) byte-unchanged.
+2. **(A) Java** `FacetStateMapperImpl.mapDto(List<CountableSearchFilter>, FacetStateDto)`: add `.statuses(getSearchFiltersForFacetType(state, FacetType.STATUSES))`.
+
+### Tests (G-C9 both buckets · G-C15 surviving-RED)
+- **Unit (FE slice)** — FIX test #3: assert the deselected option is dropped **AND `isFacetsStateSynced === true`** (RED on `f89c9a65`: synced=false; GREEN on fix). SoT for the new value = correct behaviour (a resolved deselect is not pending → Results must fetch). Keep #1 (in-flight selection carried, synced=false) + #2 (clean REPLACE) unchanged — round-3 proof.
+- **Unit (Java)** — NEW `FacetStateMapperImplTest` (or extend a search test): `mapDto(entityClasses, state-with-selected-STATUSES).getStatuses()` reflects the selected statuses (RED on base: null/empty; GREEN on fix) → patch-coverage (G-C13) on the changed line.
+- **Integration (IT-151 extend)** — 2 cases, assertions on **captured real shapes**, RED on `f89c9a65` (the B1-specific base) AND `ref:f63d3915` (the ST-1b feature base), GREEN on the fix:
+  - **A — sidebar deselect reloads results.** Deep-link a sidebar facet (`?q=…&types[]=<TABLE typeId>`) → dataset only + the type chip selected; deselect (chip-✕ or Clear-All) → results broaden (group returns). RED on `f89c9a65`: synced strands → group never returns / loader persists.
+  - **B — status deep-link filters + chip.** Deep-link `?q=…&statuses[]=<id>` → filtered results + the status chip selected. RED on `f89c9a65`: chip missing + results don't settle.
+- **Full regression** on the fix SUT: feature-complete green + multi-stack + known-bugs still-RED + ingestion-e2e + IT-151 GREEN-on-fix / RED-on-base. Java `:odd-platform-api:build` now RUNS (Java changed) + local patch-coverage.
+
+## Plan-check round 4 (G-C19) — B1 rework: VERIFICATION PASSED (0 BLOCKER, 2 WARNING)
+
+The adversarial `plan-checker` (fresh context, goal-backward, re-derived every `file:line` against `f89c9a65`)
+returned **VERIFICATION PASSED**. Confirmed first-hand: (A)+(B) are **individually necessary and jointly
+sufficient** for both triggers (T1 needs (B); T2 needs (A) — without the echo, a selected status is a phantom
+even under (B)); the round-3 in-flight-SELECTION carry is **preserved** (slice tests #1/#2 stay green under the
+new predicate); the Java echo is additive (`FacetState.statuses` NOT_REQUIRED, `components.yaml:1618`;
+`FacetType.STATUSES` exists; Term path separate — no G-C7, no regen); leaving Search.tsx/searchUrlState/selectors/
+MainSearchInput unchanged is safe (complete `getSearchFacetsSynced` consumer set = mirror + `Results.tsx:53`
+fetch-gate + `getSearchIsFetching` loader; `termSearch` is a separate slice); scope-growth flagged, no facet
+dropped.
+
+**WARNING 1 (the GATE-1 item) — symmetric round-3 parity: a rapid double-DESELECT lost-update remains.** The fix
+carries pending *additions* (absent from the in-flight create's response) but structurally cannot carry a pending
+*removal*: a facet deselected *during* an in-flight create is still `selected:true` in that create's response, so
+it is present in `serverFacet`, the `option.selected` predicate drops the optimistic `selected:false`, and the
+server value resurrects it → the 2nd deselect is lost (chip reappears; results stay filtered). Verified reachable
+at the same pace the round-3 SELECTION race was (2nd toggle ~½s later, RTT < 400ms). **Not introduced by this fix**
+(`f89c9a65` is worse — strand *and* lose) and **outside the two stated B1 triggers** (both delivered + strictly
+improved) → WARNING, not BLOCKER. But it is the exact mirror of the race the maintainer escalated as unacceptable
+for core search, and `must_haves.truths[4]` claims parity only for *selection* → **surfaced at GATE 1**, not left
+implicit. Two dispositions: **(B) minimal** (carry-selected-only) + log the edge as a follow-up CTRIB, or **(B′)
+root fix** — replace the `!(id in serverFacet)` heuristic with an optimistic-vs-requested reconciliation
+(`action.meta.arg.searchFormData.filters`), which fixes the double-deselect symmetrically and removes the leaky
+heuristic class that produced B1. Both include (A) the statuses echo.
+
+**WARNING 2 (fold-in, no decision) — truth #3 (no-revert) is only transitively tested.** The 2 new IT cases don't
+drive a Back/Forward *after* a deselect to directly assert "not reverted." Cheap strengthening: in IT case A, after
+the deselect reloads, add `page.goBack()` + assert the URL is not re-reverted. → folded into the IT-151 case-A plan.
+
+## GATE 1 — APPROVED (2026-07-01, rework): B′ (root fix) + statuses echo
+
+Maintainer chose **Root fix (B′) + parity** via AskUserQuestion: replace the leaky `!(id in serverFacet)`
+heuristic with an **optimistic-vs-requested reconciliation** (`action.meta.arg.searchFormData.filters`) —
+fixing B1's T1/T2 **and** the symmetric rapid-double-DESELECT lost-update (WARNING 1), removing the heuristic
+class that produced B1 — plus **(A)** the additive `statuses` echo in `mapDto`. Scope: **2 source files**
+(`FacetStateMapperImpl.java` +1 line · `dataEntitySearch.slice.ts` reconciliation). This meets the maintainer's
+round-3 reliable+stable parity bar in the "core search → caution" area (their revealed preference: fix this
+lost-update class, not defer it).
+
+**Approved plan (authoritative for Phase D):**
+- **(A) Java** `FacetStateMapperImpl.mapDto(entityClasses, state)` += `.statuses(getSearchFiltersForFacetType(state, FacetType.STATUSES))`.
+- **(B′) slice** `updateSearchState` new-session branch: `carryPendingLocals(facet)` keeps `oldFacet` options where `!option.syncedState && option.selected !== requested.has(option.entityId)` (requested = the create's `meta.arg.searchFormData.filters` selected ids); `hasPendingLocals` = any remaining `!syncedState`. Same-session branch byte-unchanged. Handles pending SELECT + pending DESELECT symmetrically; legacy `get.fulfilled` (no `searchFormData`) → clean REPLACE (no optimistic locals on a legacy load).
+- **Tests:** slice unit — update `fulfil` to carry requested filters; #1 (in-flight select carried), #2 (clean REPLACE), #3 (single deselect → dropped + `synced=true`, RED-on-base), **NEW #4** (double-deselect → optimistic `selected:false` preserved + `synced=false`, RED-on-base — proves B′ over B). Java unit — `mapDto` echoes statuses (RED-on-base). IT-151 — case A (sidebar deselect → results reload + `goBack` no-revert, W2 fold-in) + case B (status deep-link → filtered + chip). Full regression on the fix SUT (Java build now runs).
+
+`plan_approved_by`: maintainer — GATE 1 AskUserQuestion 2026-07-01 (rework: B′ root fix + statuses echo).
+
+## Phase D — B1 rework implementation (2026-07-01 → 02, resume session 2)
+
+Resumed mid-Phase-D: the prior resume session had implemented **(A)** + **(B′)** + the slice tests (#3/#4
+rewritten, `fulfil` carries `meta.arg` filters) + the new `FacetStateMapperImplTest` + IT-151 case A
+(all uncommitted in `../odd-platform-ctrib049`), and was interrupted before IT-151 case B. This session
+verified the implemented fix line-by-line against the GATE-1-approved plan (MATCH — predicate
+`!syncedState && selected !== requested.has(id)`; `hasPendingLocals` = any remaining `!syncedState`;
+same-session branch byte-unchanged; legacy GET → clean REPLACE), fixed the Java-test fixture id
+(3L→4L: `DataEntityStatusDto` STABLE=3/DEPRECATED=4 — fixture said DEPRECATED), completed the test set,
+and ran the full evidence ladder below.
+
+### The THIRD defect — sidebar chips lose their labels (found, decided, fixed this session)
+
+While preparing IT-151 case B's chip assertion (capture-first rule), traced + **verified live** on the
+running fix stack: the ST-1b reader builds every create request **from the URL (ids only)**
+(`searchUrlStateToFormData` — its own docstring *claimed* "names backfill from the response"), and the
+server echoes back exactly the names the request carried (`SearchServiceImpl.search:75-82` →
+`getFacetsData` → `mapDto` → `mapFilter` `entityName(f.getEntityName())`; `SearchMapperImpl.mapDto` maps
+`.name(dto.getEntityName())` — **no name resolution anywhere**). `updateSearchState.setFacetOptionsById`
+then overwrote the optimistic labelled entry with the name-less echo → **every sidebar-facet chip lost its
+label ~1 s after selection** (`SelectedFilterOption` renders `entityName` via `TextFormatted`, which renders
+NOTHING for undefined → a bare ✕ chip). Pre-ST-1b the debounced PUT carried names (the optimistic delta
+includes `entityName`), so this is a **regression vs main introduced by ST-1b**, distinct from B1's
+two triggers, invisible to IT-151 (class facet = named histogram) and to the review.
+
+**Evidence (captured, not reasoned):** wire — `POST /api/search` with `{"tags":[{"entity_id":1,"selected":true}]}`
+echoes `"tags":[{"id":1,"name":null}]` (live capture; note the response `"statuses":[]` — the (A) echo active).
+Pixels — Playwright probe on the fix stack: T+0 chip "Obs probe tag ✕" labelled; T+4 s URL correctly
+`?q=obsprobe&tags[]=1`, results correctly filtered, **chip label GONE** (`getByTitle` count 0), bare ✕
+(screenshots `integration-tests/e2e/evidence/obs-chip-{1,2}-*.png`).
+
+**Scope decision (AskUserQuestion fired 2026-07-02 ~00:10; maintainer away → 60 s timeout → proceeded on the
+recommended option per the autonomous operating model; requires ratification at GATE 2 / re-review):**
+**Fold in the minimal name-preserving merge** — `setFacetOptionsById` keeps the already-known `entityName`
+when the echo has none (`facetOption.name ?? state.facetState[facetName]?.[id]?.entityName`; same reducer B′
+rewrites; ~6 lines + comment). Restores main-parity for the interactive flow + in-session back/forward.
+Rationale: erases the regression with a bounded change; forward-compatible with (and not foreclosing) the
+full server-side fix; matches the maintainer's reliable+stable bar and the ST-1b/1c slicing philosophy.
+Alternatives surfaced in the question: BE echoes resolved names now (hot-path per-facet lookups — too big to
+absorb unratified), or ship-approved-scope-only (knowingly ships the interactive regression — rejected).
+
+**The residual (explicit truth reduction vs the ORIGINAL ST-1b plan — tracked as ST-1d):** a **fresh**
+faceted deep-link (recipient, new tab) renders its chips **present but unlabelled** — there is no known name
+to preserve client-side. The original plan's R2 acceptance "shows the tag chip selected", key_link #5's
+"names backfill server-side", and round-4 T2's "the status chip shows selected; `/search?statuses[]=<id>`
+reproduces it" all rested on the now-falsified backfill premise — **the delivered truth is: the deep-link
+reproduces the filtered RESULTS and the filter state (functional ✕ chip); its LABEL arrives with ST-1d**
+(server resolves names in the echo — which also fixes the echo violating the spec's own
+`SearchFilter.required: [id, name]`). Follow-up on disk: `state/search-overhaul-decomposition.md` § ST-1
+"Sub-slice ledger" → **ST-1d**; cited from the IT-151 spec comment + protocol §4.6.
+
+### must_haves delta (label-preserve; extends the GATE-1 B′+A contract)
+```yaml
+truths:
+  - "A sidebar-facet chip keeps its label after the search settles (select flow; was: blanked ~1s after every selection)"
+  - "REWORDED T2 (deep-link half): /search?statuses[]=<id> reproduces the status-FILTERED results and the applied filter state; the chip LABEL on a fresh deep-link is ST-1d"
+artifacts:
+  - path: "odd-platform-ui/src/redux/slices/dataEntitySearch.slice.ts"
+    provides: "setFacetOptionsById(facetOptions, facetName) preserves the known entityName when the echo is name-less"
+    anchor: "recipient-side label backfill is a logged follow-up"
+key_links:
+  - from: "the name-less create echo (name:null for URL-derived requests)"
+    to: "the rendered SelectedFilterOption label"
+    via: "entityName: facetOption.name ?? state.facetState[facetName]?.[id]?.entityName"
+    breaks_if: "the echo value is taken verbatim → TextFormatted renders nothing → a bare ✕ chip on every facet selection"
+```
+
+### Plan-check round 5 (G-C19, the grown reducer change) — ISSUES FOUND → resolved in-session
+Adversarial re-check of the implemented (A)+(B′)+name-preserve: **code and tests SOUND** — all round-4 truths
+re-verified under the grown implementation (T1/T2, round-3 SELECT carry, W1 DESELECT parity, legacy GET clean
+REPLACE — `getDataEntitiesSearch` arg carries no `searchFormData`); the merge introduces no new defect
+(carried pending locals keep their own labels; entityClasses histogram unaffected; `'my'` never in facetState;
+same-session branch consumes the shared name-preserving builder; types/lint clean); RED-locks verified
+(slice #3/#4/#5, Java test, IT-151 A+B), G-C15 clean (#3 adds a STRICTER oracle; #1/#2 byte-unchanged);
+scope = exactly (A)+(B′)+merge+tests; G-C7 does not fire (`FacetState.statuses` existing NOT_REQUIRED field,
+no regen). **1 BLOCKER (plan-integrity, no code rework): the label residual was an untracked truth-reduction —
+resolved:** ST-1d written into the decomposition's Sub-slice ledger + cited from spec/protocol + this section
+rewords T2 + the GATE-1 ratification is queued (below). **2 WARNINGS resolved:** the `meta.arg` comment
+corrected (update DOES carry `searchFormData`; behaviourally moot — thunk orphaned); the deep-link
+chip-presence automation omission recorded as DELIBERATE in protocol §4.6 (ST-1d scope) rather than growing
+the spec after the RED runs were captured.
+
+### Evidence ledger (every gate ACTUALLY RUN this session; worktree `../odd-platform-ctrib049`, uncommitted → committed below)
+- **FE unit (node:24 container):** the 3 affected files **20/20 GREEN on the fix** (searchUrlState 11 ·
+  slice 5 incl. NEW #5 label-preserve · useQueryParams 4). **RED-on-base (f89c9a65 slice.ts swapped in):
+  #3, #4, #5 FAIL — 3 failed / 2 passed** (#1/#2 pass: round-3 carry pre-existed). `tsc --noEmit` CLEAN;
+  `eslint` on all changed FE files CLEAN.
+- **Java unit:** `FacetStateMapperImplTest` (2 tests) — **RED on the base mapper (2 failures:
+  "Expecting actual not to be null" — `getStatuses()` null)** → **GREEN on the fix** (fresh XML evidence).
+  **Full CI replica `scripts/run-platform-tests.sh` (`:odd-platform-api:build` = test + checkstyleMain +
+  checkstyleTest + assemble): BUILD SUCCESSFUL in 10m36s.**
+- **Patch coverage (G-C13):** the repo's jacoco config **structurally excludes `**/*MapperImpl*`**
+  (build.gradle:181-188, "MapStruct-generated impls" — the glob also catches this hand-written class), so
+  `FacetStateMapperImpl` has NO measurable lines in the CI coverage gate → the 98% changed-files gate is
+  vacuous for this diff; the changed line is nonetheless directly unit-tested RED→GREEN (above). The FE file
+  is outside the Java gate. (The over-broad glob is an upstream repo-config nit — noted, not this PR's scope.)
+- **IT-151 ladder (stream ctrib049, ports 18210/15610):**
+  - **GREEN on the fix SUT: 4/4 passed** (class-tab write/removal 6.6s · share+back/forward 5.4s ·
+    case A sidebar-deselect+Clear-All+goBack-no-revert 5.2s · case B status select/label/deep-link 6.7s) —
+    run-log `2026-07-02-IT-151.md` (the preceding e2e:FAIL entry = the spec's OWN afterAll FK bug — tag link
+    not cleared before the entity DELETE — fixed in the spec teardown, not a SUT defect).
+  - **RED on `ODD_SUT=ref:f89c9a65` (B1 base): 2 failed / 2 passed — EXACTLY per prediction** (the 2 original
+    immune-facet cases pass; case A fails — stranded `synced`, the group never returns; case B fails — no
+    statuses echo → results freeze).
+  - **RED on `ODD_SUT=ref:f63d3915` (feature base): see the run-log entry** (expected: 4/4 fail — no facets
+    in the URL at all).
+- **Docs re-verified (G-C10/11):** DOC-497's authored `search.md` @ documentation `7259606` re-read — every
+  claim ("filters in the URL", "back/forward step through filter changes", "reproduces the entire faceted
+  search") is **reliably true post-fix**; the text does not promise recipient-side chip LABELS → **no doc
+  edit needed**; ST-1d does not gate DOC-497.
+- **Ontology (G-C10):** search-flow sidecar refresh stays **deferred-to-merge** (ST-1a/ST-1b precedent — the
+  ontology tracks `main`; nothing stale until the PR merges).
+
+### FULL regression (committed SHA `02f0ee60`; `run-regression.sh ctrib049`, flock held, torn down after)
+- **feature-complete: 336 passed / 1 failed — GREEN-FOR-CHANGE.** The 1 = `favorites-star-see-loop.spec.ts:159`
+  (the #1815 Group-B Description column) — the documented **contributor-independent** failure (asserts unmerged
+  CTRIB-039 Group-B behaviour; RED on any non-Group-B SUT incl. main). The prior run's owner-association flake
+  did NOT recur. Every search spec GREEN (catalog-search, search-url-state ST-1a, search-url-facets IT-151,
+  tsquery-poisoning IT-003, search-session-not-found D9, class-tab-filter, suggestions).
+- **known-bugs: exactly 3 failed = IT-004 · IT-006 · IT-007 (expected-RED), 0 unexpected-green.**
+- **multi-stack: PASS** · **ingestion-e2e: 15/15 PASS** (first pass, same SHA/digest `3948e2ac…`).
+- *Process note:* the first pass's per-suite counts were lost to an output-truncation mistake (regression piped
+  through `tail -40`; `results.json`/`test-results` overwritten by later suites) → feature-complete + known-bugs
+  were **re-run under the flock** with full capture (`SUT b4cc5c4b…` from the same clean `02f0ee60`) — the
+  counts above are from that run's log. Tooling follow-up noted below.
+
+### DoD — all five gates ACTUALLY RUN at the committed SHA
+1. **Unit build green on the working tree** ✅ — FE vitest 20/20 (node 24) + `tsc` + `eslint` clean; Java FULL
+   `:odd-platform-api:build` (test + checkstyle ×2 + assemble) **BUILD SUCCESSFUL 10m36s**.
+2. **FULL integration regression on the working-tree SUT** ✅ — green-for-change (336/1 contributor-independent ·
+   kb 3-RED-expected/0-green · ms PASS · ie 15/15) **+ IT-151 GREEN-on-fix 4/4 · RED-on-`ref:f89c9a65`
+   2-of-2-new · RED-on-`ref:f63d3915` 4/4** — G-C15 complete for every new/changed test.
+3. **Docs read + decided + routed + authored** ✅ — DOC-497 on `docs/CTRIB-049-search-url-facets @ 7259606`
+   (train `release/1.0.0`); re-read this session: every claim reliably true post-fix, **no edit needed**;
+   ST-1d does not gate it. Train push stays maintainer-gated (ST-1a/DOC-495 precedent).
+4. **Ontology** ✅ — deferred-to-merge (tracks `main`; ST-1a/ST-1b precedent). The unowned prior-run lineage
+   drift (feature-flows + 2 sidecars + P-001 yamls) stays routed-around, uncommitted (O10).
+5. **Principal sufficiency (G-C13)** ✅ — both buckets meaningful + RED-locked per defect dimension;
+   patch-coverage: the jacoco `**/*MapperImpl*` exclusion makes the gate vacuous for the changed mapper
+   (recorded; behaviour proven by the direct RED→GREEN test); **pixel review DONE this time** — the chip
+   surface was driven and screenshotted (evidence PNGs; the settled chip keeps its label on the fix).
+
+**Follow-ups logged:** **ST-1d** (deep-link chip-label resolution — `state/search-overhaul-decomposition.md`
+§ST-1 Sub-slice ledger; also covers the echo violating `SearchFilter.required:[id,name]`) · **tooling** — the
+run-log template records neither pass/fail counts nor the `ODD_PLATFORM_DIR` HEAD (it logs the default
+checkout's HEAD — misleading on worktree streams) — logged in the ledger here for the tests-pillar sweep.
+
+## Status: `review-ready` (2026-07-02) → re-`/review` (separate session) → GATE 2
+Commit `02f0ee60` pushed same-name (upstream-unset worktree, push.default=current, pre-push assertion run);
+DRAFT PR #1834 body updated with the rework section (live-verified: draft, `Part of #1825`, no closing
+keyword; milestone 1.0.0 re-verified OPEN on #1825). **GATE-2 ratification item (lead):** the label-preserve
+scope fold-in was decided autonomously after the AskUserQuestion timed out — the maintainer ratifies (or
+reverses) it at review/merge; the full decision record is in "The THIRD defect" above.

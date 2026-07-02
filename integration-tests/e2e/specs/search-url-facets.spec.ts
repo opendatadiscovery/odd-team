@@ -66,12 +66,43 @@ const datasetRowOf = (page: Page) =>
 const groupRowOf = (page: Page) =>
   page.getByTestId('search-result-item').filter({ hasText: GROUP_NAME });
 
+// B1 (rework) — the SIDEBAR facets + statuses. `tags` is a non-immune ECHOED facet (unlike the class tab):
+// deselecting it must re-sync so the results refetch. `statuses` was never echoed → its chip never rendered.
+const TAG_IN_URL = /tags(\[\]|%5B%5D)=\d+/;
+const STATUS_IN_URL = /statuses(\[\]|%5B%5D)=\d+/;
+
+// Seed a tag linked to the DATASET only, so tags[]=<id> narrows to it (the group has no tag). Returns the id —
+// captured at runtime, never hardcoded (tag ids are auto-increment). SELECT-then-INSERT (tag.name not a reliable
+// unique constraint — the db.ts seedEntityTag precedent) + DELETE-then-INSERT the link; idempotent.
+async function seedTagOnDataset(tagName: string): Promise<number> {
+  const existing = await dbQuery<{ id: number }>('SELECT id FROM tag WHERE name = $1 LIMIT 1', [tagName]);
+  const tagId = existing[0]?.id
+    ?? (await dbQuery<{ id: number }>(
+      'INSERT INTO tag (name, important) VALUES ($1, false) RETURNING id', [tagName]))[0].id;
+  await dbQuery('DELETE FROM tag_to_data_entity WHERE data_entity_id = $1 AND tag_id = $2', [DATASET_ID, tagId]);
+  await dbQuery('INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external) VALUES ($1, $2, false)',
+    [tagId, DATASET_ID]);
+  return Number(tagId);
+}
+
+// B1 — give the two entities distinct lifecycle statuses so statuses[]=3 (STABLE) narrows to the dataset.
+// DataEntityStatusDto: STABLE=3, DEPRECATED=4 (data_entity.status smallint; DELETED=5 hides the entity).
+async function seedDistinctStatuses(): Promise<void> {
+  await dbQuery('UPDATE data_entity SET status = 3 WHERE id = $1', [DATASET_ID]); // STABLE
+  await dbQuery('UPDATE data_entity SET status = 4 WHERE id = $1', [GROUP_ID]); // DEPRECATED
+}
+
 test.describe('F-017 search URL state — facets in the URL (ST-1b / D10)', () => {
   test.beforeEach(async () => {
     await seedSearchableEntity(DATASET_ID, DATASET_NAME); // DATA_SET class {1}, type TABLE
     await seedSearchableOfClass(GROUP_ID, GROUP_NAME, '{8}', 17); // DATA_ENTITY_GROUP class {8}
   });
   test.afterAll(async () => {
+    // the tag link (case A/B seeds) references data_entity — clear it first or the entity DELETE hits the FK
+    await dbQuery('DELETE FROM tag_to_data_entity WHERE data_entity_id = ANY($1::bigint[])', [
+      [DATASET_ID, GROUP_ID],
+    ]);
+    await dbQuery('DELETE FROM tag WHERE name = $1', [`${TERM}_tag`]);
     await dbQuery('DELETE FROM search_entrypoint WHERE data_entity_id = ANY($1::bigint[])', [
       [DATASET_ID, GROUP_ID],
     ]);
@@ -147,5 +178,88 @@ test.describe('F-017 search URL state — facets in the URL (ST-1b / D10)', () =
     await expect(groupRow, 'Forward re-applies the facet (group filtered out)').toHaveCount(0, {
       timeout: 15_000,
     });
+  });
+
+  // B1 (rework) — a SIDEBAR-facet deselect must re-sync so the results refetch. RED on ref:f89c9a65 (ST-1b with
+  // B1): the deselected tag is carried as a phantom → isFacetsStateSynced stranded false → Results.tsx never
+  // refetches → the group never returns (and the still-armed mirror can revert a later navigation).
+  test('a sidebar facet + Clear All reloads the results (no stranded sync, no revert)', async ({ page }) => {
+    const datasetRow = datasetRowOf(page);
+    const groupRow = groupRowOf(page);
+    const tagId = await seedTagOnDataset(`${TERM}_tag`);
+
+    // a shareable link carrying a sidebar TAG facet — only the tagged dataset (the group has no tag).
+    await page.goto(`/search?q=${TERM}&tags[]=${tagId}`);
+    await expect(datasetRow, 'the tagged dataset is shown').toBeVisible({ timeout: 15_000 });
+    await expect(groupRow, 'the untagged group is filtered out').toHaveCount(0, { timeout: 15_000 });
+    await expect(page, 'the tag facet is in the URL').toHaveURL(TAG_IN_URL, { timeout: 15_000 });
+
+    // Clear All removes the facet — the results MUST broaden (the group returns), proving the create response
+    // re-synced and Results.tsx refetched.
+    await page.getByRole('button', { name: 'Clear All' }).click();
+    await expect(page, 'the tag facet leaves the URL').not.toHaveURL(TAG_IN_URL, { timeout: 15_000 });
+    await expect(groupRow, 'the group returns once the facet is cleared (results refetched)').toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(datasetRow).toBeVisible();
+
+    // no-revert (W2): the still-un-synced mirror must NOT re-navigate back to the tag link (> the 400ms debounce).
+    await page.waitForTimeout(1_000);
+    await expect(page, 'the cleared URL is not reverted by a stale mirror write').not.toHaveURL(TAG_IN_URL);
+
+    // W2 fold-in — Back AFTER the deselect lands on the tagged state and STAYS there: the tagged result
+    // reproduces (the create re-synced) and no stale debounced mirror write bounces the URL afterwards.
+    await page.goBack();
+    await expect(page, 'Back returns to the tagged URL').toHaveURL(TAG_IN_URL, { timeout: 15_000 });
+    await expect(groupRow, 'the tag filter re-applies (group filtered out)').toHaveCount(0, {
+      timeout: 15_000,
+    });
+    await expect(datasetRow).toBeVisible();
+    await page.waitForTimeout(1_000);
+    await expect(page, 'the restored URL is not bounced by a stale mirror write').toHaveURL(TAG_IN_URL);
+  });
+
+  // B1 (rework) — `statuses` is a REAL sidebar facet the server filters on but never echoed back
+  // (FacetStateMapperImpl.mapDto omitted it), so selecting a status stranded `isFacetsStateSynced` and froze
+  // the results. Wire shapes captured live: options = {id:3,name:'STABLE'} (ids = DataEntityStatusDto);
+  // the URL-derived create echoes the request's names (null) — the chip label must survive that echo.
+  test('a status filter narrows results, keeps its chip label, and deep-links (echo + label-preserve)', async ({
+    page,
+  }) => {
+    const datasetRow = datasetRowOf(page);
+    const groupRow = groupRowOf(page);
+    await seedDistinctStatuses(); // dataset STABLE(3) · group DEPRECATED(4)
+
+    // ---- select flow: pick STABLE in the Statuses sidebar facet ----
+    await page.goto(`/search?q=${TERM}`);
+    await expect(datasetRow, 'both entities visible before filtering').toBeVisible({ timeout: 15_000 });
+    await expect(groupRow).toBeVisible({ timeout: 15_000 });
+
+    await page.locator('#filter-statuses').click();
+    await page.getByRole('option', { name: 'STABLE' }).click();
+
+    // the committed status reaches the URL and refilters server-side (RED on the B1 build: the un-echoed
+    // status strands `synced` → Results.tsx never refetches → the group never disappears).
+    await expect(page, 'the status facet reaches the URL').toHaveURL(STATUS_IN_URL, { timeout: 15_000 });
+    await expect(groupRow, 'DEPRECATED group is filtered out').toHaveCount(0, { timeout: 15_000 });
+    await expect(datasetRow, 'STABLE dataset remains').toBeVisible();
+
+    // the chip label survives the settle: the URL-derived create echoes name:null, and the reducer must keep
+    // the label it already knows (RED without the label-preserving merge: the chip blanks ~1s after select).
+    await page.waitForTimeout(2_000);
+    await expect(page.getByTitle('STABLE'), 'the STABLE chip is still labelled after the create settles')
+      .toBeVisible();
+    await expect(groupRow, 'the filtered results did not revert').toHaveCount(0);
+
+    // ---- deep-link flow: the same state reproduces fresh from the URL ----
+    await page.goto(`/search?q=${TERM}&statuses[]=3`);
+    await expect(datasetRow, 'the status-filtered dataset renders (results settle)').toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(groupRow, 'the DEPRECATED group is filtered out on the deep-link').toHaveCount(0, {
+      timeout: 15_000,
+    });
+    // (deep-link chips render unlabelled until the server echoes resolved names — follow-up ST-1d,
+    // state/search-overhaul-decomposition.md "Sub-slice ledger"; deliberately not asserted here.)
   });
 });

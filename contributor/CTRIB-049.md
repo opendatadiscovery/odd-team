@@ -4,7 +4,7 @@ title: "ST-1b — Facets-in-URL search state (the facet half of ST-1; shareable 
 issue: "ST-1b sub-task of #1825 (Part of #1825; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: review-ready           # B1 rework COMPLETE 2026-07-02 @ 02f0ee60 ((A) statuses echo + (B′) optimistic-vs-requested + label-preserve merge; third defect found+fixed this session — GATE-2 ratification item). Full ladder + regression green-for-change; PR #1834 updated. → re-/review (separate session) → GATE 2. History: REJECTED B1 2026-07-01 → rework sections below.
+status: review-ready           # RE-/REVIEW 2026-07-02 (review-ctrib049-2): ACCEPTED — all gates PASS; full regression INDEPENDENTLY green-for-change (feature-complete 336/1 contributor-independent · IT-151 4/4 incl. B1/T1+T2 · known-bugs 3-RED · multi-stack 9 · ingestion-e2e 15) + Java `:odd-platform-api:build` SUCCESSFUL @ 02f0ee60. GATE-2-ready → human merges PR #1834 (owns pending-release→done via /review release:1.0.0). TWO human-ratification items at GATE 2: (1) label-preserve scope-add (autonomous post-AskUserQuestion-timeout; correct+tested), (2) ST-1d truth-reduction (fresh deep-link chips unlabelled; tracked). Verdict: "## Re-Review (2026-07-02, session: review-ctrib049-2)" below. History: B1 rework COMPLETE @ 02f0ee60 ((A) statuses echo + (B′) optimistic-vs-requested + label-preserve); REJECTED B1 2026-07-01 → rework sections below.
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 full-search-state-in-URL, D9 no-break) [maintainer-approved direction]"
@@ -921,3 +921,146 @@ DRAFT PR #1834 body updated with the rework section (live-verified: draft, `Part
 keyword; milestone 1.0.0 re-verified OPEN on #1825). **GATE-2 ratification item (lead):** the label-preserve
 scope fold-in was decided autonomously after the AskUserQuestion timed out — the maintainer ratifies (or
 reverses) it at review/merge; the full decision record is in "The THIRD defect" above.
+
+## Re-Review (2026-07-02, session: review-ctrib049-2) — VERDICT: ACCEPTED → stays `review-ready` (GATE-2-ready)
+
+Separate-session re-review of the B1 rework (`02f0ee60`), reject-by-default. Unlike the 2026-07-01 static-only
+pass, this review **independently RAN the full regression + the Java CI-replica build** on a SUT built from the
+reviewed commit (`ODD_SUT=working`; worktree `../odd-platform-ctrib049` CLEAN at `02f0ee60`; stream `ctrib049`,
+flock acquired then released, stack torn down). B1 was re-verified **first-hand** in the FE reducer + the Java —
+not inferred. **Result: B1 is FIXED (both triggers), no regression introduced, every gate PASSes.** Two
+scope/product decisions are surfaced for the human at GATE 2 (they fail no gate — the code is correct and both
+are honestly tracked): the label-preserve fold-in and the ST-1d truth-reduction.
+
+### Acceptance criteria (reworded must_haves + Spec)
+- [x] **R1** (facet→URL, query preserved) — PASS. `MainSearchInput` merge unchanged; a deselect/status now
+  correctly updates the URL post-B1 (the prior "revert-under-latency" PARTIAL resolved). Ev: IT-151 t294 GREEN.
+- [x] **R2** (faceted deep-link reproduces) — PASS for RESULTS + filter state (IT-151 t293/t295). The chip **label**
+  on a FRESH deep-link is deferred to **ST-1d** — independently corroborated: `searchUrlStateToFormData`
+  (`searchUrlState.ts:130-139`) sends **ids only** (`entityName` intentionally omitted) → the server echoes
+  `name:null` (no name resolution in `mapFilter`/`SearchMapperImpl.mapDto`) → nothing client-side to label a
+  recipient's chip.
+- [x] **R3** (back/forward navigates facet states) — PASS. The stranded-`synced` revert is gone; IT-151 t293/t294.
+- [x] **R4** (recipient-scoped, ids-only, fail-closed) — PASS. `searchStateToParams` emits ids only; recipient
+  scoping inherited from the unchanged `/api/search`.
+- [x] **R5** (D9 legacy + `/api/search` unchanged) — PASS. `Search.tsx` `routerSearchId` branch byte-unchanged;
+  the Java change fills an existing NOT_REQUIRED response field (no wire-contract break). `search-session-not-found`
+  284-288 GREEN.
+- [x] **R6** (fail-closed parse) — PASS. `paramsToSearchState` try/catch-wrapped + coerces facet ids to
+  `Number.isInteger(n) && n > 0`; `search-tsquery-poisoning` (IT-003) GREEN.
+
+### B1-rework truths (the must_haves delta)
+- [x] **T1** — a sidebar-facet **deselect / Clear-All** reloads + broadens results, no stuck loader, no strand.
+  Verified: reducer trace (the B′ predicate `!syncedState && selected !== requested.has(id)` DROPS a resolved
+  deselect → `hasPendingLocals` false → `synced` true → `Results.tsx` fetches) + slice test **#3 RED-on-base** +
+  **IT-151 t294 GREEN**.
+- [x] **T2** — a **status** filter narrows results, keeps its chip, deep-links. Verified: `mapDto` echoes `statuses`
+  (`FacetStateMapperImpl.java:177`; `FORM_MAPPINGS:48` already filters STATUSES; `FacetState.statuses` is an
+  existing NOT_REQUIRED spec field @ `components.yaml:1587` → additive, no regen) + `FacetStateMapperImplTest`
+  RED-on-base (`getStatuses()` null) + **IT-151 t295 GREEN**.
+- [x] **No-revert after deselect/status** — PASS (synced returns true → the mirror disarms; traced + IT-151 t294/t295).
+- [x] **Round-3 in-flight SELECT preserved** — PASS (the predicate keeps an optimistic option whose `selected`
+  differs from the create's request; slice test #1 GREEN).
+- [x] **Symmetric rapid double-DESELECT** (round-4 WARNING 1) — PASS/FIXED as a bonus (B′ over B); slice #4 RED-on-base.
+- [x] **Label-preserve** (interactive chip keeps its label) — PASS. `setFacetOptionsById` keeps the known
+  `entityName` when the echo is name-less; slice #5 RED-on-base + IT-151 t295.
+
+### Quality Bar
+- **Gate 1** — PASS (extends `searchUrlState`/`useQueryParams`; no parallel state layer; the rework adds no new
+  layer) via read of the diff + no `useSearchParams` dup.
+- **Gate 2** — N/A (no alias).
+- **Gate 3** — N/A (code; the release-gated-behaviour admonition is DOC-497 on the train).
+- **Gate 4** — PASS. `Consumer-read:` footer accurate; verified first-hand: `SearchServiceImpl`, `FacetStateDto`,
+  `FacetStateMapperImpl` (`FORM_MAPPINGS`+`mapDto`), the slice reducer, `dataentitySearch.selectors.ts`
+  (`getSearchUrlState`), `Search.tsx` (reader/mirror), `searchUrlState.ts`.
+- **Gate 5** — N/A (no SDK builder).
+- **Gate 6** — PASS. Code paths documented via DOC-497 (train). One LOW code↔doc note: the doc's "reproduces the
+  **entire faceted search**" runs slightly ahead of the ST-1d fresh-deep-link-chip-label residual → owned by ST-1d
+  + re-verified at the 1.0.0 release gate (`/review release:1.0.0`); NOT a new item (ST-1d owns it).
+- **Gate 7** — N/A (code; DOC-497 = 1-line replacement, SUMMARY/TOC unaffected).
+- **Gate 8** — **PENDING-RELEASE (1.0.0)**. Code ships via PR #1834 (GATE-2 human merge). DOC-497 is **authored** on
+  the train `docs/CTRIB-049-search-url-facets @ 7259606` (off `release/1.0.0` `5b2bb04`, touches
+  `data-discovery/search.md`) — authored, not merely drafted → not a Gate 8 FAIL; the train push is
+  maintainer-gated (ST-1a/DOC-495 precedent). Post-release live-verify: `docs.opendatadiscovery.org/data-discovery/search`
+  — phrases "Your filters are in the URL too", "back / forward step through your filter changes".
+- **Gate 9** — PASS. Every cited source verified first-hand (Java merge/replace + `mapDto` + `FORM_MAPPINGS` + the
+  `FacetState.statuses` NOT_REQUIRED spec field + the FE consumers). Banned-phrase check: none used.
+- **Gate 10** — N/A (code).
+- **Gate 11** — PASS. Grep of the authored `search.md` for workspace-internal terms
+  (Cornerstone/Gate N/LSN/CTRIB/sidecar/must_haves/ST-1b/B1/…) — CLEAN.
+- **G-C7** (ADR) — PASS (correctly not fired: additive `FacetState.statuses` fill, no regen; `/api/search` contract
+  untouched; D9/D10 conform).
+- **G-C11** (milestone) — PASS (1.0.0 open/semver).
+- **G-C15** (changed tests) — PASS. Slice #3/#4/#5 are RED-on-base **by construction** (traced against the old
+  `!(id in serverFacet)` heuristic: it carries the deselect phantom / resurrects the mid-flight deselect / nulls
+  the label) — corroborated by the implementer's swapped-base run + IT-151 RED-on-`ref:f89c9a65` (2/2 new).
+  `searchUrlState.test.ts` changes only widen the object to the new `SearchUrlState` type (no matcher weakened,
+  no `.skip`/deletion). New expected values trace to CORRECT behaviour, never system output. Java test RED-on-base.
+
+### Regressions — INDEPENDENTLY RUN on the SUT built from `02f0ee60`
+- **feature-complete: 336 passed / 1 failed** — GREEN-FOR-CHANGE. The 1 = `favorites-star-see-loop.spec.ts:159`
+  (#1815 CTRIB-039 Group-B Description column, unmerged on this SUT — **contributor-independent**, RED on any
+  non-Group-B SUT). Every search spec GREEN (catalog-search · `search-url-state` ST-1a · **`search-url-facets`
+  IT-151 4/4** incl. t294 Clear-All-no-strand + t295 status+chip+deep-link · `search-tsquery-poisoning` IT-003 ·
+  `search-session-not-found` D9 · `search-class-tab-filter` · `search-suggestions`).
+- **known-bugs: 3 failed = IT-007 + IT-006 + IT-004 (expected-RED), 0 unexpected-green.**
+- **multi-stack: 9 passed** · **ingestion-e2e: 15 passed.** All suites exit 0; stack torn down; flock released.
+- **Unit bucket: Java `:odd-platform-api:build` (test + checkstyleMain + checkstyleTest + assemble) BUILD SUCCESSFUL
+  in 8m6s** at `02f0ee60` (independently run) — the new `FacetStateMapperImplTest` + all Java tests + checkstyle
+  pass. The FE reducer/selector behaviour is confirmed by the reducer trace + the IT-151 E2E (the stronger
+  measurement); the implementer's node:24 vitest run (20/20; #3/#4/#5 RED-on-base) corroborates.
+
+### Navigation
+Consistent — `navigation/domains/search.md` points at `FacetStateMapperImpl.java`, `Search.tsx`,
+`dataEntitySearch.slice.ts`, `dataentitySearch.selectors.ts` (all touched files); no files moved; no new bean
+factory/SDK builder.
+
+### Outbound URL sweep / Banned-phrase
+Outbound URLs on the authored `search.md` (the FTSConstants.java GitHub link + intra-doc links) are DOC-497's
+live verification at the 1.0.0 release gate (release-gated), not re-swept here. Banned-phrase check: none used.
+
+### Doc-product editorial audit (per `playbooks/doc-product-editorial-read.md`)
+- **Coverage this run**: bounded to `data-discovery/search.md` + neighbourhood. The full-tree read was done by
+  **review-ctrib048 on 2026-06-30 → DOC-496** (pending; DE-search-vs-term-search share-model divergence). The
+  published tree (origin/main) has had no churn since — partition noted, not skipped silently.
+- **Findings**: none NEW. ST-1b **widens** the DOC-496 divergence (DE catalog search now carries full faceted URL
+  state while term search still uses expiring `/termsearch/{uuid}` sessions) — an extension of the already-tracked
+  DOC-496, not a new item.
+
+### The two GATE-2 ratification items (the human decides at merge — they do NOT block this PASS)
+1. **Label-preserve scope-add.** GATE 1 approved (A)+(B′) = 2 files. In Phase D the implementer found a THIRD
+   defect — sidebar chips blank ~1s after every selection (a regression ST-1b's id-only-request design
+   introduced) — and folded in a ~6-line name-preserving merge in the same reducer, **after an `AskUserQuestion`
+   timed out (maintainer away, 60s)**, per the autonomous operating model, flagging it for GATE-2 ratification.
+   **The code is correct + tested** (slice #5, IT-151 t295). Assessment: **defensible** (erases a self-introduced
+   regression with a bounded change; shipping approved-scope-only would knowingly ship blank chips) and
+   transparently flagged. The maintainer ratifies (or reverses) the scope at GATE 2.
+2. **ST-1d truth-reduction.** The original plan's R2 ("shows the tag chip selected") + key_link ("names backfill
+   server-side") premise is **falsified**: a fresh faceted deep-link renders chips PRESENT + FUNCTIONAL but
+   **UNLABELLED**. RESULTS + filter state are correct; only the chip TEXT is missing on a fresh deep-link.
+   **Honestly tracked** as ST-1d (`state/search-overhaul-decomposition.md` §ST-1 ledger + IT-151 protocol §4.6 +
+   the `SearchFilter.required:[id,name]` contract note) → not silent (G-C19 satisfied). Assessment: an acceptable,
+   well-tracked truth-reduction — the core ST-1b promise (share/bookmark/navigate a faceted search) is delivered.
+   The maintainer ratifies shipping ST-1b with this residual vs bundling ST-1d.
+
+### Notes
+- B1 fix VERIFIED via first-hand read of `FacetStateMapperImpl.java:164-178` (+`FORM_MAPPINGS:39-49`),
+  `dataEntitySearch.slice.ts:42-158` (the B′ reconciliation + label-preserve + `hasPendingLocals`),
+  `dataentitySearch.selectors.ts` (`getSearchUrlState` selected-only), `Search.tsx:64-104` (reader arg =
+  `searchUrlStateToFormData`; mirror armed only on `!synced`), `searchUrlState.ts:91-139` (fail-closed + ids-only),
+  the 3 FE test files, `FacetStateMapperImplTest.java` — PLUS an independent full regression + Java build (above).
+- My-Objects / numeric-class-tab immunity VERIFIED via `changeDataEntitySearchFacet:243-244` (the
+  `typeof facetOptionId === 'number'` guard keeps the string `'my'` OUT of `facetState`; `myObjects` rides the
+  boolean, re-synced from the echo at `updateSearchState:150`, and is not part of the `hasPendingLocals` check) +
+  the full-histogram `entityClasses` echo (`mapDto:167`). So the B′ change re-introduces NO strand for the
+  class/My-Objects paths (the only class the prior review worried about).
+- Reject-by-default satisfied: every gate has cited evidence; the two surfaced items are product/scope decisions
+  for the human, not gate failures.
+- Review resources: flock ACQUIRED for the regression then RELEASED + stack torn down; `lineage/**` NOT written by
+  this review (the pre-existing unowned probe drift left routed-around, O10); run-log churn from the regression
+  reverted — this review commits exactly the verdict + `state/PROGRESS.md` + its `state/active-streams.yaml` entry.
+
+**Disposition:** `review-ready` (unchanged) — **ACCEPTED, GATE-2-ready.** The human owns the GATE-2 merge of DRAFT
+PR #1834 (the bot cannot self-merge — G-C4) **plus** the two ratification items above; on merge the item becomes
+`pending-release` (1.0.0), and `/review release:1.0.0` owns the final `done` after the release ships + DOC-497
+live-verifies. Maintainer action also surfaced: push the docs train (`release/1.0.0`) for DOC-497 (maintainer-gated).

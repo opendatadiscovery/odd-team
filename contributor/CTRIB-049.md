@@ -4,7 +4,7 @@ title: "ST-1b — Facets-in-URL search state (the facet half of ST-1; shareable 
 issue: "ST-1b sub-task of #1825 (Part of #1825; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: review-ready           # RE-/REVIEW 2026-07-02 (review-ctrib049-2): ACCEPTED — all gates PASS; full regression INDEPENDENTLY green-for-change (feature-complete 336/1 contributor-independent · IT-151 4/4 incl. B1/T1+T2 · known-bugs 3-RED · multi-stack 9 · ingestion-e2e 15) + Java `:odd-platform-api:build` SUCCESSFUL @ 02f0ee60. GATE-2-ready → human merges PR #1834 (owns pending-release→done via /review release:1.0.0). TWO human-ratification items at GATE 2: (1) label-preserve scope-add (autonomous post-AskUserQuestion-timeout; correct+tested), (2) ST-1d truth-reduction (fresh deep-link chips unlabelled; tracked). Verdict: "## Re-Review (2026-07-02, session: review-ctrib049-2)" below. History: B1 rework COMPLETE @ 02f0ee60 ((A) statuses echo + (B′) optimistic-vs-requested + label-preserve); REJECTED B1 2026-07-01 → rework sections below.
+status: review-ready           # RE-/REVIEW 2026-07-02 (review-ctrib049-2): ACCEPTED — all gates PASS; full regression INDEPENDENTLY green-for-change (feature-complete 336/1 contributor-independent · IT-151 4/4 incl. B1/T1+T2 · known-bugs 3-RED · multi-stack 9 · ingestion-e2e 15) + Java `:odd-platform-api:build` SUCCESSFUL @ 02f0ee60. GATE-2-ready → human merges PR #1834 (owns pending-release→done via /review release:1.0.0). GATE-2 (2026-07-02): maintainer RATIFIED the label-preserve scope-add (item #1); ST-1d residual (item #2) ships tracked-not-blocked. AWAITING the maintainer's own GitHub merge of PR #1834 (GATE 2 = human action, G-C4 — the bot cannot self-merge); on merge → pending-release 1.0.0. Verdict + ratification: "## Re-Review (2026-07-02, session: review-ctrib049-2)" + "## GATE-2 ratification (2026-07-02, maintainer)" below. History: B1 rework COMPLETE @ 02f0ee60 ((A) statuses echo + (B′) optimistic-vs-requested + label-preserve); REJECTED B1 2026-07-01 → rework sections below.
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 full-search-state-in-URL, D9 no-break) [maintainer-approved direction]"
@@ -1064,3 +1064,25 @@ live verification at the 1.0.0 release gate (release-gated), not re-swept here. 
 PR #1834 (the bot cannot self-merge — G-C4) **plus** the two ratification items above; on merge the item becomes
 `pending-release` (1.0.0), and `/review release:1.0.0` owns the final `done` after the release ships + DOC-497
 live-verifies. Maintainer action also surfaced: push the docs train (`release/1.0.0`) for DOC-497 (maintainer-gated).
+
+## GATE-2 ratification (2026-07-02, maintainer)
+
+**Item #1 — the label-preserve scope-add: RATIFIED by the maintainer.** The autonomous fold-in (the ~6-line
+name-preserving merge in `setFacetOptionsById`, decided after the `AskUserQuestion` 60 s timeout) is **approved and
+stays in the PR** — this closes the "GATE-2 ratification item" the rework flagged. The delivered scope is therefore
+(A) statuses echo + (B′) optimistic-vs-requested reconciliation + the label-preserve merge, all as reviewed at
+`02f0ee60`.
+
+**Item #2 — the ST-1d truth-reduction: NOT separately ratified; ships as a tracked residual on merge.** Merging
+#1834 accepts that a *fresh* faceted deep-link renders its filter chips **unlabelled** until ST-1d lands (results +
+filter state are correct; only the chip text is missing). ST-1d remains a follow-up in
+`state/search-overhaul-decomposition.md` §ST-1 (it also fixes the echo honouring `SearchFilter.required:[id,name]`).
+Surfaced for the maintainer's awareness — not a blocker.
+
+**The merge (GATE 2) is the maintainer's GitHub action — NOT performed by the agent (G-C4).** The bot is the PR
+author; GitHub blocks author self-approval and `main` branch protection requires ≥1 approving review with no
+bot-bypass (the App has no Administration scope). Maintainer steps to merge #1834: (1) mark the DRAFT PR **Ready for
+review**; (2) a human **approving review**; (3) **squash-merge** to `main`. On merge → the item flips to
+`pending-release` (1.0.0), and `/review release:1.0.0` owns the final `done` after the 1.0.0 release + DOC-497
+live-verification. Still pending in parallel: push the docs train (`release/1.0.0`) for **DOC-497**
+(maintainer-gated) so the paired doc publishes at the 1.0.0 release.

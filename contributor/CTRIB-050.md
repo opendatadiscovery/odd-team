@@ -17,7 +17,7 @@ reproduced: >-
   facetState carries the name (RED on ab63b6d3, GREEN on the fix).
 plan_approved_by: "PENDING — GATE 1"
 plan_approved_at: ""
-docs_routing: "TBD in Phase D after READING docs/data-discovery/search.md — expected NONE (chip labels are internal correctness on the shareable-URL behaviour ST-1a/ST-1b already documented; no new user-facing capability). Decision recorded only after the page is read (G-C10)."
+docs_routing: "NONE — decided after READING the page (G-C10). `docs/CTRIB-049-search-url-facets:docs/data-discovery/search.md:81` (the release/1.0.0-train version carrying ST-1a/b) already documents 'a shared or bookmarked link reproduces the ENTIRE faceted search, not just the query.' ST-1d is internal correctness that makes that PUBLISHED promise true (a recipient's fresh-deep-link chips go blank → labelled) — no new user-facing capability, so no doc change. Re-verify at the 1.0.0 release gate that the live page's claim holds (owned by /review release:1.0.0, same as DOC-497)."
 effort: medium                  # 1 new batched repository method + 1 wiring point in getFacetsData + unit + IT — additive/fail-soft, but on the core search hot path (held to reliable+stable)
 pr_url: ""                      # opens as a DRAFT PR in Phase E (Part of #1835)
 pr_draft: true
@@ -165,8 +165,11 @@ must_haves:
    (unknown id → null, no throw).
 4. **Integration — extend IT-151.** Add a case: open `/search?tags[]=<id>` (and ≥1 more facet type) in a fresh session
    → the chip shows the **name** (not blank). RED on `ODD_SUT=ref:main` (ab63b6d3), GREEN on the worktree SUT.
-5. **Docs + ontology.** Read `search.md` (record the decision — expected none). Ontology search-flow sidecar refresh
-   deferred to the 1.0.0 release-gate (ST-1a/b precedent).
+5. **Docs + ontology.** Docs — **DONE (decision): NONE.** `search.md` READ @ the train version
+   (`docs/CTRIB-049-search-url-facets:docs/data-discovery/search.md:81`) — it already documents "a shared or
+   bookmarked link reproduces the ENTIRE faceted search"; ST-1d makes that published promise true, no new capability →
+   no doc change (G-C10, page read). Ontology — search-flow sidecar refresh deferred to the 1.0.0 release-gate
+   (ST-1a/b precedent; the ontology tracks `main`, stale only on merge).
 
 ## Tests (both buckets, G-C9/G-C15) — RED base = `ab63b6d3` (current main; has ST-1a+ST-1b, lacks name resolution)
 - **Unit:** the resolver (per facet type) + the in-process echo test (Task 3) — RED on base, GREEN on fix; full

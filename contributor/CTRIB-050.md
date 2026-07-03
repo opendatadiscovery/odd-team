@@ -4,7 +4,7 @@ title: "#1835 ST-1d — server-side facet-name echo (a fresh shared faceted link
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1835 (Part of #1825; PR will be Part of #1835 — ST-1c remains, so #1835 does not close on this merge)"
 parent_epic: 1825
 class: "bug/enhancement — residual of ST-1 (ST-1d); server-side echo fix"
-status: review-ready            # Phase D+E DONE. All 5 DoD gates met (full build 7m2s; regression green-for-change 336/1-contributor-independent; IT-151 GREEN-on-fix/RED-on-base; docs NONE-read; coverage 100% changed-lines). DRAFT PR #1849 (Part of #1835, bot-authored, cannot self-merge). → /review (separate session) → GATE 2 (human merge). Implementer does NOT self-mark done.
+status: review-ready            # Phase D+E DONE. All 5 DoD gates met (full build 7m2s; regression green-for-change 336/1-contributor-independent; IT-151 GREEN-on-fix/RED-on-base; docs NONE-read; coverage 100% changed-lines). DRAFT PR #1849 (Part of #1835, bot-authored, cannot self-merge). → /review (separate session) → GATE 2 (human merge). Implementer does NOT self-mark done.  ·  REVIEW (review-ctrib050, 2026-07-03, max-effort, separate session): **ACCEPTED → stays `review-ready` = GATE-2-ready**. Verdict rests on the reviewer's OWN independent measurement (review-ctrib029 lesson — implementer's digests/logs NOT trusted): fresh SUT `sha256:10141b3e…` built from `2c0bfaf3` — feature-complete **335/2 GREEN-FOR-CHANGE** (both fails non-attributable: favorites-star:159 #1815 Group-B known-independent + search-url-facets:112 a load-timing flake proven GREEN 4/4 in isolation → TST-057) · multi-stack 9/0 · known-bugs 3-RED-expected/0-unexpected · ingestion-e2e 15/0; Java `:odd-platform-api:build` **BUILD SUCCESSFUL 7m8s** + `SearchServiceFacetNameEchoTest` 4/4 + changed-lines coverage **13/13=100%**. Human merges DRAFT PR #1849 (bot cannot self-merge, G-C4) → `pending-release` 1.0.0 → `/review release:1.0.0` owns `done`. Findings (non-blocking): implementer's 4 full-regression run-logs are template STUBS (HEAD=base, no counts) → reviewer had to re-measure; missing `Sources:` footer; TST-057 (the :112 flake). See "## Review" below.
 target_repo: odd-platform
 milestone: "1.0.0"              # G-C11 PASS — #1835 carries milestone 1.0.0 (open, semver, due 2026-07-31)
 adr: "adrs/drafts/unified-asset-search.md (D10 — the full search state is shareable/resolvable from the URL). Conforms to the existing OpenAPI contract SearchFilter.required:[id,name]."
@@ -356,3 +356,137 @@ RED-on-base 3/1**; **full regression green-for-change** — feature-complete 336
 3-RED · multi-stack 9 · ingestion-e2e 15; docs NONE-read; ontology deferred) → **Phase E DONE** (branch pushed
 same-name; **DRAFT PR #1849 `Part of #1835`**) → status **`review-ready`** → `/review` (separate session) → **GATE 2**
 (human merge; the bot cannot self-merge).
+
+---
+
+## Review (2026-07-03, session: review-ctrib050) — VERDICT: ACCEPTED → stays `review-ready` (GATE-2-ready)
+
+Separate-session `/review` (distinct from the Phase D/E implement session), **max-effort, reject-by-default**.
+Reviewed **odd-platform `2c0bfaf3`** (branch `contrib/CTRIB-050-facet-name-echo`, DRAFT PR #1849, `Part of #1835`,
+milestone 1.0.0, **unmerged**). Per the **review-ctrib029 lesson** the verdict rests on the reviewer's OWN
+independent measurement — the implementer's cited digests/logs are NOT trusted: a fresh SUT built from `2c0bfaf3`
+(`ODD_SUT=working`, worktree `../odd-platform-ctrib050` clean; image `odd-team-sut-revctrib050`, digest
+**`sha256:10141b3e3249…`**) + the Java CI-replica build on the same worktree.
+
+- **Result**: **ACCEPTED**
+
+### Acceptance criteria (must_haves truths) — each traced to the diff + verified on the running system
+- [x] Fresh shared `/search?<facet>[]=<id>` link shows LABELLED chips — PASS. `resolveFacetNames` fills the echo's
+  `SearchFilter.name`; proven by `SearchServiceFacetNameEchoTest` (id-only tag/status/group → resolved name, 4/4
+  green) + IT-151 `:226` (fresh `/search?q=…&statuses[]=3` → `getByTitle('STABLE')` visible, GREEN on my SUT).
+- [x] Every URL-carried facet covered (types·owners·namespaces·datasources·groups·statuses; entityClasses already
+  labelled) — PASS. Enum: types/statuses via `DataEntityTypeDto`/`DataEntityStatusDto.findById`; jOOQ:
+  owners/tags/namespaces/datasources via `SELECT id,name WHERE id IN(sel)`; groups via
+  `coalesce(INTERNAL_NAME,EXTERNAL_NAME)`; entityClasses skipped (already a named histogram) — read first-hand.
+- [x] Results + filter state unchanged; only the LABEL added — PASS. `getSearchResults` uses `findByState`
+  (separate path), counts from `countByState`; the fix only fills `entityName`. My full regression green-for-change
+  across every search-driven spec.
+- [x] Plain no-facet search cost-unaffected — PASS. `resolveDbFacet` issues zero queries when unselected; the
+  combined `Flux.merge(...).collectList().map(...)` ALWAYS emits an (empty) map — never `Mono.empty()` (the W2
+  hot-path P0 guard) — pinned by the `search_withNoFacets` unit case.
+- [x] Unresolvable id (deleted entity) renders as today — no crash (fail-soft) — PASS. `fillResolvedFacetNames`
+  sets only when a resolved name exists; `resolveDbFacet` filters null names; the id stays blank, no throw.
+
+### Quality Bar / contributor gates (each verdict ends in a fetch/grep/read/run citation)
+- **G-C1 reproduce-first** — PASS. Live RED = IT-151 RED-on-base (`ODD_SUT=ref:main` ab63b6d3, digest `1e3efdfe`):
+  test 4 fails at exactly `getByTitle('STABLE')` (the fresh deep-link chip is blank on base).
+- **G-C2 / G-C13 — verify the running system + the FULL regression, BOTH buckets (my own measurement)** — PASS.
+  Fresh SUT `10141b3e` from `2c0bfaf3`:
+  - **feature-complete 335 passed / 2 failed = GREEN-FOR-CHANGE.** Both failures NON-attributable:
+    (1) `favorites-star-see-loop.spec.ts:159` — #1815 CTRIB-039 Group-B (RED on any non-Group-B SUT incl. main; the
+    documented contributor-independent failure, matches the CTRIB-048/049 baseline); (2) `search-url-facets.spec.ts:112`
+    (class-tab write/removal) — a **load-timing flake**: PASSES **4/4 in isolation** on my exact SUT (`revctrib050b`
+    re-run, `:112` GREEN **4.7s** vs the 16.6s timeout at position 292/337 under single-worker full-suite load); the
+    ST-1d change is a proven **no-op** for a class-tab-only selection (empty resolver map ⇒ no fill; entityClasses
+    skipped ⇒ zero added latency), and the other 3 facet tests (`:143/:186/:226`) + all ST-1a tests passed under the
+    same load. Logged as **TST-057** (test-stability, odd-team e2e; not a CTRIB-050 defect).
+  - **known-bugs 3 failed = 3-RED-expected / 0 unexpected-green** (IT-004 PLT-052 · IT-006 TEST-GAP-1013 · IT-007
+    LSN-001 attachment-durability) — scope held.
+  - **multi-stack 9 passed / 0 failed** · **ingestion-e2e 15 passed / 0 failed.**
+  - **Unit — Java CI replica `:odd-platform-api:build` (test + checkstyleMain + checkstyleTest + assemble + jacoco)
+    BUILD SUCCESSFUL in 7m 8s** on the worktree @ `2c0bfaf3`; `SearchServiceFacetNameEchoTest` **4 tests / 0 failures /
+    0 errors** (the unit RED→GREEN, GREEN half re-confirmed first-hand).
+  - **Patch coverage (G-C13, computed LOCALLY from jacocoTestReport.xml ∩ the diff):** `SearchServiceImpl` added
+    executable lines **13/13 covered = 100.0%** (L136/138/139/153 + `fillResolvedFacetNames` L170-175/178-180, all
+    `ci>0`, zero missed); `ReactiveSearchFacetRepositoryImpl` jacoco-excluded (`**/repository/**`). Gate
+    `min-coverage-changed-files: 98` → **PASS**.
+- **G-C4** — PASS (WebFetch PR #1849). DRAFT, author `odd-contributor[bot]` (cannot self-approve), base `main`, OPEN,
+  not merged. The bot never merges — human GATE 2 owns it.
+- **G-C5 scope bounded** — PASS. Diff = the resolver (interface + impl) + one `getFacetsData` wiring point + 2 tests;
+  zero BE-API/OpenAPI/migration/i18n/generated-client. PR body carries `Part of #1835` with **no** `Closes/Fixes/Resolves`
+  keyword (won't close #1835 on merge — ST-1c remains). GATE-1 scope comment on the issue (issuecomment-4870898276;
+  PR body corroborates the scope).
+- **G-C7** — PASS (no ADR needed). Additive/corrective echo fix filling an already-spec-required `name`
+  (`SearchFilter.required:[id,name]`); no migration, no auth-posture, no breaking wire-contract.
+- **G-C9 test integrity (both buckets)** — PASS. Unit `SearchServiceFacetNameEchoTest` (BaseIntegrationTest =
+  in-process) injects the id-only failing condition explicitly (`SearchFilterState().entityId(x).selected(true)`, NO
+  `entityName`) and asserts the resolved name echoes back; integration = IT-151 extension.
+- **G-C10 docs + ontology** — PASS. Docs decision NONE, page READ (`search.md:81` on the 1.0.0 train already documents
+  the shareable-faceted-search promise; ST-1d makes it render correctly — no new capability). Ontology refresh deferred
+  to the 1.0.0 release-gate (ST-1a/b precedent; ontology tracks `main`, stale only on merge). Consistent with CTRIB-049.
+- **G-C15 test-change integrity** — PASS (CLEAN). The IT-151 change is PURELY ADDITIVE — the committed diff
+  (`207fc96→e0a1040`) replaces the comment *"deliberately not asserted here"* with a real
+  `expect(page.getByTitle('STABLE')).toBeVisible()` on the fresh deep-link. No assertion weakened, no matcher loosened,
+  no mock swapped, nothing `.skip`/deleted. The RED SURVIVES on the unfixed base (IT-151 RED-on-base: test 4 fails at
+  exactly this assertion, digest `1e3efdfe`). New expected traces to an independent SoT (the spec
+  `SearchFilter.required:[id,name]` + the live wire shape `{id:3,name:'STABLE'}`), not the system's current output.
+
+### Code review (first-hand, `2c0bfaf3`) — correct + safe on the search hot path
+- `resolveFacetNames` (ReactiveSearchFacetRepositoryImpl) — `Flux.merge(dbResolvers).collectList().map(...)` ALWAYS
+  emits an (empty) map, never `Mono.empty()`, so the 4-arg `Mono.zip` in `getFacetsData` can't be starved on the
+  no-facet path (the P0 hot-path guard, verified + pinned).
+- `fillResolvedFacetNames` (SearchServiceImpl) — fills `entityName` ONLY where `StringUtils.isEmpty` (a client-sent
+  name is preserved → the interactive/label-preserve path is byte-unchanged), an unresolved id stays blank (fail-soft).
+  Runs in the zip COMBINATOR after all sources complete → no read-during-mutation; `resolveFacetNames` only READS
+  `state` during the concurrent phase.
+- **No persistence leak (D10 holds):** the session pojo is persisted (`searchFacetRepository.create`/`update`) BEFORE
+  `getFacetsData` mutates the in-memory `state`; the resolved names reach the RESPONSE echo only.
+- **No shared-mutable-state bug:** in all three entry points (`search`/`updateFacets`/`getFacets`) the `state` reaching
+  `getFacetsData` is a fresh per-request object, `removeUnselected`/`mergeFacetState`-filtered to SELECTED filters only,
+  so `resolveFacetNames` resolves `IN(selected)` exactly (no waste) and the mutation is visible to `mapDto` via the
+  live `getFacetEntities` list.
+
+### Findings (non-blocking — the fix is correct + independently verified; they do NOT gate the GATE-2 handoff)
+1. **The implementer's four full-regression run-logs are template STUBS.** `integration-tests/run-log/2026-07-03-{feature-complete,known-bugs,multi-stack,ingestion-e2e}.md`
+   carry an unfilled `runner:` placeholder, `HEAD: ab63b6d3` (the BASE, not the fix `2c0bfaf3`), a SUT digest `7bcb77c2`
+   whose provenance-to-2c0bfaf3 is unrecorded (≠ the IT-151-confirmed fix digest `a2dd359c`), an unfilled `evidence/notes:`
+   placeholder, and NO pass/fail counts — the ledger's "336/1 / 3-RED / 9 / 15 / contributor-independent" appears nowhere
+   in durable evidence (the Playwright `results.json` had overwritten feature-complete's counts). This is a DoD-evidence
+   miss (G-C2 requires the ledger to CITE the FULL regression with run-logs). It did **not** block the verdict because the
+   reviewer independently re-ran and confirms green-for-change — but a reviewer should not have to RECONSTRUCT the
+   regression evidence, and a lighter review that trusted the logs would have been misled. **Next contributor run:** fill
+   each run-log completely (runner · HEAD = the fix SHA · the built SUT digest · actual pass/fail counts · name the single
+   contributor-independent failure).
+2. **The commit lacks a `Sources:`/`Consumer-read:` footer** that CTRIB-049 (the direct precedent) carried. Provenance IS
+   present (the CTRIB Phase-B root-cause cites every consumer `file:line`, verified first-hand here), so this is advisory,
+   not a gate failure. If `2c0bfaf3` is ever amended, add the footer.
+3. **`search-url-facets.spec.ts:112` is a load-timing flake** (6× 15s-timeout awaits in one round-trip, single worker,
+   `retries:0`) → **TST-057** (low; odd-team e2e harness; it will intermittently false-RED `feature-complete` for future
+   contributors/reviewers).
+4. Process note: `state/active-streams.yaml` is stale (last verified 2026-06-26; missing CTRIB-048/049/050). docker was
+   idle + no co-active stream at review time, so no reviewer stream was registered (it would protect nothing); flagged.
+
+### Doc-product editorial audit
+Deferred this run — CTRIB-050 is a backend code item touching **zero** `documentation/docs/**` files, and the editorial
+audit is non-blocking + partitionable. Queued for the next docs-touching / release review. (Full-tree editorial coverage
+last ran review-ctrib048 2026-06-30 → DOC-496; the ST-1b/1d search work widens that already-tracked divergence, not a new
+finding.)
+
+- **Outbound URL sweep**: PR #1849 verified live via WebFetch (draft · bot-authored · `Part of #1835` no-auto-close · OPEN).
+- **Banned-phrase check**: none used.
+- **Regressions**: none attributable to the change (both feature-complete fails non-attributable; verified).
+- **Navigation**: consistent (no pointer shift — the change reuses `ReactiveSearchFacetRepository`, an existing node).
+- **Upstream issues logged**: none.
+
+### Disposition
+All gates PASS with cited first-hand evidence. Per the contributor convention (CTRIB-048/049), an ACCEPTED contributor
+item **stays `review-ready`** (GATE-2-ready): the human maintainer reviews + merges DRAFT PR #1849 (the bot cannot
+self-merge — G-C4) → `pending-release` (1.0.0) → `/review release:1.0.0` owns the final `pending-release → done` after the
+1.0.0 release ships + the live `search.md` promise is re-verified (shared with DOC-497/CTRIB-049). **Follow-ups (tracked,
+none block the merge):** TST-057 (`:112` flake) · ST-1c (W4 session-navigator rewire) · the search-flow ontology refresh
+at the 1.0.0 release-gate.
+
+Review resources: heavy-e2e flock acquired→released; the `revctrib050`/`revctrib050b` stacks torn down `-v` (images
+retained). `lineage/**` probe drift + reviewer run-log churn left **uncommitted** (review is read-only on lineage — O10/R9;
+the pre-existing P-001 drift is not mine to reconcile). odd-team commit (explicit paths): `contributor/CTRIB-050.md` (this
+verdict + status) · `backlog/tests/TST-057.md` (new) · `state/PROGRESS.md`.

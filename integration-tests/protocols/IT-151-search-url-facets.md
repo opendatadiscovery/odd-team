@@ -40,11 +40,12 @@ never echoed:
   (`statuses[]=3`), refilter server-side, and the **chip must stay labelled** after the create settles — the
   URL-derived create echoes the request's names (`null` on the wire; captured live), so the reducer must keep
   the label it already knows. A `/search?…&statuses[]=3` deep-link must reproduce the filtered result (results
-  must settle). On the buggy build the server never echoed `statuses`, so a status select stranded `synced` and
-  froze the results; the un-merged echo also blanked every sidebar chip label ~1s after selection.
-  *(A fresh deep-link renders its chips unlabelled until the server echoes resolved names — follow-up **ST-1d**,
-  `state/search-overhaul-decomposition.md` "Sub-slice ledger". The null echo also violates the spec's own
-  `SearchFilter.required: [id, name]` — ST-1d owns making the echo honour its contract.)*
+  must settle) **and render the chip LABELLED**. On the buggy build the server never echoed `statuses`, so a
+  status select stranded `synced` and froze the results; the un-merged echo also blanked every sidebar chip label
+  ~1s after selection.
+  *(**ST-1d (shipped):** a fresh deep-link now renders LABELLED chips — the server resolves facet names in the
+  echo (`SearchServiceImpl.resolveFacetNames`), so a URL-derived id-only request echoes `SearchFilter.name`, also
+  making the echo honour the spec's `SearchFilter.required: [id, name]`. Asserted in the deep-link flow below.)*
 
 > The class tab renders as a MUI `role="tab"` with the literal label ("All", "Datasets", …) + a count hint
 > (`SearchResultsTabs.tsx`). `seedSearchableEntity(id,name)` seeds a DATA_SET; a non-DATA_SET class is seeded
@@ -74,12 +75,12 @@ never echoed:
    group has no tag); click **Clear All**; observe the URL drops `tags[]` AND the group **returns** (results
    re-fetched). The URL must NOT revert back to the tag link afterwards. Then **Back** → the tagged URL + the
    dataset-only result reproduce, and the URL is not bounced by a late mirror write.
-6. **B1 — status select + deep-link:** search `it150facets`; pick **STABLE** in the **Statuses** sidebar facet;
-   observe the URL gains `statuses[]=3`, the DEPRECATED group is filtered out, and — after the search settles
-   (~2 s) — the **STABLE chip is still labelled**. Then open `/search?q=it150facets&statuses[]=3` fresh; observe
-   the dataset-only result renders (the results settle). *Manual-only observation:* the status chip renders
-   present-but-unlabelled on the fresh load — the automated rail deliberately asserts the results-settle only;
-   deep-link chip rendering (presence + label) is **ST-1d** follow-up scope.
+6. **B1 + ST-1d — status select + deep-link:** search `it150facets`; pick **STABLE** in the **Statuses** sidebar
+   facet; observe the URL gains `statuses[]=3`, the DEPRECATED group is filtered out, and — after the search
+   settles (~2 s) — the **STABLE chip is still labelled** (B1 label-preserve). Then open
+   `/search?q=it150facets&statuses[]=3` fresh; observe the dataset-only result renders (results settle) **and the
+   STABLE chip is LABELLED** (ST-1d — the server resolves the facet name in the echo). RED on `ref:main`
+   (ab63b6d3, pre-ST-1d: the fresh deep-link chip has no label) → GREEN on the fix.
 
 **Automated rail**: `integration-tests/run-suite.sh IT-151` (Playwright `e2e/specs/search-url-facets.spec.ts`).
 

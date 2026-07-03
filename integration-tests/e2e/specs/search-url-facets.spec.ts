@@ -259,7 +259,10 @@ test.describe('F-017 search URL state — facets in the URL (ST-1b / D10)', () =
     await expect(groupRow, 'the DEPRECATED group is filtered out on the deep-link').toHaveCount(0, {
       timeout: 15_000,
     });
-    // (deep-link chips render unlabelled until the server echoes resolved names — follow-up ST-1d,
-    // state/search-overhaul-decomposition.md "Sub-slice ledger"; deliberately not asserted here.)
+    // ST-1d — a FRESH faceted deep-link now renders LABELLED chips. The URL carries the status id only, and the
+    // server resolves facet names in the echo (SearchServiceImpl.resolveFacetNames → the SearchFilter.name the FE
+    // chip reads). RED on ref:main (ab63b6d3 echoed name:null → the chip had no title) → GREEN on the ST-1d fix.
+    await expect(page.getByTitle('STABLE'), 'the deep-linked status chip is labelled (server-resolved echo)')
+      .toBeVisible({ timeout: 15_000 });
   });
 });

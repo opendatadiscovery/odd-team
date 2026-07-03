@@ -4,7 +4,7 @@ title: "#1835 ST-1d — server-side facet-name echo (a fresh shared faceted link
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1835 (Part of #1825; PR will be Part of #1835 — ST-1c remains, so #1835 does not close on this merge)"
 parent_epic: 1825
 class: "bug/enhancement — residual of ST-1 (ST-1d); server-side echo fix"
-status: gate-1-pending          # Phase B root-cause + Phase C design/must_haves/plan-check complete → GATE 1 (human approves the ST-1d plan before any code, G-C3).
+status: review-ready            # Phase D+E DONE. All 5 DoD gates met (full build 7m2s; regression green-for-change 336/1-contributor-independent; IT-151 GREEN-on-fix/RED-on-base; docs NONE-read; coverage 100% changed-lines). DRAFT PR #1849 (Part of #1835, bot-authored, cannot self-merge). → /review (separate session) → GATE 2 (human merge). Implementer does NOT self-mark done.
 target_repo: odd-platform
 milestone: "1.0.0"              # G-C11 PASS — #1835 carries milestone 1.0.0 (open, semver, due 2026-07-31)
 adr: "adrs/drafts/unified-asset-search.md (D10 — the full search state is shareable/resolvable from the URL). Conforms to the existing OpenAPI contract SearchFilter.required:[id,name]."
@@ -15,12 +15,13 @@ reproduced: >-
   (Phase D — the integration IT is the reproduction for this user-facing FE/BE-contradiction symptom, G-C9) + an
   in-process (BaseIntegrationTest) unit RED that creates a search with an id-only facet and asserts the echoed
   facetState carries the name (RED on ab63b6d3, GREEN on the fix).
-plan_approved_by: "PENDING — GATE 1"
-plan_approved_at: ""
+plan_approved_by: "maintainer — GATE 1 2026-07-03 (Option 1 'Approve — build it': server-side resolveFacetNames, additive/fail-soft; post scope comment then Phase D; ST-1c stays separate)"
+plan_approved_at: "2026-07-03"
 docs_routing: "NONE — decided after READING the page (G-C10). `docs/CTRIB-049-search-url-facets:docs/data-discovery/search.md:81` (the release/1.0.0-train version carrying ST-1a/b) already documents 'a shared or bookmarked link reproduces the ENTIRE faceted search, not just the query.' ST-1d is internal correctness that makes that PUBLISHED promise true (a recipient's fresh-deep-link chips go blank → labelled) — no new user-facing capability, so no doc change. Re-verify at the 1.0.0 release gate that the live page's claim holds (owned by /review release:1.0.0, same as DOC-497)."
 effort: medium                  # 1 new batched repository method + 1 wiring point in getFacetsData + unit + IT — additive/fail-soft, but on the core search hot path (held to reliable+stable)
-pr_url: ""                      # opens as a DRAFT PR in Phase E (Part of #1835)
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1849"   # DRAFT (Part of #1835), bot-authored; scope comment issuecomment-4870898276
 pr_draft: true
+merged_sha: ""                  # not merged — GATE 2 (human)
 ---
 
 ## Context
@@ -189,6 +190,13 @@ must_haves:
 > sees labelled chips. Results/filter behaviour are unchanged — additive only. Remaining ST-1 follow-up:
 > **ST-1c** (retire the home/toolbar session-navigators), tracked separately.
 
+## GATE 1 — APPROVED (2026-07-03) + scope comment posted
+Maintainer approved **Option 1 ("Approve — build it")**. Per G-C5 the plan carried a scope comment (this PR delivers
+ST-1d only; ST-1 itself is delivered via ST-1a/1b; ST-1c deferred) — posted immediately after approval, before any
+code: **https://github.com/opendatadiscovery/odd-platform/issues/1835#issuecomment-4870898276** (`odd-contributor[bot]`,
+HTTP 201). Live re-verify at approval: origin/main still `ab63b6d3` (RED base holds); #1835 open + milestone 1.0.0
+(G-C11); docker empty; flock free.
+
 ## Plan-check (G-C19) — VERIFICATION PASSED (no open BLOCKER)
 
 Adversarial `plan-checker` (fresh context, goal-backward) independently re-verified every load-bearing claim against
@@ -232,6 +240,91 @@ Only-PASS-reaches-GATE-1 satisfied: no open BLOCKER.
 
 ---
 
+## Phase D — implementation (2026-07-03, GATE 1 APPROVED)
+
+Built on `contrib/CTRIB-050-facet-name-echo` (worktree `../odd-platform-ctrib050` off `origin/main ab63b6d3`;
+LSN-038-safe — upstream unset, push.default=current, no push until Phase E). **Commit `2c0bfaf3` (4 files):**
+
+| File | Change |
+|---|---|
+| `repository/reactive/ReactiveSearchFacetRepository.java` | + `resolveFacetNames(FacetStateDto): Mono<Map<FacetType, Map<Long,String>>>` (interface) |
+| `repository/reactive/ReactiveSearchFacetRepositoryImpl.java` | the resolver — batched `id IN(selected)` per DB facet (owners/tags/namespaces/datasources; groups via `coalesce(INTERNAL_NAME,EXTERNAL_NAME)`) + in-process enum (types/statuses); entityClasses skipped; no query when unselected; always emits (empty map, never `Mono.empty()`) |
+| `service/search/SearchServiceImpl.java` | `getFacetsData` — 4-arg zip incl. `resolveFacetNames`; `fillResolvedFacetNames` fills each selected filter's name ONLY where blank (preserves client-sent names; fail-soft on unresolved id); persisted session stays ids-only (names added to the echo only) |
+| `test/.../service/search/SearchServiceFacetNameEchoTest.java` | NEW in-process Testcontainers unit — id-only tag [jOOQ] / status [enum] / group [coalesce] echo a resolved name + a no-facet hot-path guard |
+
+**Reproduce-first RED→GREEN (Java unit, `SearchServiceFacetNameEchoTest`, run on the running Testcontainers stack):**
+- **RED on base `ab63b6d3`** (unmodified worktree + the new test): **2 failed / 1 passed** — the tag case (L71, echoed
+  `name` null) + the status case (L91, null; the debug log confirmed the persisted `"entity_name":null`) FAILED; the
+  no-facet guard PASSED. The bug is reproduced on the running system exactly as designed.
+- **GREEN on the fix:** the same test **3 passed** (+ the group case added for the coalesce path) — `BUILD SUCCESSFUL`.
+
+**Unit-bucket DoD (full CI replica):** `./gradlew :odd-platform-api:build` (test + checkstyleMain + checkstyleTest +
+assemble + jacoco) — **BUILD SUCCESSFUL in 7m 2s**, zero test/checkstyle failures.
+
+**Patch coverage (G-C13 — computed LOCALLY from the jacoco XML, not discovered in CI):** the Madrapps gate is
+`min-coverage-changed-files: 98` (changed-lines-scoped). My changed files: `ReactiveSearchFacetRepository(Impl)` is
+**jacoco-excluded** (`**/repository/**`, like the mappers) → not measured; `SearchServiceImpl` — **every added
+executable line COVERED** (L136/138/139/153 + `fillResolvedFacetNames` L170-180 all `ci>0`; the only missed lines in
+the file are the pre-existing `selectedDataEntityClass` block, untouched by this diff) → **changed-files coverage
+100% → gate PASSES**.
+
+**Integration (IT-151 extension):** the odd-team `IT-151` deep-link flow now asserts a **fresh**
+`/search?q=…&statuses[]=3` renders the **labelled** chip (`getByTitle('STABLE')`) — converting the previously
+"deliberately not asserted (ST-1d)" line into a real assertion (G-C15: an ADDED assertion, not a weakened one).
+RED-on-base (`ODD_SUT=ref:main`) + GREEN (working SUT) + the FULL regression — recorded in the evidence ledger below.
+
+**Docs (G-C10):** NONE — decided after READING `search.md` (train version `docs/CTRIB-049-search-url-facets:81`
+already documents "a shared or bookmarked link reproduces the entire faceted search"; ST-1d makes that published
+promise render correctly — no new capability). **Ontology:** search-flow sidecar refresh deferred to the 1.0.0
+release-gate (ST-1a/b precedent; ontology tracks `main`, stale only on merge).
+
+### Evidence ledger (each gate ACTUALLY RUN; worktree `../odd-platform-ctrib050`, committed SHA `2c0bfaf3`)
+- **Java unit:** `SearchServiceFacetNameEchoTest` — RED on `ab63b6d3` (2 failed / 1 passed) → GREEN on fix (all pass).
+- **Full unit build:** `:odd-platform-api:build` BUILD SUCCESSFUL 7m2s (test + checkstyle + assemble + jacoco).
+- **Changed-files coverage:** 100% on the only measured file (SearchServiceImpl added lines); repo impl jacoco-excluded.
+- **Integration IT-151 (odd-team, F-017 / #1825):**
+  - **GREEN on the worktree SUT** (`odd-platform:odd-team-sut-ctrib050` @ `2c0bfaf3`): `run-suite.sh IT-151` → **4/4
+    passed** (21.0s), incl. test 4 (status select + deep-link with the new labelled-chip assertion).
+  - **RED on base** (`ODD_SUT=ref:main` = `ab63b6d3`, pre-ST-1d): `run-suite.sh IT-151` → **3 passed / 1 failed** —
+    test 4 FAILED at exactly the new assertion (`getByTitle('STABLE')` timed out — the deep-link chip is blank on the
+    base). Tests 1-3 (ST-1b behaviour) pass. **G-C15 clean: the changed test's RED survives on base — not tautological.**
+  - **FULL regression** (`run-regression.sh ctrib050`, working SUT `2c0bfaf3` under the heavy-e2e flock) —
+    **GREEN-FOR-CHANGE:** feature-complete **336 passed / 1 failed** (the 1 = `favorites-star-see-loop.spec.ts`
+    #1815 Group-B term-links — **contributor-independent**, RED on any non-Group-B SUT incl. main; the IT-151
+    search specs are among the 336 passed) · known-bugs **3 failed = expected-RED** (PLT-052 quality-dashboard-unknown,
+    TEST-GAP-1013 error-boundary, +1), 0 unexpected-green · multi-stack **9 passed** · ingestion-e2e **15 passed**.
+    Matches the CTRIB-049 baseline (336/1, same Group-B test) → my ST-1d change introduced **zero** regressions.
+    Flock released, `ctrib050` stack torn down. Run-logs: `integration-tests/run-log/2026-07-03-{feature-complete,
+    known-bugs,multi-stack,ingestion-e2e}.md` + `2026-07-03-IT-151.md`.
+
+## Definition of Done (G-C10/G-C13) — all 5 gates met (each ACTUALLY RUN this session)
+1. **Full unit build green on the working tree** ✅ — `:odd-platform-api:build` BUILD SUCCESSFUL 7m2s (test +
+   checkstyle + assemble + jacoco), zero failures.
+2. **FULL integration regression on the working-tree SUT** ✅ — GREEN-FOR-CHANGE (feature-complete 336/1
+   contributor-independent · known-bugs 3-RED-expected · multi-stack 9 · ingestion-e2e 15) **+ IT-151 GREEN-on-fix
+   4/4 · RED-on-base 3/1** (`ref:main` — test 4 fails, the deep-link chip blank; G-C15 clean).
+3. **Docs read + decided + routed** ✅ — NONE (the shareable-faceted-search promise is already documented on the
+   1.0.0 train `search.md:81`; ST-1d makes it render correctly — no new capability). Page READ (G-C10).
+4. **Ontology** ✅ (deferred, justified) — search-flow sidecar refresh owned by the 1.0.0 release-gate (ST-1a/b
+   precedent; ontology tracks `main`, stale only on merge; lineage/** also carries unowned probe drift → not
+   written by this stream, R9).
+5. **Principal sufficiency (G-C13)** ✅ — both test buckets, RED→GREEN, the failing condition (id-only request)
+   injected explicitly; local patch-coverage **100%** on the changed lines (repo impl jacoco-excluded); no control
+   lost (one centralized resolver + one wiring point, additive/fail-soft); no existing functionality harmed (full
+   regression green-for-change). **Pixel review N/A** — backend-only echo change; the sole visual delta is the chip
+   now showing its (correct) resolved label, proven on the running UI by IT-151 test 4 (RED-on-base → GREEN).
+
+## Phase E — DRAFT PR + handoff (2026-07-03)
+Branch `contrib/CTRIB-050-facet-name-echo` @ `2c0bfaf3` pushed same-name via the App token (LSN-038-safe: `main`
+verified still `ab63b6d3` after the push; upstream unset). **DRAFT PR #1849**
+(https://github.com/opendatadiscovery/odd-platform/pull/1849) — bot-authored (`odd-contributor[bot]`), `draft:true`,
+base `main`, body carries **`Part of #1835`** (live-verified: **no** auto-close keyword — will NOT close the issue on
+merge; ST-1c remains), `Milestone: 1.0.0`, `Docs: none`. The bot cannot self-merge (G-C4). Scope comment posted at
+GATE 1: issuecomment-4870898276. → status **`review-ready`** → **`/review`** (separate session) → **GATE 2** (human
+merge). On merge → `pending-release` (1.0.0); `/review release:1.0.0` owns `done` after 1.0.0 ships. **Follow-ups
+(tracked, not blocking):** ST-1c (W4 session-navigator rewire); the search-flow ontology refresh at the 1.0.0
+release-gate.
+
 ## Phase A — the intake classification (why ST-1d is the residual; preserved)
 
 Issue **#1835** (`kind: feature`/`scope: frontend`, milestone 1.0.0, author RamanDamayeu, 0 comments) is the
@@ -253,9 +346,13 @@ searchUrlState additive-ready); `page` → intentionally excluded (infinite scro
 itself would be a duplicate (Gate-1/LSN-035).
 
 ## Status
-intake → live-reconcile (origin/main @ ab63b6d3; no co-active stream; flock free; docker empty) → G-C11 PASS → Phase A
-classify **ALREADY-DELIVERED** → **GATE-1 intake decision: maintainer chose "Implement ST-1d now"** → Phase B
-root-cause (first-hand @ ab63b6d3: null-name echo → blank chip; spec-contract violation) → Phase C product-critique
-(WHAT right, no divergence) + design (centralized `resolveFacetNames`, additive/fail-soft, hot-path but bounded) +
-must_haves (G-C19) → **adversarial plan-check (running)** → **GATE 1 (the ST-1d plan; PENDING)**. No code, no GitHub
-write, no worktree/SUT/stack/flock yet (G-C3). Live RED reproduction + implementation are Phase D (post-GATE-1).
+intake → live-reconcile (origin/main @ ab63b6d3) → G-C11 PASS → Phase A classify **ALREADY-DELIVERED** → **GATE-1
+intake: maintainer chose "Implement ST-1d now"** → Phase B root-cause (null-name echo → blank chip; spec-contract
+violation) → Phase C product-critique (WHAT right, no divergence) + design (centralized `resolveFacetNames`,
+additive/fail-soft, one wiring point) + must_haves → **plan-check VERIFICATION PASSED** (5 warnings dispositioned) →
+**GATE 1 APPROVED (Option 1, 2026-07-03)** + scope comment posted → **Phase D DONE** (4 files @ `2c0bfaf3`; Java unit
+**RED-on-base 2/1 → GREEN 3/3**; full build 7m2s; changed-lines coverage **100%**; **IT-151 GREEN-on-fix 4/4 ·
+RED-on-base 3/1**; **full regression green-for-change** — feature-complete 336/1-contributor-independent · known-bugs
+3-RED · multi-stack 9 · ingestion-e2e 15; docs NONE-read; ontology deferred) → **Phase E DONE** (branch pushed
+same-name; **DRAFT PR #1849 `Part of #1835`**) → status **`review-ready`** → `/review` (separate session) → **GATE 2**
+(human merge; the bot cannot self-merge).

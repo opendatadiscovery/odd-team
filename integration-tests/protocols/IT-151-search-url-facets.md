@@ -97,6 +97,9 @@ never echoed:
   the **STABLE** chip (Typography `title="STABLE"`) is still visible ~2 s after settle; the deep-link renders the
   dataset-only result. (FAIL on the B1 build: the un-echoed status strands `synced` → the results freeze; FAIL
   without the label-preserving merge: the chip blanks after the create response.)
+- **#1835 chip renders the RAW value (PASS):** the STABLE chip's TEXT equals `STABLE`, not the capitalized
+  `Stable`, so the chip and the sidebar dropdown option agree. (FAIL on `ref:main`: the chip ran the value through
+  `TextFormatted`→`capitalize` → `Stable`.)
 
 ## 6. RED proof (two bases)
 - **Feature base — `ODD_SUT=ref:main` (`f63d3915`, ST-1a merged, no facets in URL):** the whole facet-in-URL
@@ -106,6 +109,8 @@ never echoed:
   the group never returns) and the status select/deep-link freezes the results (no echo → `synced` stranded).
   GREEN only after the B1 fix (mapDto echoes `statuses` + the slice reconciles optimistic-vs-requested + the
   label-preserving merge keeps the chip label across the name-less echo).
+- **#1835 casing base — `ODD_SUT=ref:main` (post-ST-1d):** every case passes EXCEPT the new chip-TEXT assertion —
+  the chip renders `Stable` (TextFormatted `capitalize`), not the raw `STABLE`. GREEN on the working-tree SUT.
 
 ## 7. Result log
 - 2026-07-01 — authored for CTRIB-049 / ST-1b (#1825). RED proof base `ref:f63d3915` (post-ST-1a, pre-ST-1b).

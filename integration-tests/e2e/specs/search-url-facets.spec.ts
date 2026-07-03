@@ -249,6 +249,11 @@ test.describe('F-017 search URL state — facets in the URL (ST-1b / D10)', () =
     await page.waitForTimeout(2_000);
     await expect(page.getByTitle('STABLE'), 'the STABLE chip is still labelled after the create settles')
       .toBeVisible();
+    // #1835 — the chip renders the RAW facet value (STABLE), not TextFormatted's capitalized "Stable"
+    // (which diverged from the sidebar dropdown option showing the raw enum). RED on ref:main (chip
+    // text "Stable") -> GREEN on the fix.
+    await expect(page.getByTitle('STABLE'), 'the chip renders the raw value, matching the dropdown')
+      .toHaveText('STABLE');
     await expect(groupRow, 'the filtered results did not revert').toHaveCount(0);
 
     // ---- deep-link flow: the same state reproduces fresh from the URL ----

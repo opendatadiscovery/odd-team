@@ -16,7 +16,7 @@ reproduced: >-
   → 'DRAFT'. Divergence is live for any non-Title-case facet value. Live RED = the vitest render test (Phase D).
 docs_routing: "NONE — read docs/data-discovery/search.md (@ main) per G-C10: the page documents search/filter USE, with no content on how facet chip values are cased or formatted (no 'chip' / 'capitali' / 'DRAFT' / 'label' / facet-value-formatting mentions). Chip↔dropdown casing consistency is not a documented capability → no user-facing doc change, no train routing. Ontology: no per-node sidecar covers the changed FE files (only unrelated DataQualityFilters); F-017 feature behaviour unchanged (display-only casing) → no /enrich."
 effort: small
-pr_url: ""
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1850"   # DRAFT, Part of #1835, bot-authored (odd-contributor[bot]) — cannot self-merge (G-C4)
 pr_draft: true
 merged_sha: ""
 ---

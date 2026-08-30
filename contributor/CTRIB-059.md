@@ -9,7 +9,7 @@ target_repo: odd-platform
 milestone: "1.0.0"   # inherited from the #1825 epic; milestone 1.0.0 is OPEN (due 2026-07-31, unreleased)
 slice: "ST-5c of #1839"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1862"
-head_sha: "c49fc784"   # rebased 98b17da9 -> c49fc784 onto origin/main 00b03129 (clean, no conflicts)
+head_sha: "6cbf7865"   # rebased 98b17da9 -> c49fc784 onto origin/main 00b03129 (clean, no conflicts); then c49fc784 -> 6cbf7865, the review's two comment polishes (fast-forward, no force). **c49fc784 remains an ancestor** and is the SHA every gate measurement in "## Review" was taken at; `git diff c49fc784..HEAD` is comments only.
 docs_routing: "NONE for this slice's own diff (the two Popular-column pages were READ on documentation origin/main and neither is made stale — D5 leaves the live-view_count path untouched). AMENDED BY REVIEW 2026-08-30: docs ARE owed at 1.0.0 for the additive half (this is the platform's 5th @Scheduled job and the other four all carry an operator-manual entry) — filed with full epic scope as backlog/docs/DOC-499.md (milestone 1.0.0), so playbooks/release-review.md check 1 must clear it before 1.0.0 publishes. Paired ADR-log gap: backlog/adr/ADR-0080.md."
 pr_draft: true
 merged_sha: ""
@@ -390,3 +390,35 @@ are present. The honest "no ontology coverage" caveat matches reality (verified 
 - Reviewer's stream `review-ctrib059` registered in `state/active-streams.yaml` at intake; heavy-e2e flock acquired
   and released; both leftover IT-042 stacks torn down; `lineage/**` **clean** (no probe drift — the api rail never
   ran). VERIFIED via `git status --short lineage/` (empty) and `docker ps` (empty).
+
+### Post-review fold — the two comment polishes (2026-08-30, same review session, at the maintainer's request)
+
+Both optional polishes named in the verdict were folded into the branch and pushed. Kept as a **separate commit**
+(`6cbf7865`) rather than an amend, so `c49fc784` — the SHA every measurement above was taken at — stays an ancestor
+and the evidence stays anchored to a commit still in the branch's history.
+
+| polish | before | after |
+|---|---|---|
+| `V0_0_100__snapshot_popularity_score.sql` | cited `concepts.yaml:564` — an odd-team workspace file, unresolvable from this repo and with no precedent in merged odd-platform source | cites the in-repo fact it stood for: `ReactiveDataEntityRepositoryImpl.incrementViewCount` (`:175`) is an `UPDATE ... SET view_count = view_count + 1` row-locking the entity on the hottest read — the same method this file's closing NOTE already cites |
+| `AssetPopularitySnapshotTest.java` | `(R-C4 / KL3)` — internal planning codes | dropped; the sentence already states what the transaction proves |
+
+**Behaviour-change ruled out mechanically, not asserted.** Every changed line in the `.sql` is a `--` comment, and
+the migration with comments + blank lines stripped is **byte-identical** to `c49fc784` (`md5 349c01e8` on both
+sides), so no Flyway statement moved. The Java delta is two comment lines.
+
+**Gate re-run after the edit** (right-sized to a comment change; the full suites were already run at the parent):
+`:odd-platform-api:checkstyleMain + checkstyleTest + --tests "*AssetPopularitySnapshot*"` → **BUILD SUCCESSFUL in
+5m23s**, `AssetPopularitySnapshotTest` **5/5 GREEN** (7.201s), both Flyway passes still reaching `v0.0.100`.
+Checkstyle matters here specifically because `LineLength` is 120 and comment rewrapping is exactly how that gate
+gets tripped — the longest line in either touched file is now 112 (`.sql`) / 119 (`.java`, pre-existing).
+
+**Pushed** fast-forward (no force): `c49fc784..6cbf7865` → `origin/contrib/CTRIB-059-popularity-snapshot`.
+Pre-push assertions per O6/LSN-038: branch is `contrib/CTRIB-059-popularity-snapshot`, upstream is the same-named
+remote ref (**not** `main`), 2 commits ahead of `origin/main`. PR #1862 re-read after the push: head
+`6cbf786534db45e58cc8626624985b21dfabc102`, **still `draft: true`**, 5 files `+376/−0` (one line more than +375 —
+the rewrapped comment block). **The verdict is unchanged: ACCEPTED, awaiting human GATE 2.**
+
+**Upstream CI re-run on the pushed head — confirmed green, not assumed.** Polled to completion:
+`6cbf7865` = **6/6 SUCCESS** (`run_tests`, `Test Results`, `run_playwright_tests/{test,lint,format-check}`,
+`update_release_draft`) — the same 6/6 the reviewed parent carried, so the full gradle build, both checkstyle
+tasks and the `min-coverage-changed-files: 98` gate all still pass at the head a maintainer will merge.

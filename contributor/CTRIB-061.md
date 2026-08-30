@@ -13,7 +13,7 @@ branch: contrib/CTRIB-061-favorites-filter
 plan_approved_by: ""
 plan_approved_at: ""
 reproduced: "n/a — feature slice, not a bug. The entry gate is spec-gate (G-C17), not reproduce-first."
-docs_routing: "documentation@release/1.0.0 — favorites.md + search.md (unreleased behaviour, G-C11)"
+docs_routing: "documentation@release/1.0.0 — favorites.md (frontmatter :2 + :7 + :29 + :31-33), catalog-overview.md (:43), search.md (unreleased behaviour, G-C11); paired item backlog/docs/DOC-503"
 ---
 
 # CTRIB-061 — #1841 ST-7: the Favorites filter, and the end of the Favorites tab
@@ -55,8 +55,8 @@ The bot's pre-work note is prior-session output, not evidence. Each claim was ve
 
 | Pre-work claim | Verdict after reading `origin/main @ 82e7e70e` |
 |---|---|
-| "The mirror-merge trap (the #1858 bug class) … if URL-only, it must be added to that merge" | **REAL, and confirmed exactly.** `Search.tsx:104-117` rebuilds the URL from the redux facet state and merges back precisely three URL-only params — `entityClasses`, `sort`, `assetKinds`. A fourth URL-only param that is not added there is silently dropped by **any** sidebar facet toggle. This is the single highest-risk wiring point in the slice |
-| "The backend is mostly assembled. `CurrentUserIdentityResolver` + the favorites semi-join pattern **already serve** `/api/search/assets` (#1856)" | **WRONG on the load-bearing half.** `ReactiveAssetSearchRepositoryImpl` contains **no** reference to `favorite` or to the identity tuple; its only per-caller predicate is my-objects, keyed on the **internal `OwnerPojo`** (`:305-310`) resolved via `AuthIdentityProvider.fetchAssociatedOwner()` (`AssetSearchServiceImpl:70`) — a *different* identity axis from favorites' `(oidc_username, provider)`. `CurrentUserIdentityResolver` is used by the favorites/recently-viewed services, **never** by the search stack. So this slice must **thread a new identity parameter** through 3 repository methods + the service. It is not "a predicate on existing machinery" |
+| "The mirror-merge trap (the #1858 bug class) … if URL-only, it must be added to that merge" | **REAL, and confirmed exactly.** `Search.tsx:100-106` rebuilds the URL from the redux facet state and merges back precisely three URL-only params — `entityClasses`, `sort`, `assetKinds`. A fourth URL-only param that is not added there is silently dropped by **any** sidebar facet toggle. This is the single highest-risk wiring point in the slice |
+| "The backend is mostly assembled. `CurrentUserIdentityResolver` + the favorites semi-join pattern **already serve** `/api/search/assets` (#1856)" | **WRONG on the load-bearing half.** `ReactiveAssetSearchRepositoryImpl` contains **no** reference to `favorite` or to the identity tuple; its only per-caller predicate is my-objects, keyed on the **internal `OwnerPojo`** (`:305-310`) resolved via `AuthIdentityProvider.fetchAssociatedOwner()` (`AssetSearchServiceImpl:67`) — a *different* identity axis from favorites' `(oidc_username, provider)`. `CurrentUserIdentityResolver` is used by the favorites/recently-viewed services, **never** by the search stack. So this slice must **thread a new identity parameter** through 3 repository methods + the service. It is not "a predicate on existing machinery" |
 | "The 'No' anti-join deserves an EXPLAIN sanity check at scale" | **Valid and adopted** — measured, not assumed (§7 gate) |
 | "Retire the tab the #1852 way — grep *every* navigator" | **Valid.** The census is exactly three (§5 D8) plus the route itself |
 | "`auth.type=DISABLED` labelling … i18n all 7 locales" | **Valid.** 7 locale files confirmed: `br ch en es fr hy ua` |
@@ -117,7 +117,7 @@ is a GATE-1 decision by construction, not a clarifying question.
 | A URL-only search filter (read + write + navigate) | **`AssetTypeFilter.tsx`** — the ST-4 pattern: read via `paramsToSearchState(location.search)`, write via `searchStateToParams` + `navigate(searchPath()…)` | It is the *only* correct way to write the search URL — anything hand-rolled diverges byte-wise from the mirror and breaks `Search.tsx`'s equality loop-guard |
 | The identity tuple | **`CurrentUserIdentityResolver`** verbatim | Already the single, security-context-only source for favorites; never returns empty (falls back to the shared sentinel) — so no my-objects-style short-circuit is needed |
 | The `(asset_kind, asset_id)` correlated lookup | The **`favorite_identity_asset_key`** unique index (`V0_0_94`) | Exactly the 4-tuple an `EXISTS` / `NOT EXISTS` correlates on — an index-only probe per row, both directions |
-| The "(shared)" labelling convention | **`FavoritesColumn.tsx:57`** — `isShared ? t('Favorites (shared)') : t('Favorites')` via `useAppInfo().authType` | Already the shipped convention on the sibling surface; a second phrasing would be a parallel surface with drift |
+| The "(shared)" labelling convention | **`FavoritesColumn.tsx:44`** — `isShared ? t('Favorites (shared)') : t('Favorites')`, off the `isShared` computed from `useAppInfo().authType` at `:32` | Already the shipped convention on the sibling surface; a second phrasing would be a parallel surface with drift |
 | The control | Depends on GATE-1 decision 1 (§6.1). **Toggle (recommended): no new component at all.** **Tri-state:** a new `FixedOptionsSingleFilter` — and it must be modelled on **`SingleFilterItem`**, which renders `AppSelect` + `AppMenuItem` (`SingleFilterItem.tsx:6,41-45`), **not** the `Input`+`Autocomplete` idiom an earlier revision of this record wrongly attributed to it. An Autocomplete-based tri-state would sit visually out of step with its immediate neighbours Datasource and Namespace | `FixedOptionsMultiFilter` is a multiselect-with-chips — it would render "All/Yes/No" as removable chips, the wrong affordance. The correction above came from the plan-check; the original claim was made without reading `SingleFilterItem` |
 
 ### (b) ADR check
@@ -186,8 +186,8 @@ shapes R5 (below). **No new ADR is warranted** — this slice conforms; it estab
 | Generated clients | BE + FE OpenAPI codegen both regenerate off `components.yaml`; BE needs `rm -rf build/generated` (the `$ref`'d `components.yaml` is not tracked as a Gradle input — `reference_odd_platform_activity_event_and_spec_codegen`) |
 | Consumers of changed signatures | 3 repository methods (`keysetPage` / `relevancePage` / `count`) on the interface + impl, whose only production caller is `AssetSearchServiceImpl`; plus their tests. **With the ordering split out to ST-7b (§6.2), `SearchSortDto.resolveEffective` is NOT touched** — which matters, because it has **two** independent production call sites (`AssetSearchServiceImpl:61` and `ReactiveAssetSearchRepositoryImpl:238`) plus `SearchSortDtoTest`, and changing it would also pull in `AssetSearchCursorTest`, `AssetSearchKeysetPaginationTest`, `AssetSearchSortIntegrationTest`, `AssetSearchServiceIntegrationTest`, `AssetSearchControllerWebTest` and the FE `SearchSortMenu.test.tsx`. That census belongs to ST-7b |
 | Migrations | **None.** `favorite` + both indexes ship in `V0_0_94` |
-| Docs | `favorites.md` (the tab section is now false) + `search.md` (a new filter) on `release/1.0.0` |
-| Ontology | `/enrich --touched` on the asset-search nodes — **subject to `lineage/**` being unclaimed** (ctrib060 is co-active) |
+| Docs | On `release/1.0.0`: `favorites.md` (**four** locations — the frontmatter `description:` at `:2`, which is the published meta tag, plus `:7`, `:29`, `:31-33`), `catalog-overview.md:43`, and `search.md`'s facet list. Paired backlog item **DOC-503** (`milestone: "1.0.0"`) is the release-gate hook |
+| Ontology | `/enrich --touched` on the asset-search nodes + the `concepts.yaml` favorites gap. **A Definition-of-Done gate, not optional (G-C10):** if `lineage/**` is still claimed by ctrib060 it **queues**, and the PR stays `draft` until it runs — never skipped because the lock was busy |
 | Tests | Unit (predicate + identity scoping + fail-closed parse + mirror-merge) **and** integration. `IT-148` drives `/favorites` in **all four** of its tests (`favorites-star-see-loop.spec.ts:82,105,152,181`), so every one is affected: 1 and 3 re-grounded on the narrowing oracle, 2 retired with its subject, 4 deleted with the Group-B column (§7 step 9) |
 
 ### (e) Product-Owner / SRE lens
@@ -252,9 +252,13 @@ each point in the source. The ordering is not a branch; it re-opens the ST-5 cur
 
 That is eight call sites across the engine that shipped as ST-5a, ST-5b and ST-5c — **three separate slices**.
 
-**The decisive fact: splitting costs the user nothing.** The docs that promise newest-first publish at the
-**1.0.0 release**, not at merge. As long as both slices land in 1.0.0, no operator ever sees the regression
-and no page is ever wrong in public.
+**The decisive fact: splitting costs the user nothing — and the evidence is stronger than doc timing.**
+**Favorites has never shipped.** `Favorites.tsx` and `V0_0_94__create_favorite.sql` are both absent from
+**0.29.0, 0.28.0 and 0.27.13** (checked with `git cat-file -e` against each tag) — the whole feature exists
+only on `main`, heading for 1.0.0. And `docs/data-discovery/favorites.md` is **absent from
+`documentation@origin/main`**, present only on `origin/release/1.0.0`. So there is no operator on any
+published release who can experience the missing ordering, and no live page asserting the promise. The
+"regression" exists only between two unreleased slices of the same milestone.
 
 | Option | What ships | Consequence |
 |---|---|---|
@@ -263,8 +267,22 @@ and no page is ever wrong in public.
 | **C — never do the ordering** | The filter only | The manual's promise must be retracted before 1.0.0, and the "what did I just star" workflow stays broken permanently |
 
 **Recommendation: A.** Same end state as B by the release, in two slices each of which can be reviewed
-properly. If you take A, I file ST-7b as a sub-issue for you before this PR opens, so the promise is tracked
-and cannot be lost between slices.
+properly.
+
+**How ST-7b is kept from being lost — the mechanism, already on disk, not a promise.** The bot is
+policy-barred from creating GitHub issues (`playbooks/github-write.md`; G-C18), so "I'll file it" would not
+have been a mechanism at all. Two artefacts do the job instead:
+
+- **`issues/odd-platform/PLT-257`** — a **paste-ready** ST-7b sub-issue (ASCII, suggested milestone 1.0.0, no
+  milestone self-assigned) for you to file under #1825 whenever you choose.
+- **`backlog/docs/DOC-503`, carrying `milestone: "1.0.0"`** — this is the part that actually enforces R5. The
+  1.0.0 release gate derives its manifest by `grep -rl 'milestone: "1.0.0"' backlog/ contributor/`
+  (`playbooks/release-train-merge.md`), so this item **forces the gate to reconcile** `favorites.md`'s
+  ordering sentence against what actually merged: keep the claim if ST-7b shipped, drop it if it did not.
+  Verified working — that exact grep returns `backlog/docs/DOC-503.md` today.
+
+So R5's "verified at the 1.0.0 release gate" is enforceable by a mechanism that already exists, rather than by
+an intention that could evaporate between slices.
 
 ### 6.3 What the SME added that is now folded into the spec above (no decision needed)
 
@@ -279,7 +297,8 @@ and cannot be lost between slices.
   contract reason `asset_kinds` cannot: **PLT-256** (§11), logged during this slice.
 - **Ontology gap** — `lineage/odd-platform/concepts.yaml` contains **zero** `favorit*` entries (verified:
   `grep -ci favorit` -> 0). Favorites is about to gain a search filter while remaining uncatalogued as a
-  concept. Handled by the Phase-D `/enrich`, subject to the `lineage/**` lock.
+  concept. Handled by the Phase-D `/enrich`, which is a Definition-of-Done gate: if `lineage/**` is still
+  claimed it queues and the PR stays `draft` (§7 step 12) — it is never skipped.
 
 **One SME caveat corrected.** It flagged that it could not read the `favorites.md` "most-recently-favorited
 first" promise first-hand (no shell; the page is on the unmerged `release/1.0.0` branch) and asked that the
@@ -307,7 +326,9 @@ keeps this slice inside one reviewable context.
 5. **The control** — `FavoritesFilter.tsx`, rendered **unconditionally** in `Filters.tsx`; label via
    `useAppInfo().authType` (`Favorites` / `Favorites (shared)`, both already translated ×7) plus the R10
    inline-help tooltip. Shape per GATE-1 decision 1; if tri-state, modelled on `SingleFilterItem`'s
-   `AppSelect` + `AppMenuItem` (§5a). Backend identical either way.
+   `AppSelect` + `AppMenuItem` (§5a). Backend identical either way. **The control writes the URL through
+   `searchStateToParams` + `navigate`, never a hand-built string** (the `AssetTypeFilter` pattern) — and T12's
+   oracle drives it **by clicking**, so the write path is proven and not merely the read path.
 6. **Retire the tab, without stranding bookmarks (R4)** — delete the toolbar entry, the page and its
    page-only components; **replace** the `App.tsx:63` route with a `<Navigate replace>` to the pre-filtered
    search (there is no catch-all route — verified — so a bare delete gives a blank screen). Remove the four
@@ -332,8 +353,10 @@ keeps this slice inside one reviewable context.
      | T5 | `/favorites` lands on the pre-filtered search; no Favorites toolbar tab | on base it renders the tab |
      | T7 | the panel's `View all` lands pre-filtered and narrowed | on base it lands on `/favorites` |
      | T8 | with the filter on, toggling a sidebar facet leaves it in force and still narrowing | on base there is no filter to preserve |
-     | T10 | filter on + zero favorites -> the teaching text, not "No matches found" | on base the tab owns that state |
+     | T10 | filter on + zero favorites -> the teaching text, not "No matches found" | on base the `favorites` param is dropped, so the page is not even empty — it lists the whole catalog and the teaching text appears nowhere on it |
      | T11 | under DISABLED the filter's inline-help tooltip states the shared-bucket consequence | on base there is no filter control at all |
+     | T12 | **click** the control (do not navigate): the URL gains `favorites=yes` and the list narrows | on base there is no control to click |
+     | T2b | (API-level) `POST /api/search/assets {"favorites":false}` returns the unstarred set | on base the field does not exist, so the response is the unfiltered page |
    - **IT-148's four existing tests:** 1 and 3 (star -> find it again, for a DE and a Term) are re-pointed at
      the filter with the narrowing oracle above. **Test 2 is retired with the tab, not re-pointed** — its
      subject ("the *Favorites tab* uses the platform multi-select facet, not a checkbox group") ceases to
@@ -346,8 +369,12 @@ keeps this slice inside one reviewable context.
 11. **Docs on `release/1.0.0`** — wider than the tab section, because three pages assert the tab:
     `favorites.md` **frontmatter `description:` (:2 — the published meta tag), the intro (:7), the panel
     paragraph (:29) and the tab section (:31-33)**; `catalog-overview.md:43` ("a **View all** link to the
-    top-level Favorites tab"); and `search.md`'s facet list gains the filter. Paired backlog DOC item with
-    `milestone: 1.0.0`.
+    top-level Favorites tab"); and `search.md`'s facet list gains the filter.
+    **The ordering sentence at `:33` is the seam of the split, so it is decided explicitly, not left to
+    drift:** this PR rewrites `:31-33` as the *filter* and **drops the "most-recently-favorited first"
+    claim**, because ST-7 alone does not deliver it and a page must not promise behaviour that is not there.
+    **DOC-503** (`milestone: "1.0.0"`, the release-gate hook) then forces the 1.0.0 gate to put the claim back
+    if ST-7b merged, or to confirm its absence if it did not. Neither outcome can be reached by accident.
 12. **Ontology** — `/enrich --touched` on the asset-search nodes, plus the `concepts.yaml` favorites gap
     (§6.3). **Not conditional:** G-C10 makes it a Definition-of-Done gate. If `lineage/**` is still claimed by
     ctrib060 when Phase D reaches it, this slice **queues behind it and the PR stays `draft`** — it is never
@@ -361,15 +388,16 @@ keeps this slice inside one reviewable context.
 |---|---|---|---|
 | T1 | With the Favorites scope on, the result list contains the caller's starred assets, of every kind | R1 | unit + IT (narrowing oracle) |
 | T2 | The scope **genuinely narrows** — an asset the caller has not starred is absent from the filtered list | R1 | unit + IT (narrowing oracle) |
-| T2b | The negative direction (not-starred-only) returns exactly the unstarred set | R1 | unit + API-level IT. **Conditioned on GATE-1 decision 1:** under the recommended toggle this is reachable by URL/API but has no UI control, so it is an API-level truth, not a rendered one; under the tri-state it is user-observable and gains a UI assertion |
-| T3 | Two different signed-in users see different results from the same catalog | R2 | unit |
+| T2b | The negative direction (not-starred-only) returns exactly the unstarred set | R1 | unit + the API-level IT oracle in §7 step 9. **Conditioned on GATE-1 decision 1:** under the recommended toggle this is reachable by URL/API but has no UI control, so it is an API-level truth, not a rendered one; under the tri-state it is user-observable and gains a UI assertion |
+| T3 | Two different signed-in users see different results from the same catalog | R2 | **unit only, deliberately** — the e2e stack is `odd-minimal` with `AUTH_TYPE=DISABLED`, i.e. one shared sentinel identity, so a two-identity proof is not expressible there; it needs the `multi-stack` LOGIN_FORM/LDAP lane. Not a missing mandatory IT under G-C9 |
 | T4 | Under `auth.type=DISABLED` the filter is labelled `Favorites (shared)` | R3 | IT |
 | T5 | No Favorites tab; `/favorites` lands on the pre-filtered search rather than a blank screen | R4 | IT |
 | T7 | The panel's `View all` lands on a search page already narrowed to favorites | R6 | IT |
 | T8 | Toggling any sidebar facet leaves an active Favorites filter in force | R7 | vitest + IT |
-| T9 | Every new label renders in each of the 7 locales | R8 | scripted parity diff |
+| T9 | Every new label renders in each of the 7 locales | R8 | the repo's `i18n-key-parity.test.ts`, run explicitly |
 | T10 | With the scope on and nothing starred, the results area teaches the star | R9 | IT |
 | T11 | Under DISABLED the filter carries inline help stating anyone on the instance can see and remove these stars | R10 | vitest + IT |
+| T12 | **Clicking** the control (not navigating to a crafted URL) narrows the list and puts `favorites` in the address bar | R1,R7 | IT — one oracle drives the control by click, so the write path is proven, not just the read path |
 
 **T6 (row 1 is the newest-starred) is deliberately absent — it is ST-7b's truth (§6.2), and R5's acceptance
 is verified at the 1.0.0 release gate across both slices.**
@@ -384,7 +412,8 @@ is verified at the 1.0.0 release gate across both slices.**
 | `…/service/AssetSearchServiceImpl.java` | T3 | `currentUserIdentityResolver.resolve()` |
 | `…/lib/search/searchUrlState.ts` | T1,T2,T7 | `SEARCH_FAVORITES_PARAM` |
 | `…/components/Search/Search.tsx` | **T8** | `favorites: live.favorites` |
-| `…/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx` | T4,T11 | `Favorites (shared)`, `InformationIcon` |
+| `…/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx` | T4,T11,T12 | `Favorites (shared)`, `InformationIcon` |
+| `…/components/Search/Filters/Filters.tsx` | T4,T12 — renders the control **unconditionally** in the rail | `<FavoritesFilter` |
 | `…/components/App.tsx` | **T5** | `<Navigate replace` on `favoritesPath()` |
 | `…/components/Search/Results/Results.tsx` — the `EmptyContentPlaceholder` at `:203-207` | T10 | the favorites-scope branch of its `text` |
 | `…/components/Overview/…/FavoritesColumn/FavoritesColumn.tsx` | T7 | `searchStateToParams` |
@@ -401,6 +430,7 @@ is verified at the 1.0.0 release gate across both slices.**
 | `AssetSearchFormData.favorites` | the SQL predicate | `FavoritesScopeDto` threaded through **all three** repo methods | `count` disagreeing with the page -> a total that does not match the rows |
 | an existing `/favorites` bookmark | the pre-filtered search | the `Navigate` replacing the deleted route | a blank content area under the toolbar — no 404, no message |
 | the favorites IT | a real RED on base | asserting **absence of an un-starred asset**, not presence of a starred one | the test passes on the unfixed base and proves nothing (G-C15) |
+| a click on the Favorites control | the canonical search URL | `searchStateToParams` inside `FavoritesFilter`, never a hand-built string | a byte-divergent URL that `Search.tsx`'s mirror immediately rewrites — the control appears to do nothing, or flickers and reverts |
 
 **Two key_links verified as already-wired (traced, not assumed) — so the plan does NOT touch them:**
 
@@ -490,7 +520,7 @@ Phase A/C held **no** shared resource (read-only against `origin/main`).
 
 | Stream | Work | Bearing on this slice |
 |---|---|---|
-| `ctrib060` | #1840 ST-6 query operators | **Holds the heavy-e2e flock** (`run-regression.sh`, pid 248842 since 23:39:22). My Phase-D regression queues behind it — `run-regression.sh` blocks on the flock, so this is automatic, not a manual wait. Also mid-`/enrich`, so `lineage/**` (R9) is treated as claimed |
+| `ctrib060` | #1840 ST-6 query operators | **Holds the heavy-e2e flock** (`run-regression.sh`, pid 248842 since 23:39:22). My Phase-D regression queues behind it — `run-regression.sh` blocks on the flock, so this is automatic, not a manual wait. Also mid-`/enrich`, so `lineage/**` (the R9 single-writer resource in `playbooks/stream-coordination.md` — not this record's R9) is treated as claimed |
 | `ctrib062` | #1842 **ST-8 — My-data filter + retire the My-Objects tab + rewire 3 home panels** | **The structural twin of this slice**, and the real coordination point |
 
 **The ST-8 overlap, stated precisely.** ST-7 and ST-8 do the same four things to the same four files: add a
@@ -513,7 +543,34 @@ Nothing here blocks GATE 1. It is recorded so the second slice to reach Phase D 
 |---|---|---|
 | **`issues/odd-platform/PLT-256`** | **"Save current search" silently drops the Asset-type filter.** `SavedSearch.spec` is typed `SearchFormData`, which has no `asset_kinds` — so ST-4's Asset-type narrowing is dropped on capture *and* on reapply, with no warning. Found while mapping this slice's URL-param census; grepped the backlog + `issues/odd-platform/` first — untracked | A pre-existing, already-shipped defect in ST-3×ST-4, not caused by ST-7. Fixing it means a **contract** change (`SavedSearch.spec` -> `AssetSearchFormData`) plus a migration-free data question — out of this slice's approved scope (G-C5) |
 
-**This slice inherits that gap by construction:** `favorites`, like `asset_kinds`, is a URL-only dimension on
+| **`issues/odd-platform/PLT-257`** | **Paste-ready ST-7b sub-issue** — "Recently favorited" ordering, with the eight call sites enumerated and the never-shipped evidence. ASCII, suggested milestone 1.0.0, **no milestone self-assigned** | The bot is policy-barred from creating GitHub issues (`playbooks/github-write.md`, G-C18); the maintainer files it under #1825 |
+| **`backlog/docs/DOC-503`** | The **release-gate hook** (`milestone: "1.0.0"`): reconcile `favorites.md`'s "most-recently-favorited first" claim against what actually merges into 1.0.0 — keep it if ST-7b shipped, drop it if not | It is a gate obligation, not this PR's work. Verified live: `grep -rl 'milestone: "1.0.0"' backlog/ contributor/` returns it |
+
+**This slice inherits the saved-search gap by construction:** `favorites`, like `asset_kinds`, is a URL-only dimension on
 `AssetSearchFormData`, so a saved search will not capture it either. That is *consistent* with the shipped
 behaviour rather than a new regression, and PLT-256 fixes both at once. Called out in the PR body so the
 maintainer sees the inheritance, not just the new field.
+
+## 12. Plan-check record (G-C19) — three adversarial rounds
+
+Run against `.claude/agents/plan-checker.md` (fresh context, assume-flawed, goal-backward). **Every checkable
+claim it made was re-verified here first-hand before being acted on** — an agent finding is a lead, not a fact.
+Each round was right, and none of the three was a rubber stamp.
+
+| Round | Verdict | The finding that mattered most |
+|---|---|---|
+| 1 | **ISSUES FOUND** — 8 blockers, 7 warnings | The `FAVORITED_AT` ordering is not one `ORDER BY` branch but eight call sites across the ST-5 cursor engine, two failing silently. Drove the ST-7/ST-7b split |
+| 2 | **ISSUES FOUND** — 4 blockers, 11 warnings | R8 asserted "nothing performs i18n key parity" *as checked*. Wrong — the guard is a vitest test I never grepped for. Also: the re-grounded IT would have been GREEN on base, and the retirement would have shipped the blank-page defect R4 exists to prevent |
+| 3 | **ISSUES FOUND** — 1 blocker, 9 warnings; all four round-2 blockers verified closed | §6.2 committed the bot to *filing* the ST-7b sub-issue — an action `playbooks/github-write.md` and G-C18 forbid — and that non-existent mechanism was the only thing keeping R5 tracked |
+
+**Round 3's blocker is closed by a mechanism that exists and was tested, not by an intention:**
+`issues/odd-platform/PLT-257` (paste-ready, maintainer files it) + `backlog/docs/DOC-503` carrying
+`milestone: "1.0.0"`. The release gate derives its manifest with `grep -rl 'milestone: "1.0.0"' backlog/
+contributor/` (`playbooks/release-train-merge.md`); that exact command was run and returns `DOC-503`. All nine
+round-3 warnings are folded in, and a grep confirms no stale claim survives.
+
+Round 3 also verified something stronger than this record had argued: **Favorites has never shipped** —
+`Favorites.tsx` and `V0_0_94` are absent from 0.29.0, 0.28.0 and 0.27.13, and `favorites.md` is absent from
+`documentation@origin/main`. Independently confirmed here with `git cat-file -e` per tag. That makes the
+ST-7/ST-7b split materially safer than the doc-timing argument alone suggested: there is no published release
+on which the missing ordering can be experienced.

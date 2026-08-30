@@ -314,7 +314,7 @@ implementation of D4's mandate, not new architecture: the BFS-with-visited-set e
 | **Every consumer of a changed signature** | `ReactiveAssetSearchRepository.{keysetPage,relevancePage,count}` change `OwnerPojo owner` → the resolved scope. Consumers: `AssetSearchServiceImpl` (3 call sites) + `AssetSearchKeysetPaginationTest`, `AssetSearchSortIntegrationTest`, `AssetSearchServiceIntegrationTest` — all updated in the same commit. |
 | **Migration** | `V0_0_101__lineage_child_oddrn_index.sql` — one additive `CREATE INDEX` (see (e)). Non-destructive ⇒ not a G-C7 hard stop. **Lane check at branch time:** main's max is `V0_0_100`; ctrib060 (ST-6) and ctrib061 (ST-7) are not expected to add migrations, but the number is re-verified against `origin/main` immediately before the commit. |
 | **i18n — ALL 7 locales** | `My Objects` / `Upstream` / `Downstream` already exist in all 7 (verified per key). NEW keys: the group heading, the two `… of my data` option labels, the two depth-select labels, the QE-exclusion caption, the truncation strip copy, the unbound-user reason, `N results` / `0 results`. Every new key added to `en,br,ch,es,fr,hy,ua` in the same commit; the `i18n-key-parity` test is the guard. |
-| **Dead code** | `SearchResultsTabs/` and `SearchTabsSkeleton/` are imported **only** by `Results.tsx` — both directories are deleted, not left orphaned. |
+| **Dead code** | `SearchResultsTabs/` and `SearchTabsSkeleton/` are imported **only** by `Results.tsx` (verified by grep) — both directories are deleted, not left orphaned. **Deliberately NOT deleted:** `dataEntitySearch.slice`'s `myObjects` field and `getSearchEntityClass`'s `'my'` branch. They are not dead — the slice faithfully mirrors the still-live `SearchFacetsData.myObjects` echo, and the legacy `/search/{sessionId}` deep-link (kept by D9) can still load a session whose `myObjects` is true. Only the *writer* (`changeDataEntitySearchFacet`'s `'my'` pseudo-class, `dataEntitySearch.slice.ts:230-236`) becomes unreachable; removing it would ripple into `dataEntitySearch.slice.test.ts` and the `SearchClass` type for no user-visible gain. |
 | **Docs** | `search.md` (the whole "Result-class tabs" section dies with my change) + `catalog-overview.md` (panel captions + the new View-all deep-links), on the `release/1.0.0` train. |
 | **Ontology** | `F-017` (search filter facets), `F-148` (the class-tab filter this retires), `F-015` (the my-objects anchor reads the panels use). `/enrich --touched` in Phase D **iff** `lineage/**` is clean and unclaimed (R9 is currently contended by ctrib060). |
 | **Existing tests broken by the change** | `integration-tests/e2e/specs/multilingual-i18n.spec.ts:312-335` asserts the **My Objects tab** renders + translates — it must be re-pointed at the new My-data filter control (protocol `IT-102` updated in step with it). `IT-068`/`IT-151` reference the class-tab strip; re-read and re-pointed where they touch the retired control. |
@@ -352,16 +352,22 @@ worst case is readable off the code, not off a query plan. The neighbour set **e
 the shipped panel semantics (`DataEntityRelationsServiceImpl.java:33-38`), so "Upstream of my data" means *the things
 feeding mine*, not *mine*.
 
-The predicate handed to the ranked query, kind-guarded in the condition-(3)/(7) style, using a **single array bind**
-(`= ANY(?::bigint[])`) rather than a 10 000-element `IN` list — the `unbounded_in_clause_anchor_fanout` drift class
-already recorded on `F-015`:
+The predicate handed to the ranked query, kind-guarded in the condition-(3)/(7) style, applied to the **unified
+INDEX row** and bound as a **hashable subquery** — never a 10 000-element `IN` list (the
+`unbounded_in_clause_anchor_fanout` drift class recorded on `F-015`) and never `= ANY(array)` on the joined base
+table (**measured at 54 s** — `## Plan-time measurements` M3):
 
 ```
-(ASSET_KIND = 'DATA_ENTITY' AND data_entity.id  = ANY(:deIds))
-OR (ASSET_KIND = 'TERM'     AND term.id         = ANY(:termIds))
+   (asset_search_entrypoint.asset_kind = 'DATA_ENTITY' AND asset_search_entrypoint.asset_id IN (SELECT unnest(:deIds)))
+OR (asset_search_entrypoint.asset_kind = 'TERM'        AND asset_search_entrypoint.asset_id IN (SELECT unnest(:termIds)))
 ```
 
 Empty arrays make both branches false — a scope that resolves to nothing returns nothing, never the full catalog.
+The predicate deliberately reads `asset_id` off the **index row** rather than the left-joined `data_entity.id`: for a
+DE row they are the same value, so the join is unnecessary here, and keeping the predicate off the join is exactly
+what preserves the FTS-driven plan (M3 — 249 ms vs 54 443 ms).
+The predicate deliberately reads `asset_id` off the index row rather than the left-joined `data_entity.id`: for a DE
+row they are the same value, and keeping it off the join is what preserves the FTS-driven plan (M3).
 
 ### (e) The index — measured, not assumed
 
@@ -395,7 +401,7 @@ the migration is dropped and the measurement is recorded instead.
 | 1 | **Contract + migration** — `MyDataScope`, `SearchFormData.{my_data,upstream_depth,downstream_depth}`, `my_objects` deprecated-with-alias, `AssetPageInfo.scope_truncated`; `V0_0_101` index | `odd-platform-specification/components.yaml`, `…/db/migration/V0_0_101__lineage_child_oddrn_index.sql` |
 | 2 | **Backend — the bounded scope resolver (RED-first)** | new `service/MyDataScopeResolver{,Impl}.java`, `dto/MyDataScopeResult.java`, `dto/DataEntityIdOddrn.java`; `ReactiveLineageRepository{,Impl}` + `getNeighbourOddrns`; `ReactiveDataEntityRepository{,Impl}` + `listIdAndOddrnByOwner` / `listIdsByOddrns`; `ReactiveTermRepository{,Impl}` + `listIdsByOwner`; new `MyDataScopeResolverTest` |
 | 3 | **Backend — the search predicate + response flag** | `ReactiveAssetSearchRepository{,Impl}` (owner → scope; kind-guarded array predicate), `AssetSearchServiceImpl` (scope resolution, back-compat alias, depth clamp, `scopeTruncated` on the page info); extend `AssetSearchServiceIntegrationTest` |
-| 4 | **Frontend — the URL contract** | `lib/search/searchUrlState.ts` (+ params, fail-closed parse, legacy `?my=` alias, form-data projection), `redux/selectors/dataentitySearch.selectors.ts`, `Search.tsx` (mirror merge), `Filters.tsx` (Clear All); `lib/search/__tests__/searchUrlState.test.ts` + `searchFormDataToUrlState.test.ts` |
+| 4 | **Frontend — the URL contract** | `lib/search/searchUrlState.ts` (+ params, fail-closed parse, legacy `?my=` alias, form-data projection), `redux/selectors/dataentitySearch.selectors.ts`, `Search.tsx` (mirror merge), `Filters.tsx` (Clear All), `lib/hooks/useNavigateToSearch.ts`; **three existing test files that assert the old `myObjects` shape and WILL break**: `lib/search/__tests__/searchUrlState.test.ts` (:17,60-110,153,197-215), `lib/search/__tests__/searchFormDataToUrlState.test.ts` (:13,28), `lib/hooks/__tests__/useNavigateToSearch.test.tsx` (:49 — asserts `{myObjects:true}` → `/search?my=true`) |
 | 5 | **Frontend — the My-data sidebar group** | new `Filters/MyDataFilter/MyDataFilter.tsx` (+ styles, + `__tests__`), `Filters/Filters.tsx` |
 | 6 | **Frontend — retire the tab strip, land the result count + truncation strip** | `Results/Results.tsx`, **delete** `Results/SearchResultsTabs/**` + `SearchTabsSkeleton/**`, `redux/{interfaces,slices,selectors,thunks}` for `total` + `scopeTruncated` |
 | 7 | **Frontend — the three panel deep-links + caption correction** | `Overview/OwnerAssociation/OwnerEntitiesList/{OwnerEntitiesList.tsx,DataEntityList/DataEntityList.tsx}` |
@@ -474,8 +480,8 @@ must_haves:
       provides: "the index that makes the upstream hop an index scan instead of a seq scan"
       anchor: "lineage_child_oddrn"
     - path: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveAssetSearchRepositoryImpl.java"
-      provides: "the kind-guarded array-bound scope predicate on the ranked query"
-      anchor: "= ANY"
+      provides: "the kind-guarded scope semi-join on the ranked query, applied to the INDEX row (measured M3)"
+      anchor: "unnest"
     - path: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/AssetSearchServiceImpl.java"
       provides: "scope resolution, the my_objects back-compat alias, the depth clamp, scopeTruncated on the page info"
       anchor: "scopeTruncated"
@@ -509,7 +515,7 @@ must_haves:
       via: "assetSearch.thunks mapping -> AssetSearchState.pageInfo -> selector -> Results.tsx (the mapping currently DISCARDS total)"
     - from: "MyDataScopeResolver's resolved id set"
       to: "the ranked query"
-      via: "a single = ANY(?::bigint[]) array bind in conditions(), kind-guarded - never a per-row expansion, never a 10k IN list"
+      via: "a kind-guarded asset_id IN (SELECT unnest(?)) semi-join on ASSET_SEARCH_ENTRYPOINT in conditions() - never a per-row expansion, never a 10k IN list, and never = ANY(array) on the joined data_entity.id (measured at 54s, M3)"
     - from: "Filters.handleClearAll"
       to: "my_data + the two depths"
       via: "explicit clearing in the reconstructed URL - they are filters, unlike query/sort"
@@ -517,3 +523,59 @@ must_haves:
       to: "the saved spec"
       via: "searchUrlStateToFormData projecting my_data + depths into SearchFormData"
 ```
+
+## Plan-time measurements (Phase-A probe — measured, not assumed)
+
+Run on a throwaway `postgres:13.2-alpine` (**the deployed version** — `docker/demo.yaml`) in this stream's own
+namespace (`ctrib062-pgprobe`, no published port, removed after the run; ctrib060's stack and flock untouched).
+Fixture: `lineage` recreated with odd-platform's **exact** DDL (`V0_0_2` + the `V0_0_17` 3-column PK + `V0_0_26`
+varchar widening + `V0_0_79 is_deleted`), seeded as a dense 6-layer × 400-node graph with fan-out 25 =
+**50 000 edges**; plus a 200 000-row `data_entity` + a mirror `asset_search_entrypoint` with its GIN index.
+
+### M1 — the upstream hop is a sequential scan today; the index fixes it
+
+| Hop (200 roots) | Plan | Time |
+|---|---|---|
+| DOWNSTREAM — `parent_oddrn = ANY(…)` (PK prefix) | Bitmap Index Scan on `lineage_pkey` | **29.95 ms** |
+| UPSTREAM — `child_oddrn = ANY(…)` (**no index today**) | **Seq Scan on lineage** | **880.46 ms** |
+| UPSTREAM — after `CREATE INDEX lineage_child_oddrn ON lineage(child_oddrn)` | Bitmap Index Scan on `lineage_child_oddrn` | **22.40 ms** |
+
+**39× on a 50 000-edge table.** The `V0_0_101` index is confirmed necessary, not speculative — three upstream hops
+would otherwise cost ~2.6 s of pure sequential scanning on **every** search request.
+
+### M2 — the existing `UNION ALL` edge CTE really does explode; the BFS does not
+
+Replicating `ReactiveLineageRepositoryImpl.lineageCte` **exactly**, from the same 200 roots:
+
+| Expansion | Result |
+|---|---|
+| Existing CTE, depth 2 | **1 157 ms**, **130 000 rows materialised** to yield 800 distinct nodes (a 162× amplification) |
+| Existing CTE, depth 3 | **did not complete within a 25 s statement timeout** |
+| Planned BFS (visited set, one bounded+ordered query per hop), depth 3 | **~281 ms total** (36 / 68 / 121 ms per hop), 1 400 distinct nodes |
+
+This is the measured justification for **not** reusing `getLineageRelations` — at the ADR's own ceiling the existing
+primitive is not merely slow, it does not return.
+
+### M3 — ⚠ the planned scope predicate was WRONG, and the measurement caught it
+
+The design first specified `data_entity.id = ANY(?::bigint[])` on the **joined base table**. Measured on the
+200 000-row fixture with a 10 000-id scope:
+
+| Scope-predicate shape | Plan | Time |
+|---|---|---|
+| **(as originally planned)** `de.id = ANY(array)` on the joined `data_entity` | Hash Right Join, the array re-scanned **per row** | **54 443 ms** |
+| `asset_search_entrypoint.asset_id IN (SELECT unnest(?))`, kind-guarded — **on the index row, no join** | Bitmap Heap Scan (FTS-driven) + hashed semi-join | **249 ms** |
+| the same scope as an explicit `(kind, id)` JOIN against `unnest` | Nested Loop driving `ase_pkey` | **212 ms** |
+
+**218× — and completely invisible on a small test fixture.** `= ANY(array)` is a scalar array operation Postgres
+evaluates linearly *per candidate row*; `IN (SELECT unnest(?))` is a hashable subquery.
+
+**Two design corrections, made here rather than discovered at the perf gate:**
+1. The scope predicate is applied to **`ASSET_SEARCH_ENTRYPOINT.ASSET_ID`** — the unified index row — **not** to the
+   left-joined `DATA_ENTITY.ID`. For DE rows the two are the same value, so the join is unnecessary for this
+   predicate and removing it keeps the FTS bitmap scan as the driver.
+2. The bind is **`IN (SELECT unnest(?))`**, never `= ANY(?)`. Recorded in `must_haves` as the artifact anchor.
+
+Budget check with the corrections: 3 BFS hops (~281 ms) + the scoped ranked query (~249 ms) ≈ **0.53 s** at the
+worst-case ceiling (depth 3, 10 000-node scope, 200 k-row catalog) — inside a 1 s interactive budget, with the
+common case (depth 1) an order of magnitude cheaper. The Phase-D gate re-measures this on the real SUT.

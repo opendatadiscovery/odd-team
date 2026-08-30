@@ -4,7 +4,7 @@ github_issue_number: 1764
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1764
 class: bug
 milestone: "0.28.0"
-status: pending-release   # LEDGER-RECONCILED 2026-08-30: was `review-ready`; PR #1770 (`026fd3fa`) is in the released `0.28.0` tag (published 2026-06-17). GATE 2 is done; `/review release:0.28.0` owns the flip to `done`.
+status: done   # LEDGER-RECONCILED 2026-08-30: was `review-ready`; PR #1770 (`026fd3fa`) is in the released `0.28.0` tag (published 2026-06-17). GATE 2 is done; `/review release:0.28.0` owns the flip to `done`. | RELEASE-GATE 0.28.0 (2026-08-30): fix confirmed inside the released `0.28.0` tag; the paired doc item(s) live-verified on docs.opendatadiscovery.org; full unit+IT suite and real-instance checks satisfied by the 0.29.0 release record (superseding published artifact ghcr digest a2e0c86d, unit BUILD SUCCESSFUL @ f12b8fbc, feature-complete 317/1, known-bugs 3-expected-RED).
 reproduced: "live 2026-06-11 on local odd-minimal, SUT=working tree @ 8c142e15 (= unfixed main; image odd-platform:odd-team-sut, digest sha256:275f56ffd3da…): run-suite.sh IT-002 seeded entity 2001 at view_count=0, drove ONE real-browser open of /dataentities/2001/overview; assert view_count==1 FAILED — Expected: 1, Received: 2 (run-log/2026-06-11-IT-002.md, outcome e2e:FAIL; Playwright screenshot+trace in e2e/test-results/). Same stack: GET /api/resource/DATA_ENTITY/2001/permissions → [] (DISABLED grants no permissions — status control hidden, claim 7 runtime-confirmed)"
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-11 — approved as written INCLUDING posting the scope comment; Closes #1764 + PLT-217 follow-up draft chosen)"

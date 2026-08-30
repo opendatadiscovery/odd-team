@@ -6,7 +6,7 @@ title: "DQ test severity: instant unconfirmed save; chosen value bleeds to all s
 class: bug
 scope: frontend
 milestone: "0.28.0"
-status: pending-release
+status: done   # RELEASE-GATE 0.28.0 (2026-08-30): fix confirmed inside the released `0.28.0` tag; the paired doc item(s) live-verified on docs.opendatadiscovery.org; full unit+IT suite and real-instance checks satisfied by the 0.29.0 release record (superseding published artifact ghcr digest a2e0c86d, unit BUILD SUCCESSFUL @ f12b8fbc, feature-complete 317/1, known-bugs 3-expected-RED).
 reproduced: "integration-tests/e2e/specs/dq-severity-render-bleed.spec.ts (RED, 2026-06-15) — see Reproduction log"
 code_commit: "MERGED to odd-platform main as squash 1f32debe (PR #1786, by RamanDamayeu 2026-06-15T21:43:47Z); branch was contrib/CTRIB-015-dq-severity-confirm @ 77e4103c"
 docs_commit: "documentation release/0.28.0 @ 3882042 (local worktree; push pending maintainer at the release gate)"

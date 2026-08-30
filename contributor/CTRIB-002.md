@@ -3,7 +3,7 @@ id: CTRIB-002
 github_issue_number: 1746
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1746
 class: bug
-status: pending-release   # LEDGER-RECONCILED 2026-08-30: was `merged`; PR #1747 (`fbb2eb43`) is in the released `0.28.0` tag (published 2026-06-17). GATE 2 is done; `/review release:0.28.0` owns the flip to `done`.
+status: done   # LEDGER-RECONCILED 2026-08-30: was `merged`; PR #1747 (`fbb2eb43`) is in the released `0.28.0` tag (published 2026-06-17). GATE 2 is done; `/review release:0.28.0` owns the flip to `done`. | RELEASE-GATE 0.28.0 (2026-08-30): fix confirmed inside the released `0.28.0` tag; the paired doc item(s) live-verified on docs.opendatadiscovery.org; full unit+IT suite and real-instance checks satisfied by the 0.29.0 release record (superseding published artifact ghcr digest a2e0c86d, unit BUILD SUCCESSFUL @ f12b8fbc, feature-complete 317/1, known-bugs 3-expected-RED).
 milestone: "0.28.0"   # VERIFIED 2026-08-30 via GitHub API — the upstream issue carries milestone 0.28.0 (closed/released).
 reproduced: "live 2026-06-10 on local odd-minimal, SUT=working tree @ 921e8c98 (= unfixed main): GET /api/terms/1 -> terms[].term.namespace null for the cross-namespace linked term, non-null for the same-namespace control in the SAME payload; GET /api/terms/2 (direct) -> namespace intact; UI /terms/1/overview -> fully blank page (body innerText == ''), pageerror 'TypeError: Cannot read properties of null (reading name)' from the useState lazy initializer; screenshot /tmp/repro-1746-overview.png"
 adr_required: false

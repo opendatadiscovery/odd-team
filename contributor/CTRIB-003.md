@@ -3,7 +3,7 @@ id: CTRIB-003
 github_issue_number: 1748
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1748
 class: bug
-status: pending-release   # LEDGER-RECONCILED 2026-08-30: was `merged`; PR #1749 (`8c142e15`) is in the released `0.28.0` tag (published 2026-06-17). GATE 2 is done; `/review release:0.28.0` owns the flip to `done`.
+status: done   # LEDGER-RECONCILED 2026-08-30: was `merged`; PR #1749 (`8c142e15`) is in the released `0.28.0` tag (published 2026-06-17). GATE 2 is done; `/review release:0.28.0` owns the flip to `done`. | RELEASE-GATE 0.28.0 (2026-08-30): fix confirmed inside the released `0.28.0` tag; the paired doc item(s) live-verified on docs.opendatadiscovery.org; full unit+IT suite and real-instance checks satisfied by the 0.29.0 release record (superseding published artifact ghcr digest a2e0c86d, unit BUILD SUCCESSFUL @ f12b8fbc, feature-complete 317/1, known-bugs 3-expected-RED).
 milestone: "0.28.0"   # VERIFIED 2026-08-30 via GitHub API — the upstream issue carries milestone 0.28.0 (closed/released).
 reproduced: "live 2026-06-10 on local odd-minimal, SUT=working tree @ fbb2eb43 (= unfixed main, digest sha256:49543efe…): drove the REAL SelectLanguage dialog (user menu → Select language → Ukrainian; localStorage i18nextLng='ua'); toolbar then renders [Каталог, Директорія, Data Quality, Data Modelling, Master Data, Менеджмент, Словник, Сповіщення, Активність] — 6 tabs translated, 3 raw English literals side-by-side; screenshot /tmp/repro-1748-toolbar-ua.png; baseline IT-102 3/3 green on the same SUT (run-log/2026-06-10-IT-102.md)"
 adr_required: false

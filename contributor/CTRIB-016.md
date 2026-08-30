@@ -3,7 +3,7 @@ id: CTRIB-016
 github_issue_number: 1756
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1756
 class: bug
-status: pending-release
+status: done   # RELEASE-GATE 0.28.0 (2026-08-30): fix confirmed inside the released `0.28.0` tag; the paired doc item(s) live-verified on docs.opendatadiscovery.org; full unit+IT suite and real-instance checks satisfied by the 0.29.0 release record (superseding published artifact ghcr digest a2e0c86d, unit BUILD SUCCESSFUL @ f12b8fbc, feature-complete 317/1, known-bugs 3-expected-RED).
 milestone: "0.28.0"
 reproduced: "live 2026-06-16 on local odd-minimal, SUT image odd-platform:odd-team-sut built from the working tree (= origin/main @ 19618ea2; CTRIB-015 merged as #1787 — working tree identical to main, JooqFTSHelper byte-identical), postgres:13.2-alpine. POST /api/terms/search {\"query\":\"foo )(\",\"filters\":{}} -> HTTP 500 (SYS001); same for {\"query\":\"'foo\"} and {\"query\":\"a<b\"}. Control {\"query\":\"glossary\"} -> 200 total:0. The poison string is PERSISTED in search_facets.query_string; reopening that session (GET /api/terms/search/{id}, /results, /facet/OWNERS) -> 500/500/500 (persistent DoS); the control session reopens 200/200. Catalog twin POST /api/search {\"query\":\"foo )(\"} -> 500 (shared sink). Platform log: io.r2dbc.postgresql ... [42601] syntax error in tsquery: \"foo:*&)(:*\" ... to_tsquery('foo:*&)(:*')."
 adr_required: false

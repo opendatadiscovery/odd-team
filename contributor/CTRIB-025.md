@@ -4,7 +4,7 @@ github_issue_number: 1763
 github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1763"
 class: bug
 milestone: "0.29.0"
-status: pending-release
+status: done   # RELEASE-GATE 0.29.0 residue closed 2026-08-30: this item's PR is inside the released `0.28.0..0.29.0` delta (0.29.0 published 2026-06-26) and its release-gated doc items are `done` + live-verified, but the 2026-06-26 release review's check-7 close-out listed only CTRIB-021 + CTRIB-028..037 and skipped CTRIB-022..027. Checks 2/3/5/6 (full unit+IT suite on ghcr digest a2e0c86d, real-instance on the published image, ontology refresh to f12b8fbc, advisory sweep) are the same run and were GREEN; re-verified 2026-08-30 that the merge commit is an ancestor of the tag.
 reproduced: "live — see Reproduction log (running odd-minimal stack, 2026-06-20)"
 adr_required: false
 plan_approved_by: "maintainer (GATE 1, 2026-06-20 — 'Approve, one feature PR'; expanded scope to full Activity-mirrored Alerts hardening; backward-compat directive same day)"

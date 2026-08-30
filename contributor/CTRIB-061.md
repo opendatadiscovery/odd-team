@@ -5,13 +5,13 @@ github_issue: 1841
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1841
 target_repo: odd-platform
 milestone: "1.0.0"
-status: plan-pending
+status: plan-approved
 classification: feature
 stream_id: ctrib061
 base_sha: 82e7e70e
 branch: contrib/CTRIB-061-favorites-filter
-plan_approved_by: ""
-plan_approved_at: ""
+plan_approved_by: "RamanDamayeu"
+plan_approved_at: "2026-08-31"
 reproduced: "n/a — feature slice, not a bug. The entry gate is spec-gate (G-C17), not reproduce-first."
 docs_routing: "documentation@release/1.0.0 — favorites.md (frontmatter :2 + :7 + :29 + :31-33), catalog-overview.md (:43), search.md (unreleased behaviour, G-C11); paired item backlog/docs/DOC-503"
 ---
@@ -444,9 +444,31 @@ is verified at the 1.0.0 release gate across both slices.**
 sibling slice with its own tracked issue*, not a deferred shadow of this one — the distinction the plan-check
 required, and the reason R5's acceptance is timed to the release gate rather than dropped.
 
-### The scope comment to post at GATE-1 approval (G-C5), drafted
+### GATE 1 — APPROVED 2026-08-31
 
-ASCII, self-contained, no workspace-internal IDs. Posted to #1841 immediately after approval, before any code.
+**Maintainer (`RamanDamayeu`) decided both open questions, taking the recommendation on each:**
+
+1. **Filter shape -> the "Favorites only" toggle** (§6.1 option A), not the issue's literal All / Yes / No.
+   The wire contract stays the optional boolean, so `favorites=false` remains expressible by API and URL —
+   the capability the issue asked for is retained; only the dead on-screen value is dropped. **This is less
+   work than the AC states: no `FixedOptionsSingleFilter` is built.** §5(a)'s conditional control row and §7
+   step 5's "if tri-state" branch both collapse to the toggle.
+2. **Ordering -> its own slice, ST-7b, same milestone** (§6.2 option A). This slice ships the filter; the
+   `FAVORITED_AT` ordering follows in 1.0.0. Tracking is already on disk and mechanically verified:
+   `issues/odd-platform/PLT-257` (paste-ready sub-issue for the maintainer to file) +
+   `backlog/docs/DOC-503` (`milestone: "1.0.0"` — the release-gate hook).
+
+**Consequences folded into the plan:** T2b stays an API-level truth (no UI control for the negative
+direction); T12's click-driven oracle drives the toggle; the docs prose describes a toggle and **drops** the
+"most-recently-favorited first" claim, which DOC-503 forces the 1.0.0 gate to restore if ST-7b merges.
+
+`plan_approved_by: RamanDamayeu` · `plan_approved_at: 2026-08-31`.
+
+### The scope comment posted to #1841 (G-C5)
+
+Posted immediately after approval, **before any code**. It states both divergences from the issue's written
+AC — the toggle instead of All/Yes/No, and the deferred ordering — because the public thread must reflect the
+actual PR scope, not just the workspace record. ASCII, self-contained.
 
 ```
 Scope for the PR that will close this issue.
@@ -460,26 +482,38 @@ In this PR:
 - The Catalog Overview Favorites panel's "View all" deep-links to the pre-filtered search.
 - Docs and the favorites end-to-end test are updated to match.
 
-Deferred to a sibling slice (ST-7b), NOT in this PR:
-- "Recently favorited" ordering. The retired tab lists the full favorites set
-  newest-starred-first; the search page cannot yet, because a per-user ordering has to be
-  threaded through the cursor-pagination engine built in ST-5a/5b/5c - eight call sites
-  across the pager, the cursor codec and the sort control. That is a change of the same
-  size as its ST-5 siblings, so it ships as its own reviewable slice in this milestone
-  rather than riding along here. Since the docs describing the ordering publish at the
-  1.0.0 release and both slices target 1.0.0, nothing regresses for users in between.
+Two deliberate departures from the AC as written, both agreed before any code:
+
+1. The control ships as a single "Favorites only" toggle rather than an All / Yes / No
+   tri-state. A person stars tens of assets out of thousands, so "show me everything I have
+   NOT starred" returns a list a user cannot tell apart from "All" - a selected state that
+   looks broken, sitting between them and the value they actually want. The request body
+   keeps the optional boolean, so favorites=false is still expressible via the API and the
+   URL; only the dead on-screen option is dropped. No capability is lost.
+
+2. "Recently favorited" ordering is NOT in this PR. It ships as a sibling slice in the same
+   milestone. The retired tab lists favorites newest-starred-first; the search page cannot
+   yet, because a per-user ordering has to be threaded through the cursor-pagination engine
+   built in ST-5a/5b/5c - eight call sites across the pager, the cursor codec and the sort
+   control, two of which fail silently. That is a change the size of its ST-5 siblings, so
+   it gets its own reviewable slice rather than riding along here. Nothing regresses for
+   users in the meantime: Favorites has never shipped (it is absent from 0.29.0, 0.28.0 and
+   0.27.13) and its documentation page is not published yet, so no operator on any released
+   version can encounter the gap. This PR's docs describe the filter without claiming an
+   ordering; the claim returns with the follow-up slice.
 
 Not touched:
 - Favoriting itself: the star, the favorite table, the /api/favorites write and list
   endpoints, and the Overview panel's own list.
 - The legacy /api/search path and the per-kind searches.
 
-One thing found while working on this, reported separately: saving a search does not
-capture the Asset-type filter, because the saved-search spec type has no field for it.
-That is a pre-existing defect from the saved-search and asset-kind slices, not caused by
-this change. A Favorites filter will be dropped by a saved search for the same reason
-until it is fixed.
+Also found while working on this, reported separately: saving a search does not capture the
+Asset-type filter, because the saved-search spec type has no field for it. That is a
+pre-existing defect from the saved-search and asset-kind slices, not caused by this change.
+A Favorites filter will be dropped by a saved search for the same reason until it is fixed.
 ```
+
+**Posted:** https://github.com/opendatadiscovery/odd-platform/issues/1841#issuecomment-5471707666 (`odd-contributor[bot]`, 2026-08-30T22:41:05Z). Read back from the API after posting and verified: 2684 chars, **0 non-ASCII**, and both AC divergences present in the live body.
 
 ## 8. The parked Group-B slice — disposition (the issue asks for this explicitly)
 

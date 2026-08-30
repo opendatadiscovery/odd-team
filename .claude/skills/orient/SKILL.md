@@ -21,7 +21,7 @@ Quick orientation for working in the ODD Team maintenance system.
    - `/review <id>` — verify completed work
    - `/status` — full progress report
    - `/navigate <feature>` — find code locations
-4. Check release trains (`adrs/drafts/release-train-doc-gating.md`): grep `backlog/` for `milestone:` by status + `git -C ../documentation branch -r --list 'origin/release/*'`. A closed milestone with `pending-release` items, or a published release whose train still exists, makes the release gate (`playbooks/release-train-merge.md`) the recommended next action.
+4. Check release trains (`adrs/drafts/release-train-doc-gating.md`): grep `backlog/` **and `contributor/`** for `milestone:` by status (a `backlog/`-only grep is blind to CTRIB items — LSN-041) + `git -C ../documentation branch -r --list 'origin/release/*'`. A closed milestone with `pending-release` items, or a published release whose train still exists, makes the release gate (`playbooks/release-train-merge.md`) the recommended next action.
 5. Show recommended next action based on current progress
 6. List any blockers or items needing attention
 

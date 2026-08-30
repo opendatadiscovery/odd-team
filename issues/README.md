@@ -64,7 +64,10 @@ discovered_during: DOC-013 | scan/{scanner} | free text
 github_issue_url:                 # populated when status flips draft → filed
 github_issue_number:              # populated when filed (nice for cross-reference)
 found_date: "YYYY-MM-DD"
-user_facing_verified: true | false   # false until the user-facing claim is driven against the running system; draft -> filed needs true OR an explicit false + reason (playbooks/user-facing-verification.md)
+user_facing_verified: true | false   # false until the user-facing claim is driven against the running system; draft -> filed needs true OR an explicit false + reason (playbooks/user-facing-verification.md).
+                                     # AND, when false: the TITLE and `## User-facing impact` must be written as a HYPOTHESIS ("may", "if it reaches the UI"), never as an observed symptom.
+                                     # Case: PLT-253/#1867 (2026-08-30) was filed titled "the panel lists a term twice" off a SQL-shape simulation; measurement then showed a Set upstream absorbs it and nothing is user-visible.
+                                     # A backend-layer proof is NOT a user-facing proof: trace the read path to the response (mappers, Set/distinct collectors) AND the FE render before asserting a symptom.
 suggested_milestone:              # optional ("0.29.0") — the agent's recommendation for the target release; carried into the paste
 ---
 ```

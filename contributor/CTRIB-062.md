@@ -431,7 +431,7 @@ Read first, then author on the **`release/1.0.0` train** (unreleased behaviour) 
 branch `docs/CTRIB-062-my-data-filter` off `origin/release/1.0.0`; the push to the shared train is
 **maintainer-gated** (DOC-495/497 precedent). Paired backlog item **DOC-503** (`milestone: 1.0.0`,
 `status: pending-release`) records the affected pages + expected post-merge URLs.
-- `docs/data-discovery/search.md` — the "Result-class tabs" section is **retired by this change** and is rewritten as the Filters-sidebar model including the My-data group, the per-direction depth, the truncation caveat, and the DISABLED/unbound posture.
+- `docs/data-discovery/search.md` — **read at `origin/release/1.0.0` before planning this** (`:15-49`). Two edits: (i) the whole **"Result-class tabs"** section (`:31-49`, a nine-tab table incl. `My Objects`) is **retired by this change** — ST-4 removed the seven class tabs and ST-8 removes the last one — and is rewritten as the Filters-sidebar model, adding the My-data group, the per-direction depth, the truncation caveat and the DISABLED/unbound posture; (ii) the **Type** facet bullet (`:22`) still reads *"Only shown after an entity-class tab is selected at the top of the Catalog"* — already false since ST-4, and definitively unfixable-by-reference once no tab exists, so the clause is corrected to the Data-entity-type sidebar filter in the same edit rather than left as a known-false sentence beside a true one.
 - `docs/data-discovery/catalog-overview.md` — the three panels' corrected captions + their new "View all" deep-links.
 
 ### Scope comment (G-C5 — posted to #1842 immediately after GATE 1, before any code)
@@ -617,3 +617,49 @@ on `SearchFormData` because it **generalises `my_objects`, which already lives t
 the deprecated field it supersedes would force a precedence rule spanning two schemas. The underlying class (the
 saved-search spec projection dropping `AssetSearchFormData`-only dimensions) is the follow-up logged as `PLT-257`;
 it is not ST-8's to fix and is not a blocker for either slice.
+
+## Scope comment — DRAFT (ASCII-only; posts to #1842 immediately after GATE 1, before any code)
+
+> **ST-8 scope note — what this PR will and will not cover**
+>
+> Working #1842 now. Three corrections to the issue text, and three deferrals, so the thread matches the PR.
+>
+> **Corrections to the issue as written**
+>
+> 1. **The home panels have no "See all" to rewire — it will be added.** `My Objects`, `Upstream dependents` and
+>    `Downstream dependents` render no "See all"/"View all" link today (only the Favorites and Recently Viewed
+>    columns have one). This PR adds one to each of the three, deep-linking into the new filter.
+> 2. **The multi-select ships without an "All" option.** "All - My Objects - Upstream - Downstream" mixes a reset
+>    state with three additive scopes, so "All + Upstream" would be a contradictory selection. Zero boxes ticked IS
+>    All - which is also how the existing Asset-type filter behaves, so the control stays consistent with its sibling.
+> 3. **The cross-kind semantics are fixed as part of "each scope narrows correctly".** Today `my_objects=true` on
+>    `/api/search/assets` narrows only Data Entity rows: every Term and every Query Example in the catalog passes
+>    through unfiltered, so the filter WIDENS the result for two of three kinds while its label promises narrowing.
+>    After this PR, ownership is evaluated per kind by that kind's own ownership relation - data entities via
+>    `ownership`, terms via `term_ownership` - and query examples, which have no ownership model at all, are
+>    excluded while a My-data scope is active, with the reason shown in the sidebar rather than silently absent.
+>
+> **Also in scope, because this PR makes it user-visible**
+>
+> The two lineage panel captions are corrected. "Upstream dependents" is inverted - a dependent depends on you, i.e.
+> is downstream, while that endpoint returns the entities your data depends ON - and the manual currently carries
+> three different names for the concept. Since this PR wires those panels into the new filter, leaving the panel and
+> the filter chip disagreeing would ship a defect this change creates.
+>
+> **Deferred, with a tracked home (not silently dropped)**
+>
+> * Per-option counts on the filter ("My Objects (23)") - three extra aggregate queries per search on the slice that
+>   already carries the perf gate; ships only with measured evidence.
+> * Giving query examples an ownership model - a product question, not this slice's.
+> * Saved searches do not persist the Asset-type selection (a pre-existing gap from the ST-3/ST-4 boundary, found
+>   while reading this code) - tracked separately, not fixed here.
+> * `data-lineage.md` contradicts itself about "Upstream dependents" and records two wrong OpenAPI summaries -
+>   tracked as a documentation follow-up; this PR's doc changes are to `search.md` and `catalog-overview.md`.
+>
+> **The performance gate is a deliverable, not a checkbox.** Measured on a Postgres 13.2 fixture while planning:
+> the upstream lineage hop is a sequential scan today (881 ms vs 30 ms downstream, on 50k edges) because `lineage`
+> has no index leading on `child_oddrn` - so the PR adds one (22 ms after). The existing recursive edge CTE
+> materialises 130k rows for 800 nodes at depth 2 and does not complete at depth 3 within 25 s, so the scope
+> expansion is a bounded breadth-first walk with a visited set instead. Depth is capped at 3, the traversed set at
+> 10,000 nodes, and any truncation is reported by the server and shown to you - a partial impact set must never
+> read as a complete one.

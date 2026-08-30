@@ -113,10 +113,14 @@ test.describe('F-148 Search Class-Tab Filter — narrows results by entity class
     await expect(datasetRow, 'the dataset must appear under the All tab').toBeVisible({ timeout: 15_000 });
     await expect(groupRow, 'the group must appear under the All tab').toBeVisible({ timeout: 15_000 });
 
-    // ---- act: click the "Datasets" class tab (a facet mutation -> re-fetch) ----
-    const datasetsTab = page.getByRole('tab', { name: /Datasets/ });
-    await expect(datasetsTab, 'the Datasets class tab must be present in the tab strip').toBeVisible();
-    await datasetsTab.click();
+    // ---- act: apply the "Datasets" entity class (a facet write -> re-fetch) ----
+    // RE-POINTED by ST-8 (#1842 / CTRIB-062): this clicked the "Datasets" CLASS TAB. ST-4 retired the seven
+    // class tabs (class selection became the Data-entity-type sidebar filter) and ST-8 retired the last one,
+    // so the tab strip no longer exists. The claim under test — selecting the Datasets class narrows the
+    // results to dataset-class entities — is unchanged and is asserted on the same rendered outcome; only
+    // the control the user reaches for has moved. The PLT-147 regression lock below is untouched.
+    await page.locator('#filter-entityClasses').click();
+    await page.getByRole('option', { name: 'Datasets', exact: true }).click();
 
     // ---- assert: the result set is now scoped to the dataset class. We assert on the rendered outcome
     //      (group gone, dataset kept) which only holds AFTER the facet PUT + re-fetch land — no need to

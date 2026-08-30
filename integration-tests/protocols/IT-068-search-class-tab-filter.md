@@ -1,6 +1,6 @@
 ---
 id: IT-068
-title: "Search class-tab filter — clicking Datasets narrows results to dataset class; a null-details transformer renders in the list and its detail page loads (PLT-147 regression lock)"
+title: "Search class filter — selecting Datasets narrows results to dataset class; a null-details transformer renders in the list and its detail page loads (PLT-147 regression lock)"
 gates:
   validates: [F-148]
   enforces: []
@@ -16,11 +16,19 @@ status: ready
 
 ## 1. What this checks
 
-Two things on the 9-tab class strip atop `/search` (a distinct UX surface from the 7-facet sidebar):
+> **RE-POINTED 2026-08-31 by ST-8 (#1842 / CTRIB-062).** This protocol was written against the 9-tab class
+> strip atop `/search`. ST-4 (#1838) retired the seven per-class tabs — class selection became the
+> **Data entity type** filter in the Filters sidebar (`#filter-entityClasses`) — and ST-8 retired the last tab
+> (`My Objects`), so the strip no longer exists. Both claims below are unchanged in substance and strength;
+> only the control exercised in step 1 has moved from the tab strip to that sidebar filter. The PLT-147
+> regression lock is entirely unaffected (it never touched a tab).
 
-1. **(F-148 UC-001, GREEN)** Clicking the **Datasets** tab narrows the result list to dataset-class (SET)
-   entities — a non-dataset row drops out. **Operator consequence if it FAILS:** the class tabs (the most-used
-   search-scoping control) don't actually scope.
+Two things about narrowing `/search` by entity class (a control that lived in a tab strip until ST-4/ST-8,
+and now lives in the Filters sidebar):
+
+1. **(F-148 UC-001, GREEN)** Selecting the **Datasets** entity class narrows the result list to dataset-class (SET)
+   entities — a non-dataset row drops out. **Operator consequence if it FAILS:** the class filter (the most-used
+   search-scoping control) doesn't actually scope.
 2. **(PLT-147 / #1755 regression lock — FIXED 2026-06-12, CTRIB-009)** A **DATA_TRANSFORMER**-class entity
    whose details DTO is null (class id present, `specific_attributes` block absent) renders as a result row
    (results GET **200**, empty Sources/Targets cells), and clicking through, its **detail page loads**

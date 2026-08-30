@@ -9,13 +9,19 @@ import { seedSearchableEntity, dbQuery } from '../helpers/db';
  *        bookmarkable, and back/forward-correct — layered on ST-1a's query-URL); regresses the ST-1b
  *        facet-URL contract.
  *
- * ST-1b moves the FACETS into the URL. We exercise the on-page CLASS tab (Results.tsx / SearchResultsTabs) —
- * the round-1 write surface that is NOT in the Filters sidebar and would be missed by a sidebar-only writer.
- * Applying it navigates to the canonical /search?…&entityClasses[]=<id>; the page runs the filtered search
- * FROM the URL; a shared/bookmarked faceted URL reproduces it with no prior session; back/forward navigate
- * facet states; and removing the facet (the All tab) drops it from the URL and broadens the results (the
- * round-2 removal path — a plain server merge could never remove it, which is why the reader CREATEs a fresh
- * session per URL state = the REPLACE path).
+ * ST-1b moves the FACETS into the URL. Applying an entity-class narrowing navigates to the canonical
+ * /search?…&entityClasses[]=<id>; the page runs the filtered search FROM the URL; a shared/bookmarked faceted
+ * URL reproduces it with no prior session; back/forward navigate facet states; and REMOVING the facet drops
+ * it from the URL and broadens the results (the round-2 removal path — a plain server merge could never
+ * remove it, which is why the reader CREATEs a fresh session per URL state = the REPLACE path).
+ *
+ * RE-POINTED by ST-8 (#1842 / CTRIB-062). This test used the on-page CLASS TAB as its write surface; ST-4
+ * retired the seven class tabs and ST-8 retired the last one, so the tab strip no longer exists. The write
+ * surface is now the **Data entity type** filter in the sidebar (`DataEntityTypeFilter`, `#filter-entityClasses`),
+ * which is where class selection lives since ST-4 — and which carries the SAME URL contract. The assertions
+ * are unchanged in substance and strength: apply -> the facet is in the URL and the other class drops out;
+ * remove -> the facet leaves the URL and the other class returns. Still RED on ref:main (CTRIB-049 base,
+ * f63d3915), where no facet reaches the URL at all.
  *
  * RED on ref:main (CTRIB-049 base, f63d3915): a class tab dispatches a PUT /facets that never touches the
  * URL, so no facet reaches the URL and a faceted deep-link is meaningless. GREEN on the working-tree SUT.
@@ -59,6 +65,18 @@ async function runSearch(page: Page, term: string): Promise<void> {
   const box = page.getByPlaceholder('Search', { exact: true });
   await box.fill(term);
   await box.press('Enter');
+}
+
+// ST-8 re-point: class selection is the sidebar Data-entity-type multiselect (an autocomplete + removable
+// chips — FixedOptionsMultiFilter), not the retired tab strip. Selecting opens the autocomplete and picks the
+// option; deselecting clicks the "x" on the rendered chip, the direct analogue of the old "All" tab.
+async function selectEntityClass(page: Page, className: string): Promise<void> {
+  await page.locator('#filter-entityClasses').click();
+  await page.getByRole('option', { name: className, exact: true }).click();
+}
+
+async function deselectEntityClass(page: Page, className: string): Promise<void> {
+  await page.getByTitle(className, { exact: true }).locator('..').getByRole('button').click();
 }
 
 const datasetRowOf = (page: Page) =>
@@ -120,17 +138,19 @@ test.describe('F-017 search URL state — facets in the URL (ST-1b / D10)', () =
     await expect(datasetRow, 'the dataset appears under All').toBeVisible({ timeout: 15_000 });
     await expect(groupRow, 'the group appears under All').toBeVisible({ timeout: 15_000 });
 
-    // apply the Datasets class tab — ST-1b serialises the facet into the URL (RED on main: no URL change).
-    await page.getByRole('tab', { name: /Datasets/ }).click();
+    // apply the Datasets entity class from the sidebar — ST-1b serialises the facet into the URL
+    // (RED on main: no URL change). The class TAB this used to click was retired by ST-8.
+    await selectEntityClass(page, 'Datasets');
     await expect(page, 'the class facet is serialised into the URL').toHaveURL(FACET_IN_URL, {
       timeout: 15_000,
     });
     await expect(groupRow, 'the group class is filtered out').toHaveCount(0, { timeout: 15_000 });
     await expect(datasetRow, 'the dataset class remains').toBeVisible();
 
-    // remove the facet via the All tab — it leaves the URL AND the results broaden (round-2 removal: the
-    // reader CREATEs a fresh session per URL state = REPLACE, so a dropped facet is genuinely removed).
-    await page.getByRole('tab', { name: /^All/ }).click();
+    // remove the facet by deselecting the chip — it leaves the URL AND the results broaden (round-2 removal:
+    // the reader CREATEs a fresh session per URL state = REPLACE, so a dropped facet is genuinely removed).
+    // This is the direct analogue of the retired "All" tab, on the control that replaced it.
+    await deselectEntityClass(page, 'Datasets');
     await expect(page, 'the facet is removed from the URL').not.toHaveURL(FACET_IN_URL, {
       timeout: 15_000,
     });
@@ -147,7 +167,7 @@ test.describe('F-017 search URL state — facets in the URL (ST-1b / D10)', () =
     await page.goto('/search');
     await runSearch(page, TERM);
     await expect(datasetRow).toBeVisible({ timeout: 15_000 });
-    await page.getByRole('tab', { name: /Datasets/ }).click();
+    await selectEntityClass(page, 'Datasets');
     await expect(page).toHaveURL(FACET_IN_URL, { timeout: 15_000 });
     await expect(groupRow).toHaveCount(0, { timeout: 15_000 });
     const facetedUrl = page.url();

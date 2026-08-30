@@ -296,42 +296,44 @@ test.describe('F-043 Multilingual UI — locale switching + fallback', () => {
   });
 
   // REGRESSION #1751 / PLT-205 (wave 3 — the maintainer's /search example, 2026-06-15): the search
-  // result-type tabs ("All", "My Objects", "Datasets", …) are string literals in a TS object array
-  // (SearchResultsTabs.tsx) rendered via <AppTabs>, so they live OUTSIDE JSX — the eslint no-literal-string
-  // rule and the JSX-attribute guard BOTH miss them; they rendered English under every locale (the maintainer
-  // drove /search under `ua` and saw the English tab strip). CTRIB-014 wrapped them in t() + added a
-  // deterministic object-property guard. Drive a real search under `ua` and assert the tab strip is Ukrainian.
-  test('the search result-type tabs render translated under a non-English locale (#1751 / PLT-205 wave 3)', async ({
+  // result-type labels were string literals in a TS object array rendered via <AppTabs>, so they lived
+  // OUTSIDE JSX — the eslint no-literal-string rule and the JSX-attribute guard BOTH miss them, and they
+  // rendered English under every locale (the maintainer drove /search under `ua` and saw an English strip).
+  // CTRIB-014 wrapped them in t() + added a deterministic object-property guard.
+  //
+  // RE-POINTED by ST-8 (#1842 / CTRIB-062): the tab strip is retired — ST-4 removed the seven class tabs and
+  // ST-8 removed the last one. The SAME literal class it guards now lives in the sidebar filters, whose
+  // option labels are likewise built in a TS object array outside JSX (DE_CLASS_OPTIONS / ASSET_KIND_OPTIONS
+  // / the My-data scope labels), so the regression surface is unchanged: drive /search under `ua` and assert
+  // the filter labels are Ukrainian, not English.
+  test('the search filter labels render translated under a non-English locale (#1751 / PLT-205 wave 3)', async ({
     page,
   }) => {
     await page.goto('/search');
-    // perform a search so the result-tab strip renders (the main catalog box searches on Enter)
-    const box = page.getByPlaceholder('Search', { exact: true });
-    await box.fill('a');
-    await box.press('Enter');
-    // baseline English: the result-type tab strip renders "All" + "My Objects" (names carry a count hint,
-    // so match by substring, like IT-068)
+    // baseline English: the Filters sidebar renders its group headings
     await expect(
-      page.getByRole('tab', { name: /All/ }),
-      'baseline: the English "All" search tab must render before switching',
+      page.getByText('Asset type', { exact: true }),
+      'baseline: the English "Asset type" filter must render before switching',
     ).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByRole('tab', { name: /My Objects/ })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Data entity type', { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
 
     await switchLanguageViaUi(page, 'Ukrainian');
 
-    // the tab strip now renders its ua.json values (these were hardcoded literals pre-CTRIB-014)
+    // the sidebar now renders its ua.json values
     await expect(
-      page.getByRole('tab', { name: /Усі/ }),
-      'after switching to ua, the "All" tab must read ua.json "Усі"',
+      page.getByText('Тип активу', { exact: true }),
+      'after switching to ua, the "Asset type" filter must read ua.json "Тип активу"',
     ).toBeVisible({ timeout: 10_000 });
     await expect(
-      page.getByRole('tab', { name: /Мої об'єкти/ }),
-      'the "My Objects" tab must read ua.json "Мої об\'єкти"',
+      page.getByText('Фільтри', { exact: true }),
+      'the Filters panel heading must read ua.json "Фільтри"',
     ).toBeVisible({ timeout: 10_000 });
-    // and the raw English tab label is gone — it was a hardcoded literal, now translated
+    // and the raw English labels are gone — they were hardcoded literals, now translated
     await expect(
-      page.getByRole('tab', { name: /My Objects/ }),
-      'the raw English "My Objects" tab must be gone under ua',
+      page.getByText('Asset type', { exact: true }),
+      'the raw English "Asset type" label must be gone under ua',
     ).toHaveCount(0);
   });
 });

@@ -19,6 +19,47 @@ Full-text and faceted search across all metadata entities.
 - `odd-platform-ui/src/redux/slices/dataEntitySearch.slice.ts` — search state
 - `odd-platform-ui/src/redux/selectors/dataentitySearch.selectors.ts`
 
+### Unified cross-kind Asset Search (#1825 overhaul — ST-1..ST-5)
+
+The 2026-07 overhaul added a SECOND, additive search stack beside the legacy data-entity-only one above.
+`POST /api/search/assets` returns Data Entities + Terms + Query Examples in ONE ranked list, served by a single
+polymorphic FTS index. The legacy `/api/search` paths are untouched (ADR `unified-asset-search` D9).
+
+- `odd-platform-api/.../controller/AssetSearchController.java` — the `/api/search/assets` entry point
+- `odd-platform-api/.../service/AssetSearchService.java` → `AssetSearchServiceImpl.java`
+- `odd-platform-api/.../service/SearchAssetResolver.java` — resolves `(asset_kind, asset_id)` refs into renderable assets
+- `odd-platform-api/.../repository/reactive/ReactiveAssetSearchRepository.java` → `…Impl.java` — the ranked
+  query: `keysetPage` (index-backed browse sorts) / `relevancePage` (ts_rank, OFFSET + depth-cap) / `count` /
+  `refreshPopularityScores`
+- `odd-platform-api/.../dto/AssetSearchCursor.java` + `AssetSearchPageRow.java` — the keyset cursor + page row
+- `odd-platform-api/.../service/job/AssetPopularitySnapshotJob.java` — **the scheduled job** (`@Scheduled` 15 min
+  + ShedLock) that re-snapshots `popularity_score` off the request path. Deliberately NOT a `HousekeepingJob`
+  (that manager is opt-in); sibling idiom: `service/job/DataEntityStatusSwitchJob.java`
+- `odd-platform-ui/src/redux/{actions,thunks,slices,selectors,interfaces}/assetSearch.*` — the FE state
+- `odd-platform-ui/src/lib/search/searchUrlState.ts` — search state ⇄ URL params (ST-1a/ST-1b)
+- Saved searches (ST-3): `controller/SavedSearchController.java`, `service/SavedSearchService{,Impl}.java`,
+  `repository/reactive/ReactiveSavedSearchRepository{,Impl}.java`,
+  `odd-platform-ui/src/components/Search/Results/SavedSearches/`
+
+**Schema (the substrate — read these before touching the ranked query):**
+- `db/migration/V0_0_96__add_status_priority.sql` — the denormalised status-priority sort key
+- `db/migration/V0_0_97__create_saved_search.sql` — saved searches
+- `db/migration/V0_0_98__create_asset_search_entrypoint.sql` — **the unified index table** `asset_search_entrypoint`
+  `(asset_kind, asset_id, search_vector)` + the per-entrypoint AFTER triggers that mirror each kind's FTS vector in
+- `db/migration/V0_0_99__denormalise_asset_search_sort_columns.sql` — NULLS-aligned sort columns + btree indexes
+- `db/migration/V0_0_100__snapshot_popularity_score.sql` — `popularity_score` + the `asset_popularity_bucket()`
+  log2-band function (the single source of truth shared by the backfill AND the refresh job) + the composite index.
+  **There is deliberately NO trigger on `data_entity.view_count`** — the read hot path stays decoupled from the
+  search index (ADR D5 + its rev-3 SRE correction); popularity moves only when the snapshot job runs
+
+**Decision record:** `adrs/drafts/unified-asset-search.md` (D1 unified index / D2 live semi-join / D5 snapshotted
+popularity / D9 no breaking change / D12 keyset-vs-relevance pagination) + the SRE corrections in
+`adrs/drafts/research/unified-asset-search/SEARCH-CAPABILITIES-DESIGN.md`.
+
+**Coverage caveat:** this subsystem has **no ontology sidecars and no feature-flow** yet (`lineage/odd-platform/`
+carries nothing for `asset_search_entrypoint`) — tracked as `backlog/navigation/NAV-004.md`. Until that closes,
+this file is the only navigation pointer into the unified stack.
+
 ### Term Search (separate)
 - `odd-platform-ui/src/components/Terms/TermSearch/` — dedicated term search with own facets
 - `odd-platform-api/.../service/term/TermSearchService.java`
@@ -27,6 +68,6 @@ Full-text and faceted search across all metadata entities.
 - `documentation/docs/Features.md#advanced-search` — mentions 3 of 7 filters
 
 ## Related Domains
-- data-entities (searchable objects)
+- data-entities (searchable objects; `view_count` is the popularity input — see the V0_0_100 caveat above)
 - glossary (terms searchable via dedicated search)
 - collaboration (tags/labels as facets)

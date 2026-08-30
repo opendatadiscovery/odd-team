@@ -83,7 +83,7 @@ Grounded in: the source at `82e7e70e`; the live manual on the `release/1.0.0` tr
 | **R9** | The zero-result state still **teaches the star** | The tab's empty state reads *"Star an asset to pin it here."* — it is how a first-time user learns what the star does | With the Favorites scope on and nothing starred, the results area carries that same teaching line, not a bare "no results" | Favorites scope on + zero favorites -> the teaching text is rendered (asserted, not eyeballed) |
 | **R10** | The DISABLED **consequence** survives, not just the state | The tab shows a full warning paragraph: favorites are shared by everyone on the instance | The `(shared)` label keeps the *state*; ODD's shipped inline-help idiom (`InformationIcon` + `AppTooltip`, ADR-0076) carries the *consequence* sentence beside it | Under DISABLED the filter shows the info icon and its tooltip states that anyone on the instance can see and remove these stars |
 
-**In scope:** the tri-state predicate + its wire contract; identity threading; the sidebar control; the URL
+**In scope:** the favorites predicate + its wire contract (UI shape per GATE-1 decision 1 — the backend is identical either way); identity threading; the sidebar control; the URL
 param + mirror-merge; the tab retirement + dead-code removal; the panel rewire; the re-grounding of `IT-148`;
 docs on the `release/1.0.0` train; i18n ×7.
 
@@ -260,7 +260,10 @@ quote be verified before use. **It has been** — read directly from
 Ordered, with the GATE-1 answer folded in at step 3.
 
 1. **Spec** — `components.yaml`: add `favorites` (optional boolean, described) to `AssetSearchFormData`.
-   Regenerate BE (`rm -rf build/generated` first) + FE clients.
+   **Also update the endpoint's own prose** — `openapi.yaml:966-974` enumerates the honored contract
+   ("query + filters + sort + my_objects … plus an optional asset_kinds filter"); a new dimension that is not
+   listed there is undocumented at the contract's most-read line. Regenerate BE (`rm -rf build/generated`
+   first) + FE clients.
 2. **Backend predicate** — `FavoritesScopeDto` record; thread it through `ReactiveAssetSearchRepository`
    (`keysetPage` / `relevancePage` / `count`) into `conditions(...)` as `EXISTS` / `NOT EXISTS`;
    `AssetSearchServiceImpl` resolves the identity via `CurrentUserIdentityResolver` **only when** `favorites`
@@ -323,7 +326,7 @@ Ordered, with the GATE-1 answer folded in at step 3.
 | `…/components/Search/Search.tsx` | **T8** | `favorites: live.favorites` |
 | `…/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx` | T4 | `Favorites (shared)` |
 | `…/components/Overview/…/FavoritesColumn/FavoritesColumn.tsx` | T7 | `searchStateToParams` |
-| `…/components/Search/Results/Results.tsx` (empty state) | T10 | the teaching string in the favorites-scope zero-result branch |
+| `…/components/Search/Results/Results.tsx` — the `EmptyContentPlaceholder` at `:203-207` (today a flat `t('No matches found')`) | T10 | the favorites-scope branch of that placeholder's `text` |
 | `…/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx` (inline help) | T11 | `InformationIcon` + `AppTooltip` |
 | `…/locales/translations/{br,ch,en,es,fr,hy,ua}.json` | T9,T10,T11 | the new keys ×7 (`Favorites` / `Favorites (shared)` already exist — reused) |
 | `integration-tests/protocols/IT-148-*.md` + `e2e/specs/favorites-star-see-loop.spec.ts` | T5,T7,T8 | `favorites=yes` |
@@ -336,6 +339,16 @@ Ordered, with the GATE-1 answer folded in at step 3.
 | `FavoritesColumn` `View all` | a narrowed search page | `searchStateToParams`, not a literal | a byte-divergent URL the mirror immediately rewrites, losing the filter |
 | `AssetSearchFormData.favorites` | the SQL predicate | the `FavoritesScopeDto` threaded through all 3 repo methods | `count` disagreeing with the page -> a total that does not match the rows |
 | the Yes scope | the `FAVORITED_AT` ordering | the join being present when that sort is chosen | an ordering that silently falls back, or an SQL error when Favorites is off |
+
+**Two key_links verified as already-wired (traced, not assumed) — so the plan does NOT touch them:**
+
+- **The request build.** Both fetch sites (`Results.tsx:93` scroll-extend, `:101` page 1) read one
+  `assetSearchFormData` memo derived from `location.search` (`:85`). Once `searchUrlStateToAssetSearchFormData`
+  carries `favorites`, both pick it up with no further change.
+- **The re-query trigger.** Page 1 is gated on the DE session having settled (`:99-104`). Changing only
+  `favorites` changes `searchStateToParams`' output, so `Search.tsx`'s `urlStateKey` changes, a fresh DE
+  session is created, `searchFacetsSynced` flips, and the settle-effect re-fires page 1 with the new form
+  data. This is exactly the `asset_kinds` mechanism, and it is why `favorites` needs no bespoke re-fetch.
 
 **No scope-reduction language.** Nothing here is `v1`, `static for now`, or `wired later`.
 

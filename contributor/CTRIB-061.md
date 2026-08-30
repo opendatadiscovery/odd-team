@@ -74,12 +74,14 @@ Grounded in: the source at `82e7e70e`; the live manual on the `release/1.0.0` tr
 |---|---|---|---|---|
 | **R1** | A Favorites narrowing on the unified cross-kind search | No favorites predicate exists on `/api/search/assets` (verified: zero `FAVORITE` references in `ReactiveAssetSearchRepositoryImpl`) | `AssetSearchFormData.favorites` (optional boolean; absent = All) narrows the result set for **every** asset kind | `POST /api/search/assets {"favorites":true}` returns exactly the caller's starred assets; `false` returns exactly the unstarred ones; absent returns both. Asserted per-kind (DATA_ENTITY + TERM + QUERY_EXAMPLE) |
 | **R2** | Per-user scoping, ownership-free | n/a | The predicate keys on `(oidc_username, provider)` from `CurrentUserIdentityResolver` **only** — never a request parameter, never the internal Owner | A unit test proves two identities see disjoint results from the same corpus, and that the identity is taken from the security context (a caller cannot ask for another user's favorites) |
-| **R3** | `auth.type=DISABLED` = one shared bucket, **labelled** | The tab renders `Favorites (shared)` + a warning paragraph; the panel renders `Favorites (shared)` | The filter's visible label is `Favorites (shared)` under DISABLED and `Favorites` otherwise — reusing the panel's exact existing convention (`FavoritesColumn.tsx:57`) | Under `AUTH_TYPE=DISABLED` the sidebar filter's label reads `Favorites (shared)`; the resolver returns the `(__shared__, DISABLED)` sentinel |
+| **R3** | `auth.type=DISABLED` = one shared bucket, **labelled** | The tab renders `Favorites (shared)` + a warning paragraph; the panel renders `Favorites (shared)` | The filter's visible label is `Favorites (shared)` under DISABLED and `Favorites` otherwise — reusing the panel's exact existing convention (`FavoritesColumn.tsx:57`). **Verified: both keys already exist, translated, in all 7 locale files — R3 adds no i18n work at all** | Under `AUTH_TYPE=DISABLED` the sidebar filter's label reads `Favorites (shared)`; the resolver returns the `(__shared__, DISABLED)` sentinel |
 | **R4** | The `/favorites` tab is gone | A top-level route + toolbar tab + a bespoke page with its own duplicate asset-type facet | The route, the toolbar tab, the page component and every component that only the page used are **deleted**; `/favorites` no longer resolves | `GET /favorites` renders no Favorites page; no toolbar tab named Favorites; `git grep favoritesPath` returns nothing |
 | **R5** | Finding a favorite again is **not worse** than before | The tab lists favorites **most-recently-favorited first** — promised in the published manual (`favorites.md`: *"most-recently-favorited first"*) and served by the existing index `favorite_identity_created_active_idx (oidc_username, provider, created_at DESC) WHERE deleted_at IS NULL` | **GATE-1 decision (§6).** Recommended: a `FAVORITED_AT` ordering, offered and defaulted when the Favorites=Yes filter is active with no text query | With `?favorites=yes` and no query, the most-recently-starred asset is row 1 |
 | **R6** | The panel deep-links pre-filtered | `FavoritesColumn.tsx:95` links `View all` -> `/favorites` | It links to `/search?favorites=yes` | Clicking `View all` lands on the search page with the Favorites filter active and the list narrowed |
 | **R7** | The filter survives every other control | n/a | `favorites` is merged back in the `Search.tsx` facet->URL mirror alongside `sort` / `assetKinds` / `entityClasses` | Toggling **any** sidebar facet with `?favorites=yes` active leaves `favorites=yes` in the URL and the narrowing in force (the #1858 regression class) |
-| **R8** | i18n | n/a | Every new visible string exists in **all 7** locale files | `br ch en es fr hy ua` each carry every new key; the CI key-parity guard passes |
+| **R8** | i18n | n/a | Every new visible string exists **and is translated** in all 7 locale files | `br ch en es fr hy ua` each carry every new key with a real translation, not the English fallback. **There is no CI guard for this** — checked: no workflow, no `package.json` script, nothing under `scripts/` performs key parity (`pnpm i18n:scan` only *extracts* keys, it fails nothing). So the check is a scripted diff run here and shown in the PR, not something CI will catch for us |
+| **R9** | The zero-result state still **teaches the star** | The tab's empty state reads *"Star an asset to pin it here."* — it is how a first-time user learns what the star does | With the Favorites scope on and nothing starred, the results area carries that same teaching line, not a bare "no results" | Favorites scope on + zero favorites -> the teaching text is rendered (asserted, not eyeballed) |
+| **R10** | The DISABLED **consequence** survives, not just the state | The tab shows a full warning paragraph: favorites are shared by everyone on the instance | The `(shared)` label keeps the *state*; ODD's shipped inline-help idiom (`InformationIcon` + `AppTooltip`, ADR-0076) carries the *consequence* sentence beside it | Under DISABLED the filter shows the info icon and its tooltip states that anyone on the instance can see and remove these stars |
 
 **In scope:** the tri-state predicate + its wire contract; identity threading; the sidebar control; the URL
 param + mirror-merge; the tab retirement + dead-code removal; the panel rewire; the re-grounding of `IT-148`;
@@ -154,7 +156,7 @@ shapes R5 (below). **No new ADR is warranted** — this slice conforms; it estab
 
 | Dimension | Handled |
 |---|---|
-| i18n | **All 7 locales** (`br ch en es fr hy ua`) for every new string — never en-only-plus-backlog (LSN-035) |
+| i18n | **All 7 locales** (`br ch en es fr hy ua`), translated, for every new string — never en-only-plus-backlog (LSN-035). Reduced by reuse: `Favorites` / `Favorites (shared)` already exist in all 7. **No CI guard exists** — the parity check is ours to run (R8) |
 | Generated clients | BE + FE OpenAPI codegen both regenerate off `components.yaml`; BE needs `rm -rf build/generated` (the `$ref`'d `components.yaml` is not tracked as a Gradle input — `reference_odd_platform_activity_event_and_spec_codegen`) |
 | Consumers of changed signatures | 3 repository methods (interface + impl + their tests) — the only callers are `AssetSearchServiceImpl` and the repository's own tests |
 | Migrations | **None.** `favorite` + both indexes ship in `V0_0_94` |
@@ -172,16 +174,44 @@ shapes R5 (below). **No new ADR is warranted** — this slice conforms; it estab
   evaluated per candidate row — bounded, but it must be **measured** (`EXPLAIN (ANALYZE, BUFFERS)`), not
   asserted. That measurement is a gate in §7, not a footnote.
 
-## 6. GATE-1 decision — the one thing the issue does not settle
+## 6. GATE-1 decisions — the two things the issue does not settle
 
-Everything above is decided. **One question needs the maintainer**, because it is a product trade-off the issue
-is silent on and the answer changes what gets built.
+Everything else is decided. **Two questions need the maintainer.** Both change what gets built, and the first
+one **disagrees with the issue's own wording** — which is precisely the case G-C16 says must go to the human
+rather than be silently absorbed.
+
+Both are informed by an `odd-sme` consultation run for this slice:
+`lineage/odd-platform/sme-consultations/2026-08-30-favorites-tab-to-filter-ia.md` (confidence HIGH). Its
+checkable claims were re-verified here before use; one of its own caveats is corrected in §6.3.
+
+### 6.1 Decision 1 — the filter's shape: the issue says **All / Yes / No**; the evidence says **on/off**
+
+**In plain language:** "No" means *show me everything I have not starred*. Because a person stars tens of
+assets out of thousands, that result is visually **indistinguishable from "All"** — the user selects a filter,
+the list does not change, and the control looks broken. Meanwhile every use of the value people actually want
+("just my starred ones") costs an extra click to get past a middle option nobody picks.
+
+The SME survey found **no** comparable product exposing a tri-state for a personal boolean: DataHub ships
+Views (a saved filter set activated from the search bar), Atlan and Secoda ship saved/filtered views, and
+GitHub — the one verified product with a personal star list — ships a simple starred list plus sorting.
+
+| Option | What the user gets | Cost |
+|---|---|---|
+| **A (recommended) — one "Favorites only" toggle**, labelled `Favorites (shared)` under DISABLED; off = All. **The wire contract stays the specced optional boolean**, so `favorites=false` remains expressible by API and URL at zero cost — nothing is lost, only the dead UI value goes | One click to the thing they want; no state that looks broken | *Less* than the issue's ask — no new single-select control is needed; it conforms to the existing personal-scope idiom |
+| **B — All / Yes / No exactly as the issue specifies** | Literal compliance with the written AC | A new `FixedOptionsSingleFilter` control, plus a filter value whose selected state is indistinguishable from no filter |
+
+**Recommendation: A.** Same capability, one fewer control to build, and no dead option on screen. If you
+want the literal AC, say so and B ships instead — the backend is identical either way.
+
+### 6.2 Decision 2 — ordering
 
 **In plain language:** the Favorites tab you are retiring shows your starred assets **newest-starred first**.
-The search page cannot do that — with no search text it orders by status, then by internal id. So after this
-change, a user who stars something today may find it buried in the middle of their favorites list. The
-published manual (`favorites.md`) states the newest-first behaviour as a promise, so shipping without it makes
-a live doc page wrong.
+The search page cannot. With no search text it orders by status priority, and ties break on **internal
+catalog id** — which is arbitrary *and stable*. So a freshly starred asset does not merely rank low: it lands
+at an unrelated position **and never moves**, which is the exact opposite of "what did I just star". The
+published manual states the newest-first behaviour as a promise — verified first-hand at
+`documentation@origin/release/1.0.0 docs/data-discovery/favorites.md:33` — so shipping without it makes a page
+we wrote this cycle wrong.
 
 | Option | What the user gets | Cost | Risk of not doing it |
 |---|---|---|---|
@@ -205,6 +235,26 @@ agreement. That trap is the reason this is a day and not an afternoon.
 **Recommendation: A.** It is the difference between *moving* a feature and *degrading* it, the index was
 already built for exactly this ordering, and B forces a same-release retraction of a page we wrote this cycle.
 
+### 6.3 What the SME added that is now folded into the spec above (no decision needed)
+
+- **The teaching empty state** -> promoted from a design footnote to **R9**, an acceptance line with a test.
+  The SME's point is well taken: as a §5(e) note it would be the first thing dropped under Phase-D pressure.
+- **The DISABLED *consequence*** -> **R10**. `(shared)` preserves the state but loses "anyone on this instance
+  can see and remove your star"; ODD's shipped `InformationIcon` + `AppTooltip` inline-help idiom carries it.
+- **Discoverability** — a nav tab advertises a feature; a sidebar control does not. Mitigation is already in
+  the plan (R6, the panel's `View all`), and the SME's condition is adopted: the control renders
+  **unconditionally** in the Filters rail, never behind an "add a filter" affordance.
+- **Nameability** — a saved search should be able to hold the favorites scope. It cannot today, for the same
+  contract reason `asset_kinds` cannot: **PLT-256** (§11), logged during this slice.
+- **Ontology gap** — `lineage/odd-platform/concepts.yaml` contains **zero** `favorit*` entries (verified:
+  `grep -ci favorit` -> 0). Favorites is about to gain a search filter while remaining uncatalogued as a
+  concept. Handled by the Phase-D `/enrich`, subject to the `lineage/**` lock.
+
+**One SME caveat corrected.** It flagged that it could not read the `favorites.md` "most-recently-favorited
+first" promise first-hand (no shell; the page is on the unmerged `release/1.0.0` branch) and asked that the
+quote be verified before use. **It has been** — read directly from
+`origin/release/1.0.0:docs/data-discovery/favorites.md:33`. The quote stands.
+
 ## 7. `## Plan`
 
 Ordered, with the GATE-1 answer folded in at step 3.
@@ -221,18 +271,22 @@ Ordered, with the GATE-1 answer folded in at step 3.
 4. **URL state** — `searchUrlState.ts`: `SEARCH_FAVORITES_PARAM = 'favorites'`, `favorites?: 'yes' | 'no'` on
    `SearchUrlState`, fail-closed parse, serialise, and project into `searchUrlStateToAssetSearchFormData`.
 5. **The mirror-merge (the #1858 trap)** — add `favorites: live.favorites` to the `Search.tsx` merge-back.
-6. **The control** — `FixedOptionsSingleFilter` + `FavoritesFilter.tsx`; render in `Filters.tsx`; DISABLED
-   label via `useAppInfo()`.
+6. **The control** — `FavoritesFilter.tsx`, rendered **unconditionally** in `Filters.tsx`; label via
+   `useAppInfo().authType` (`Favorites` / `Favorites (shared)`, both keys already translated ×7) plus the
+   R10 inline-help tooltip. **Shape per GATE-1 decision 1:** a toggle (recommended — no new control needed)
+   or a new `FixedOptionsSingleFilter` for the literal All/Yes/No. The backend is identical either way.
 7. **Retire the tab** — delete the route, the toolbar entry, the page and its page-only components; remove the
    four now-dead `lib.ts` helpers and their tests.
 8. **Rewire the panel** — `FavoritesColumn.tsx` `View all` -> the serialised `/search?favorites=yes`.
-9. **i18n ×7** — every new string in `br ch en es fr hy ua`.
+9. **i18n ×7** — every new string translated in `br ch en es fr hy ua`, plus a scripted parity diff whose
+   output goes in the PR (there is no CI guard — R8). The `Favorites` / `Favorites (shared)` labels are
+   already present in all 7 and are reused, not re-added.
 10. **Tests — both buckets.** Unit: the predicate (Yes/No/absent × 3 kinds), identity isolation, fail-closed
     param parse, the mirror-merge preservation (vitest), the sort default. Integration: **re-ground `IT-148`**
     — it drives `/favorites` in 3 of its 4 tests and its 4th test (`:159`, the Group-B Description column) is
     **already permanently RED on `main`** against an unimplemented feature. Re-point tests 1-3 at the search
     filter and resolve test 4 per §8. Add: the panel `View all` lands pre-filtered; a sidebar toggle preserves
-    `favorites=yes`; `/favorites` no longer resolves.
+    `favorites=yes`; `/favorites` no longer resolves; the R9 teaching empty state; the R10 inline help.
 11. **SRE measurement** — `EXPLAIN (ANALYZE, BUFFERS)` for Yes and No on a seeded corpus; recorded in this file.
 12. **Docs on `release/1.0.0`** — rewrite the `favorites.md` "Favorites tab" section as the filter; add the
     filter to `search.md`'s facet list; paired backlog DOC item with `milestone: 1.0.0`.
@@ -253,6 +307,8 @@ Ordered, with the GATE-1 answer folded in at step 3.
 | T7 | The panel's `View all` lands on a search page already narrowed to favorites | R6 |
 | T8 | Toggling any sidebar facet leaves an active Favorites filter in force | R7 |
 | T9 | Every new label renders in each of the 7 locales | R8 |
+| T10 | With the Favorites scope on and nothing starred, the results area teaches the star instead of saying "no results" | R9 |
+| T11 | Under `auth.type=DISABLED` the filter carries inline help stating that anyone on the instance can see and remove these stars | R10 |
 
 **Artifacts** (path -> provides -> grep anchor):
 
@@ -267,7 +323,9 @@ Ordered, with the GATE-1 answer folded in at step 3.
 | `…/components/Search/Search.tsx` | **T8** | `favorites: live.favorites` |
 | `…/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx` | T4 | `Favorites (shared)` |
 | `…/components/Overview/…/FavoritesColumn/FavoritesColumn.tsx` | T7 | `searchStateToParams` |
-| `…/locales/translations/{br,ch,en,es,fr,hy,ua}.json` | T9 | the new keys ×7 |
+| `…/components/Search/Results/Results.tsx` (empty state) | T10 | the teaching string in the favorites-scope zero-result branch |
+| `…/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx` (inline help) | T11 | `InformationIcon` + `AppTooltip` |
+| `…/locales/translations/{br,ch,en,es,fr,hy,ua}.json` | T9,T10,T11 | the new keys ×7 (`Favorites` / `Favorites (shared)` already exist — reused) |
 | `integration-tests/protocols/IT-148-*.md` + `e2e/specs/favorites-star-see-loop.spec.ts` | T5,T7,T8 | `favorites=yes` |
 
 **key_links** (where this would silently half-work):

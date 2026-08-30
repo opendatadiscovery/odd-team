@@ -156,8 +156,8 @@ on `documentation@origin/release/1.0.0`), and the SME consult
 | | |
 |---|---|
 | **Current** | No depth parameter on search. The two home panels are hard-wired to exactly 1 hop (`LineageDepth.empty()` ⇒ the recursive term never fires — `ReactiveLineageRepositoryImpl.java:158`, `LineageDepth.java:16`). |
-| **Target** | `upstream_depth` and `downstream_depth`, each default **1**, independently settable, **hard ceiling 3** (ADR D4 + SME Q4: DataHub's Impact Analysis defaults to 1 degree "to minimize processor-intensive queries"; ODD's ceiling is lower than a graph view's because a search filter runs per interaction). Each direction's depth applies only when that direction's scope is ticked. A value outside `[1,3]`, or a non-integer, **degrades to the default** — never a 400, never a 500. **This constrains the wire types** (plan-check W3): `my_data` is declared `array` of **plain `string`** and the depths as plain `integer` with **no `minimum`/`maximum`**, with the token set and the range documented in the description and enforced by a service-side allow-list + clamp. A strict `enum` / `minimum` would make the generated Jackson deserializer reject the value *before* any clamp could run, turning a hand-edited URL into a 400. This is exactly the `SearchFormData.sort` precedent — *"deliberately a plain string rather than a strict enum so an unknown value degrades gracefully to the default instead of failing the request"* (`components.yaml:2453-2460`). |
-| **Acceptance** | With a chain `U2 → U1 → A(mine) → D1 → D2`: `Upstream, depth 1` ⇒ `{U1}`; `depth 2` ⇒ `{U1,U2}`; `Downstream, depth 1` ⇒ `{D1}`. `?upstream_depth=99` and `?upstream_depth=abc` both behave exactly as `depth 1`. |
+| **Target** | `upstream_depth` and `downstream_depth`, each default **1**, independently settable, **hard ceiling 3** (ADR D4 + SME Q4: DataHub's Impact Analysis defaults to 1 degree "to minimize processor-intensive queries"; ODD's ceiling is lower than a graph view's because a search filter runs per interaction). Each direction's depth applies only when that direction's scope is ticked. A value outside `[1,3]` **degrades to the default** — never a 400, never a 500. *(Corrected after measuring the running system — see `## Live-system verification`. The original wording also claimed a non-integer degrades; that is **false at the API level**, where a wrong-JSON-typed value is a 400 from the deserialiser like any typed field. It is true at the URL level, which is the case that matters: the FE's `parseDepth` drops a non-numeric depth before a request is ever built, so no stale or hand-edited shareable link can produce one.)* **This constrains the wire types** (plan-check W3): `my_data` is declared `array` of **plain `string`** and the depths as plain `integer` with **no `minimum`/`maximum`**, with the token set and the range documented in the description and enforced by a service-side allow-list + clamp. A strict `enum` / `minimum` would make the generated Jackson deserializer reject the value *before* any clamp could run, turning a hand-edited URL into a 400. This is exactly the `SearchFormData.sort` precedent — *"deliberately a plain string rather than a strict enum so an unknown value degrades gracefully to the default instead of failing the request"* (`components.yaml:2453-2460`). |
+| **Acceptance** | With a chain `U2 → U1 → A(mine) → D1 → D2`: `Upstream, depth 1` ⇒ `{U1}`; `depth 2` ⇒ `{U1,U2}`; `Downstream, depth 1` ⇒ `{D1}`. `?upstream_depth=99` and `?upstream_depth=abc` both behave exactly as `depth 1` **as URLs** — the first clamps server-side (verified live: HTTP 200), the second is dropped by the URL parser and never reaches the request. |
 
 ### R4 — The scope expansion is bounded, and any truncation is a server-declared, visible state
 
@@ -840,3 +840,37 @@ Proven, not assumed — the whole point of re-running rather than waving it thro
 The three URL-shape assertions I could have guessed wrong (`my_data[]=MY_OBJECTS`,
 `downstream_depth=2&my_data[]=DOWNSTREAM`, and the depth-omission rules) are asserted against **real
 serialiser output**, not a derived shape — the CTRIB-023 / IT-137 lesson.
+
+## Live-system verification (the running SUT, not a unit mock)
+
+`odd-platform:odd-team-sut-ctrib062` built from this worktree, stack `ctrib062` on `:18260` — the same image
+the e2e runs against.
+
+**The response shape was CAPTURED, never assumed** (the CTRIB-023 / IT-137 lesson — an assertion written from
+a reasoned shape broke on the fix itself):
+
+```
+POST /api/search/assets?size=5   {"query":"","filters":{},"my_data":["DOWNSTREAM"],"downstream_depth":2}
+-> {"items":[], "page_info":{"total":0,"hasNext":false,"nextCursor":null,
+                             "scopeTruncated":null,"scopeTruncationReason":null}}
+```
+
+So the wire really is `page_info` (snake_case, like its siblings) carrying camelCase members — matching the
+`AssetPageInfo` declaration rather than my expectation of it.
+
+**Fail-closed, proven end-to-end on the running system rather than only in a unit test:**
+
+| Request | Result |
+|---|---|
+| `my_data: ["NONSENSE"]`, `upstream_depth: 99` | **HTTP 200** — the unknown token is dropped and the depth clamps |
+| `upstream_depth: -7` | **HTTP 200** — clamped into range |
+| `my_objects: true` (the deprecated field, alone) | **HTTP 200** — the back-compat alias still serves |
+| `upstream_depth: "abc"` (wrong JSON **type**) | **HTTP 400** `USR001 Failed to read HTTP message` |
+
+**That last row contradicted my own spec, and the spec was corrected rather than the result explained away.**
+R3 originally claimed "a value outside [1,3], **or a non-integer**, degrades — never a 400". The out-of-range
+half is true and measured; the non-integer half is not, because Jackson rejects a wrong-typed value before any
+service-side clamp can run. The claim is now scoped to what is actually true — the URL path, where
+`parseDepth` drops a non-numeric depth before the request exists, which is the case a shareable link can
+actually hit — and the **published OpenAPI descriptions for both depth fields were rewritten to match**, since
+an inaccurate contract description is exactly the class of defect this project exists to prevent.

@@ -4,15 +4,15 @@ title: "#1839 ST-5c — snapshotted popularity_score on the unified search index
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1839"
 parent_epic: 1825
 class: "performance — substrate"
-status: review-ready   # REVIEW ACCEPTED 2026-08-30 (session review-ctrib059) — see "## Review". Every gate re-verified first-hand at c49fc784: reviewer's own unit build 747/0 + own four-suite regression on a FRESH reviewer SUT (321/16 feature-complete, ALL 16 change-independent and proven so by a cold ref:main A/B; known-bugs 3-RED with zero unexpected GREENs; multi-stack 9/0; ingestion-e2e 15/0) + running-instance checks (shedlock row, no view_count trigger, D9 legacy search 200). Terminal state for a passing CTRIB item: bot cannot self-merge (G-C4) -> human GATE 2 -> pending-release 1.0.0 -> /review release:1.0.0 owns done.
+status: pending-release   # GATE 2 MERGED 2026-08-30T19:42:20Z by RamanDamayeu — PR #1862 squashed to origin/main as 82e7e70e; issue #1839 (ST-5) auto-closed. Cannot reach `done` before the 1.0.0 release: `/review release:1.0.0` owns that flip (playbooks/release-review.md). Review verdict: ACCEPTED (see "## Review").
 target_repo: odd-platform
 milestone: "1.0.0"   # inherited from the #1825 epic; milestone 1.0.0 is OPEN (due 2026-07-31, unreleased)
 slice: "ST-5c of #1839"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1862"
 head_sha: "6cbf7865"   # rebased 98b17da9 -> c49fc784 onto origin/main 00b03129 (clean, no conflicts); then c49fc784 -> 6cbf7865, the review's two comment polishes (fast-forward, no force). **c49fc784 remains an ancestor** and is the SHA every gate measurement in "## Review" was taken at; `git diff c49fc784..HEAD` is comments only.
 docs_routing: "NONE for this slice's own diff (the two Popular-column pages were READ on documentation origin/main and neither is made stale — D5 leaves the live-view_count path untouched). AMENDED BY REVIEW 2026-08-30: docs ARE owed at 1.0.0 for the additive half (this is the platform's 5th @Scheduled job and the other four all carry an operator-manual entry) — filed with full epic scope as backlog/docs/DOC-499.md (milestone 1.0.0), so playbooks/release-review.md check 1 must clear it before 1.0.0 publishes. Paired ADR-log gap: backlog/adr/ADR-0080.md."
-pr_draft: true
-merged_sha: ""
+pr_draft: false   # flipped to ready + merged by the maintainer at GATE 2
+merged_sha: "82e7e70e"   # squash of 6cbf7865 onto origin/main; `git diff 6cbf7865 82e7e70e` is EMPTY — the merged tree is byte-identical to the reviewed head
 record_provenance: retro-booked-2026-08-30, gates-run-2026-08-30   # retro-booked by the ledger reconciliation; the gates were then ACTUALLY RUN by the ctrib059 session (evidence below)
 ---
 
@@ -422,3 +422,31 @@ the rewrapped comment block). **The verdict is unchanged: ACCEPTED, awaiting hum
 `6cbf7865` = **6/6 SUCCESS** (`run_tests`, `Test Results`, `run_playwright_tests/{test,lint,format-check}`,
 `update_release_draft`) — the same 6/6 the reviewed parent carried, so the full gradle build, both checkstyle
 tasks and the `min-coverage-changed-files: 98` gate all still pass at the head a maintainer will merge.
+
+## GATE 2 — merged (2026-08-30, verified first-hand, not taken on report)
+
+The maintainer merged PR #1862. Every fact below was re-read from the GitHub API and the remote refs rather
+than inferred from the notification:
+
+| fact | value |
+|---|---|
+| PR #1862 | `state: closed`, `merged: true`, `draft: false` |
+| merged_at / merged_by | `2026-08-30T19:42:20Z` / `RamanDamayeu` |
+| merge style | **squash** → `82e7e70e` is now `origin/main` head ("… ST-5c of #1839 (#1862)") |
+| head at merge | `6cbf7865` — the polished head, i.e. exactly what this review re-ran its gates against |
+| merged content | 5 files, **+376/−0**, and `git diff 6cbf7865 82e7e70e` is **EMPTY** — the squash introduced no drift, so the review's evidence applies verbatim to what is now on `main` |
+| issue #1839 (ST-5) | **closed** at `19:42:21Z` by the merge — ST-5 is complete (5a `2988d062` + 5b `a1a4988e` + 5c `82e7e70e`) |
+| epic #1825 | **still open**, milestone 1.0.0 — correct: #1861 ("Most popular" sort) and ST-9 remain |
+| CI on the merge commit | `update_release_draft` success; the `images` build was still in progress when checked (the PR-test workflows are PR-triggered and had already passed 6/6 on `6cbf7865`) |
+
+**Status → `pending-release`.** The code is on `main` but 1.0.0 is unreleased, so `done` is not available:
+`/review release:1.0.0` owns that flip after the release publishes, and it must verify this slice against the
+published artifact. What it should check for ST-5c specifically — the column + index + the
+`asset_popularity_bucket` function exist on the released image, the `shedlock` row `assetPopularitySnapshotJob`
+appears (i.e. the job runs), and **no** trigger on `data_entity.view_count` — with the caveat that there is
+still **no user-visible surface** for `popularity_score` until #1861 ships, so this is a substrate check, not
+a UI verification.
+
+**Still owed at the 1.0.0 gate, now that the code is merged:** `backlog/docs/DOC-499.md` (the #1825 doc train
+stops at ST-1b; includes this job's operator-manual entry) and `backlog/adr/ADR-0080.md` (publish the
+unified-asset-search ADR). Both carry `milestone: "1.0.0"`.

@@ -17,7 +17,7 @@ The live manual describes the latest **published release**, never `main`. Docume
 ## inputs
 
 - `{version}` — the milestone title == the release tag (plain semver, e.g. `0.28.0`)
-- the train manifest, **derived, never a state file**: `grep -rl 'milestone: "{version}"' backlog/` + `git -C ../documentation log origin/main..origin/release/{version} --oneline`
+- the train manifest, **derived, never a state file**: `grep -rl 'milestone: "{version}"' backlog/ contributor/` (**`contributor/` is not optional** — CTRIB items are the largest producer of release-gated work; a `backlog/`-only grep hid 22 stale items for 10 weeks, `retrospectives/LSN-041`. Re-measured 2026-08-30 for 1.0.0: `backlog/` alone finds 9, `contributor/` holds 22 more, 19 of them already `pending-release`) + `git -C ../documentation log origin/main..origin/release/{version} --oneline`
 - each manifest item's recorded post-merge URL list + expected verbatim phrases (written at `/review` time with the `PENDING-RELEASE` Gate 8 verdict)
 
 ## procedure

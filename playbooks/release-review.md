@@ -22,7 +22,7 @@ The mandate that makes this a *release* review rather than a doc-merge: a releas
 - `{prev-tag}` — the previous release tag: `git -C ../{repo} fetch --tags && git -C ../{repo} tag --sort=-v:refname` → the entry immediately before `{version}`.
 - **the release delta** (the backbone of the whole review): `git -C ../{repo} log --oneline {prev-tag}..{version}` and `git -C ../{repo} diff --stat {prev-tag}..{version}`. Derived, never a state file.
 - the milestone's closed issues: `GET /repos/{org}/{repo}/issues?milestone={n}&state=closed` (find `{n}` via `…/milestones?state=all`). Use `/search/issues?q=…milestone:{version}…` for the authoritative `total_count`.
-- the documentation train `release/{version}` + the pending-release manifest: `grep -rl 'milestone: "{version}"' backlog/`.
+- the documentation train `release/{version}` + the pending-release manifest: `grep -rl 'milestone: "{version}"' backlog/ contributor/` (**`contributor/` is not optional** — CTRIB items are the largest producer of release-gated work; a `backlog/`-only grep hid 22 stale items for 10 weeks, `retrospectives/LSN-041`. Re-measured 2026-08-30 for 1.0.0: `backlog/` alone finds 9, `contributor/` holds 22 more, 19 of them already `pending-release`).
 
 ## procedure
 

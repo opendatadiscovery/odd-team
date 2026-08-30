@@ -579,3 +579,41 @@ evaluates linearly *per candidate row*; `IN (SELECT unnest(?))` is a hashable su
 Budget check with the corrections: 3 BFS hops (~281 ms) + the scoped ranked query (~249 ms) ≈ **0.53 s** at the
 worst-case ceiling (depth 3, 10 000-node scope, 200 k-row catalog) — inside a 1 s interactive budget, with the
 common case (depth 1) an order of magnitude cheaper. The Phase-D gate re-measures this on the real SUT.
+
+## Parallel-stream coordination (three streams co-active)
+
+`state/active-streams.yaml`, live-verified at intake and again before GATE 1.
+
+| Stream | Work | State when this plan was written | Overlap with ST-8 |
+|---|---|---|---|
+| `ctrib060` | #1840 ST-6 — `websearch_to_tsquery` query operators | Phase D; **holds the heavy-e2e flock** (`run-regression.sh ctrib060`, pid 248842); stack on 18100/15500 | Touches `JooqFTSHelper.tsQuery` — the FTS *condition*, not the scope predicate. **No file overlap.** My Phase-D regression queues behind its flock (`run-regression.sh` blocks; no contention). |
+| `ctrib061` | #1841 ST-7 — Favorites filter | Phase A/C, `plan-pending` | **Direct overlap** — see below. |
+| `ctrib062` | **this** | Phase C, plan-check pending | — |
+
+### The ST-7 ∥ ST-8 overlap — real, and mechanically resolvable
+
+Both slices add a *personalised scope filter* to the same sidebar, the same URL contract and the same ranked query.
+Read from `contributor/CTRIB-061.md` (its `## 5 Design` / `## 7 Plan`), the shared files are:
+
+| File / symbol | ST-7 (Favorites) | ST-8 (My data) | Conflict class |
+|---|---|---|---|
+| `components.yaml` | adds `favorites` to **`AssetSearchFormData`** | adds `my_data` + depths to **`SearchFormData`**, `scope_truncated` to `AssetPageInfo` | different schemas — textual only |
+| `lib/search/searchUrlState.ts` | `SEARCH_FAVORITES_PARAM` + parse/serialise | `SEARCH_MY_DATA_PARAM` + two depth params | adjacent additions |
+| `Search.tsx` mirror merge (`:101-106`) | adds `favorites` to the merge-back | adds `my_data` + depths | **same object literal** |
+| `Filters.tsx` (render + Clear All) | mounts `FavoritesFilter` | mounts `MyDataFilter` | same two hunks |
+| `ReactiveAssetSearchRepository{,Impl}` — `keysetPage` / `relevancePage` / `count` | threads a new **identity** parameter | replaces `OwnerPojo owner` with the resolved **scope** | **same three signatures** |
+| `AssetSearchServiceImpl` | resolves the identity | resolves the scope + the depth clamp + `scopeTruncated` | same method |
+| `AssetSearchServiceIntegrationTest` | new favorites cases | new my-data cases | same class |
+
+**Posture:** both branch from `origin/main @ 82e7e70e`; neither depends on the other's behaviour. **Whichever merges
+second rebases** — the conflicts are textual (adjacent additions to the same literals/signatures), not semantic, and
+the two predicates compose by AND without interacting. I do **not** wait for ST-7: waiting serialises two independent
+slices for no correctness gain, and the rebase is minutes of mechanical work. Recorded here so whoever rebases sees
+the exact hunk list instead of discovering it.
+
+**One noted difference, deliberately not harmonised here:** ST-7 puts `favorites` on `AssetSearchFormData` (the
+`asset_kinds` precedent), so — like `asset_kinds` — it will not be captured into a saved search; ST-8 puts `my_data`
+on `SearchFormData` because it **generalises `my_objects`, which already lives there**, and splitting a field from
+the deprecated field it supersedes would force a precedence rule spanning two schemas. The underlying class (the
+saved-search spec projection dropping `AssetSearchFormData`-only dimensions) is the follow-up logged as `PLT-257`;
+it is not ST-8's to fix and is not a blocker for either slice.

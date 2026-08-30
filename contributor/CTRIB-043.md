@@ -5,7 +5,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1816
 title: "Recently Viewed — detail-header recency shows the absolute open time (tz + offset), not '0 seconds ago'"
 class: feature-followup
 milestone: "1.0.0"
-status: done                # MERGED #1829 @ 4c0dbfc6 (Part of #1816). GATE 2 complete (maintainer merge).
+status: pending-release   # MERGED #1829 @ 4c0dbfc6 (Part of #1816). GATE 2 complete (maintainer merge). | LEDGER-RECONCILED 2026-08-30: was `done`; PR #1829 (`4c0dbfc6`) merged, but NOT released — milestone 1.0.0, which is OPEN/UNRELEASED (latest release 0.29.0, 2026-06-26). GATE 2 is done; `/review release:1.0.0` owns the flip to `done`.
 reproduced: "maintainer found in the running UI (2026-06-29): the detail-header recency marker shows 'Viewed 0 seconds ago' — the detail page records-on-open so lastViewedAt ~ now; the relative time is always ~0 and resets on every refresh (no information). Confirmed by code: RecentlyViewedTag renders formatDistanceToNowStrict(lastViewedAt)."
 adr_required: false         # presentation refactor; conforms to the shipped RV foundation (same basis as CTRIB-041/042)
 tracking: "maintainer-directed follow-up to #1816 (CTRIB-042 precedent); no new GitHub issue; PR refs #1816 (already closed by S2)"

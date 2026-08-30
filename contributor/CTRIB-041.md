@@ -5,7 +5,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1816
 title: "Recently Viewed — recency-tracking foundation + main-page panel"
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open, semver, due 2026-07-31
-status: done                # S1 MERGED (#1826 @ 9097c548) + S2 MERGED (#1827 @ 3cbb3b85). GATE 2 complete (maintainer merge).
+status: pending-release   # S1 MERGED (#1826 @ 9097c548) + S2 MERGED (#1827 @ 3cbb3b85). GATE 2 complete (maintainer merge). | LEDGER-RECONCILED 2026-08-30: was `done`; PRs #1826 (`9097c548`) + #1827 (`3cbb3b85`) merged, but NOT released — milestone 1.0.0, which is OPEN/UNRELEASED (latest release 0.29.0, 2026-06-26). GATE 2 is done; `/review release:1.0.0` owns the flip to `done`.
 reproduced: "baseline (feature absent) — see Phase B"
 adr_required: false         # conforms to the approved+shipped foundation ADR (G-C7 does NOT re-fire) — see Phase A §G-C7
 adr: adrs/drafts/favorites-recently-viewed-foundation.md   # D1-D8 already cover Recently Viewed

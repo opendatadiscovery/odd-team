@@ -2,7 +2,7 @@
 id: CTRIB-045
 title: "Recently-viewed reachability — pin the recency column right + a usable horizontal scrollbar (CTRIB-044 follow-up)"
 issue: 1816
-status: done                # MERGED #1831 @ 2f9734e1 (Part of #1816). GATE 2 complete (maintainer merge).
+status: pending-release   # MERGED #1831 @ 2f9734e1 (Part of #1816). GATE 2 complete (maintainer merge). | LEDGER-RECONCILED 2026-08-30: was `done`; PR #1831 (`2f9734e1`) merged, but NOT released — milestone 1.0.0, which is OPEN/UNRELEASED (latest release 0.29.0, 2026-06-26). GATE 2 is done; `/review release:1.0.0` owns the flip to `done`.
 target_repo: odd-platform
 milestone: "1.0.0"
 pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1831 (DRAFT, Part of #1816; author odd-contributor[bot]; base main; off main 9fa5fea9)"

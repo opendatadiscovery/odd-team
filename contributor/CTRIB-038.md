@@ -4,7 +4,7 @@ github_issue_number: 1679
 issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1679
 class: feature
 milestone: "1.0.0"          # G-C11 PASS — open + semver, due 2026-07-31
-status: review-ready        # /review ACCEPTED 2026-06-27 (session review-ctrib038, separate from implement). Human GATE 2 (approve+merge PR #1818) owns merged. Never self-merged.
+status: pending-release   # /review ACCEPTED 2026-06-27 (session review-ctrib038, separate from implement). Human GATE 2 (approve+merge PR #1818) owns merged. Never self-merged. | LEDGER-RECONCILED 2026-08-30: was `review-ready`; PR #1818 (`de6992c1`) is merged to odd-platform `main` but NOT released — milestone 1.0.0, which is OPEN/UNRELEASED (latest release 0.29.0, 2026-06-26). GATE 2 is done; `/review release:1.0.0` owns the flip to `done`.
 reproduced: "Phase B — running-system understanding captured below (feature, not bug: confirmed current state + data availability)"
 adr_required: no            # G-C7 does NOT fire; see "Architectural-significance check"
 plan_approved_by: "maintainer (Raman) — GATE 1 via AskUserQuestion, 2026-06-26"

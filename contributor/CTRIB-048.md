@@ -4,7 +4,7 @@ title: "ST-1 — Parametrised-URL search state (shareable & bookmarkable; retire
 issue: "ST-1 sub-issue of #1825 (being created by the maintainer; milestone 1.0.0)"
 parent_epic: 1825
 class: feature
-status: review-ready           # Phase D + DoD complete (green-for-change); DRAFT PR #1833 open; hand to /review (implementer does NOT self-done — G-C4)
+status: pending-release   # Phase D + DoD complete (green-for-change); DRAFT PR #1833 open; hand to /review (implementer does NOT self-done — G-C4) | LEDGER-RECONCILED 2026-08-30: was `review-ready`; PR #1833 (`f63d3915`) merged, but NOT released — milestone 1.0.0, which is OPEN/UNRELEASED (latest release 0.29.0, 2026-06-26). GATE 2 is done; `/review release:1.0.0` owns the flip to `done`.
 target_repo: odd-platform
 milestone: "1.0.0"
 adr: "adrs/drafts/unified-asset-search.md (rev 3 — D10 param-URL, D9 no-break) [maintainer-approved direction]"

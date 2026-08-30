@@ -3,7 +3,8 @@ id: CTRIB-001
 github_issue_number: 1744
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1744
 class: bug
-status: review-ready
+status: pending-release   # LEDGER-RECONCILED 2026-08-30: was `review-ready`; PR #1745 (`921e8c98`) is in the released `0.28.0` tag (published 2026-06-17) — `git -C ../odd-platform log 0.27.13..0.28.0`. GATE 2 is done; `/review release:0.28.0` owns the flip to `done`.
+milestone: "0.28.0"   # VERIFIED 2026-08-30 via GitHub API — the upstream issue carries milestone 0.28.0 (closed/released).
 reproduced: "live this session 2026-06-09 (documented in issue body + retrospectives/LSN-031): GET /api/activity?tag_ids=1,2&owner_ids=1,2&type=ALL -> 20 rows / 5 distinct; GET /api/activity/counts -> total_count=20; UI 5 cards under 'All 20' badge. Local stack currently down — the durable reproduction is the failing repository test (phase D, testcontainers)."
 adr_required: false
 plan_approved_by: "RamanDamayeu (GATE 1, 2026-06-09 — EXISTS fix; root-cause comment skipped; branch protection confirmed)"

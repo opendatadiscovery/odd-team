@@ -1,0 +1,167 @@
+---
+probe_id: P-392
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__repository__util__file__JooqFTSHelper.md
+emitted_at: 2026-08-30T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-001
+test_class: integration
+verified_against_commit: 82e7e70e29f05902640a2f69490f33fc65c68ba3
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A, MAX_OPERATOR_LEAVES = 64 at
+  JooqFTSHelper.java:61): "What does the OPERATOR SEE at the cap boundary?"
+
+  The unit test at JooqFTSHelperTest.java:190-203 pins the SQL STRING on both
+  sides of the cap (at 64 the operators apply; at 65 the expression is exactly
+  `CAST('' AS tsquery)`). Nothing pins what the HTTP caller receives. The
+  hypothesis this probe has NOT been able to confirm from the code alone:
+
+    at 65 operator leaves the search API returns HTTP 200 with an EMPTY result
+    page (items == [], total == 0) and NO field, header, status code or message
+    that distinguishes "your query was too complex and was refused" from
+    "nothing in the catalog matches your query".
+
+  If confirmed, the fail-closed decision is correct (it never silently inverts
+  `-term` back into a REQUIRED term, per the comment at JooqFTSHelper.java:309-313)
+  but is INDISTINGUISHABLE from a legitimate empty result at the surface the user
+  actually looks at.
+
+  A second, sharper hypothesis this probe measures in the same run: the counter
+  incremented at JooqFTSHelper.java:297 counts the `or` TOKEN as a leaf even
+  though `or` contributes no leaf to the compiled tsquery. So a query of N `or`-ed
+  bare terms trips the cap at ~N=33 alternatives, not 64 — roughly HALF the
+  documented budget, and the arithmetic is invisible from the API surface.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack — odd-platform-api + postgres. auth.type=DISABLED so the
+      probe measures the cap, not the auth chain.
+  - kind: sql
+    query: |
+      -- One asset that WOULD match the positive term of every query below, so an
+      -- empty page can only come from the cap and never from an empty catalog.
+      INSERT INTO data_entity (id, oddrn, external_name, type_id, entity_class_ids,
+                               hollow, status, exclude_from_search)
+      VALUES (99201, '//probe/p392/capsubject', 'capsubject alpha beta',
+              1, ARRAY[1], false, 1, false);
+  - kind: rest
+    note: |
+      Force the FTS vector for the seeded row through the normal writer, so the
+      row is reachable by search exactly as a production row would be.
+    method: POST
+    path: /ingestion/entities
+    body_ref: arrange/p392-seed-ingestion.json
+    optional: true
+    fallback: |
+      If direct ingestion is inconvenient, call
+      ReactiveSearchEntrypointRepository.updateDataEntityVectors(99201) via a
+      Spring test hook, mirroring AssetSearchServiceIntegrationTest.java:451.
+act:
+  - kind: rest
+    id: control_no_operator
+    method: POST
+    path: /api/assets/search?size=30
+    body: '{"query": "capsubject", "filters": {}}'
+    capture_as: control
+  - kind: rest
+    id: at_cap
+    note: |
+      64 negation leaves + 1 bare positive term. operatorLeaves == 64, which is
+      NOT > MAX_OPERATOR_LEAVES, so the operators apply.
+    method: POST
+    path: /api/assets/search?size=30
+    body: '{"query": "capsubject -zzz01 -zzz02 ... -zzz64", "filters": {}}'
+    body_generator: |
+      "capsubject " + " ".join(f"-zzz{i:02d}" for i in range(1, 65))
+    capture_as: at_cap
+  - kind: rest
+    id: over_cap
+    note: 65 negation leaves — one past the cap.
+    method: POST
+    path: /api/assets/search?size=30
+    body_generator: |
+      "capsubject " + " ".join(f"-zzz{i:02d}" for i in range(1, 66))
+    capture_as: over_cap
+  - kind: rest
+    id: or_token_counts_as_leaf
+    note: |
+      33 alternatives joined by 32 `or` tokens = 32 counted leaves; then 33 more
+      `or`-joined alternatives push the COUNTED total past 64 while the compiled
+      tsquery still holds far fewer than 64 real leaves.
+    method: POST
+    path: /api/assets/search?size=30
+    body_generator: |
+      " or ".join(["capsubject"] * 66)
+    capture_as: or_heavy
+observe:
+  - kind: http
+    capture_as: over_cap_status
+    expression: over_cap.status_code
+  - kind: http
+    capture_as: over_cap_items
+    expression: over_cap.body.items
+  - kind: http
+    capture_as: over_cap_total
+    expression: over_cap.body.page_info.total
+  - kind: http
+    capture_as: over_cap_headers
+    expression: over_cap.headers
+  - kind: http
+    capture_as: at_cap_items
+    expression: at_cap.body.items
+  - kind: http
+    capture_as: or_heavy_items
+    expression: or_heavy.body.items
+  - kind: log-scan
+    capture_as: server_log_lines
+    pattern: "(?i)(operator|leaf|cap|truncat|refus)"
+    note: |
+      Does ANY server-side signal exist that the query was refused? The code path
+      at JooqFTSHelper.java:309-313 emits no log statement — this capture pins
+      that absence as a measured fact, not an inference.
+assert:
+  - "control.status_code == 200 and len(control.body.items) == 1   # the catalog is not empty"
+  - "at_cap.status_code == 200"
+  - "len(at_cap_items) == 1                                        # at 64 leaves the operators still apply"
+  - "over_cap_status == 200                                        # fail-closed, not a 4xx"
+  - "len(over_cap_items) == 0                                      # the refusal is an EMPTY page"
+  - "over_cap_total == 0"
+  - "'X-Search-Query-Truncated' not in over_cap_headers            # no distinguishing header (drift hypothesis)"
+  - "server_log_lines == []                                        # no server-side trace of the refusal"
+  - "len(or_heavy_items) == 0                                      # `or` tokens consume the leaf budget"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM search_entrypoint WHERE data_entity_id = 99201;"
+  - kind: sql
+    query: "DELETE FROM data_entity WHERE id = 99201;"
+  - kind: docker-compose-down
+    destroy_volumes: true
+local_execution_only:
+  enforced: true
+  mechanism: |
+    docker-compose (odd-platform-api + postgres) on the maintainer's workstation;
+    REST calls via curl or WebTestClient. No remote VM, no managed database, no
+    hosted CI runner in the probe loop.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+cross_references:
+  related_sidecars:
+    - odd-platform__java__repository__util__file__JooqFTSHelper
+  related_tests:
+    - odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/util/JooqFTSHelperTest.java:190-203
+    - odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AssetSearchServiceIntegrationTest.java:411-429
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  This probe does NOT verify the ORIGINAL rationale in the comment at
+  JooqFTSHelper.java:59-61 (that an uncapped query would approach the Postgres
+  65535 bind ceiling). 64 leaves is roughly three orders of magnitude below that
+  ceiling, so the cap is a product-level conservatism, not a driver-level limit —
+  measuring the true bind/latency curve would need a separate performance probe
+  with the cap temporarily raised, which changes the code under test.
+
+  It also does not exercise the UI. If the assertions hold, the follow-up question
+  belongs to the Search UI sidecar: does the results page render "No matches found"
+  for a refused query, and is that acceptable? The backend half is what this probe
+  settles.

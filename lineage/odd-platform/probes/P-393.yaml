@@ -1,0 +1,197 @@
+---
+probe_id: P-393
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__repository__util__file__JooqFTSHelper.md
+emitted_at: 2026-08-30T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-001
+test_class: performance
+verified_against_commit: 82e7e70e29f05902640a2f69490f33fc65c68ba3
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E, the per-OR-branch guard at
+  JooqFTSHelper.java:214-216): "Does the querytree() guard actually buy the
+  index scan the comment claims it buys?"
+
+  The guard's entire justification is a PLAN-level claim written in a comment:
+
+    "A branch with no positive term (`-test`, and the subtle `<stop word> -test`)
+     is not index-searchable -- Postgres falls back to a sequential scan of the
+     entire search index -- and querytree() returns 'T' for exactly that shape."
+     (JooqFTSHelper.java:208-211)
+
+  The existing tests pin RESULTS, never PLANS: JooqFTSHelperTest.java:178-188
+  asserts the generated SQL contains `querytree`, and
+  AssetSearchServiceIntegrationTest.java:377-409 asserts the returned rows. Both
+  would still pass if `querytree()` returned something other than 'T' for a
+  negation-only branch on the deployed Postgres, because the fallback in that
+  case is "the branch stays as written" — which returns the same (empty) row set
+  by a much more expensive route.
+
+  Three hypotheses this probe has not been able to confirm from the code:
+    H1. `querytree(!! plainto_tsquery('test'))` renders as the literal 'T' on the
+        Postgres version the platform actually ships against (the comment says it
+        was measured on postgres:13.2-alpine; the shipped compose file may differ).
+    H2. WITHOUT the guard, `search_vector @@ (!! plainto_tsquery('test'))` plans as
+        a Seq Scan over the FTS entrypoint table.
+    H3. WITH the guard, the same user query plans without a Seq Scan on that table,
+        and the two-branch query `customer or -test` still uses the GIN index for
+        the `customer` branch (the reason the guard is per-branch, not global).
+
+  If H1 fails on the shipped Postgres, the guard is inert: every negation-only
+  branch silently degrades to the sequential scan the guard exists to prevent, and
+  no test in the repository would go red.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack. Record the EXACT server version under test —
+      `SELECT version()` — because H1 is version-sensitive and the comment's
+      measurement (postgres:13.2-alpine) may not be the shipped image.
+  - kind: sql
+    query: "SELECT version();"
+    capture_as: pg_version
+  - kind: sql
+    note: |
+      Enough indexed rows that the planner has a real choice. Below a few thousand
+      rows Postgres prefers a Seq Scan regardless, which would make H2/H3
+      unfalsifiable — this is the load-bearing arrange step.
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, type_id, entity_class_ids,
+                               hollow, status, exclude_from_search)
+      SELECT 993000 + i,
+             '//probe/p393/row' || i,
+             CASE WHEN i % 100 = 0 THEN 'customer guardsubject ' || i
+                  ELSE 'unrelated guardfiller ' || i END,
+             1, ARRAY[1], false, 1, false
+      FROM generate_series(1, 20000) AS i;
+  - kind: sql
+    note: Populate search_entrypoint via the same generated/derived vector path production uses.
+    query: |
+      INSERT INTO search_entrypoint (data_entity_id, data_entity_vector)
+      SELECT id, setweight(to_tsvector(coalesce(external_name, '')), 'A')
+      FROM data_entity WHERE id BETWEEN 993001 AND 1013000;
+  - kind: sql
+    query: "ANALYZE search_entrypoint; ANALYZE data_entity;"
+act:
+  - kind: sql
+    id: h1_querytree_render
+    note: H1 — does querytree() return the literal 'T' for a negation-only tsquery?
+    query: |
+      SELECT querytree(!! plainto_tsquery('test'))                AS negation_only,
+             querytree(!! phraseto_tsquery('some phrase'))         AS negated_phrase,
+             querytree(to_tsquery('customer:*'))                   AS positive_prefix,
+             querytree(to_tsquery('customer:*') && (!! plainto_tsquery('test')))
+                                                                   AS mixed_branch,
+             querytree(plainto_tsquery('the'))                     AS stop_word_only,
+             querytree(plainto_tsquery('the') && (!! plainto_tsquery('test')))
+                                                                   AS stopword_plus_negation;
+    capture_as: querytree_renders
+  - kind: sql
+    id: h2_unguarded_plan
+    note: |
+      H2 — the plan WITHOUT the guard. This is the expression the pre-guard code
+      would have produced for the user query `-test`.
+    query: |
+      EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS)
+      SELECT data_entity_id FROM search_entrypoint
+      WHERE search_vector @@ (!! plainto_tsquery('test'));
+    capture_as: unguarded_plan
+  - kind: sql
+    id: h3_guarded_plan
+    note: |
+      H3a — the plan WITH the guard, exactly as JooqFTSHelper.java:214-216 renders it
+      for the user query `-test`.
+    query: |
+      EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS)
+      SELECT data_entity_id FROM search_entrypoint
+      WHERE search_vector @@ (CASE WHEN querytree(!! plainto_tsquery('test')) = 'T'
+                                   THEN CAST('' AS tsquery)
+                                   ELSE (!! plainto_tsquery('test')) END);
+    capture_as: guarded_plan
+  - kind: sql
+    id: h3_two_branch_plan
+    note: |
+      H3b — the per-branch payoff: `customer or -test`. The guard must drop the
+      negation-only branch WITHOUT costing the `customer` branch its index scan.
+    query: |
+      EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS)
+      SELECT data_entity_id FROM search_entrypoint
+      WHERE search_vector @@ (
+        (CASE WHEN querytree(to_tsquery('customer:*')) = 'T'
+              THEN CAST('' AS tsquery) ELSE to_tsquery('customer:*') END)
+        ||
+        (CASE WHEN querytree(!! plainto_tsquery('test')) = 'T'
+              THEN CAST('' AS tsquery) ELSE (!! plainto_tsquery('test')) END));
+    capture_as: two_branch_plan
+observe:
+  - kind: sql-result
+    capture_as: negation_only_render
+    expression: querytree_renders.negation_only
+  - kind: sql-result
+    capture_as: stopword_plus_negation_render
+    expression: querytree_renders.stopword_plus_negation
+  - kind: plan
+    capture_as: unguarded_node_types
+    expression: "collect all 'Node Type' values in unguarded_plan"
+  - kind: plan
+    capture_as: guarded_node_types
+    expression: "collect all 'Node Type' values in guarded_plan"
+  - kind: plan
+    capture_as: two_branch_node_types
+    expression: "collect all 'Node Type' values in two_branch_plan"
+  - kind: plan
+    capture_as: unguarded_shared_read_blocks
+    expression: unguarded_plan[0].Plan['Shared Read Blocks'] + unguarded_plan[0].Plan['Shared Hit Blocks']
+  - kind: plan
+    capture_as: guarded_shared_read_blocks
+    expression: guarded_plan[0].Plan['Shared Read Blocks'] + guarded_plan[0].Plan['Shared Hit Blocks']
+assert:
+  - "negation_only_render == 'T'                                    # H1 — the guard's predicate is live"
+  - "stopword_plus_negation_render == 'T'                           # H1 — the SUBTLE case the comment names"
+  - "querytree_renders.positive_prefix != 'T'                       # a real term is never dropped"
+  - "querytree_renders.mixed_branch != 'T'                          # a branch with one positive term survives"
+  - "'Seq Scan' in unguarded_node_types                             # H2 — the cost the guard exists to avoid"
+  - "'Seq Scan' not in guarded_node_types                           # H3a — the guard removes it"
+  - "guarded_shared_read_blocks < unguarded_shared_read_blocks / 10  # H3a — order-of-magnitude I/O win"
+  - "'Bitmap Index Scan' in two_branch_node_types or 'Index Scan' in two_branch_node_types  # H3b"
+  - "'Seq Scan' not in two_branch_node_types                        # H3b — the good branch keeps its index"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM search_entrypoint WHERE data_entity_id BETWEEN 993001 AND 1013000;"
+  - kind: sql
+    query: "DELETE FROM data_entity WHERE id BETWEEN 993001 AND 1013000;"
+  - kind: docker-compose-down
+    destroy_volumes: true
+local_execution_only:
+  enforced: true
+  mechanism: |
+    docker-compose postgres on the maintainer's workstation (or Testcontainers
+    from a JUnit harness); psql / JDBC for the EXPLAIN captures. No remote VM,
+    no managed database, no hosted observability backend.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+cross_references:
+  related_sidecars:
+    - odd-platform__java__repository__util__file__JooqFTSHelper
+  related_tests:
+    - odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/util/JooqFTSHelperTest.java:166-188
+    - odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AssetSearchServiceIntegrationTest.java:377-409
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The EXPLAIN statements reconstruct the expression BY HAND rather than capturing
+  the SQL jOOQ actually emits. That is deliberate — it isolates the guard from the
+  surrounding CTE/join machinery so a Seq Scan cannot be attributed to an unrelated
+  part of the query — but it means a divergence between this reconstruction and the
+  rendered jOOQ SQL would go unnoticed. Pair it with a one-off capture of the real
+  statement (jOOQ DEBUG logging, or `log_statement = 'all'`) on the first run and
+  diff the tsquery expression.
+
+  20000 rows is enough to make the planner prefer the GIN index but is not a
+  production-scale catalog; the ABSOLUTE numbers are not a capacity statement, only
+  the RELATIVE guarded-vs-unguarded comparison is load-bearing.
+
+  Postgres may also choose a Seq Scan for the unguarded case purely because the
+  predicate matches nearly every row rather than because the tsquery is
+  un-indexable. If assertion H2 fails, re-run with a negated term that is present
+  in only a handful of rows before concluding the comment is wrong.

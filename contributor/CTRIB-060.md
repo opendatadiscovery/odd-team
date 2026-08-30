@@ -4,12 +4,12 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: plan-approved
+status: implementing
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1840 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-6 of #1825"
 base_sha: "82e7e70e"      # odd-platform origin/main at intake (= #1862 ST-5c merged)
-reproduced: "pending — Phase B"
+reproduced: "the behavioural suite on origin/main @82e7e70e — 6/15 RED, incl. `customer -test` returning the EXCLUDED row (expected 13L but was 14L). See ## Test ledger."
 plan_approved_by: "RamanDamayeu"
 plan_approved_at: "2026-08-30"
 pr_url: null
@@ -323,6 +323,105 @@ must_haves:
       to: "the GIN index on search_vector"
       via: "the querytree()='T' guard, without which a no-positive-term query is a measured Seq Scan"
 ```
+
+
+## Test ledger — measured, at the working tree
+
+Every number below was produced on this machine. Gradle runs are serialised: two concurrent builds fail with
+`Cannot lock daemon addresses registry` (and OOM'd one daemon into a 772 MB heap dump in the odd-team root —
+`.gitignore` now covers `*.hprof`).
+
+### Unit bucket — `scripts/run-platform-tests.sh` (the CI replica)
+
+| Run | Result |
+|---|---|
+| `:odd-platform-api:compileJava` + `checkstyleMain` | **BUILD SUCCESSFUL** (15m 4s, cold worktree) |
+| `--tests "*JooqFTSHelperTest*"` on the fix | **45 tests / 0 failures** (3m 6s) |
+| `--tests "*AssetSearchServiceIntegrationTest*"` on the fix | **15 tests / 0 failures** (3m 30s) |
+| the same behavioural test on `origin/main` @ `82e7e70e` | **6 RED / 15** — the proof |
+
+**RED→GREEN matrix** (the behavioural test, driven through the real `AssetSearchService` on a real Postgres):
+
+| Case | on `main` | on the fix |
+|---|---|---|
+| `phrasealpha "customer orders"` | **RED** — 2 rows; the quotes are dropped, so both assets match | 1 row, the adjacent one |
+| `negbeta customer -test` | **RED** — returns the asset it was asked to EXCLUDE | 1 row, the kept one |
+| `orgamma alphaside or orgamma betaside` | **RED** — `[]`; the parser ANDs the branches | both rows |
+| `prefixdelta custom -testfixture` | **RED** — `expected: 13L but was: 14L`, i.e. the inverse row | 1 row, the kept one |
+| `-negonlyeta` (no positive term) | **RED** — returns rows (a measured Seq Scan shape) | empty page |
+| `guardzeta indexable or -absentword` | **RED** — `[]`; the indexable branch is lost | the indexable branch answers |
+| operator-shaped poison (20 payloads) | pass | pass |
+| tsquery-metacharacter poison | pass | pass |
+| the 7 pre-existing ST-4/ST-5 cases | pass | pass |
+| the 13 pre-existing `tsQuery` parity pins | pass | pass |
+
+The two poison cases pass on **both** builds, and that is stated rather than dressed up: `main` is already
+fail-closed for them (the #1756 fix holds), so this slice does not get to claim it fixed them — it inherits the
+property and extends the payload set.
+
+**Honest limitation:** the new `JooqFTSHelperTest` cases are white-box — they call `tsQueryExpression`, which
+does not exist on `main`, so "RED on base" is not a meaningful claim for them and is not made. The behavioural
+suite is the RED evidence.
+
+### The guard is proved by mutation, not by assertion
+
+The plan-check's Blocker 5 was "R6's *without a sequential scan* has no covering artifact". A test that merely
+*mentions* the guard is not one, so the guard was **deliberately disabled** and the suite re-run:
+
+| Guard state | `searchAssets_negationOnly_returnsEmptyPage` | `searchAssets_orWithNonIndexableBranch_keepsTheIndexableBranch` |
+|---|---|---|
+| disabled (mutation probe) | **RED** — "Expecting empty but was: [Asset id: 17 …]" | **RED** |
+| restored | green | green |
+
+The OR case only bites because the assertion was **hardened** after the ontology pass raised it (`P-393`): it
+originally asserted only that the indexable branch was *present*, which an unfired guard would also satisfy. It
+now seeds an unrelated neighbour and asserts it is **absent** — the canary for the query degenerating into
+"match almost everything", which is exactly what an unguarded `!absentword` branch does.
+
+### Patch coverage — the CI gate is inert here, and that is stated, not dressed up
+
+CI runs `Madrapps/jacoco-report` with `min-coverage-changed-files: 98` (`.github/workflows/run-pr-tests.yaml:85`).
+Computing that aggregate locally against the full build's `jacocoTestReport.xml` returns **zero instrumented
+changed lines** — not 100%. Cause: `odd-platform-api/build.gradle:181-188` sets
+`jacocoExcludes = [ …, '**/repository/**' ]`, and **both** changed files live under `repository/`
+(`repository/util/JooqFTSHelper.java`, `repository/reactive/ReactiveDataEntityRepositoryImpl.java`).
+
+So the gate **cannot fail** on this PR and offers **no** assurance about it. Reporting "coverage 100%" here would
+be true-sounding and meaningless. The actual assurance is behavioural: 45 unit cases + 15 service-level cases
+driven through the real `AssetSearchService` on a real Postgres, with a 6-case RED proof on `main` and a
+mutation probe on the guard.
+
+### Front-end
+
+| Check | Result |
+|---|---|
+| `tsc --noEmit` (Node 24.13) | **clean** |
+| `eslint` on the three changed FE paths | **0 errors** (one prettier warning, auto-fixed, re-verified clean) |
+
+
+## Ontology refresh + what it surfaced (G-C10)
+
+`JooqFTSHelper` had **no sidecar** despite being the single FTS sink; one was written for it —
+`lineage/odd-platform/understanding/odd-platform__java__repository__util__file__JooqFTSHelper.md` (confidence
+HIGH). The analyser was pointed at the **CTRIB-060 worktree**, not `../odd-platform`: `/enrich` resolves sources
+to `../{repo}`, which here sits on an unrelated branch, so the default path would have described code that is
+not this change (the LSN-033 "measured against a fossil" shape, one directory over).
+
+It surfaced three things beyond the sidecar. **Each was verified first-hand before being acted on, and one did
+not survive that check** — an agent finding is a lead, not a fact:
+
+| Finding | Verdict after my own read |
+|---|---|
+| `resultFacetStateConditions` drops the **ENTITY_CLASSES** facet when `state.isMyObjects()` (`JooqFTSHelper.java:157-162`), with no replacement at either caller and no comment defending it | **REAL.** Confirmed in the source. And the combination is user-expressible post-ST-4: the tab strip is now only All / My Objects, with the class narrowing living in the sidebar Asset-type filter, whose own comment says *"a class narrowing is a refinement of All, not of My"* (`SearchResultsTabs.tsx:41-45`). The **unified** ST-4 path is NOT affected — it applies the class refinement independently of my-objects. Filing is **deferred until the e2e stack is up**, so the user-facing half is driven rather than asserted (`feedback_user_facing_impact_mandatory`) |
+| `QUERY_EXAMPLE_CONDITIONS` / `LOOKUP_TABLES_CONDITIONS` are `Map.of()`, so "every facet supplied on those surfaces is silently a no-op with a 200" | **NOT A DEFECT — not filed.** `QueryExampleSearchFormData` carries **only** `query` (`components.yaml:3113-3117`); the lookup-table search likewise has no facet-bearing wire contract. No facet *can* be supplied, so the empty maps are correct-by-design placeholders, not a silent drop |
+| The published metacharacter caveat omits `* < >` and backslash from the strip set (as well as `"` and `-`) | **REAL** — folds into the existing `DOC-500` rather than a new item |
+
+The analyser also raised (as probe `P-393`) that `JooqFTSHelperTest` asserts the SQL *contains* `querytree`
+without asserting what it evaluates to, so a future Postgres change could silently restore the sequential scan
+with the suite green. Half of that is already covered — `searchAssets_negationOnly_returnsEmptyPage` is
+behavioural and goes RED if the guard stops firing (an unguarded `-negonlyeta` returns rows). The **uncovered**
+half is the OR case: `searchAssets_orWithNonIndexableBranch_keepsTheIndexableBranch` asserts only that the
+indexable branch is present, so an unfired guard there would still pass. That assertion is hardened below.
 
 ## GATE 1 — APPROVED 2026-08-30
 

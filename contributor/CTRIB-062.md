@@ -4,17 +4,17 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: planned            # plan-checked (G-C19: 4 blockers accepted+fixed, 1 disproved); awaiting GATE 1
+status: implementing       # GATE 1 APPROVED 2026-08-31; scope comment posted; Phase D
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
 base_sha: "82e7e70e"      # odd-platform origin/main at intake (= #1862 ST-5c merged)
 reproduced: "n/a at intake — feature-shaped slice, so the entry gate is spec-gate (G-C17), not reproduce-first. Baseline observations of the CURRENT my_objects behaviour are captured in ## Baseline observations and proved RED in Phase D."
 adr_required: false       # covered by the approved spine ADR adrs/drafts/unified-asset-search.md D4 + D8; no new architectural decision
-plan_approved_by: null
-plan_approved_at: null
+plan_approved_by: "RamanDamayeu"
+plan_approved_at: "2026-08-31"
 pr_url: null
-docs_routing: "pending — expected release/1.0.0 train (unreleased behaviour); see ## Plan"
+docs_routing: "release/1.0.0 train (unreleased behaviour) — branch docs/CTRIB-062-my-data-filter off origin/release/1.0.0; paired backlog item DOC-504 (id re-verified at write time). Push to the shared train is maintainer-gated (DOC-495/497 precedent)."
 stream: ctrib062
 ---
 
@@ -756,3 +756,19 @@ not three · W8 the two **retired** i18n keys named so all 7 files change symmet
 
 **Loop count: 1 of ≤3. No open BLOCKER remains** — four accepted and fixed above, one disproved with cited evidence
 and downgraded to a warning that is also fixed. The plan is GATE-1 ready.
+
+
+## GATE 1 — APPROVED 2026-08-31
+
+| | |
+|---|---|
+| Approved by | `RamanDamayeu` (the maintainer, and #1842's author) |
+| Decision **D1 — option labels** | **Option 1 (the recommendation): `My Objects` · `Upstream of my data` · `Downstream of my data`**, under the group heading **My data** — keeping ODD's published `My Objects` (already on the Alerts scope tabs + the Recommended panel, and already in all 7 locales) and replacing the inverted `dependents` wording. **Includes the two home-panel caption corrections**, so the panel a user clicks and the filter they land on read the same. |
+| Decision **GATE 1** | **Approve — post the scope note and build.** The panel-caption correction is IN (the alternative that dropped it was declined). |
+| Scope comment | Posted before any code, as the gate requires: [issuecomment-5471710327](https://github.com/opendatadiscovery/odd-platform/issues/1842#issuecomment-5471710327) — 3 888 chars, ASCII-verified (0 bytes > 127), `odd-contributor[bot]`, 2026-08-30T22:41:41Z. It carries the three corrections, the Clear-All change, the in-scope caption correction, the four deferrals, and the measured perf table. |
+
+**Consequences of D1 fixed here so Phase D does not re-litigate them:**
+- New i18n keys (× 7 locales): `My data`, `Upstream of my data`, `Downstream of my data`, `Upstream depth`, `Downstream depth`, the query-example exclusion caption, the two truncation-strip strings, the unbound-user reason, `N results`, `0 results`.
+- Retired i18n keys (× 7 locales): `Upstream dependents`, `Downstream dependents`.
+- Reused as-is (× 7 locales, already present): `My Objects`.
+- `catalog-overview.md`'s panel list (`:57-59`, currently "Upstream/Downstream **Dependencies**") is updated on the same train so the manual, the code and the filter finally agree.

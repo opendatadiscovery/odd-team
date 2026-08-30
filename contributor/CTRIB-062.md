@@ -783,9 +783,24 @@ Migration lane re-verified at branch time — `origin/main` max is `V0_0_100`, n
 |---|---|---|
 | 1 | `54f3cb91` contract + `V0_0_101` index | done — `my_data` / depths declared **permissively** (plain `string` array + plain `integer`, no `enum`/`minimum`) so a stale URL degrades instead of 400-ing; `my_objects` deprecated-with-alias; `AssetPageInfo.scopeTruncated` + `scopeTruncationReason` |
 | 2 | `ebb38484` the bounded lineage walk | done — **7/7 tests GREEN** in 21 s against a real Postgres |
-| 3 | search predicate + service wiring | code written; tests running |
-| 4-8 | frontend | written (URL contract · sidebar group · tab retirement + count · panel deep-links · i18n × 7) |
-| 9-10 | odd-team ITs, docs, follow-ups, ontology | not started |
+| 3 | `ba18fafa` cross-kind scope predicate + service wiring | done — **11/11 tests GREEN** (5 predicate + 6 wiring) |
+| 4 | `cb97c058` the URL contract (+ the #1858 mirror merge) | done — **42/42 FE tests GREEN** |
+| 5-8 | `077313ad` sidebar group · tab retirement + count · panel deep-links · i18n × 7 | done — tsc clean; full vitest 163/164 (the 1 failure non-attributable, proven below) |
+| 9 | `aac1e908` (odd-team) IT-152 + the three re-pointed specs | authored; **run in progress** |
+| 10 | `24c3034d` (odd-team) + `documentation@e692c43` docs on the 1.0.0 train, DOC-504/505 | done |
+| — | ontology refresh | in progress (`/enrich` on the one sidecar this change makes stale) |
+| — | FULL regression + draft PR | pending |
+
+**Commit-hygiene defect caught and fixed before any push.** The `git rm` of the retired tab components was
+left staged and rode along into the *resolver* commit, whose message says nothing about a UI deletion — a
+reviewer of that commit would have seen two files vanish with no explanation. Since nothing was pushed, the
+five commits were regrouped with `reset --soft` + explicit-path re-commits, and the result verified
+**byte-identical** to the pre-regroup tree (`git diff --stat 2437df4e HEAD` → empty).
+
+**A second push-safety trap caught, in the docs repo.** `git worktree add -b <branch> origin/release/1.0.0`
+silently set the upstream to the **shared, published-facing** `release/1.0.0` train — the LSN-034 class, where
+a bare `git push` publishes to it. Unset and asserted (`@{u}` absent, `branch.merge` unset,
+`push.default=current`) before a single doc byte was written.
 
 ### Unit bucket — measured, not asserted
 
@@ -806,3 +821,22 @@ resolver's test seam gave it two constructors (`No default constructor found`) �
 `@Autowired` on the injectable one; and four checkstyle violations (a 142-char line, a blank line at a block
 start, an import-order swap) that a bare `:test` task would have been blind to, which is exactly why the local
 gate runs the full `build` lifecycle.
+
+
+### Frontend bucket — measured
+
+| Check | Result |
+|---|---|
+| `tsc --noEmit` (Node 24, after a full OpenAPI regen — the new fields are in the generated client) | **clean, exit 0, no output** |
+| `vitest run src/lib/search src/lib/hooks/__tests__/useNavigateToSearch.test.tsx` | **42/42 GREEN** |
+| `vitest run` (the whole FE suite) | **163/164**, 33 files |
+
+The single failure — `DataSourceItem.test.tsx > REJECTED delete → the dialog STAYS OPEN` — is a
+**load-induced timeout**, not a regression: the suite ran while a gradle build and a neighbouring stream's
+docker regression were saturating the box (187 s wall, 845 s of import time), and the test timed out at its
+5 000 ms budget. Re-run in isolation it is **2/2 GREEN in 1.87 s**. It imports nothing this slice touches.
+Proven, not assumed — the whole point of re-running rather than waving it through.
+
+The three URL-shape assertions I could have guessed wrong (`my_data[]=MY_OBJECTS`,
+`downstream_depth=2&my_data[]=DOWNSTREAM`, and the depth-omission rules) are asserted against **real
+serialiser output**, not a derived shape — the CTRIB-023 / IT-137 lesson.

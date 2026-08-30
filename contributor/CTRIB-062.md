@@ -772,3 +772,37 @@ and downgraded to a warning that is also fixed. The plan is GATE-1 ready.
 - Retired i18n keys (× 7 locales): `Upstream dependents`, `Downstream dependents`.
 - Reused as-is (× 7 locales, already present): `My Objects`.
 - `catalog-overview.md`'s panel list (`:57-59`, currently "Upstream/Downstream **Dependencies**") is updated on the same train so the manual, the code and the filter finally agree.
+
+## Phase D — implementation ledger (running)
+
+Branch `contrib/CTRIB-062-my-data-filter` in worktree `../odd-platform-ctrib062`, off `origin/main @ 82e7e70e`.
+Branch safety asserted before any push (O6/LSN-038): no upstream set, `branch.merge` unset, `push.default=current`.
+Migration lane re-verified at branch time — `origin/main` max is `V0_0_100`, neither co-active stream adds one.
+
+| # | Commit | State |
+|---|---|---|
+| 1 | `54f3cb91` contract + `V0_0_101` index | done — `my_data` / depths declared **permissively** (plain `string` array + plain `integer`, no `enum`/`minimum`) so a stale URL degrades instead of 400-ing; `my_objects` deprecated-with-alias; `AssetPageInfo.scopeTruncated` + `scopeTruncationReason` |
+| 2 | `ebb38484` the bounded lineage walk | done — **7/7 tests GREEN** in 21 s against a real Postgres |
+| 3 | search predicate + service wiring | code written; tests running |
+| 4-8 | frontend | written (URL contract · sidebar group · tab retirement + count · panel deep-links · i18n × 7) |
+| 9-10 | odd-team ITs, docs, follow-ups, ontology | not started |
+
+### Unit bucket — measured, not asserted
+
+`MyDataScopeResolverTest` — **7/7 GREEN, 0 failures, 21.152 s** (`build/test-results/test/TEST-…MyDataScopeResolverTest.xml`):
+
+| Case | Time |
+|---|---|
+| UPSTREAM/DOWNSTREAM walk opposite directions; per-direction depth is independent; a depth above the ceiling is clamped | 1.998 s |
+| the owned anchors are excluded — "upstream of my data" is not "my data" | 0.359 s |
+| a **cycle** terminates and does not duplicate (the visited set the recursive CTE lacks) | 0.671 s |
+| the node budget truncates **deterministically** — same request, byte-identical set, twice | 1.640 s |
+| a **large owned set does not starve the walk** — the plan-check B4 regression guard | 0.963 s |
+| an owner with no lineage resolves empty, not a catalog leak | 15.394 s |
+| no lineage scope ⇒ the resolver does no work | 0.063 s |
+
+**Two defects this bucket caught before review, not after:** the Spring context failed to start because the
+resolver's test seam gave it two constructors (`No default constructor found`) — fixed with an explicit
+`@Autowired` on the injectable one; and four checkstyle violations (a 142-char line, a blank line at a block
+start, an import-order swap) that a bare `:test` task would have been blind to, which is exactly why the local
+gate runs the full `build` lifecycle.

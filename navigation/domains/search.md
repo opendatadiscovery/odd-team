@@ -8,14 +8,17 @@ Full-text and faceted search across all metadata entities.
 - `odd-platform-specification/openapi.yaml` — `/api/search`, `/api/search/{search_id}`, `/api/search/{search_id}/facet/{facet_type}`
 - `odd-platform-api/.../dto/FacetType.java` — 9 facet types: ENTITY_CLASSES, TYPES, NAMESPACES, DATA_SOURCES, OWNERS, TAGS, GROUPS, STATUSES, DATA_ENTITY
 - `odd-platform-api/.../repository/reactive/ReactiveSearchFacetRepositoryImpl.java`
+- `odd-platform-api/.../repository/util/JooqFTSHelper.java` — **the single FTS sink and the home of the product's query grammar.** `tsQueryExpression(String)` compiles a user's search string to a tsquery; `ftsCondition` / `ftsRankField` are the match + rank sinks. **7 repository classes / 26 call sites** consume it — the unified asset search, the legacy `/api/search`, the facet counts, term search, query-example search, lookup-table search, autocomplete suggestions and the `ts_headline` highlights — so a change here is a change to every search surface at once. Bare words are PREFIX-matched (`tsQuery`, the #1756 sanitiser); `"phrase"` / `-exclusion` / `or` compile to `phraseto_tsquery` / `!! plainto_tsquery` / `||` groups, each guarded by `querytree(...) = 'T'` so a branch with no positive term cannot force a sequential scan (#1840 / ST-6)
 - `odd-platform-api/.../repository/util/FTSConfig.java` — full-text search config
 - `odd-platform-api/.../repository/util/FTSConstants.java` — FTS constants
+- `odd-platform-api/.../repository/reactive/ReactiveDataEntityRepositoryImpl.java` — `getHighlightedResult` (`ts_headline`, the result-row "why you see it" highlight) + `getQuerySuggestions` (autocomplete); both build their query through the sink above
 - `odd-platform-api/.../mapper/FacetStateMapper.java` → `FacetStateMapperImpl.java`
 
 ### UI
 - `odd-platform-ui/src/components/Search/Search.tsx` — search page container
 - `odd-platform-ui/src/components/Search/Filters/Filters.tsx` — 7 filter components: Datasource, Type, Namespace, Owner, Tag, Groups, Statuses
 - `odd-platform-ui/src/components/Search/Results/Results.tsx` — search results view
+- `odd-platform-ui/src/components/shared/elements/MainSearchInput/MainSearchInput.tsx` — the ONE search box, rendered on both entry points (the Catalog home hero and the Search page); commits a query to `/search?q=` on Enter. `SearchSyntaxHint.tsx` beside it is the query-syntax inline help (ADR-0076 `InformationIcon` + `AppTooltip`)
 - `odd-platform-ui/src/redux/slices/dataEntitySearch.slice.ts` — search state
 - `odd-platform-ui/src/redux/selectors/dataentitySearch.selectors.ts`
 

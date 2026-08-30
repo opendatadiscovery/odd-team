@@ -140,4 +140,87 @@ test.describe('IT-003 search tsquery poisoning — a metacharacter must not 500 
         `to_tsquery (PLT-127 / F-024 H-009).`,
     ).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------------------------------------
+  // ST-6 (#1840) extension. The sink now understands three OPERATORS — a quoted phrase, a `-` exclusion and
+  // the bare word `or` — so the fail-closed guard has a second family of payloads to survive: operator-SHAPED
+  // strings that are syntactically incomplete (an unbalanced quote, a dangling dash, a bare `or`, mixtures).
+  // The property under test is unchanged and is the whole point of building the query from Postgres
+  // constructors that cannot raise: whatever the user types, they get a page — results or "No matches found".
+  // -------------------------------------------------------------------------------------------------------
+
+  const OPERATOR_POISON = [
+    '"unbalanced',      // a quote that never closes
+    'trailing-',        // a dash glued to the end of a word
+    '- -',              // dashes with nothing to negate
+    'or',               // the OR operator with no operands
+    'or or',
+    '"" ""',            // empty phrases
+    '-"',               // a negated, unterminated, empty phrase
+    '"-"',              // a phrase that is only a dash
+    'foo )( -"" or',    // the PLT-090 payload mixed with operator shapes
+    '?{0}',             // characters the sanitiser does NOT strip (jOOQ template + bind markers)
+  ];
+
+  test('catalog search: operator-shaped payloads return a page, never a 5xx (ST-6 / #1840)', async ({
+    page,
+  }) => {
+    const errors = watchApi5xx(page);
+
+    await page.goto('/');
+    const box = page.locator('[data-qa="search_string"]');
+    await box.waitFor({ state: 'visible' });
+    await box.fill('dataset');
+    await box.press('Enter');
+    await page.waitForLoadState('networkidle');
+    expect(
+      errors,
+      `setup: a well-formed catalog search must not 5xx before the operator payloads are tested. ` +
+        `Got: ${JSON.stringify(errors)}`,
+    ).toEqual([]);
+
+    for (const payload of OPERATOR_POISON) {
+      await box.fill(payload);
+      await box.press('Enter');
+      await page.waitForTimeout(1200);
+      expect(
+        errors,
+        `Operator-shaped payload ${JSON.stringify(payload)} must yield a page, never a 5xx. ` +
+          `Got server errors: ${JSON.stringify(errors)}. Every leaf of the compiled query comes from a ` +
+          `Postgres constructor that cannot raise on metacharacters (to_tsquery over the sanitiser, ` +
+          `phraseto_tsquery, plainto_tsquery), and the user's text is always a BIND — so a 5xx here means ` +
+          `the query is being assembled as SQL text again (the #1756 / PLT-090 regression).`,
+      ).toEqual([]);
+    }
+  });
+
+  test('dictionary (term) search: operator-shaped payloads return a page, never a 5xx (ST-6 / #1840)', async ({
+    page,
+  }) => {
+    const errors = watchApi5xx(page);
+
+    await page.goto('/termsearch');
+    const box = page.getByPlaceholder(/search term/i);
+    await box.waitFor({ state: 'visible' });
+    await box.fill('glossary');
+    await box.press('Enter');
+    await page.waitForLoadState('networkidle');
+    expect(
+      errors,
+      `setup: a well-formed term search must not 5xx. Got: ${JSON.stringify(errors)}`,
+    ).toEqual([]);
+
+    // The term surface shares the sink, so it must survive the same payloads — this is the "one query
+    // language, not two dialects" property that made the shared sink the unit of change for ST-6.
+    for (const payload of OPERATOR_POISON) {
+      await box.fill(payload);
+      await box.press('Enter');
+      await page.waitForTimeout(1200);
+      expect(
+        errors,
+        `Operator-shaped payload ${JSON.stringify(payload)} must not 5xx the dictionary surface either. ` +
+          `Got: ${JSON.stringify(errors)}`,
+      ).toEqual([]);
+    }
+  });
 });

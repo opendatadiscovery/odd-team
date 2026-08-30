@@ -8,9 +8,9 @@ gates:
 test_class: e2e
 stack: odd-minimal
 automation: "e2e:specs/search-tsquery-poisoning.spec.ts"
-plan_ref: "I7 (search/session poisoning) — Tier-1 UI scenario; lead item of the e2e build-out"
+plan_ref: "I7 (search/session poisoning) — Tier-1 UI scenario; lead item of the e2e build-out. EXTENDED 2026-08-30 by CTRIB-060 (#1840 / ST-6) with operator-shaped payloads on both query surfaces."
 status: ready
-expected_result: "GREEN as of CTRIB-016 / odd-platform#1756 (ships 0.28.0) — JooqFTSHelper.tsQuery strips the full tsquery operator set, so a `(`/`)`/`:`/`'`/`<` returns results or \"No matches found\" and never persists a poisoned session. Was RED (the unescaped to_tsquery 500); moved known-bugs -> feature-complete 2026-06-16. Flips on main when the CTRIB-016 PR merges."
+expected_result: "GREEN as of CTRIB-016 / odd-platform#1756 (metacharacters) and CTRIB-060 / odd-platform#1840 (operator shapes) (ships 0.28.0) — JooqFTSHelper.tsQuery strips the full tsquery operator set, so a `(`/`)`/`:`/`'`/`<` returns results or \"No matches found\" and never persists a poisoned session. Was RED (the unescaped to_tsquery 500); moved known-bugs -> feature-complete 2026-06-16. Flips on main when the CTRIB-016 PR merges."
 ---
 
 # IT-003 — search tsquery poisoning (the persistent-500 footgun)
@@ -40,6 +40,25 @@ explanation; refreshing repeats it because the poison is persisted; and because 
 session URL is shareable and unbound to any owner, a careless or malicious teammate
 can permanently poison a colleague's saved search — a one-click, low-skill DoS.
 Source: F-017 H-007 · F-024 H-009 · PLT-090 · PLT-127 · `JooqFTSHelper.java:164-168`.
+
+
+## 1b. What the ST-6 extension adds (CTRIB-060 / #1840)
+
+`JooqFTSHelper` no longer treats every punctuation mark as noise: `"a quoted phrase"`, a leading `-`
+(exclusion) and the bare word `or` are now **operators**. That gives the fail-closed property a second family
+of adversarial inputs — strings that *look* like operators but are syntactically incomplete:
+
+`"unbalanced` · `trailing-` · `- -` · `or` · `or or` · `"" ""` · `-"` · `"-"` · `foo )( -"" or` · `?{0}`
+
+The property under test is unchanged and is precisely why the query is compiled from Postgres constructors that
+**cannot raise** (`to_tsquery` over the existing sanitiser, `phraseto_tsquery`, `plainto_tsquery`) with the
+user's text always carried as a **bind**: whatever is typed, the user gets a page — results or "No matches
+found" — never an HTTP 500 and never a persisted poison. The last payload (`?{0}`) is deliberate: `?` and `{}`
+are *not* stripped by the sanitiser and are jOOQ's own plain-SQL bind/template markers, so it exercises the
+boundary between the query text and the SQL template.
+
+Both surfaces are covered because ST-6 made the sink the product's single query grammar — the catalog search
+and the Dictionary (term) search must not drift into two dialects.
 
 ## 2. Preparation — build the test stand
 - **Stack**: `odd-minimal` (platform + Postgres; the platform image serves the bundled

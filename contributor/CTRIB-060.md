@@ -4,14 +4,14 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: planned
+status: plan-approved
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1840 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-6 of #1825"
 base_sha: "82e7e70e"      # odd-platform origin/main at intake (= #1862 ST-5c merged)
 reproduced: "pending — Phase B"
-plan_approved_by: null
-plan_approved_at: null
+plan_approved_by: "RamanDamayeu"
+plan_approved_at: "2026-08-30"
 pr_url: null
 docs_routing: "pending — expected release/1.0.0 train (unreleased behaviour); see ## Plan"
 ---
@@ -56,7 +56,7 @@ All four are answered in `## Spec` / `## Design` below, each with first-hand evi
 
 ### What exists today — measured first-hand, not assumed
 
-`JooqFTSHelper.tsQuery()` (`repository/util/JooqFTSHelper.java:172-181`) is the **single FTS sink** for the whole product. It strips every tsquery metacharacter and emits `token:*&token:*` — **every term a PREFIX match, AND-joined**. Ten repositories consume it via `ftsCondition` / `ftsRankField` / `tsQuery`:
+`JooqFTSHelper.tsQuery()` (`repository/util/JooqFTSHelper.java:172-181`) is the **single FTS sink** for the whole product. It strips every tsquery metacharacter and emits `token:*&token:*` — **every term a PREFIX match, AND-joined**. **Seven** repository classes consume it across **26 call sites** (counted, not estimated — an earlier revision said "ten repositories", which wrongly counted classes that merely *inject* the helper without calling its query methods):
 
 | Consumer | Surface |
 |---|---|
@@ -64,7 +64,7 @@ All four are answered in `## Spec` / `## Design` below, each with first-hand evi
 | `ReactiveSearchFacetRepositoryImpl:120,148,185,270,472,662` | the legacy `/api/search` results **and the facet counts** |
 | `ReactiveDataEntityRepositoryImpl:451,480,491,792,916,921` | legacy DE search, `countByState`, **autocomplete suggestions**, **`ts_headline` highlights** |
 | `ReactiveTermRepositoryImpl:254,264,291,297,383` | term search + term suggestions |
-| `ReactiveQueryExample*RepositoryImpl:84,101,103,109` | query-example search |
+| `ReactiveQueryExampleRepositoryImpl:84,103,109` + `ReactiveQueryExampleSearchEntrypointRepositoryImpl:101,109` | query-example search |
 | `ReactiveLookupTableRepositoryImpl:119,137,143` | lookup-table search |
 
 **Measured on a real `postgres:13.2-alpine`** — the version odd-platform deploys (`docker/*.yaml`, `BaseIntegrationTest:26`) — with `default_text_search_config = pg_catalog.english`:
@@ -88,10 +88,10 @@ All four are answered in `## Spec` / `## Design` below, each with first-hand evi
 | **R1** | Quoted phrase | quotes ignored → both words anywhere | `"customer orders"` matches only adjacent occurrence | seed `customer orders daily` + `orders from customer`; the query returns only the first |
 | **R2** | Negation | dash ignored → the term is **required** | `customer -test` excludes test-matching assets | seed `customer table` + `customer test table`; returns only `customer table` (on `main` it returns only `customer test table` — an inverted RED) |
 | **R3** | `or` | AND | `customer or orders` returns either | seed `customer table` + `orders table`; returns **both** (today: neither) |
-| **R4** | Plain-term parity | prefix + AND on every surface | **byte-identical** | `cust` still finds `Customers`; `customer orders` still ANDs; every pre-existing search/suggestion/highlight test stays green **unmodified** |
+| **R4** | Plain-term parity | prefix + AND on every surface | **behaviourally identical** (the emitted SQL does change — see Design (e) — but an operator-free query still compiles to the one pre-existing `to_tsquery(tsQuery(q))` call) | `cust` still finds `Customers`; `customer orders` still ANDs; every pre-existing search/suggestion/highlight test stays green **unmodified** |
 | **R5** | Fail-closed | metacharacters → page, never 500 | unchanged **and extended** to operator-shaped payloads (unbalanced quote, trailing dash, bare `or`, mixed) on unified **and** legacy paths | the extended poison set returns a page (possibly empty) on both endpoints |
 | **R6** | Index-searchability | n/a | a query with no positive term returns an empty page via an index probe | `-test` returns 0 results; `EXPLAIN` shows an index scan, not a Seq Scan |
-| **R7** | One query language | n/a | result list, total, **facet counts**, ranking and **highlights** all interpret the query identically | an operator query's sidebar facet counts agree with the listed results |
+| **R7** | One query language | n/a | result list, total, **facet counts**, ranking and **highlights** all interpret the query identically | for the **data-entity subset** (the sidebar counts read the DE-only `search_entrypoint` while the list reads `asset_search_entrypoint`; cross-kind facet counts are ST-11), an operator query's facet counts agree with the DE rows listed |
 
 **In scope:** the shared FTS sink and every surface it feeds; the `ts_headline` highlight expression; unit + integration tests; the user-facing docs section.
 
@@ -125,7 +125,7 @@ All four are answered in `## Spec` / `## Design` below, each with first-hand evi
 - **ODD publishes the opposite promise, today, on a live page.** `documentation/docs/data-discovery/search.md:93` states verbatim that the search box *"strips them and matches the remaining words **as prefixes**"*. Adopting `websearch_to_tsquery` per-query silently revokes that for any query containing an operator. *(Verified first-hand by reading the file, not taken from the consult.)*
 - **The refinement flow breaks.** Operators are typed **second**, as a refinement. `cust` finds "Customers Orders"; `cust -test` then returns **zero rows**. The act of refining destroys the result set.
 - **The cited precedent does not do this.** DataHub's quoting is documented as **per-term** ("enclosing one or more terms with double quotes will enforce exact matching on *these terms*"), and its prefix is an explicit `*` the user types — never a behaviour the system revokes as a side effect.
-- **Autocomplete and highlights are two of the ten consumers.** `getQuerySuggestions` must stay prefix unconditionally, and if matching goes exact while highlighting stays prefix, the result row's already-shipped "why you see it" affordance starts lying.
+- **Autocomplete and highlights are two of the 26 call sites.** `getQuerySuggestions` must stay prefix unconditionally, and if matching goes exact while highlighting stays prefix, the result row's already-shipped "why you see it" affordance starts lying.
 
 The SME asked that "can prefix be preserved alongside operators?" be **established, not assumed**, before accepting the per-query switch. It has been — see `## Design (c)`. It can, safely. That makes the mechanism the one real GATE-1 decision (`## GATE 1`).
 
@@ -199,14 +199,36 @@ Grammar parity with `websearch_to_tsquery` was checked case-by-case on PG 13.2 s
 | Dimension | Disposition |
 |---|---|
 | i18n (7 locales) | none if no UI string ships; the GATE-1 discoverability sub-option adds one key × **all 7** locale files — handled here, never en-only |
-| Generated BE/FE clients | **none** — no OpenAPI change; the query stays a plain string |
+| Generated BE/FE clients | **no regen committed** — the only spec edit is a `description` on `SearchFormData.query`; request/response shapes are unchanged and generated sources are gitignored. The BE build does not track `$ref`'d `components.yaml`, so `build/generated` is cleared once to prove the spec still compiles |
 | Consumers of changed signatures | `ftsCondition`/`ftsRankField`/`tsQuery` signatures **unchanged**; all ten consumers inherit the behaviour by design — that is the point. `getHighlightedResult` builds its own `to_tsquery(?)` and is edited onto the shared expression (R7) |
 | Migrations | **none** |
+| Stored query text (replay) | `saved_search.spec` (JSONB `SearchFormData`) and the `search_facets` session row both persist the raw query string, so a saved search or bookmarked session containing `"`/`-`/`or` **changes meaning on replay** after this ships. That change is the fix (the operator was previously ignored or inverted), not a regression — called out in the PR body; no migration, no data touched |
 | Docs | `docs/data-discovery/search.md` — a "Query syntax" section **and** a correction to the `:93` caveat; release-gated (1.0.0) |
 | Ontology | `/enrich --touched` on the sidecars covering the FTS sink + search feature; re-embed; commit |
-| SRE | the negation-only Seq Scan is measured and neutralised; leaf count capped; all constructors are IMMUTABLE (constant-folded, no per-row cost) |
+| SRE | the negation-only Seq Scan is measured and neutralised; leaf count capped; the 1-arg constructors this design uses are **STABLE**, not IMMUTABLE (only the `(regconfig, text)` overloads are IMMUTABLE) — verified in `pg_proc`; a STABLE index qual is still evaluated once per scan, not per row, confirmed by `EXPLAIN`. The 1-arg form is the deliberate choice: it follows `default_text_search_config`, exactly as the indexed vectors do (`concatVectorFields` calls `to_tsvector(...)` 1-arg), so query and index cannot diverge |
 
 **(e) A correctness improvement the change requires.** `ftsCondition` renders a bound expression to a **string** and re-parses it as plain SQL (`JooqFTSHelper.java:108-113`), inlining the query text into SQL. That is tolerable today only because `tsQuery()` pre-strips `'`; the operator path must carry the user's raw text into `phraseto_tsquery`/`plainto_tsquery`, so the render→re-parse round trip is replaced by `DSL.condition("{0} @@ {1}", vectorField, expr)` with real binds. **Required by** the change, not gold-plating. Open verification for Phase B (on the running stack, not reasoned about): whether a `?` or `{0}` typed into the search box already breaks the re-parsed plain SQL today.
+
+## Plan-check (G-C19) — ISSUES FOUND, 5 blockers, all resolved
+
+An adversarial `plan-checker` run (fresh context, goal-backward, re-measuring the plan's own SQL claims on the
+`postgres:13.2-alpine` container) returned **5 BLOCKERs + 12 warnings** against the first revision. It did not
+dispute the mechanism substitution — it attacked the substitute, which is exactly what it is for. Every blocker
+was reproduced first-hand before being accepted; the design below is the corrected one.
+
+| # | Blocker | Verified how | Resolution |
+|---|---|---|---|
+| 1 | **`X or -Y` returned ZERO rows.** Guarding the WHOLE expression collapses `customer or -test` to the empty tsquery, because `querytree('custom':* \| !'test') = 'T'` | measured: whole-expression guard → **0 rows**; the `customer` branch alone → **50 000**; `websearch_to_tsquery` → 50 000. The plan was *worse* than the mechanism it replaces on this shape | the guard moved **per OR-branch**. A non-indexable branch collapses to the empty tsquery, which is the **identity** for `\|\|`, so it is dropped rather than voiding the query. Re-measured: **50 000 rows**, Bitmap Index Scan. Pinned by `guardIsAppliedPerOrBranch` + `searchAssets_orWithNonIndexableBranch_keepsTheIndexableBranch` |
+| 2 | **The tokenizer's stated order destroyed a phrase containing `or`.** The plan's pseudo-code split on `or` *before* handling quotes | `websearch_to_tsquery('"customer or orders"')` → one phrase; the plan as written → two OR groups | the scan is a single left-to-right pass that consumes a quoted span **first**; stated explicitly and pinned by `quotedSpanIsTokenisedFirst` (`"a or b"`, `"a -b"`, `-"a b"`, unterminated) |
+| 3 | **Past the leaf cap the fallback INVERTED negations.** The plain path renders `customer -test` as `'custom':* & 'test':*` | measured `to_tsquery('customer:*&-test:*')` → `'custom':* & 'test':*` — the exact inversion this slice fixes, applied silently | the over-cap path **fails closed** (empty tsquery), never the plain path. Cap raised to 64 (well under Postgres's 65 535 bind limit) and pinned at the 64/65 boundary by `overTheLeafCapFailsClosed` |
+| 4 | **The docs-train claim was false** | the maintainer corrected it; `git ls-remote` confirms `origin/release/1.0.0` @ `5b2bb04` | root-caused to a single-branch clone refspec, repaired; DOC-501 deleted, DOC-497 amended. See `### Docs` |
+| 5 | **R6's "without a sequential scan" had no covering artifact** | no named test asserted the guard | the guard is pinned deterministically at the expression level (`noPositiveTermIsGuardedAndEmptyQueryMatchesNothing`) rather than by an `EXPLAIN` assertion, which is unstable on a small test table |
+
+Warnings folded in: the consumer count corrected to 7 classes / 26 call sites; the STABLE-vs-IMMUTABLE claim
+corrected; the saved-search/session replay impact row added; R4 reworded from "byte-identical" to behavioural
+parity; R7's acceptance scoped to the DE subset; the `?` / `{0}` question resolved **by construction** (user text
+is now a bind, so it never reaches the SQL template) and both payloads added to the poison set; the navigation
+pointer added to the impact list.
 
 ## Plan
 
@@ -216,6 +238,7 @@ Grammar parity with `websearch_to_tsquery` was checked case-by-case on PG 13.2 s
 |---|---|---|
 | 1 | `repository/util/JooqFTSHelper.java` | the operator tokenizer + compositional `tsQueryExpression(String)` + the `querytree` guard + the leaf cap; `ftsCondition` / `ftsRankField` rewired onto it with real binds. `tsQuery(String)` **unchanged** — it *is* the bare-term leaf |
 | 2 | `repository/reactive/ReactiveDataEntityRepositoryImpl.java` | `getHighlightedResult` uses the shared expression so highlights reflect what actually matched (R7) |
+| 3 | `odd-platform-specification/components.yaml` | `SearchFormData.query` carries **no `description` at all** today (verified — its sibling `sort` carries a full one). Add the operator syntax there: it is the contract that both search paths share, and Swagger is the API-reference surface. Description-only → no committed codegen (generated sources are gitignored) |
 
 No other production file changes. No migration, no OpenAPI change, no FE change **unless** GATE 1 selects the discoverability affordance.
 
@@ -234,12 +257,15 @@ Every authored test is **run here** — GREEN on the fix, RED on `ODD_SUT=ref:ma
 
 ### Docs (G-C10 + G-C11)
 
-`docs/data-discovery/search.md` read first-hand. Two edits: a new **"Query syntax"** section (the three operators, the one-sentence rule *"bare words match as prefixes; a quoted phrase and an excluded word match exactly"*, the no-positive-term behaviour, and that it applies to every search surface), and a **correction to the `:93` caveat**, whose character list omits `"` and `-`. **Routing:** unreleased behaviour → the `release/1.0.0` train. **Verified 2026-08-30: `release/1.0.0` exists neither locally nor on `origin` (only `main` + `release/0.28.0`), and the CTRIB-048/049 doc worktrees are gone** — so the branch is cut from `documentation` `origin/main` and the push to the shared train is the maintainer-gated step (DOC-495/497 precedent), with a paired backlog `DOC-NNN` (`milestone: 1.0.0`).
+`docs/data-discovery/search.md` read first-hand. Two edits: a new **"Query syntax"** section (the three operators, the one-sentence rule *"bare words match as prefixes; a quoted phrase and an excluded word match exactly"*, the no-positive-term behaviour, and that it applies to every search surface), and a **correction to the `:93` caveat**, whose character list omits `"` and `-`. **Routing:** unreleased behaviour → the **`release/1.0.0` train, which exists** (`origin/release/1.0.0`, 8 commits ahead of `origin/main`, head `5b2bb04`). Authoring directly on the train is correct (`adrs/drafts/release-train-doc-gating.md` Decision 5). Paired backlog `DOC-NNN` with `milestone: 1.0.0`.
+
+> **Correction (2026-08-30).** An earlier revision of this plan asserted the train did not exist. That was wrong, and the maintainer corrected it. Root cause: the workspace's `../documentation` clone was configured **single-branch** (`remote.origin.fetch = +refs/heads/main:refs/remotes/origin/main`), so `git branch -r` showed a truncated view — absence was concluded from a shallow probe instead of from the fetch config (`feedback_verify_absence_by_reading_config`, second instance). The refspec is repaired to `+refs/heads/*:refs/remotes/origin/*`. The false backlog item DOC-501 has been deleted; the one **real** residual it contained is now recorded on its rightful owner, `DOC-497` (its commit `7259606` never landed, so the train still tells readers that facet selections are not in the URL — stale since ST-1b shipped).
 
 ### Follow-ups logged on disk (not folded into this PR)
 
+- `DOC-497` corrected from `pending-release` to `pending`: its content never reached the train, which still carries the stale "facet selections are not yet in the URL" bullet.
 - A **released-truth** doc inaccuracy the SME surfaced and I confirmed at `search.md:93`: the published caveat enumerates `( ) : & | ! '` but omits `"` and `-`, and does not say that `-term` currently *requires* the term. That is wrong about **0.28.0, which is live** — so it ships on its own immediate-flow branch, never mixed onto the 1.0.0 train.
-- `documentation` has **no `release/1.0.0` branch and no surviving worktree** carrying the DOC-495/497 content — a 1.0.0 release-gate integrity risk that predates this slice.
+
 
 ### Scope comment for the issue thread (G-C5 — posted immediately after GATE 1)
 
@@ -274,6 +300,9 @@ must_haves:
     - path: "integration-tests/protocols/IT-003-search-tsquery-poisoning.md"
       provides: "the operator-shaped poison payloads on both query paths"
       anchor: "operator"
+    - path: "odd-platform-specification/components.yaml"
+      provides: "the query field's operator syntax on the shared search contract (Swagger/API reference)"
+      anchor: "SearchFormData"
     - path: "documentation/docs/data-discovery/search.md"
       provides: "the user-facing Query syntax section + the corrected metacharacter caveat (on the 1.0.0 train)"
       anchor: "Query syntax"
@@ -295,6 +324,17 @@ must_haves:
       via: "the querytree()='T' guard, without which a no-positive-term query is a measured Seq Scan"
 ```
 
-## GATE 1 — the decision put to the maintainer
+## GATE 1 — APPROVED 2026-08-30
 
-Recorded in `## Product critique (ii)`. One decision: **which query-matching model ships**, plus whether a discoverability affordance ships with it. Awaiting approval; no code, no branch, no GitHub write until then.
+**Maintainer (`RamanDamayeu`), verbatim:** *"go with composite design, let's build best in class search"*.
+
+**What that approves:**
+
+1. **The compositional tsquery model**, not the issue's named `websearch_to_tsquery` — operators narrow, they never revoke prefix. `cust -test` still finds "Customers". The published `search.md:93` prefix promise stays true.
+2. **The shared sink as the unit of change** — one query language across the unified path, the legacy `/api/search` path, terms, query examples, lookup tables, suggestions, facet counts and highlights.
+3. **The discoverability affordance ships** — "best in class" resolves the sub-option: reuse ODD's existing inline-help pattern (`InformationIcon` + `AppTooltip`, ADR-0076) on the search bar rather than inventing one, with the new string in **all 7 locale files**.
+4. The index-searchability guard, the leaf cap, the `SearchFormData.query` contract description, and the docs section on the `release/1.0.0` train.
+
+**In the same message the maintainer corrected a false claim in the prior revision** (the 1.0.0 doc train does exist). Correction recorded under `### Docs`; DOC-501 deleted; DOC-497 amended.
+
+`plan_approved_by: RamanDamayeu` · `plan_approved_at: 2026-08-30`. Scope comment posted to the thread before any code (G-C5).

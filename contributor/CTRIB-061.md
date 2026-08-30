@@ -185,13 +185,25 @@ a live doc page wrong.
 
 | Option | What the user gets | Cost | Risk of not doing it |
 |---|---|---|---|
-| **A (recommended) — add a "Recently favorited" ordering**, offered in the sort dropdown only when Favorites=Yes is active, and used as the default in that state (with no text query) | Identical to today's tab. The promise in the manual stays true | ~half a day. One `SearchSortDto` value, one `ORDER BY` branch, offset-paged (a personal pin list is tens of items, so the existing depth cap is ample — no keyset work). **The index this needs already exists** (`favorite_identity_created_active_idx`) | — |
+| **A (recommended) — add a "Recently favorited" ordering**, offered in the sort dropdown only when Favorites=Yes is active, and used as the default in that state (with no text query) | Identical to today's tab. The promise in the manual stays true | **~1 day** (measured against the real code, not estimated from the description — see the note below) | — |
 | **B — ship the filter as specified; accept status-priority ordering** | Favorites are findable, but not newest-first | Zero | A documented promise becomes false; the manual must be edited to retract it; a user with many favorites loses the "what did I just star" affordance |
 | **C — keep the tab as well as the filter** | Nothing is lost | Zero build, permanent duplication | Contradicts the issue and the #1825 thesis; leaves the duplicate asset-type facet in place |
 
-**Recommendation: A.** It is the difference between *moving* a feature and *degrading* it, it is small because
-the index was already built for exactly this ordering, and B forces a same-release retraction of a page we
-wrote this cycle.
+**What Option A actually costs — read out of the code, not guessed.** `relevancePage` already orders by the
+generic `orderFields(state)` (`ReactiveAssetSearchRepositoryImpl:87-99`), so routing a new sort to the
+offset pager needs no new pager and no `AssetSearchPageRow` change. The ordering itself is a **correlated
+scalar subquery in `ORDER BY`** — `(SELECT f.created_at FROM favorite f WHERE f.oidc_username=? AND
+f.provider=? AND f.deleted_at IS NULL AND f.asset_kind = a.asset_kind AND f.asset_id = a.asset_id) DESC` —
+which resolves on the same unique index the predicate already probes and therefore needs **no change to
+`searchFrom()`** (no new join, so every other query keeps its exact plan). The one genuine trap: the
+repository's `effectiveSort(state)` and the service's `SearchSortDto.resolveEffective(...)` must return the
+same answer or the cursor scope, the keyset-vs-offset choice and the `ORDER BY` disagree — the code comments
+at `:52` and `AssetSearchServiceImpl:62-64` say so explicitly. Since the favorites scope is already being
+threaded into all three repository methods, both sides read it from the same value; a unit test pins the
+agreement. That trap is the reason this is a day and not an afternoon.
+
+**Recommendation: A.** It is the difference between *moving* a feature and *degrading* it, the index was
+already built for exactly this ordering, and B forces a same-release retraction of a page we wrote this cycle.
 
 ## 7. `## Plan`
 
@@ -291,3 +303,39 @@ pre-work note asked for. This is stated in the PR body and in the #1815 disposit
 | `EXPLAIN (ANALYZE, BUFFERS)` Yes + No | pending Phase D |
 | Docs read + authored on `release/1.0.0` | pending Phase D |
 | Ontology `/enrich --touched` | pending Phase D (conditional on `lineage/**` being unclaimed) |
+
+## 10. Parallel-stream coordination (three streams co-active)
+
+Registered as `ctrib061` in `state/active-streams.yaml`. Namespace: worktree `../odd-platform-ctrib061`,
+tag `odd-platform:odd-team-sut-ctrib061`, compose `ctrib061`, ports 18250/15650 — all verified free.
+Phase A/C held **no** shared resource (read-only against `origin/main`).
+
+| Stream | Work | Bearing on this slice |
+|---|---|---|
+| `ctrib060` | #1840 ST-6 query operators | **Holds the heavy-e2e flock** (`run-regression.sh`, pid 248842 since 23:39:22). My Phase-D regression queues behind it — `run-regression.sh` blocks on the flock, so this is automatic, not a manual wait. Also mid-`/enrich`, so `lineage/**` (R9) is treated as claimed |
+| `ctrib062` | #1842 **ST-8 — My-data filter + retire the My-Objects tab + rewire 3 home panels** | **The structural twin of this slice**, and the real coordination point |
+
+**The ST-8 overlap, stated precisely.** ST-7 and ST-8 do the same four things to the same four files: add a
+URL-only param to `searchUrlState.ts`, register it in the `Search.tsx` merge-back, add a single-select fixed-option
+filter to `Filters.tsx`, and retire a tab + rewire its home panel. Two consequences:
+
+1. **A shared component.** Both need the `FixedOptionsSingleFilter` that §5(a) justifies (ST-8's
+   All / My Objects / Upstream / Downstream is also single-select over a fixed set). Whichever slice lands
+   first should build it as a general sibling of `FixedOptionsMultiFilter` — not a Favorites-specific control —
+   so the second reuses rather than forks it. This plan builds it that way regardless of merge order.
+2. **Textual conflicts, not design conflicts.** The merge-back block and the `Filters.tsx` render list will
+   each take one added line from both slices. That is a trivial rebase, and it is the *expected* shape — it
+   needs no sequencing decision, only awareness.
+
+Nothing here blocks GATE 1. It is recorded so the second slice to reach Phase D does not re-derive it.
+
+## 11. Follow-ups logged on disk (`playbooks/follow-up-on-disk.md`)
+
+| Item | What | Why it is not fixed here |
+|---|---|---|
+| **`issues/odd-platform/PLT-256`** | **"Save current search" silently drops the Asset-type filter.** `SavedSearch.spec` is typed `SearchFormData`, which has no `asset_kinds` — so ST-4's Asset-type narrowing is dropped on capture *and* on reapply, with no warning. Found while mapping this slice's URL-param census; grepped the backlog + `issues/odd-platform/` first — untracked | A pre-existing, already-shipped defect in ST-3×ST-4, not caused by ST-7. Fixing it means a **contract** change (`SavedSearch.spec` -> `AssetSearchFormData`) plus a migration-free data question — out of this slice's approved scope (G-C5) |
+
+**This slice inherits that gap by construction:** `favorites`, like `asset_kinds`, is a URL-only dimension on
+`AssetSearchFormData`, so a saved search will not capture it either. That is *consistent* with the shipped
+behaviour rather than a new regression, and PLT-256 fixes both at once. Called out in the PR body so the
+maintainer sees the inheritance, not just the new field.

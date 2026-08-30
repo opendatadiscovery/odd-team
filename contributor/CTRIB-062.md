@@ -213,7 +213,8 @@ re-pointed; a new IT; the ontology refresh.
   boolean semantics are D9-frozen. The new fields never enter `FacetStateDto`, so the legacy path cannot silently
   half-honour them; the OpenAPI description states this.
 - **`asset_kinds` is not persisted into a saved search** (pre-existing ST-3/ST-4 integration gap found en route —
-  `searchUrlStateToFormData` drops it, so `SavedSearchForm` never stores it). → follow-up item, not fixed here.
+  `searchUrlStateToFormData` drops it, so `SavedSearchForm` never stores it). → **already tracked as
+  `issues/odd-platform/PLT-256`** (filed by the co-active ST-7 stream from the same read); cited, not duplicated.
 - **The `data-lineage.md` self-contradiction** about "Upstream dependents" and the wrong `getMyObjectsWith*` OpenAPI
   summaries → follow-up DOC item (the page I am editing is `search.md` / `catalog-overview.md`).
 - **Renaming "My Objects" across Alerts / Recommended / docs** — a cross-surface vocabulary change; out.
@@ -446,11 +447,18 @@ what is deferred and where: per-option facet counts, query-example ownership, th
 
 ### Follow-ups to log on disk (G-C5 / `follow-up-on-disk.md`) — ids re-verified at write time
 
+Ids re-derived from the canonical trackers **and re-checked against the two co-active streams' uncommitted files**
+(three streams are allocating ids concurrently; `feedback_id_enumeration_canonical_tracker_only` + LSN-009).
+
 | Item | What |
 |---|---|
-| `PLT-257` | Saved searches silently drop `asset_kinds`: `searchUrlStateToFormData` (the `SavedSearchForm` capture path) projects only the shared `SearchFormData`, so an Asset-type narrowing is lost on save/reapply. Pre-existing ST-3/ST-4 gap. |
-| `DOC-504` | `data-lineage.md` contradicts itself on "Upstream dependents" (its endpoint table says the opposite of its prose two lines later) and records the wrong `getMyObjectsWithUpstream/Downstream` OpenAPI summaries. |
-| `TST-060` | Per-option counts on the My-data filter (`My Objects (23)`) — deferred pending measured evidence that three extra aggregates per search are affordable on the heaviest slice. |
+| ~~`PLT-257` saved searches drop `asset_kinds`~~ | **ALREADY TRACKED — do not duplicate.** `issues/odd-platform/PLT-256-saved-search-drops-asset-type-filter.md` (committed `3bae4c10`) was logged by the ST-7 stream from the *same* code read, hours before I reached it. I cite PLT-256 in the scope comment instead of filing a second draft. This is exactly the backlog-internal duplication LSN-009 exists to prevent, and it was caught only by grepping the tracker before writing. |
+| `DOC-504` | `data-lineage.md` contradicts itself on "Upstream dependents" (its endpoint table states the opposite of its own prose two lines later) and records the wrong `getMyObjectsWithUpstream/Downstream` OpenAPI summaries. Sourced from the SME consult + verified against the live page. |
+| `PLT-258` | Per-option counts on the My-data filter (`My Objects (23)`) — deferred pending measured evidence that three extra aggregates per search are affordable on the slice that already carries the perf gate. An odd-platform enhancement ⇒ an issue draft, not a workspace backlog item. |
+
+**Id state at plan time** (re-verify again at write time — they move while three streams run): `DOC-503` and
+`PLT-257` were claimed by ctrib061 **as untracked files** while this plan was being written, so mine are `DOC-504`
+and `PLT-258`. `TST-060` is free but not needed — neither follow-up is a test gap.
 
 ### must_haves (the plan contract — G-C19)
 
@@ -651,8 +659,8 @@ it is not ST-8's to fix and is not a blocker for either slice.
 > * Per-option counts on the filter ("My Objects (23)") - three extra aggregate queries per search on the slice that
 >   already carries the perf gate; ships only with measured evidence.
 > * Giving query examples an ownership model - a product question, not this slice's.
-> * Saved searches do not persist the Asset-type selection (a pre-existing gap from the ST-3/ST-4 boundary, found
->   while reading this code) - tracked separately, not fixed here.
+> * Saved searches do not persist the Asset-type selection (a pre-existing gap from the ST-3/ST-4 boundary) - it is
+>   already tracked from the parallel ST-7 work, and is not fixed here.
 > * `data-lineage.md` contradicts itself about "Upstream dependents" and records two wrong OpenAPI summaries -
 >   tracked as a documentation follow-up; this PR's doc changes are to `search.md` and `catalog-overview.md`.
 >

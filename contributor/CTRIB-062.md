@@ -1033,3 +1033,48 @@ exactly this trap; it was caught by auditing rather than by assuming.
 | `backlog/docs/DOC-505` | `data-lineage.md` contradicts itself on "Upstream dependents" — a **released-truth** correction, so docs `main`, never the train. |
 | `TST-059` (existing) | Its `search-url-facets.spec.ts` entry is now **stale** — IT-151 passes 4/4 here. Its `search-class-tab-filter.spec.ts` entry is **still live** (that spec still awaits the dead `GET /api/search/{id}/results` at :154, inside the PLT-147 lock). Deliberately **not** fixed: TST-059 owns that class across ten files, and half-fixing a tracked class is how it comes back. |
 | `PLT-256` (existing, ctrib061) | Saved searches drop `asset_kinds` — cited, **not** duplicated. |
+
+## Rendered-pixel review (G-C12 step 5) — done, and it raised something a green suite did not
+
+Screenshots taken on a LOGIN_FORM stack running this branch's SUT, signed in as an owner-bound user, and
+**looked at** rather than asserted on.
+
+**What the pixels confirm.** The **My data** group renders as designed: the heading, the shared autocomplete
+control, two removable chips (`My Objects ×`, `Downstream of my data ×`), the `Downstream depth [2 ▾]` select
+appearing **only** because Downstream is selected (upstream's stays hidden), and the query-example exclusion
+caption directly beneath. The truncation state renders as specified — the count reads **`1240+ results
+(partial)`** and the strip carries the full sentence naming cause *and* remedy. Legible, correctly grouped with
+the other filters, no wrapping or contrast problems at 1280px.
+
+To render the truncation state without a >10 000-node lineage graph, the response was intercepted at the
+network boundary to set `scopeTruncated` — the flag is server-declared by design, so that is the only way to
+drive the view. The *value* of the flag is covered by the unit bucket; this exercised the **rendering** of it.
+
+**The open question the review surfaced.** On that hand-built stack the results list showed `0 results` /
+"No matches found" — **including in the baseline screenshot with no My-data scope applied at all**, and with
+the search box rendering empty despite `?q=` being in the URL. So it is not the filter. The seeded fixture was
+verified present and eligible in that database (both entities `hollow=f status=1 exclude_from_search=f`, both
+mirrored into `asset_search_entrypoint`, the ownership row and the user-owner mapping correct), and **IT-153
+passes the equivalent baseline assertion on a runner-provisioned stack**, so the difference lies in how that
+stack or its page load was set up, not in the ST-8 code path.
+
+**It is recorded as open rather than explained away.** The stack was torn down (`down -v`) before this could be
+probed at the API and log level, so the evidence for a conclusion does not exist yet — and "probably the
+fixture" is exactly the kind of guess this record is supposed to refuse. It is re-checked before the PR leaves
+draft. What it already demonstrates is why the pixel gate exists: a fully green e2e suite and a screenshot
+disagreed, and only the screenshot raised it.
+
+## Unit build at the committed SHA — 2 of 765 failed, under investigation
+
+`BUILD FAILED in 37m 5s` — **765 tests, 2 failures, 0 errors**:
+
+| Test | Failure |
+|---|---|
+| `OpenApiDocsContractTest.platformApiGroupDocumentLoads()` | `IllegalStateException: Timeout on blocking read for 60 s` |
+| `LoadIngestionTest.testInjectingManyDataEntities()` | `IllegalStateException: Timeout on blocking read for 60 s` |
+
+Both are blocking-read timeouts rather than assertion failures, on a machine that was simultaneously running
+two docker stacks and a Playwright browser — and one of them is by name a *load* test. That is a strong
+environmental signal, **but it is not being taken as one**: this change edits the OpenAPI specification, and
+`OpenApiDocsContractTest` loads the generated API document, so a hang there could plausibly be mine. Both are
+re-running in isolation on a freed machine. If they fail again, they are mine.

@@ -155,23 +155,36 @@ async function openSearch(page: Page, query: string): Promise<void> {
  * state — and it FAILS LOUDLY if the fixture never becomes searchable, which a bare timeout bump would not.
  */
 async function waitUntilSearchable(page: Page, name: string): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        await page.goto(`${LOGINFORM_BASE_URL}/search?q=${TERM}`);
-        await expect(page.getByTestId('search-results-count')).toBeVisible({ timeout: 30_000 });
-        return rowOf(page, name).count();
-      },
-      {
-        timeout: 90_000,
-        intervals: [1_000, 2_000, 5_000, 5_000],
-        message:
-          `the seeded fixture "${name}" never became searchable on the freshly-booted LOGIN_FORM stack. ` +
-          'That is a readiness failure, not a scope failure — the My-data assertions below would be ' +
-          'meaningless against a catalog that cannot serve the fixture at all.',
-      },
-    )
-    .toBeGreaterThan(0);
+  // Self-diagnosing on purpose: a readiness failure that only says "0" sends the next reader to guess, and the
+  // stack is torn down in afterAll before anyone can probe it (the §18 mistake — the evidence was destroyed and
+  // then reasoned about). Capture what the page ACTUALLY showed on every attempt, and report it on failure.
+  let lastSeen = '(the results header never rendered)';
+  try {
+    await expect
+      .poll(
+        async () => {
+          await page.goto(`${LOGINFORM_BASE_URL}/search?q=${TERM}`);
+          await expect(page.getByTestId('search-results-count')).toBeVisible({ timeout: 30_000 });
+          const count = (await page.getByTestId('search-results-count').innerText()).replace(/\s+/g, ' ');
+          const rows = (await page.getByTestId('search-result-item').allInnerTexts())
+            .map(t => t.split('\n')[0].trim())
+            .filter(Boolean);
+          lastSeen = `header="${count}" renderedRows=${JSON.stringify(rows)}`;
+          return rowOf(page, name).count();
+        },
+        { timeout: 90_000, intervals: [1_000, 2_000, 5_000, 5_000] },
+      )
+      .toBeGreaterThan(0);
+  } catch {
+    throw new Error(
+      `READINESS: the seeded fixture "${name}" never became searchable on the freshly-booted LOGIN_FORM ` +
+        `stack within 90s. This is a readiness failure, NOT a scope failure — the My-data assertions below ` +
+        `would be meaningless against a catalog that cannot serve the fixture at all.\n` +
+        `  last observed page state: ${lastSeen}\n` +
+        `  (if renderedRows is non-empty but lacks "${name}", the catalog IS serving and the fixture ` +
+        `specifically is missing from the unified index — probe asset_search_entrypoint, not the stack.)`,
+    );
+  }
 }
 
 test.describe('IT-153 — My-data scopes narrow the rendered results for a bound owner', () => {

@@ -1445,3 +1445,36 @@ could be probed. Same shape: a seeded fixture absent from search on a freshly-bo
 disposition stands (this slice cannot reach an unscoped search), but the cause is now much more likely
 **platform readiness after boot** than anything about the fixture — and IT-153's gate is what will catch it
 next time instead of a screenshot nobody can re-probe.
+
+### §22b — IT-153 verified, and two corrections to how I reported it
+
+**Verification: 4/4 consecutive COLD-boot runs green** (`down -v` before each, `healthy after ~42s`, 1.8m
+each), against **2 cold failures** before the gate. The condition that failed is the condition that was
+re-tested.
+
+**Correction 1 — I verified against a FOSSIL SUT and nearly acted on it.** The first verification returned
+"4 failed" and my first reading was that the fix had made things worse. It had not: bare `run-suite.sh IT-153`
+(without `ODD_STREAM` / `ODD_PLATFORM_DIR`) builds from the **shared** `../odd-platform` worktree — it logged
+`WORKING TREE @ c54b9c61+uncommitted`, not this branch. Every test failed because the SUT had no My-data
+feature, so `search-results-count` — a component this slice ADDS — did not exist in the build under test.
+Textbook `LSN-033`. `run-regression.sh ctrib062` had been doing that plumbing silently all along.
+
+Two things made it catchable: the failure was **uniform** (all four at the same assertion, including tests that
+never touch the new helper — a real defect in the fix would have failed selectively), and **`EXIT=0` despite 4
+failures**, which is exactly why the rule is *read pass/fail counts, never exit codes*. Reuse of the tag was
+then made safe by verifying the image **digest** against the one the regression logged
+(`sha256:c763c52a…`), not by trusting the tag name.
+
+**Correction 2 — I called the failure "deterministic". It is not.** The record is 2 cold failures and 1 cold
+pass at the point I wrote that; it is **intermittent**. A single green under the failing condition proves
+nothing about an intermittent defect, which is why the verification is 4 runs rather than 1. The first green
+after the fix was also on a **warm** stack (1.8m vs 4.0m, no "recreating" line) — accepting it would have
+repeated the fossil-SUT error in a different costume: a pass obtained under conditions that do not exercise
+the thing being verified.
+
+**What the gate is actually worth.** It converts an opaque `toBeVisible` timeout into a labelled readiness
+failure that reports the rendered page state — header text plus every visible row — so the next occurrence
+answers its own question: catalog serving nothing (readiness budget too short) versus serving everything
+except this row (an indexing gap, a product finding). §18's `0 results` is unexplained precisely because the
+stack was destroyed before it could be probed; a test whose `afterAll` destroys its own evidence will keep
+producing unexplainable failures, so the diagnostic belongs IN the test.

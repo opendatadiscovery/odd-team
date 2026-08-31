@@ -4,7 +4,7 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: implementing       # GATE 1 APPROVED 2026-08-31; scope comment posted; Phase D
+status: tests-green        # GATE 1 APPROVED; both buckets green at the committed SHA; FULL regression + draft PR outstanding
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
@@ -1005,3 +1005,31 @@ fixture had assumed away**:
 The diagnosis was measured, not guessed: the stack was brought up by hand, every seeded table counted
 (`5/5/5/1/1/1` — all present), the authenticated API called directly (500, not empty), and the container log
 read for the trace. Only then was the cause known.
+
+## Definition of Done — live status
+
+| # | Gate | State |
+|---|---|---|
+| 1 | Full unit build (`test + checkstyle + assemble`) **at the committed SHA** | **running** — re-run required because `61545feb` (the ownership index) and `e4bdefdf` (the test hooks) landed after the last green build |
+| 2 | FULL integration regression on the working-tree SUT | **not started** — queued behind gate 1 so the two do not contend for the machine |
+| 3 | Docs read + decided + **routed AND authored** | **DONE** — `documentation@docs/CTRIB-062-my-data-filter e692c43` off `origin/release/1.0.0`, paired `DOC-504` (`pending-release`, milestone 1.0.0). The push to the shared train stays maintainer-gated. |
+| 4 | Ontology re-enriched + committed | **DONE** — the `ReactiveLineageRepositoryImpl` sidecar (its "no visited-set guard, no owner JOIN" claim was made false by this change), manifest advanced to `077313ad`, probes `P-394`/`P-395` |
+| 5 | Principal sufficiency review (G-C13) | **partial** — 18 unit + 8 integration cases green, both buckets, RED-proved where applicable; the **rendered-pixel review** of the sidebar group + truncation strip is still owed, and the local **patch-coverage** check runs with gate 1 |
+
+**An uncommitted-HEAD gap was found and closed before it could become false evidence.** A working-tree audit
+showed `SearchResultsHeader.tsx`'s `data-testid` hooks were still uncommitted while IT-152 and IT-153 were
+passing — and the integration runner builds its SUT from the **working tree**, so those green runs were against
+a tree the branch did not contain. The content is identical now that it is committed (`e4bdefdf`), and gate 2
+re-runs everything at the committed SHA regardless, so nothing rests on the earlier digests. `LSN-032` names
+exactly this trap; it was caught by auditing rather than by assuming.
+
+### Findings filed, not narrated
+
+| Item | |
+|---|---|
+| `issues/odd-platform/PLT-258` | Sidebar facet dropdowns match **exactly** — the box says "Search by name" but a prefix returns nothing. Measured at the endpoint. |
+| `issues/odd-platform/PLT-259` | A **NULL `ownership.title_id` 500s the entire search results page**. The column is nullable, the mapper is not. Same shape as the PLT-147 lock. |
+| `backlog/docs/DOC-504` | The paired doc item for the 1.0.0 train (`pending-release`). |
+| `backlog/docs/DOC-505` | `data-lineage.md` contradicts itself on "Upstream dependents" — a **released-truth** correction, so docs `main`, never the train. |
+| `TST-059` (existing) | Its `search-url-facets.spec.ts` entry is now **stale** — IT-151 passes 4/4 here. Its `search-class-tab-filter.spec.ts` entry is **still live** (that spec still awaits the dead `GET /api/search/{id}/results` at :154, inside the PLT-147 lock). Deliberately **not** fixed: TST-059 owns that class across ten files, and half-fixing a tracked class is how it comes back. |
+| `PLT-256` (existing, ctrib061) | Saved searches drop `asset_kinds` — cited, **not** duplicated. |

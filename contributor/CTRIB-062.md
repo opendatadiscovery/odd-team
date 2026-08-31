@@ -1078,3 +1078,31 @@ two docker stacks and a Playwright browser — and one of them is by name a *loa
 environmental signal, **but it is not being taken as one**: this change edits the OpenAPI specification, and
 `OpenApiDocsContractTest` loads the generated API document, so a hang there could plausibly be mine. Both are
 re-running in isolation on a freed machine. If they fail again, they are mine.
+
+## The two unit failures — the A/B, and what each outcome means
+
+Both failures **reproduce in isolation on a freed machine** (`BUILD FAILED in 12m 41s`, same two cases, same
+`Timeout on blocking read for 60 s`). So the load theory is dead: this is real and deterministic.
+
+**What is already known, without guessing:**
+
+- `OpenApiDocsContractTest` is the **regression guard for PLT-141 / #1759** — springdoc 2.2.0 × Spring 6.2
+  throws `NoSuchMethodError` walking `@ControllerAdvice` to build response schemas, Reactor treats it as
+  fatal, and the spec request **hangs forever**. A 60 s blocking-read timeout is that bug's exact fingerprint.
+- **But both trees pin springdoc `2.8.17`** (`gradle/libs.versions.toml:25`) — the fixed line — and this
+  branch **changes no build file** (`git diff --name-only 82e7e70e..HEAD` matches no `build.gradle` /
+  `libs.versions.toml`). So a version regression is ruled out.
+- Both failing tests are `WebTestClient` tests with a 60 s client timeout; the other **763 tests pass**, so the
+  Spring context itself starts.
+- **Prior evidence points at this branch, not at main:** `/review CTRIB-059` recorded a full build at this
+  branch point of **747 tests / 0 failures**, which would have included `OpenApiDocsContractTest`.
+
+**The A/B now running** is the same two tests on a clean detached worktree at `origin/main` `82e7e70e`
+(`../odd-platform-ctrib062base`, created for this rather than borrowing ctrib060's).
+
+| Outcome | Meaning | Next step |
+|---|---|---|
+| Baseline **RED** | pre-existing on `main`; this branch inherits it | file it as a finding, cite the A/B in the PR, proceed |
+| Baseline **GREEN** | **the failures are mine** | **no PR.** Bisect the branch's 8 commits against these two tests — the contract commit `54f3cb91` is the first suspect, since it is the only one that changes what springdoc reflects over |
+
+Recording the decision rule **before** the result so the conclusion is not fitted to whichever answer arrives.

@@ -101,20 +101,42 @@ these.
 
 ## Verification
 
-- **Unit** — 18 new behavioural tests against a real Postgres and real wiring, full `:odd-platform-api:build`
-  green (test + checkstyle + assemble). Covers direction correctness with independent per-direction depth,
-  depth clamping, the anchor exclusion, **cycle termination**, **deterministic node-cap truncation asserted
-  across two runs**, a large-owned-set regression guard, the per-kind narrowing (including the foreign-term and
-  query-example exclusions), an empty resolved scope failing closed with an agreeing count, the legacy alias,
-  and the fail-closed empty page when no owner resolves.
+- **Unit** — full `:odd-platform-api:build` **green: 773 tests, 0 failures, 0 skipped** (test + checkstyle +
+  assemble, the CI replica). 24 new behavioural tests against a real Postgres and real wiring: direction
+  correctness with independent per-direction depth, depth clamping, the anchor exclusion, **cycle
+  termination**, **deterministic node-cap truncation asserted across two runs**, the node budget spent
+  **exactly at a hop boundary**, the **wall-clock circuit breaker returning TIMEOUT with an empty scope**
+  (fail-closed — a timeout must never read as unscoped), a large-owned-set regression guard, the per-kind
+  narrowing (including the foreign-term and query-example exclusions), the full token-degradation contract
+  (blank / unrecognised / case / duplicates / the ADR D9 legacy alias precedence), an empty resolved scope
+  failing closed with an agreeing count, and the fail-closed empty page when no owner resolves.
+- **Changed-lines coverage — 115/115 = 100%** against CI's `min-coverage-changed-files: 98`, measured locally
+  rather than discovered in CI. The check found three documented outcomes with no test behind them (TIMEOUT,
+  the NODE_CAP hop boundary, unrecognised-token degradation) — all three are promises this PR's own OpenAPI
+  descriptions make, so they are now pinned. One dead factory was **deleted rather than tested**.
 - **Frontend** — `tsc` clean; 42/42 URL-contract tests, asserted against real serialiser output rather than an
   assumed shape.
-- **Integration** — a new `IT-152` covering the URL contract's survival of a facet toggle (the #1858
-  mirror-merge class), the retired strip, the count, and the DISABLED posture; three existing suite-registered
-  specs re-pointed off the retired control rather than left red.
+- **Integration** — two new protocols, both run, both green. `IT-152` (4/4) covers the URL contract's
+  survival of a facet toggle (the #1858 mirror-merge class), the retired strip, the count, and the
+  `auth.type=DISABLED` posture. `IT-153` (4/4) is the half that needs an identity: a real form login against a
+  seeded owner association, proving each scope actually NARROWS (owned / upstream / downstream are not
+  interchangeable), that per-direction depth is honoured, and that the home panels deep-link into the filter.
+  Three existing suite-registered specs were re-pointed off the retired control rather than left red.
+- **Full regression** — all four suites on the working-tree SUT: `feature-complete` 328 passed,
+  `known-bugs` 3 RED (its pass condition), `multi-stack` 12 passed, `ingestion-e2e` 15 passed. The
+  `feature-complete` failures are change-independent and reconciled by arithmetic, not assertion: 11 are the
+  documented stale-spec class (specs still gating on `GET /api/search/{id}/results`, which ST-4 retired), 6
+  belong to an unmerged sibling slice, 1 is a known cold-start instance. Three of the documented stale specs
+  now **pass** because this PR re-points them off the retired control.
 - **Live** — the running image was driven directly to capture the real response shape and to prove the
   fail-closed behaviour end-to-end. That is also how an overclaim in this PR's own API description was caught:
   an out-of-range depth clamps, but a wrong-*typed* one is a 400, and the published description now says so.
+- **Performance** — the indexes in `V0_0_101` are measured, not assumed (lineage `child_oddrn` 880 ms → 22 ms;
+  `ownership(owner_id)` 107 ms → 4.9 ms), and the scope predicate's shape was corrected *before* implementation
+  by a measurement that showed the originally-planned `= ANY(array)` costing 54 443 ms against 249 ms for the
+  sub-select form. One "obvious" optimisation was rejected for measuring slower. **Scope of that evidence,
+  stated plainly:** those runs used probe SQL on a dense fixture, not the complete shipped query at catalog
+  scale — the code comment says exactly that, and the remaining confirmation is tracked rather than implied.
 
 ## Docs
 

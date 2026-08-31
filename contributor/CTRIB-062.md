@@ -968,3 +968,40 @@ A/B** (4/4 green — proving the identical `#filter-statuses` control works on t
 directly against the warm stack** (4/4 green — proving the spec itself was correct). Only then was the
 difference isolated to the cold-stack path. A throwaway diagnostic spec read the live DOM and was deleted
 afterwards; it was an instrument, not an artefact.
+
+## Integration bucket — IT-153 GREEN (4/4): the narrowing, proven through a real login
+
+`run-suite.sh IT-153` → **4 passed (6.5 m)**, `run-log/2026-08-31-IT-153.md` outcome `e2e:PASS`, on a
+LOGIN_FORM stack running **this branch's SUT image** (`ODD_PLATFORM_IMAGE=odd-platform:odd-team-sut-ctrib062` —
+the compose file otherwise defaults to `ghcr.io/…:latest`, which would have tested a fossil, `LSN-033`).
+
+| Case | |
+|---|---|
+| `My Objects` returns what I own **across kinds** — my entity **and my term**, and neither a foreign term nor an unowned entity (**the pass-through regression**) | ✓ 53.6 s |
+| the two lineage directions are **not interchangeable**, and each **excludes the anchor** | ✓ 48.1 s |
+| depth is **per-direction**: downstream 2 reaches the second hop; raising *upstream* depth does not widen it | ✓ 1.0 m |
+| the group renders **enabled** for a bound owner — the contrast to IT-152's DISABLED absence | ✓ 41.9 s |
+
+This is the claim the unit bucket could not make: a **real principal** signs in through the Spring form,
+`user_owner_mapping (admin, LOGIN_FORM, owner)` resolves, and the assertions read the **rendered rows**.
+
+### What it cost, and what it found
+
+Three runs. Every failure was in the fixture, and **two of the three were pre-existing platform facts my
+fixture had assumed away**:
+
+1. `ON CONFLICT (name)` on `owner` — `owner_name_unique` is a **partial** index (`WHERE deleted_at IS NULL`,
+   V0_0_36 dropped the plain constraint), and `ON CONFLICT` cannot target one without repeating its predicate.
+   The *same class* as the `namespace` bug I had already fixed by reading the schema — I fixed one instance and
+   missed its sibling. Both now use SELECT-then-INSERT, which does not care how uniqueness is expressed.
+2. A 500 on every search, traced to **`DataEntityDtoMapper.extractOwnershipRelation`**: `ownership.title_id` is
+   nullable, but the mapper throws on a null, so **one** such row takes down the whole results page for
+   everyone. My fixture had omitted the title; the platform is also too strict about a state its own schema
+   permits. Both addressed — fixture fixed, and the platform defect filed as
+   **`issues/odd-platform/PLT-259`** (high). Same failure shape as the PLT-147 null-details bug IT-068 locks.
+3. `term_ownership.role_id` — the column is `title_id` since V0_0_53. Verified against the live database
+   rather than the migration I happened to read first.
+
+The diagnosis was measured, not guessed: the stack was brought up by hand, every seeded table counted
+(`5/5/5/1/1/1` — all present), the authenticated API called directly (500, not empty), and the container log
+read for the trace. Only then was the cause known.

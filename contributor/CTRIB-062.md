@@ -4,7 +4,7 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: tests-green        # GATE 1 APPROVED; both buckets green at the committed SHA; FULL regression + draft PR outstanding
+status: review-ready
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
@@ -1478,3 +1478,49 @@ answers its own question: catalog serving nothing (readiness budget too short) v
 except this row (an indexing gap, a product finding). §18's `0 results` is unexplained precisely because the
 stack was destroyed before it could be probed; a test whose `afterAll` destroys its own evidence will keep
 producing unexplainable failures, so the diagnostic belongs IN the test.
+
+---
+
+## §23 — Phase E: draft PRs open, GATE 2 handoff
+
+| Artefact | URL |
+|---|---|
+| **Code (draft)** | https://github.com/opendatadiscovery/odd-platform/pull/1871 |
+| **Docs (draft, on `release/1.0.0`)** | https://github.com/opendatadiscovery/documentation/pull/110 |
+| Branch | `contrib/CTRIB-062-my-data-filter` @ `94b2a2c8` (10 commits off `origin/main` `82e7e70e`) |
+| Docs branch | `docs/CTRIB-062-my-data-filter` (2 commits off `origin/release/1.0.0`) |
+
+**Push safety asserted before each push (LSN-038):** no upstream on either branch,
+`push.default=current`, `branch.merge` unset, `origin/main` verified unmoved at `82e7e70e`, both worktrees
+clean. Both PRs are **draft** and bot-authored — G-C4 means this stream cannot merge them.
+
+### Definition of Done — final status
+
+| # | Gate | Evidence |
+|---|---|---|
+| 1 | Full unit build green on the working tree | **773 tests, 0 failures, 0 skipped**; checkstyle re-run green at the final SHA after the comment edit |
+| 2 | FULL integration regression | 4 suites run: `feature-complete` 328P/18F (**all 18 attributed elsewhere**), `known-bugs` 3 RED (its pass condition), `multi-stack` 12P (the 1 failure was mine — fixed, **verified 4/4 cold**), `ingestion-e2e` 15P |
+| 3 | Docs read, decided, routed AND authored | Committed on the `release/1.0.0` train, verified at the SHA, one **broken link found and fixed**, corpus sweep clean |
+| 4 | Ontology refreshed + committed | Sidecar current (source unchanged since `enriched_at_commit`); graph layer is ephemeral by design, not a deliverable |
+| 5 | Principal sufficiency (G-C13) | **Changed-lines coverage 115/115 = 100%** vs CI's 98%; pixel review done; i18n verified by rendered keys across all 7 locales |
+
+**One gate closed with a narrowed claim, not a green tick.** The perf evidence (M1-M5) is real and caught a
+218x design error and a 22x missing index — but it was taken on probe SQL, not the complete shipped query. The
+code comment now says exactly that, and the residual is `TST-063`. GATE 2 decides whether it blocks merge; it
+is not presented as satisfied.
+
+### Follow-ups this slice leaves behind
+
+| ID | What |
+|---|---|
+| `PLT-258` | facet-options search is exact-match, not prefix — measured live |
+| `PLT-259` | a NULL `ownership.title_id` 500s the whole results page (high) |
+| `DOC-504` | paired doc item, `pending-release`, milestone 1.0.0 |
+| `DOC-505` | `data-lineage.md` self-contradiction (released truth) |
+| `TST-061` | the coordination substrate governs activities, not resources — **three faces**: memory contention, an unscoped `pkill`, and a kill-unsafe diagnostic restore |
+| `TST-063` | the perf claim is measured on the isolated predicate, not the shipped query |
+
+**Corrections to existing tracked items** (both contained wrong information, one of it mine):
+`TST-057` — retracted a **phantom regression** this stream had written into it, which would have sent the next
+reader hunting a non-existent 3.4x slowdown. `TST-059` — baseline corrected from **15 to 11**, since three
+specs this slice re-points now pass and one was deleted by a sibling stream.

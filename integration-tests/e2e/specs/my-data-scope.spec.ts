@@ -84,8 +84,17 @@ test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLE
     ).toBeVisible({ timeout: 20_000 });
 
     // Toggle a sidebar facet the only way a user can — through the Statuses filter's dropdown.
-    await page.locator('#filter-statuses').click();
-    await page.getByRole('option', { name: 'STABLE' }).click();
+    // The facet autocomplete is MUI **controlled-open**: the popup only shows after a debounced fetch
+    // resolves and flips `autocompleteOpen`, so a bare click can land before the handler is wired and leave
+    // the list closed for good. TYPE into it instead — `pressSequentially` drives the same
+    // `onInputChange -> handleFacetSearch` path a user does, and is this workspace's recorded technique for
+    // this widget. (A click alone passed when the stack was already warm and hung on a freshly-recreated one.)
+    const statuses = page.locator('#filter-statuses');
+    await statuses.click();
+    await statuses.pressSequentially('STAB', { delay: 60 });
+    const stableOption = page.getByRole('option', { name: 'STABLE' });
+    await expect(stableOption, 'the Statuses dropdown offered STABLE').toBeVisible({ timeout: 30_000 });
+    await stableOption.click();
 
     await expect(page, 'the toggled facet reaches the URL').toHaveURL(STATUS_IN_URL, { timeout: 15_000 });
     await expect(page, 'and the My-data scope is STILL there — not dropped by the mirror').toHaveURL(

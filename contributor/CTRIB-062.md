@@ -874,3 +874,67 @@ service-side clamp can run. The claim is now scoped to what is actually true —
 `parseDepth` drops a non-numeric depth before the request exists, which is the case a shareable link can
 actually hit — and the **published OpenAPI descriptions for both depth fields were rewritten to match**, since
 an inaccurate contract description is exactly the class of defect this project exists to prevent.
+
+## Plan-time measurements, round 2 — what the ontology refresh caught
+
+The `/enrich` pass on `ReactiveLineageRepositoryImpl` did more than restate the file: reading it fresh, the
+analyser flagged two things about **my own change**. Both were verified against the real schema before acting,
+and they resolved in opposite directions — which is the point of measuring rather than accepting.
+
+### M4 — CONFIRMED and fixed: I indexed only half the query
+
+`ownership` and `term_ownership` are both looked up **by owner** (the `MY_OBJECTS` semi-join and hop 1's
+anchor subquery), but in both tables `owner_id` is the **second** column of the only composite index
+(`ownership(data_entity_id, owner_id)`, `term_ownership(term_id, owner_id)`) — confirmed against the live
+`pg_indexes`. A predicate on `owner_id` alone cannot range-start on either.
+
+| `SELECT data_entity_id FROM ownership WHERE owner_id = ?` (400 000 rows, 500 owners) | Plan | Time |
+|---|---|---|
+| today | **Parallel Seq Scan** | **107.1 ms** |
+| after `CREATE INDEX ownership_owner_id` | Bitmap Index Scan | **4.9 ms** |
+
+**22×, on every search that carries a My-data scope.** Exactly the class of finding that produced the
+`lineage(child_oddrn)` index — and I had indexed the lineage side while leaving the ownership side on a
+sequential scan. Both indexes now ship in `V0_0_101`.
+
+### M5 — REJECTED after measuring: the "obvious" frontier fix is the slowest
+
+The same pass flagged that hops 2..n bind the frontier as a literal `IN` list — the shape M3 taught me to
+avoid. Measured at the worst case (a 10 000-element frontier over 400 000 edges):
+
+| Frontier binding | Time |
+|---|---|
+| `IN (SELECT … FROM generate_series)` — a hashed subquery | **894 ms** |
+| the literal `IN (?, ?, … ×10 000)` jOOQ emits today | **1 380 ms** |
+| `IN (SELECT unnest(?))` — the array bind used elsewhere in this slice | **1 885 ms** |
+
+**The suggested fix is the slowest of the three**, because here the planner turns it into 10 000 individual
+index probes rather than one hash. All three land around a second only at a frontier the node budget already
+caps, and the common case (depth 1, a handful of owned assets) is milliseconds. So the shape stays — changing
+it would have been churn in the wrong direction, justified by pattern-matching rather than measurement.
+
+M3 and M5 together are the honest lesson: `= ANY(array)` was catastrophic *in a per-row OR filter over a large
+scan*, and `unnest` fixed it there. Neither result generalises to a different query shape, and assuming it did
+would have made this slower.
+
+## Live-system diagnosis — IT-152's last failure was mine, twice over
+
+The `#1858` mirror-merge test failed three runs in a row on `waiting for getByRole('option', {name:'STABLE'})`.
+Rather than loosen the assertion, each hypothesis was tested against the running stack:
+
+| Hypothesis | Test | Verdict |
+|---|---|---|
+| The facet-options endpoint is broken | `curl .../facet/statuses` → 400 | **My curl was wrong** — the path enum is the uppercase `STATUSES`; it returns 200 and lists all five statuses |
+| The tag facet's async options never load | switched to `statuses`, a facet whose options always exist | correct change, but not the cause |
+| The click races the session's `searchId` | added an explicit settle-wait on the results count | correct change, but not the cause |
+| The interaction is broken on my build | ran **IT-151**, which drives the identical `#filter-statuses` → `STABLE` control | **4/4 PASS** — so the control works on my SUT |
+| The spec itself is wrong | ran `my-data-scope.spec.ts` directly against the warm stack | **4/4 PASS** — the spec is correct |
+
+So the failure only reproduces through `run-suite.sh`, which recreates the stack: on a **cold** app the MUI
+**controlled-open** autocomplete can swallow the opening click, because the popup only appears once a debounced
+fetch resolves and flips `autocompleteOpen`. That is a known ODD widget gotcha with a recorded technique —
+drive it by **typing** (`pressSequentially`), which follows the same `onInputChange → handleFacetSearch` path a
+user does. Applied, rather than papering over it with a longer timeout.
+
+A diagnostic spec was written to read the live DOM (options present, listbox open, the facet request 200) and
+**deleted afterwards** — it was an instrument, not an artefact.

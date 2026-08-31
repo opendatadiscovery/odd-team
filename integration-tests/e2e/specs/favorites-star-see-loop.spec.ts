@@ -182,8 +182,14 @@ test.describe('Favorites — star -> find it again via the search filter (#1815 
     await expect(page.getByText(FOIL).first(), 'unfiltered, the foil is listed').toBeVisible({
       timeout: 15_000,
     });
-    await favFilter(page).check();
+    // `.click()`, NOT `.check()`. Playwright's check() clicks and then requires THE SAME element to report
+    // checked — but this control navigates, so React re-mounts it and the original handle is detached. That
+    // is an API mismatch, not a product defect: the run that exposed it logged "navigations have finished",
+    // i.e. the click DID write the URL. The assertions below are strictly stronger than the one check()
+    // makes — the URL gained the param, the re-rendered control reflects it, and the list actually narrowed.
+    await favFilter(page).click();
     await expect(page).toHaveURL(/favorites=yes/, { timeout: 15_000 });
+    await expect(favFilter(page), 'the re-rendered control reflects the scope it just wrote').toBeChecked();
     await expectNarrowedToFavorites(page, NAME);
 
     // THE #1858 REGRESSION CLASS — the actual preservation check, and the reason this case exists.
@@ -191,7 +197,12 @@ test.describe('Favorites — star -> find it again via the search filter (#1815 
     // params. Toggling a redux facet (Datasource is one; the favorites scope is not) re-fires that mirror.
     // If `favorites` is missing from the merge-back list, it is silently dropped right here — the filter
     // vanishes on an unrelated click, with no error. Exactly what #1858 fixed for the class filter.
-    await page.locator('#filter-datasources').click();
+    // Datasource is a SingleFilterItem -> MUI `AppSelect`, NOT the Autocomplete that MultipleFilterItem
+    // (Statuses/Tag/Owner) renders. `#filter-datasources` is therefore MUI's HIDDEN native input
+    // (aria-hidden, tabindex=-1) and the visible `role="combobox"` div intercepts every pointer event —
+    // clicking the id selector can never succeed. Drive the visible combobox by role + accessible name,
+    // the same way a user and a screen reader reach it.
+    await page.getByRole('combobox', { name: /Datasource/i }).click();
     await page.getByRole('option', { name: 'it148-ds', exact: true }).click();
     await expect(
       page,
@@ -208,11 +219,13 @@ test.describe('Favorites — star -> find it again via the search filter (#1815 
     );
 
     await page.goto(FAV_SEARCH);
-    await favFilter(page).uncheck();
+    await expect(favFilter(page), 'starts checked from the URL').toBeChecked();
+    await favFilter(page).click();
     await expect(page, 'unchecking removes the param entirely, not favorites=no').toHaveURL(
       url => !url.search.includes('favorites='),
       { timeout: 15_000 }
     );
+    await expect(favFilter(page), 'and the re-rendered control is off').not.toBeChecked();
 
     await request.delete(`/api/favorites/DATA_ENTITY/${id}`);
   });

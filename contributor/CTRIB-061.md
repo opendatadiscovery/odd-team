@@ -1129,3 +1129,54 @@ missing **readiness** step (`TEMPLATE.md`: seed -> readiness -> run -> assert), 
 because a preceding multi-stack spec tears the stack down and leaves `beforeAll` booting cold. My re-grounded
 IT-148 has the same exposure — it seeds through real ingestion and then navigates — so if it fails on a plain
 assertion I will look for a missing readiness gate before reaching for "flake" or a timeout.
+
+## 22. The EXPLAIN gate — it found my comment wrong AND a 27x cliff
+
+IT-148 is **7/7 GREEN** on the working-tree SUT (`WORKING TREE @ 82e7e70e+uncommitted`, my own image tag —
+SUT identity read from the run log, per §21 trap 1). It took three runs, and the two failures were both mine:
+
+1. `.check()` on a control that **navigates** — Playwright requires the same element to report checked, but
+   React re-mounts it. Replaced with `.click()` plus assertions that are *stronger* than the one dropped (URL
+   gained the param · the re-rendered control reflects it · the list narrowed). Not a weakening under G-C15.
+2. `#filter-datasources` is MUI's **hidden native input**; the visible `role="combobox"` div intercepts every
+   pointer event, so the click retried 97 times and timed out. Datasource is a `SingleFilterItem` -> `AppSelect`,
+   **not** the Autocomplete that `MultipleFilterItem` renders — a distinction I had *read and written down* in
+   §5(a) and then failed to apply. Fixed to role + accessible name.
+
+**Three selector failures in one spec, one root cause:** I write assertions against a *captured real shape* for
+API payloads and against an *assumed* shape for the DOM. Every selector is now role-and-accessible-name based.
+
+### The EXPLAIN, on the GENERATED SQL
+
+Measured against 50,001 entrypoint rows / 60,200 favorites across 300 identities:
+
+| query | plan | time |
+|---|---|---|
+| broad FTS, no favorites predicate (**control**) | Bitmap Heap Scan + top-N sort | **180 ms** |
+| broad FTS + `favorites=true` | Nested Loop semi-join, drives from `favorite` | **5.9 ms** |
+| broad FTS + `favorites=false` | Nested Loop **Anti Join** | **4,829 ms** |
+| selective FTS + `favorites=false` | Merge Anti Join | **6.7 ms** |
+
+**Finding 1 — my source comment was factually wrong, and only measurement could show it.** It asserted the
+predicate "probes `favorite_identity_asset_key` … once per candidate row". Measured: the planner uses
+**`favorite_identity_created_active_idx`** and drives *from* `favorite`, probing the entrypoint PK. The
+key-shaped index is not partial, so `deleted_at` would need rechecking; the partial one satisfies it outright.
+The comment is corrected in place. Left alone it would have misled the next reader into thinking
+`favorite_identity_asset_key` is load-bearing for search — when the *other* index is.
+
+**Finding 2 — a 27x cliff on the negative direction, filed as `PLT-258`.** Not the predicate shape and not a
+missing index: a **~50x GIN row misestimate** (planner 1000, actual 50001) makes a nestloop anti-join look
+cheap, the inner side is then materialised (`loops=1`) and filtered in memory — ~10M comparisons. **I created a
+partial index on the exact correlated 4-tuple and re-measured: no change** (4.8 s -> 4.8 s). Hypothesis tested
+and rejected rather than assumed, which is why the issue says the misestimate is the driver.
+
+**Severity is low *today* only because `favorites=false` has no UI control** — the GATE-1 toggle decision. It
+is reachable by hand-built URL or API. If a later slice gives the inverted scope an affordance, this becomes
+user-facing and must be fixed first; that condition is written into PLT-258.
+
+**Not silently shipped, not unilaterally re-architected.** The remedies (GIN statistics target, a forced hash
+anti-join, capping the candidate set) all sit outside ST-7's approved scope, and the one I could test did not
+work. It is measured, tracked, disclosed in the source comment, and surfaced at the gate.
+
+This is the gate I had filed as "SRE hygiene" in the plan. It corrected a false statement in shipped source and
+found a measured performance cliff — neither of which any test, lint or coverage check could see.

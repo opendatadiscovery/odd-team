@@ -1261,3 +1261,41 @@ check.
 settle it. A stack that has produced an anomaly is evidence and should be probed *before* teardown, or
 preserved. This is the same class as `LSN-031` (verify the running system) reached from the other end — the
 running system was available and was discarded instead of interrogated.
+
+---
+
+## §19 — REOPENED: the uncensored A/B indicts the slice, and the honest reading is "suspected", not "owned"
+
+§17 closed the springdoc RED as change-independent on censored data. **Uncensored measurement reopened it.**
+
+| SUT | condition | controls | `platformApi` |
+|---|---|---|---|
+| `origin/main` `82e7e70e` | uncensored, flock-held, quiet | **7.283s** | **24.156s** |
+| branch (8 commits) | uncensored, flock-held | 14.492s | **43.750s** |
+
+**The pre-registered rule fired against me.** Recorded before the run: *"if main comes in near 43s my change
+costs nothing; if near 25s, my slice costs ~18s and I own it and hold the PR."* Main came in at **24.156s**.
+The PR is HELD.
+
+**What is NOT established, and I am not going to overstate it.** The two runs differ ~2x in load (controls
+7.283 vs 14.492), so they are not like-for-like. Control-normalisation would rescue the slice here
+(platformApi scaled 1.81x while controls scaled 1.99x — i.e. *less* than the box), but that is the exact
+normalisation withdrawn earlier in this record as unsound, and it does not become sound by favouring me.
+So the 43.750s is **un-attributed**, not attributed to this slice. The correct interim status is
+**SUSPECTED, pending one like-for-like measurement** — a distinction pressed by the ctrib061 stream against
+its own interest, and it is right.
+
+**What IS established, and it cuts both ways:**
+
+- **The ordering confound is constant within a class.** JUnit 5's default method ordering is deterministic for
+  a given class, so springdoc's reflection walk lands in the same position in every run of
+  `OpenApiDocsContractTest`. That legitimises the 24 -> 44 comparison *within* this stream, and kills
+  cross-stream ratio comparisons dead.
+- **No mechanism.** `git diff --name-only origin/main..HEAD` over `*/src/main/java/*` is 12 files: DTOs,
+  repositories, services. **Zero controllers, zero `@ControllerAdvice`, zero request mappings** — springdoc's
+  document build walks none of them. The only surface this slice presents is 5 generated scalar properties on
+  2 of 317 schemas. A 19s cost from that is not merely implausible, it has **no proposed mechanism at all**.
+
+So the mechanism says impossible and one measurement pair says 19s. One of them is wrong. Resolving which is
+the next action, and it gates the PR: **if the cost is real, this does not ship** — the structural argument
+would then be broken, which matters far beyond this slice.

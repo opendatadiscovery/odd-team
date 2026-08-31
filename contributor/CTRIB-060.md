@@ -4,7 +4,7 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: implementing
+status: blocked   # integration gate UNRESOLVED — the A/B that decides attributability of 20 feature-complete failures was interrupted at 127/339. NOT review-ready.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1840 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-6 of #1825"
@@ -422,6 +422,84 @@ with the suite green. Half of that is already covered — `searchAssets_negation
 behavioural and goes RED if the guard stops firing (an unguarded `-negonlyeta` returns rows). The **uncovered**
 half is the OR case: `searchAssets_orWithNonIndexableBranch_keepsTheIndexableBranch` asserts only that the
 indexable branch is present, so an unfired guard there would still pass. That assertion is hardened below.
+
+
+## Integration bucket — the e2e verdict, and why it needed an A/B
+
+`run-regression.sh ctrib060` (SUT built from `a256a9a1`, run-log digest confirmed, `confirmed: the e2e stack is
+running the SUT image`):
+
+| Suite | Result |
+|---|---|
+| `feature-complete` | **319 passed / 20 failed** |
+| `known-bugs` | 3 RED — its **expected** state (IT-004 / IT-006 / IT-007) |
+| `multi-stack` | PASS |
+| `ingestion-e2e` | PASS (15/15) |
+
+`api:FAIL` on `feature-complete` is **TST-058**, a tracked pre-existing dead rail — `lineage/_extractor` fails to
+build (`hatchling` rejects `readme = "../README.md"`), reproduced verbatim in this run's log. Not this change.
+
+### What the 20 failures are NOT
+
+- **Not a backend regression.** On the same SUT: `POST /api/search` → 200 with facet counts; `GET
+  /api/search/{id}/results` → 200; `customer -test` → 200. No 500, no `42601`.
+- Every failure is a 60 s `waitForResponse` / `waitForURL` timeout, and the set is heterogeneous — it includes
+  `swagger-openapi-discovery`, which has no relationship to search.
+
+### What the box was doing during that run
+
+Two **other** contributor streams were live and had registered in `state/active-streams.yaml` *after* this
+stream's intake, so the intake check (correct when taken) had already gone stale:
+
+- `ctrib061` (#1841), `ctrib062` (#1842).
+- `ctrib062`'s own entry, timestamped **23:47**, records: *"ctrib060 IS RUNNING — run-regression.sh ctrib060 pid
+  248842 … currently in the feature-complete suite … it HOLDS the heavy-e2e flock"*.
+- And `ctrib062-odd-platform` + `ctrib062-database` were **created 23:43:11** — a second platform + Postgres
+  inside this stream's e2e window. The flock guards the *regression*, not stack *bring-up*, so it never saw them.
+- `TST-042` independently records that `feature-complete` carries specs whose waits flake under full-set load.
+
+Logged as **`TST-060`** (the coordination gap), not narrated.
+
+### Two harness traps hit while investigating — both self-caught, both recorded
+
+1. An isolation re-run invoked `run-suite.sh` **without `ODD_PLATFORM_DIR`**, so it rebuilt the SUT from the
+   *shared* `../odd-platform` checkout (`c54b9c61+uncommitted`, the old `contrib/CTRIB-026-…` branch) and
+   overwrote this stream's image tag — the LSN-033 fossil trap, walked into while checking for it.
+2. `run-suite.sh` then reused a leftover "already healthy" stack and printed
+   `WARNING: the e2e stack is running image , which does NOT match the SUT digest …` — **and ran anyway**. The
+   resulting screenshot showed a pre-ST-4 nine-tab class strip and a `waitForURL(?q=)` timeout that read exactly
+   like a regression in this change. It was caught only because the rendered tab strip contradicted the source:
+   `SearchResultsTabs.tsx` on `origin/main` renders **two** tabs, not nine.
+
+Both are in `TST-060`'s acceptance criteria (a digest mismatch must abort, not warn).
+
+### The A/B — the only thing that settles attributability
+
+Side A is the run above (my SUT, 20 failures). Side B is the **identical** `feature-complete` suite against a SUT
+built from pure `origin/main` @ `82e7e70e` (digest `4e6afc9d…`), flock held. *(One caveat recorded: the suite's
+spec list gained `my-data-scope.spec.ts` from a parallel stream between the two runs, so the sets differ by that
+one spec.)*
+
+**Side B was INTERRUPTED at 127 of ~339 specs** — it did not produce a final tally. What it did establish, on a
+build that contains **no ST-6 code at all**:
+
+| Spec | on pure `origin/main` | in this change's 20 |
+|---|---|---|
+| `specs/catalog-search.spec.ts` | **FAILED** | yes |
+| `specs/entity-class-type-badge-list.spec.ts` | **FAILED** | yes |
+
+So **2 of the 20 are directly proven non-attributable** — they fail without this change present. The remaining 18
+were not reached before the interrupt and are **NOT proven either way**.
+
+**Status: the integration gate is UNRESOLVED, and this is not a pass.** The circumstantial case for
+"environmental" is strong (the backend answers 200 on all three query shapes on the same SUT; the failures are
+uniform 60 s timeouts across a heterogeneous set including `swagger-openapi-discovery`; `TST-042` records these
+specs flaking under full-set load; a second stream stood up a platform inside the e2e window) — but
+circumstantial is not the bar. **The PR stays `draft` and this CTRIB does not reach `review-ready` until side B
+is completed on a quiet box.**
+
+To finish it: `ODD_PLATFORM_DIR=../odd-platform-ctrib060base integration-tests/run-regression.sh ctrib060base
+feature-complete`, with no other stream holding a stack, then diff its failing set against the 20 above.
 
 ## GATE 1 — APPROVED 2026-08-30
 

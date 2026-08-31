@@ -8,6 +8,7 @@ gates:
 test_class: integration
 stack: odd-minimal
 automation: "e2e:favorites-star-see-loop.spec.ts"
+suite: pending-merge   # NOT feature-complete/ui-e2e until #1841 merges — see the note below
 plan_ref: ""
 status: ready
 ---
@@ -16,6 +17,34 @@ status: ready
 
 > A protocol is the source of truth — a human can execute every step below WITHOUT tooling.
 > The `automation:` spec runs the same steps and writes the same result.
+
+## 0. LANE — `pending-merge`, not `feature-complete` (read before running this)
+
+**This protocol asserts behaviour of an UNMERGED feature (ST-7 / #1841): the `/favorites` tab is GONE and a
+Favorites filter narrows the Catalog search. Neither is true on `origin/main`.**
+
+The e2e spec repo is **shared**, but every stream builds its **own** SUT from its **own** worktree. So from
+the moment the re-grounded spec was committed, it went RED for every other stream — six failures in
+*search*-named specs, in diffs containing no favorites code at all. ctrib062 hit exactly that (2026-08-31) and
+verified it change-independent before reporting it.
+
+That is not flakiness; it is a spec running where its subject does not exist. It is also corrosive in a
+specific way: the next stream diffs its failures against a stale documented baseline, finds six unexplained
+reds, and reasonably suspects its own change — a ~70-minute A/B to disprove. Worse, it trains everyone to read
+a red as "probably someone else's", which is how a real regression walks through.
+
+**So this protocol sits in the `pending-merge` lane and GRADUATES to `feature-complete` + `ui-e2e` when #1841
+merges.** That move is the measurable closure, the same graduate-or-die shape the probes use.
+
+**Deliberately NOT solved with a presence-guarded `test.skip`.** A guard that disables the spec when the filter
+is absent also disables it when the filter is **broken** — a false green, which is the G-C15 failure this
+protocol's own narrowing oracle exists to prevent. Better to not run where it cannot be true than to run and
+silently pass.
+
+**Interim coverage:** none, on `main`, for favorites — correctly. The pre-re-grounding version of this spec
+asserted the tab EXISTS; the current one asserts it is retired. The two are mutually exclusive by
+construction, and favorites has never shipped in any release (absent from 0.29.0 / 0.28.0 / 0.27.13), so the
+gap is on unreleased behaviour only.
 
 ## 1. What this checks
 

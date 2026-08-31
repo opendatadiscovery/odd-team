@@ -938,3 +938,33 @@ user does. Applied, rather than papering over it with a longer timeout.
 
 A diagnostic spec was written to read the live DOM (options present, listbox open, the facet request 200) and
 **deleted afterwards** — it was an instrument, not an artefact.
+
+## Integration bucket — IT-152 GREEN (4/4), and what the five failed runs taught
+
+`ODD_STREAM=ctrib062 integration-tests/run-suite.sh IT-152` → **4 passed (26.1 s)**,
+`run-log/2026-08-31-IT-152.md` outcome `e2e:PASS`, against a SUT built from this worktree.
+
+| Case | |
+|---|---|
+| the scope + depth params survive a sidebar facet toggle (**the #1858 mirror-merge guard**) | ✓ 8.8 s |
+| the result tab strip is gone, and the match count survives its retirement | ✓ 5.7 s |
+| an empty search reports `0 results` | ✓ 4.6 s |
+| the My-data group is **hidden** under `auth.type=DISABLED` | ✓ 3.9 s |
+
+It took five runs, and **every failure was in the test, never in the product** — which is the point of running
+it rather than reasoning about it. In order: `getByRole('tab')` also matched the app toolbar; the tag facet's
+options are async and never loaded; the facet click raced the session's `searchId`; the MUI **controlled-open**
+autocomplete swallowed the opening click on a cold stack; and finally the facet's server-side filter turned out
+to be **exact-match**, so typing the prefix `STAB` filtered `STABLE` out of its own dropdown.
+
+That last one was measured against the endpoint the dropdown calls (`?query=STAB` → `[]`, `?query=STABLE` →
+`["STABLE"]`) and is a **real product finding**, filed as `issues/odd-platform/PLT-258`: every sidebar filter's
+input is labelled *"Search by name"* but only matches a complete value, so a user typing the first letters of
+an owner or tag is told "No options". Not caused by ST-8 — reproduced directly against the endpoint — so it is
+filed separately rather than folded into this PR.
+
+Two diagnostic steps kept the loop honest rather than letting me weaken an assertion: **IT-151 was run as an
+A/B** (4/4 green — proving the identical `#filter-statuses` control works on this SUT), and the spec was **run
+directly against the warm stack** (4/4 green — proving the spec itself was correct). Only then was the
+difference isolated to the cold-stack path. A throwaway diagnostic spec read the live DOM and was deleted
+afterwards; it was an instrument, not an artefact.

@@ -1350,3 +1350,42 @@ between the two streams and filed in `TST-061`: **anything that starts a JVM tes
 `TST-057`'s remedy sizing is now measurable: **~21-24s quiet, 48-60s loaded, against a 60s bound.** Quiet, the
 bound has ~36s of headroom; loaded, essentially none. The remedy is not a bigger number — it is that a
 correctness guard must not be gated on a wall-clock bound whose margin varies 3x with unrelated machine load.
+
+---
+
+## §21 — OWED: the perf gate's Phase-D re-measurement on the real SUT
+
+Surfaced by applying the ctrib061 stream's own lens — *"a documented performance claim with no measurement
+behind it"* — to this slice. It has one.
+
+**The acceptance criterion I wrote** (`## Spec`, R-perf): *"EXPLAIN shows an index scan (not a seq scan) for
+both directions, **and the FTS bitmap scan still drives the ranked query** (the scope semi-join must not
+become the driver). Latency bound: at `downstream_depth=3` over a scope that reaches the 10 000-node cap, on a
+catalog of >= 100 000 indexed assets, `POST /api/search/assets` returns in **< 1 s**."* And M3 closes with:
+*"The Phase-D gate re-measures this on the real SUT."*
+
+**What exists:** M1-M5 — real EXPLAIN output, real timings, on a 200 000-row fixture. They caught a 218x
+design error (M3) and a 22x missing index (M4), and rejected an "obvious" optimisation (M5).
+
+**What does NOT exist: the Phase-D re-measurement.** Every one of M1-M5 was taken **plan-time, against
+hand-written probe SQL, on a throwaway Postgres**. None went through the running application. The gap that
+matters is not arithmetic — it is that **jOOQ generates the query, not me.** The measured claim is about a
+predicate *shape*; if the generated SQL differs from the probe SQL in any way that changes the plan (a cast, a
+different join order, a materialised subquery), the FTS bitmap could stop driving and every M3 number would
+describe a query the platform never issues.
+
+A code comment currently asserts the conclusion outright:
+`ReactiveAssetSearchRepositoryImpl:327` — *"keeping the predicate off the join is what preserves the
+FTS-bitmap-driven plan."* That sentence is true of the probe SQL. It is **unverified of the shipped query**.
+
+**Disposition: OWED, and it gates the PR** — this is the issue's headline deliverable ("own perf gate"), not a
+nice-to-have. It runs after the regression releases the box:
+
+1. Seed the dense fixture on the SUT stack (>= 100k indexed assets, a scope reaching the 10k cap).
+2. Capture the **generated** SQL (jOOQ debug logging / `pg_stat_statements`), not the probe SQL.
+3. `EXPLAIN (ANALYZE, BUFFERS)` it — assert the FTS bitmap is still the driver and the scope is a hashed
+   semi-join, not a per-row re-scan.
+4. Time `POST /api/search/assets` at the ceiling against the < 1 s bound.
+
+If the generated plan differs from M3's, the comment gets corrected and the shape gets fixed — the same way
+the R3 depth-degradation overclaim was corrected rather than explained away.

@@ -608,3 +608,91 @@ Round 3 also verified something stronger than this record had argued: **Favorite
 `documentation@origin/main`. Independently confirmed here with `git cat-file -e` per tag. That makes the
 ST-7/ST-7b split materially safer than the doc-timing argument alone suggested: there is no published release
 on which the missing ordering can be experienced.
+
+## 13. Phase D — what was built
+
+Branch `contrib/CTRIB-061-favorites-filter` in worktree `../odd-platform-ctrib061`, off `origin/main @ 82e7e70e`,
+**no upstream** (asserted before creation, O6/LSN-038) with `push.default=current`.
+
+### Backend
+
+| File | Change |
+|---|---|
+| `odd-platform-specification/components.yaml` | `AssetSearchFormData.favorites` — optional boolean, with the three-state contract spelled out (absent ≠ `false`) |
+| `odd-platform-specification/openapi.yaml` | the `/api/search/assets` prose now lists the dimension (it enumerates the honored contract) |
+| `dto/FavoritesScopeDto.java` (new) | `(oidcUsername, provider, favorited)`; `null` = no narrowing. Documents why it is NOT on `FacetStateDto` |
+| `ReactiveAssetSearchRepository{,Impl}.java` | one new nullable parameter on `keysetPage` / `relevancePage` / `count`; predicate `(5b)` in `conditions(...)` |
+| `AssetSearchServiceImpl.java` | resolves the identity via `CurrentUserIdentityResolver` **only when** `favorites` is present, and runs the search inside that resolution |
+
+The predicate is a correlated `EXISTS` / `NOT EXISTS` on `favorite`, keyed on the polymorphic
+`(asset_kind, asset_id)` pair, so it is **cross-kind with no kind guard** — unlike my-objects, which is
+DE-only. It probes `favorite_identity_asset_key` (the `V0_0_94` UNIQUE index) and **adds no join**, so
+`searchFrom()` is untouched and every other query keeps its plan. `NOT EXISTS` is NULL-safe where `NOT IN`
+is not.
+
+**A simplification made during self-review, before the gate ran on it.** The first cut resolved the scope
+into a `Mono<FavoritesScopeDto>` and then did `.map(Optional::of).defaultIfEmpty(Optional.empty())` to carry
+"no scope" through the reactive chain. Correct, but the kind of cleverness a reviewer has to decode. It is
+now two plain branches — an early `return` for the absent case, and `resolve().flatMap(...)` for the present
+one. Same behaviour, no `Optional` round-trip.
+
+### Front end
+
+| File | Change |
+|---|---|
+| `lib/search/searchUrlState.ts` | `SEARCH_FAVORITES_PARAM`, `favorites?: 'yes' \| 'no'`, fail-closed parse, serialise, and the `yes/no → boolean` projection that keeps **absent absent** |
+| `components/Search/Search.tsx` | `favorites: live.favorites` in the merge-back at `:101-106` — **the #1858 trap**; the comment now says every URL-only param must be listed there |
+| `Search/Filters/FavoritesFilter/FavoritesFilter.tsx` (new) | the toggle; `(shared)` label + `InformationIcon`/`AppTooltip` inline help under DISABLED; writes through `searchStateToParams` |
+| `Search/Filters/Filters.tsx` | renders it **unconditionally** in the rail |
+| `Search/Results/Results.tsx` | with the scope on, the zero-result state teaches the star instead of "No matches found" |
+| `components/App.tsx` | `/favorites` → `<Navigate replace>` to the pre-filtered search. **The route is replaced, not deleted** — there is no catch-all, so deleting it blanks every existing bookmark |
+| `AppToolbar/ToolbarTabs/ToolbarTabs.tsx` | the Favorites tab entry removed |
+| `Overview/…/FavoritesColumn.tsx` | "View all" → the serialised pre-filtered search |
+| **Deleted** | `Favorites.tsx`, `FavoritesListItem/**`, `FavoritesAssetTypeFilter/**` (+ its test), and the four `lib.ts` helpers that died with them |
+| `locales/translations/*.json` ×7 | 2 new keys, translated. `Favorites`, `Favorites (shared)`, `Star an asset to pin it here.`, `All`, `Yes`, `No` were already present — reused, not re-added |
+
+`routes/favoritesRoutes.ts` deliberately **survives**: it is the redirect's source.
+
+### Tests authored
+
+- `AssetSearchFavoritesIntegrationTest.java` (new, 6 cases, real Postgres): the narrowing across all three
+  kinds; the negative direction; **absent = no narrowing** (never an implicit `false`); per-identity scoping
+  proved without authenticating (a star written under a different `(username, provider)` must not leak);
+  soft-delete semantics (un-starring leaves the scope); and composition with `asset_kinds`. Every case also
+  asserts `total` matches the page — a count that disagrees is a phantom badge.
+- `searchUrlState.test.ts` — 6 additive cases (nothing weakened): round-trip, fail-closed, preservation
+  alongside the other params, the wire projection, and that `favorites` never reaches the legacy `SearchFormData`.
+- `FavoritesFilter.test.tsx` (new, 7 cases): reflects the URL, fails closed, **click writes the canonical URL**
+  (asserted through a real router + location probe, not a navigate spy — a spy passes on a byte-divergent URL,
+  which is the actual failure mode), unchecking removes the param entirely, and the DISABLED label + inline help.
+- `integration-tests` — `IT-148` re-grounded (protocol + spec + both `suites.yaml` lane comments).
+
+### The integration re-grounding, and a defect my own review caught
+
+The spec now seeds a **foil** (`it148_unstarred_foil`) matching the same query token and never starred, and
+every case asserts the subject is present **and the foil is absent**. Presence alone is green on `ref:main`,
+where the unknown `favorites` param is dropped and the unfiltered list contains the subject anyway.
+
+Reviewing my own draft, one case was **mislabelled and did not test what it claimed**: it was titled as the
+#1858 preservation class but asserted only that **Clear All** clears the filter — the opposite behaviour. T8
+(a facet toggle must PRESERVE an active scope) had no coverage at all. The case now toggles the **Datasource**
+redux facet — the one that actually re-fires the mirror — asserts `favorites=yes` survives it and the list is
+still narrowed, and keeps the Clear All assertion separately, where it belongs.
+
+## 14. A coordination hazard I created (recorded, not buried)
+
+Twice during Phase D I stopped my own gradle build with `pkill -f 'scripts/run-platform-tests'`. **That pattern
+is not stream-scoped** — every parallel stream runs the same script, so it matches theirs too. `ctrib062` was
+running its own build in `../odd-platform-ctrib062base` at the time, and I cannot rule out that my first
+`pkill` killed it (a fresh run of theirs appeared seconds later, which is consistent with either an
+unrelated start or a restart after being killed).
+
+No lasting damage is possible — a killed gradle run loses time, not work — but it is exactly the class of
+cross-stream harm `playbooks/stream-coordination.md` exists to prevent, and the protocol does not currently
+name it. **The rule: never `pkill` on a pattern every stream shares. Match the worktree path**
+(`pkill -f 'odd-platform-ctrib061'`) or the recorded PID. Raised here rather than quietly fixed, because the
+next stream will reach for the same shortcut.
+
+The second `pkill` also killed my own invoking shell (exit 144) mid-script, which silently dropped a Python
+edit I thought had applied — caught only by re-grepping the file afterwards. Another reason to scope the
+pattern narrowly.

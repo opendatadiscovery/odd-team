@@ -1,63 +1,98 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
-import { seedIngestionDataSource, entityByOddrn, seedSearchableTerm, dbQuery } from '../helpers/db';
+import {
+  seedIngestionDataSource,
+  entityByOddrn,
+  seedSearchableEntity,
+  seedSearchableTerm,
+  dbQuery,
+} from '../helpers/db';
 import { ingestEntities, tableEntity } from '../helpers/ingest';
 
 /**
- * IT-148 — Favorites: the star -> see loop + the completion surface (#1815 / CTRIB-039 S3+S4).
+ * IT-148 — Favorites: the star -> find-it-again loop, now through the Catalog search's Favorites filter
+ * (#1815 / CTRIB-039 S3+S4, re-grounded for ST-7 / #1841 / CTRIB-061).
  *
  * Protocol: integration-tests/protocols/IT-148-favorites-star-see-loop.md
- * Gates: validates F (Favorites) — a user can star any viewable asset and find it again on the
- * main-page panel and the Favorites tab; un-starring removes it everywhere, without a reload. S4 adds
- * the completion surface: the platform multi-select facet (A1), list-row stars (A4), and the
- * DISABLED-auth shared-bucket label (A8).
+ * Gates: validates F (Favorites) — a user can star any viewable asset and find it again, on the main-page
+ * panel and via the search filter that replaced the retired `/favorites` tab; un-starring removes it.
  *
- * RED-on-base by construction:
- *  - tests 1-3 (the S4 completion surface) were RED on 924d49de (pre-S4) and are GREEN since S4+S4b
- *    merged (origin/main da2932e1): the "Favorites (shared)" label (A8), the platform combobox facet
- *    (A1), and the Dictionary list-row star (A4).
- *  - test 4 (the Group-B Description column, #1815) is RED on da2932e1 — there is no Description column
- *    yet, so [data-qa="favorite-description"] does not exist — and GREEN on the Group-B working tree.
+ * WHY EVERY CASE ASSERTS *NARROWING*, NOT PRESENCE
+ * ------------------------------------------------
+ * The obvious re-grounding — "go to /search?favorites=yes and assert the starred asset is listed" — is
+ * GREEN ON THE UNFIXED BASE. On `ref:main` the `favorites` param does not exist, `paramsToSearchState`
+ * drops it as unknown, and the *unfiltered* search lists that asset anyway. The test would pass against
+ * the very bug it exists to catch (the G-C15 neutered-test shape).
  *
- * Seeding: REAL ingestion of one TABLE data entity + one searchable Term. Auth DISABLED (odd-minimal
- * default) -> the favorites identity is the shared sentinel, so the test seeds and asserts against
- * that one bucket. Collision-free band: 2148.
+ * So the stand seeds a PAIR — one starred asset and one deliberately un-starred asset that matches the
+ * same query — and every case asserts BOTH that the starred one is present AND that the un-starred one is
+ * ABSENT. The absence is what goes RED on base, because there the filter does nothing and both are listed.
+ *
+ * RED-on-`ref:main` per case: (1) the un-starred asset is present in the "filtered" list · (2) `/favorites`
+ * still renders the old tab instead of redirecting · (3) the panel's "View all" goes to `/favorites` ·
+ * (4) there is no Favorites control in the Filters sidebar at all, so nothing to click, preserve, or label.
+ *
+ * Seeding: REAL ingestion for the starred data entity (the star -> see loop must run the production write
+ * path) + a direct searchable seed for the un-starred foil and the Term. Auth DISABLED (odd-minimal
+ * default) -> the favorites identity is the shared sentinel, so the test seeds and asserts one bucket.
+ * Collision-free band: 2148.
  */
 const DS_ID = 2148;
 const DS = '//e2e-it148/ds';
 const E = `${DS}/tables/it148_tbl`;
 const NAME = 'it148_tbl';
+/** The foil: matches the same search token, and is NEVER starred. Its ABSENCE is the RED-on-base signal. */
+const FOIL_ID = 21481;
+const FOIL = 'it148_unstarred_foil';
+/** Both names start with this, and the FTS is prefix-matched, so one query returns the pair. */
+const TOKEN = 'it148';
 const TERM = 'IT148FavTerm';
 const FAV_DE = /\/api\/favorites\/DATA_ENTITY\/\d+(\?|$)/;
 const FAV_TERM = /\/api\/favorites\/TERM\/\d+(\?|$)/;
+
+/** The Catalog search, narrowed to favorites, for a token that matches BOTH the starred asset and the foil. */
+const FAV_SEARCH = `/search?favorites=yes&q=${TOKEN}`;
 
 async function setup(request: APIRequestContext): Promise<number> {
   await seedIngestionDataSource(DS_ID, DS, 'it148-ds');
   expect(await ingestEntities(DS, [tableEntity(E, NAME)]), 'entity ingest -> 200').toBe(200);
   const e = await entityByOddrn(E);
   expect(e, 'the dataset entity must exist').not.toBeNull();
-  // Deterministic clean start: ensure the sentinel bucket has NOT favorited it (idempotent no-op).
+  // The foil must be searchable by the same token but never favorited.
+  await seedSearchableEntity(FOIL_ID, FOIL);
+  await request.delete(`/api/favorites/DATA_ENTITY/${FOIL_ID}`);
+  // Deterministic clean start: ensure the sentinel bucket has NOT favorited the subject (idempotent no-op).
   await request.delete(`/api/favorites/DATA_ENTITY/${e!.id}`);
   return e!.id;
 }
 
 const star = (page: Page) => page.locator('[data-qa="favorite-star"]');
-const nameLink = (page: Page) => page.getByRole('link', { name: NAME, exact: true });
-// Favorites is now a column inside the always-visible Recommended section (alongside Popular), so the
-// home-page favorite assertions are scoped to that column — the page also shows the Popular column.
 const favColumn = (page: Page) => page.locator('[data-qa="recommended-favorites"]');
+// Selected by ROLE + accessible name, not a data-qa hook: FormControlLabel associates the visible label with
+// the input, so this is the same thing a user (and a screen reader) sees, and it cannot silently break if a
+// styled MUI wrapper stops forwarding a custom attribute. The name is auth-mode dependent, hence the regex.
+const favFilter = (page: Page) => page.getByRole('checkbox', { name: /^Favorites( \(shared\))? only$/ });
 const favoriteWrite = (page: Page, method: 'PUT' | 'DELETE', path: RegExp) =>
-  page.waitForResponse(
-    r => path.test(r.url()) && r.request().method() === method && r.ok()
-  );
+  page.waitForResponse(r => path.test(r.url()) && r.request().method() === method && r.ok());
 
-test.describe('Favorites — the star -> see loop + completion surface (#1815 / CTRIB-039)', () => {
-  test('star an asset -> it shows on the main panel + the Favorites tab; un-star -> it is gone', async ({
+/** The narrowing oracle: the starred asset is listed AND the un-starred foil is not. RED on base. */
+async function expectNarrowedToFavorites(page: Page, presentName: string) {
+  await expect(page.getByText(presentName).first(), 'the starred asset is listed').toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(
+    page.getByText(FOIL).filter({ visible: true }),
+    'THE NARROWING: an asset the caller has not starred must be absent (on ref:main it is present)'
+  ).toHaveCount(0);
+}
+
+test.describe('Favorites — star -> find it again via the search filter (#1815 / #1841)', () => {
+  test('star an asset -> the panel lists it and the Favorites filter narrows to it; un-star -> gone', async ({
     page,
     request,
   }) => {
     const id = await setup(request);
 
-    // 1. Open the asset's detail page — the header star is present and NOT pressed.
+    // 1. The asset's detail page — the header star renders and is NOT pressed.
     await page.goto(`/dataentities/${id}/overview`);
     await expect(star(page)).toBeVisible();
     await expect(star(page)).toHaveAttribute('aria-pressed', 'false');
@@ -68,20 +103,14 @@ test.describe('Favorites — the star -> see loop + completion surface (#1815 / 
     await put;
     await expect(star(page)).toHaveAttribute('aria-pressed', 'true');
 
-    // 3. The home-page Recommended section is always visible and shows the Favorites + Popular columns
-    //    for every audience (Popular was owner-gated before — RED on base). The Favorites column lists
-    //    the asset, and under DISABLED auth it is labelled "Favorites (shared)" (A8), non-possessively.
+    // 3. The home-page Favorites column lists it, labelled "(shared)" under DISABLED auth.
     await page.goto('/');
-    await expect(page.getByText('Popular', { exact: true })).toBeVisible();
     await expect(page.getByText('Favorites (shared)')).toBeVisible();
-    await expect(
-      favColumn(page).getByRole('link', { name: NAME, exact: true })
-    ).toBeVisible();
+    await expect(favColumn(page).getByRole('link', { name: NAME, exact: true })).toBeVisible();
 
-    // 4. The top-level Favorites tab lists it too, and is likewise labelled "(shared)" (A8).
-    await page.goto('/favorites');
-    await expect(page.getByRole('heading', { name: 'Favorites (shared)' })).toBeVisible();
-    await expect(nameLink(page)).toBeVisible();
+    // 4. The Catalog search, scoped to favorites, NARROWS to it — the foil is excluded.
+    await page.goto(FAV_SEARCH);
+    await expectNarrowedToFavorites(page, NAME);
 
     // 5. Un-star it from the detail header.
     await page.goto(`/dataentities/${id}/overview`);
@@ -91,107 +120,155 @@ test.describe('Favorites — the star -> see loop + completion surface (#1815 / 
     await del;
     await expect(star(page)).toHaveAttribute('aria-pressed', 'false');
 
-    // 6. It is gone from the home-page Favorites column.
+    // 6. It is gone from the panel AND from the favorites-scoped search.
     await page.goto('/');
+    await expect(favColumn(page).getByRole('link', { name: NAME, exact: true })).toHaveCount(0);
+    await page.goto(FAV_SEARCH);
     await expect(
-      favColumn(page).getByRole('link', { name: NAME, exact: true })
-    ).toHaveCount(0);
+      page.getByText(NAME).filter({ visible: true }),
+      'an un-starred asset leaves the scope (the soft-deleted favorite row must not still match)'
+    ).toHaveCount(0, { timeout: 15_000 });
   });
 
-  test('the Favorites tab uses the platform multi-select facet (A1), not a checkbox group', async ({
-    page,
-  }) => {
-    // The facet renders regardless of whether anything is favorited (it lives in the sidebar).
-    await page.goto('/favorites');
-    // A1: the asset-type facet is the platform autocomplete (a combobox). The S3 skeleton rendered a
-    //     fixed checkbox group with no combobox, so this is absent on ref:main.
-    await expect(page.getByRole('combobox')).toBeVisible();
-  });
-
-  test('star a Term from the Dictionary list row (A4) -> it appears on the Favorites tab', async ({
+  test('the /favorites tab is retired — the URL redirects to the pre-filtered search, never a blank page', async ({
     page,
     request,
   }) => {
-    await seedSearchableTerm(TERM);
-    const rows = await dbQuery<{ id: number }>(
-      'SELECT id FROM term WHERE name = $1 LIMIT 1',
-      [TERM]
-    );
-    expect(rows[0], 'the seeded term must exist').toBeTruthy();
-    const termId = rows[0].id;
-    await request.delete(`/api/favorites/TERM/${termId}`); // deterministic clean start
-
-    // Open the Dictionary (term search) and surface the seeded term's row.
-    await page.goto('/termsearch');
-    const input = page.getByPlaceholder('Search terms...');
-    const results = page.waitForResponse(
-      r =>
-        /\/api\/terms\/search\/[0-9a-f-]+\/results/.test(r.url()) &&
-        r.request().method() === 'GET' &&
-        r.ok()
-    );
-    await input.fill(TERM);
-    await input.press('Enter'); // TermSearchInput searches on Enter only
-    await results;
-
-    const termRow = page.locator('a', { hasText: TERM }).first();
-    await expect(termRow, 'the searched term row must be visible').toBeVisible({
-      timeout: 10_000,
-    });
-
-    // A4: the list row now carries a favorite star (the S3 Dictionary rows had none).
-    const rowStar = termRow.locator('[data-qa="favorite-star"]');
-    await expect(rowStar).toBeVisible();
-
-    // Star it from the list row — its stop-propagation keeps the row link from navigating.
-    const put = favoriteWrite(page, 'PUT', FAV_TERM);
-    await rowStar.click();
-    await put;
-
-    // It now shows on the Favorites tab.
+    await setup(request);
+    // Every bookmark and shared link to the old tab must still land somewhere useful. There is no
+    // catch-all route in the app, so a bare route deletion would render the toolbar over an empty area.
     await page.goto('/favorites');
-    await expect(page.getByText(TERM).first()).toBeVisible({ timeout: 10_000 });
-
-    // Cleanup — keep the shared sentinel bucket deterministic for re-runs.
-    await request.delete(`/api/favorites/TERM/${termId}`);
+    await expect(page, 'the old tab URL redirects to the favorites-scoped search').toHaveURL(
+      /\/search\?favorites=yes/,
+      { timeout: 15_000 }
+    );
+    // And the top-level tab itself is gone from the toolbar.
+    await expect(
+      page.getByRole('tab', { name: 'Favorites', exact: true }),
+      'no Favorites tab remains in the main navigation'
+    ).toHaveCount(0);
   });
 
-  test('the Favorites tab Description column renders the asset description with term links (#1815 Group B)', async ({
+  test('the home panel "View all" lands on the search already narrowed to favorites', async ({
     page,
     request,
   }) => {
     const id = await setup(request);
-    // Seed the term the description will mention, then give the entity an internal description that
-    // mentions it. The server resolves [[Namespace:Term]] to a /terms link in FavoriteAsset.description,
-    // which the Description column renders via Markdown. (Group B is absent on ref:main: no Description
-    // column at all, so [data-qa="favorite-description"] does not exist -> RED on base.)
-    await seedSearchableTerm(TERM); // IT148FavTerm in namespace IT019-ns
-    await dbQuery('UPDATE data_entity SET internal_description = $1 WHERE id = $2', [
-      `IT148DESCMARKER orders. See [[IT019-ns:${TERM}]] for context.`,
-      id,
-    ]);
-
-    // Star it (setup() already cleared any prior favorite for a deterministic start).
-    const put = favoriteWrite(page, 'PUT', FAV_DE);
     await page.goto(`/dataentities/${id}/overview`);
+    const put = favoriteWrite(page, 'PUT', FAV_DE);
     await star(page).click();
     await put;
 
-    // The Favorites tab's Description cell shows the description text, and the term mention is a link.
-    await page.goto('/favorites');
-    const descCell = page.locator('[data-qa="favorite-description"]').first();
-    await expect(descCell, 'the Description cell is present').toBeVisible({ timeout: 10_000 });
-    await expect(descCell).toContainText('IT148DESCMARKER');
-    await expect(
-      descCell.locator('a[href*="/terms/"]'),
-      'the [[Namespace:Term]] mention renders as a term link'
-    ).toBeVisible();
+    await page.goto('/');
+    await favColumn(page).getByRole('link', { name: 'View all' }).click();
+    await expect(page).toHaveURL(/favorites=yes/, { timeout: 15_000 });
+    await expectNarrowedToFavorites(page, NAME);
 
-    // G-C12 pixel gate: capture the rendered Description column for the maintainer's review.
-    await page.screenshot({ path: 'test-results/it148-description-column.png', fullPage: true });
-
-    // Cleanup — restore the shared sentinel bucket + the entity for re-runs.
     await request.delete(`/api/favorites/DATA_ENTITY/${id}`);
-    await dbQuery('UPDATE data_entity SET internal_description = NULL WHERE id = $1', [id]);
+  });
+
+  test('CLICKING the filter narrows; a redux-facet toggle PRESERVES it; Clear All clears it (#1858 class)', async ({
+    page,
+    request,
+  }) => {
+    const id = await setup(request);
+    await page.goto(`/dataentities/${id}/overview`);
+    const put = favoriteWrite(page, 'PUT', FAV_DE);
+    await star(page).click();
+    await put;
+
+    // Drive the CONTROL, not a crafted URL: this is the only case that proves the write path.
+    await page.goto(`/search?q=${TOKEN}`);
+    await expect(page.getByText(FOIL).first(), 'unfiltered, the foil is listed').toBeVisible({
+      timeout: 15_000,
+    });
+    await favFilter(page).check();
+    await expect(page).toHaveURL(/favorites=yes/, { timeout: 15_000 });
+    await expectNarrowedToFavorites(page, NAME);
+
+    // THE #1858 REGRESSION CLASS — the actual preservation check, and the reason this case exists.
+    // Search.tsx's mirror rebuilds the URL from the REDUX facet state, which carries none of the URL-only
+    // params. Toggling a redux facet (Datasource is one; the favorites scope is not) re-fires that mirror.
+    // If `favorites` is missing from the merge-back list, it is silently dropped right here — the filter
+    // vanishes on an unrelated click, with no error. Exactly what #1858 fixed for the class filter.
+    await page.locator('#filter-datasources').click();
+    await page.getByRole('option', { name: 'it148-ds', exact: true }).click();
+    await expect(
+      page,
+      'a redux-facet toggle must PRESERVE the favorites scope in the URL (#1858 class)'
+    ).toHaveURL(/favorites=yes/, { timeout: 15_000 });
+    await expectNarrowedToFavorites(page, NAME);
+
+    // Clear All is the one control that SHOULD drop it: favorites is a filter, and a filter reset clears
+    // every filter. (Query, sort and My-Objects are deliberately preserved by that reset — not filters.)
+    await page.getByRole('button', { name: 'Clear All' }).click();
+    await expect(page, 'Clear All is a filter reset — it clears the favorites scope too').toHaveURL(
+      url => !url.search.includes('favorites='),
+      { timeout: 15_000 }
+    );
+
+    await page.goto(FAV_SEARCH);
+    await favFilter(page).uncheck();
+    await expect(page, 'unchecking removes the param entirely, not favorites=no').toHaveURL(
+      url => !url.search.includes('favorites='),
+      { timeout: 15_000 }
+    );
+
+    await request.delete(`/api/favorites/DATA_ENTITY/${id}`);
+  });
+
+  test('a starred Term is reachable through the same filter (the scope is cross-kind)', async ({
+    page,
+    request,
+  }) => {
+    await setup(request);
+    await seedSearchableTerm(TERM);
+    const rows = await dbQuery<{ id: number }>('SELECT id FROM term WHERE name = $1 LIMIT 1', [TERM]);
+    expect(rows[0], 'the seeded term must exist').toBeTruthy();
+    const termId = rows[0].id;
+    await request.delete(`/api/favorites/TERM/${termId}`); // deterministic clean start
+
+    await page.goto('/termsearch');
+    await page.getByPlaceholder('Search terms...').fill(TERM);
+    await page.keyboard.press('Enter');
+    const row = page.getByText(TERM).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+
+    const put = favoriteWrite(page, 'PUT', FAV_TERM);
+    await page.locator('[data-qa="favorite-star"]').first().click();
+    await put;
+
+    // The favorites scope is cross-kind: one filter, one list, all three asset kinds.
+    await page.goto(`/search?favorites=yes&q=${TERM}`);
+    await expect(page.getByText(TERM).first(), 'the starred Term is in the scope').toBeVisible({
+      timeout: 15_000,
+    });
+
+    await request.delete(`/api/favorites/TERM/${termId}`);
+  });
+
+  test('under DISABLED auth the filter says (shared) and carries the consequence as inline help', async ({
+    page,
+    request,
+  }) => {
+    await setup(request);
+    await page.goto(`/search?q=${TOKEN}`);
+    // The label preserves the STATE; the info icon preserves the CONSEQUENCE the retired tab spelled out
+    // in a banner. On ref:main there is no favorites control at all, so both are absent.
+    await expect(page.getByText('Favorites (shared) only')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-qa="filter-favorites-info"]')).toBeVisible();
+  });
+
+  test('with the scope on and nothing starred, the empty state TEACHES the star', async ({
+    page,
+    request,
+  }) => {
+    const id = await setup(request);
+    await request.delete(`/api/favorites/DATA_ENTITY/${id}`); // ensure the bucket is empty for this token
+
+    await page.goto(FAV_SEARCH);
+    // The retired tab's empty state taught a first-time user what the star does. A bare "No matches found"
+    // would drop that teaching — the quiet way retiring a surface loses a feature.
+    await expect(page.getByText('Star an asset to pin it here.')).toBeVisible({ timeout: 15_000 });
   });
 });

@@ -1,6 +1,6 @@
 ---
 id: IT-148
-title: "Favorites: star an asset from its header -> it shows on the main panel + Favorites tab; un-star removes it (#1815 / CTRIB-039)"
+title: "Favorites: star an asset -> find it again via the Catalog search Favorites filter; un-star removes it (#1815 / CTRIB-039; re-grounded for ST-7 / #1841 / CTRIB-061)"
 gates:
   validates: [F-Favorites]
   enforces: []
@@ -23,14 +23,28 @@ The end-to-end Favorites promise (PRD-0001 / #1815): a user can **star any viewa
 it again** without remembering where it lives.
 
 - Starring an asset from its detail header flips the star to pressed.
-- The starred asset appears on the **main-page Favorites panel** AND the **top-level Favorites tab**.
-- **Un-starring** removes it from both — driven by the favorites slice, no reload.
+- The starred asset appears on the **main-page Favorites panel**, and the **Favorites filter** on the
+  Catalog search narrows the result list to it (ST-7 / #1841 retired the bespoke `/favorites` tab).
+- **Un-starring** removes it from both.
+- The retired `/favorites` URL **redirects** to the pre-filtered search, so existing bookmarks survive.
 
 **Operator consequence if it fails:** the only personalisation the large no-Owner audience can get
 (pin-the-assets-I-care-about) is broken — the star does nothing visible, or the pinned asset cannot be
 found again — and the feature's entire reason to exist is gone.
 
-Source: #1815 (the maintainer's PRD-0001 realisation); CTRIB-039 S3 (the favorites frontend).
+### The oracle is NARROWING, never presence — read this before editing a case
+
+The obvious check ("go to `/search?favorites=yes`, assert the starred asset is listed") **passes on the
+unfixed base**: there the `favorites` param is unknown, is dropped by the URL parser, and the *unfiltered*
+search lists that asset anyway. It would be a green test for the bug it exists to catch.
+
+So the stand seeds a **pair** — the starred subject and a deliberately **un-starred foil** (`it148_unstarred_foil`)
+that matches the same query token — and every case asserts the subject is present **AND the foil is absent**.
+The foil's absence is the whole RED signal. Any future edit that drops the foil assertion silently neuters
+this protocol.
+
+Source: #1815 (the maintainer's PRD-0001 realisation); CTRIB-039 S3 (the favorites frontend);
+CTRIB-061 / #1841 ST-7 (the tab -> filter re-grounding).
 
 ## 2. Preparation — build the test stand
 
@@ -42,11 +56,13 @@ sentinel, so the stand seeds and asserts against that one bucket.
 - **Stack:** `odd-minimal` (`AUTH_TYPE=DISABLED`), the e2e harness default.
 - **Seed (collision-free band 2148):** a `data_source` (`//e2e-it148/ds`) + a TABLE
   `//e2e-it148/ds/tables/it148_tbl` (`it148_tbl`), via real ingestion (`POST /ingestion/entities`).
-- **Clean start:** `DELETE /api/favorites/DATA_ENTITY/{id}` once (idempotent) so the star begins
+- **The foil (ST-7):** `seedSearchableEntity(21481, 'it148_unstarred_foil')` — searchable by the same
+  `it148` prefix token, and **never starred**. Its absence from the filtered list is the RED-on-base signal.
+- **Clean start:** `DELETE /api/favorites/DATA_ENTITY/{id}` for both (idempotent) so the star begins
   un-pressed deterministically across re-runs.
-- **S4 add (A4):** a searchable Term (`seedSearchableTerm('IT148FavTerm')` — seeds the FTS
+- **Term (A4):** a searchable Term (`seedSearchableTerm('IT148FavTerm')` — seeds the FTS
   `term_search_entrypoint` so it surfaces in the Dictionary list) + `DELETE /api/favorites/TERM/{id}`
-  clean start, for the list-row-star check.
+  clean start, for the cross-kind check.
 
 ## 3. Readiness check
 
@@ -58,46 +74,59 @@ sentinel, so the stand seeds and asserts against that one bucket.
 
 1. Navigate to `/dataentities/{id}/overview`. Confirm the header star (`[data-qa="favorite-star"]`)
    renders and is NOT pressed (`aria-pressed="false"`).
-2. Click the star. Confirm a `PUT /api/favorites/DATA_ENTITY/{id}` returns 2xx and the star is now
-   pressed (`aria-pressed="true"`).
-3. Navigate to `/`. Confirm the **Favorites (shared)** panel heading renders (DISABLED auth → the set
-   is an instance-wide shared bucket, labelled non-possessively — **A8**) and lists `it148_tbl` (a link).
-4. Navigate to `/favorites`. Confirm the tab is titled **Favorites (shared)** (A8) and lists `it148_tbl`.
-5. Navigate back to `/dataentities/{id}/overview` (star pressed). Click it. Confirm a
-   `DELETE /api/favorites/DATA_ENTITY/{id}` returns 2xx and the star is un-pressed.
-6. Navigate to `/`. Confirm `it148_tbl` is **gone** from the Favorites panel.
+2. Click the star. Confirm `PUT /api/favorites/DATA_ENTITY/{id}` returns 2xx and the star is pressed.
+3. Navigate to `/`. Confirm the **Favorites (shared)** label renders (DISABLED auth -> an instance-wide
+   shared bucket, labelled non-possessively) and the column lists `it148_tbl` as a link.
+4. Navigate to `/search?favorites=yes&q=it148`. Confirm `it148_tbl` **is listed** AND
+   `it148_unstarred_foil` **is NOT** — the narrowing, not mere presence.
+5. Navigate back to `/dataentities/{id}/overview` (star pressed). Click it. Confirm
+   `DELETE /api/favorites/DATA_ENTITY/{id}` 2xx and the star is un-pressed.
+6. Navigate to `/`. Confirm `it148_tbl` is gone from the panel. Navigate to `/search?favorites=yes&q=it148`
+   and confirm it is gone there too (the soft-deleted favorite row must not still match).
 
-**S4 completion surface (separate tests):**
-7. **Facet (A1):** navigate to `/favorites`; confirm the asset-type facet is the platform multi-select
-   **combobox** (`role=combobox`), not the S3 fixed checkbox group.
-8. **List-row star (A4):** navigate to `/termsearch`, search `IT148FavTerm` (fill "Search terms…" +
-   Enter); confirm its row carries a `[data-qa="favorite-star"]`; click it → `PUT /api/favorites/TERM/{id}`
-   2xx; navigate to `/favorites` and confirm the term is listed. (`DELETE` to clean up.)
+**The retirement (ST-7):**
+7. Navigate to `/favorites`. Confirm the URL **redirects** to `/search?favorites=yes` — not a blank page —
+   and that no **Favorites** tab remains in the main navigation.
+8. With the asset starred, navigate to `/` and click the Favorites column's **View all**. Confirm it lands
+   on a URL carrying `favorites=yes` and that the list is narrowed (subject present, foil absent).
 
-**Group B — Description column (separate test, #1815):**
-9. **Description (#1815 Group B):** seed `IT148FavTerm` (`IT019-ns`) and set the entity's
-   `internal_description` to mention it (`[[IT019-ns:IT148FavTerm]]`); star the entity; navigate to
-   `/favorites` and confirm the **Description** cell (`[data-qa="favorite-description"]`) shows the text
-   and renders the `[[…]]` mention as a term link (`a[href*="/terms/"]`) — the server resolves the
-   mention into `FavoriteAsset.description`. (`DELETE` + null the description to clean up.)
+**The control + the #1858 preservation class:**
+9. Navigate to `/search?q=it148` (unfiltered — confirm the foil IS listed). **Tick the Favorites checkbox**
+   (`[data-qa="filter-favorites"] input`). Confirm the URL gains `favorites=yes` and the list narrows.
+   Driving the control (not a crafted URL) is what proves the write path.
+10. Click **Clear All**. Confirm `favorites=` leaves the URL (it is a filter, so a filter reset clears it).
+11. From `/search?favorites=yes&q=it148`, untick the checkbox. Confirm the param is REMOVED entirely —
+    not rewritten to `favorites=no`, which is a different filter.
 
-**Automated rail:** `integration-tests/run-suite.sh IT-148` (or the full `run-regression.sh`). RED proof
-for Group B: `ODD_SUT=ref:main integration-tests/run-suite.sh IT-148` — on `main` (da2932e1, the S4+S4b
-completion merged but BEFORE Group B) there is **no Description column** (no `[data-qa="favorite-description"]`),
-so test 9 fails; tests 1-8 (the S4 surface) pass on da2932e1.
+**Cross-kind + the preserved affordances:**
+12. Seed + star `IT148FavTerm` from the Dictionary list row; navigate to `/search?favorites=yes&q=IT148FavTerm`
+    and confirm the Term is in the scope (one filter, one list, all asset kinds).
+13. On `/search?q=it148` under DISABLED auth, confirm the filter reads **Favorites (shared) only** and that
+    `[data-qa="filter-favorites-info"]` (the inline-help icon carrying the shared-bucket consequence) renders.
+14. With nothing starred, navigate to `/search?favorites=yes&q=it148` and confirm the empty state reads
+    **"Star an asset to pin it here."** — the teaching line the retired tab's empty state carried — rather
+    than a bare "No matches found".
+
+**Automated rail:** `integration-tests/run-suite.sh IT-148` (or the full `run-regression.sh`).
+**RED proof:** `ODD_SUT=ref:main integration-tests/run-suite.sh IT-148`. On `main` the whole ST-7 surface is
+absent, so: steps 4/6/8/9 fail because the unknown `favorites` param is dropped and the **foil is still
+listed**; step 7 fails because `/favorites` still renders the old tab; steps 9-11, 13 fail because there is
+no Favorites control in the sidebar at all; step 14 fails because the tab, not the search, owns that state.
 
 ## 5. What it checks — assertions
 
-- **PASS** when: the star toggles pressed/un-pressed on click; the starred asset appears on both the
-  main-page panel and the Favorites tab; un-starring removes it from the panel; **(S4)** the
-  panel/tab are labelled "Favorites (shared)" under DISABLED auth (A8), the tab facet is the platform
-  combobox (A1), and a Dictionary list row can be starred and then appears on the tab (A4);
-  **(Group B)** a favorited asset's **Description** cell renders the description text and shows its
-  `[[Namespace:Term]]` mentions as term links.
-- **FAIL** (regression signature) when: the star affordance is absent, or a starred asset does not
-  appear on the panel/tab, or un-starring leaves it shown; **(S4)** the surface is unlabelled under
-  DISABLED, the facet is a checkbox group, or the list rows carry no star — i.e. the `ref:main`
-  (924d49de) baseline by construction.
+- **PASS** when: the star toggles pressed/un-pressed on click; the starred asset appears on the main-page
+  panel; the favorites-scoped search lists it **and excludes an asset the caller has not starred**;
+  un-starring removes it from both surfaces; `/favorites` redirects to the pre-filtered search and no
+  Favorites tab remains; the panel's "View all" lands pre-filtered; clicking the sidebar control writes
+  `favorites=yes` and narrows; Clear All clears it and unticking removes the param; a starred Term is in
+  the same scope; the control is labelled "(shared)" with inline help under DISABLED auth; and the
+  zero-result state teaches the star.
+- **FAIL** (regression signature) when: the star affordance is absent; a starred asset does not appear;
+  un-starring leaves it shown; **the un-starred foil appears in a favorites-scoped list** (the filter is
+  not applied — the `ref:main` baseline by construction, and the signature of a dropped URL param after an
+  unrelated facet toggle, the #1858 class); `/favorites` renders a blank page; or the DISABLED consequence
+  or the teaching empty state is missing.
 
 ## 6. Result log
 

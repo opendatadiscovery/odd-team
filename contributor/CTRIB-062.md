@@ -1389,3 +1389,59 @@ nice-to-have. It runs after the regression releases the box:
 
 If the generated plan differs from M3's, the comment gets corrected and the shape gets fixed — the same way
 the R3 depth-degradation overclaim was corrected rather than explained away.
+
+---
+
+## §22 — the full regression: 19 non-expected failures, ONE of them mine
+
+`integration-tests/run-regression.sh ctrib062`, SUT `odd-platform:odd-team-sut-ctrib062`
+(`sha256:c763c52a…`), flock held throughout.
+
+| suite | result | reading |
+|---|---|---|
+| `feature-complete` | **18 failed / 328 passed** (31.1m) | all 18 attributed, none to this slice |
+| `known-bugs` | **3 failed** | EXPECTED — RED is this suite's pass condition |
+| `multi-stack` | **1 failed / 12 passed** (11.6m) | **the one real finding, and it is mine** |
+| `ingestion-e2e` | **15 passed** (4.7m) | green |
+
+### The 18, reconciled to the line — arithmetic, not assertion
+
+| cause | n |
+|---|---|
+| `TST-059` stale-spec class (gate on `GET /api/search/{id}/results`, which ST-4 retired — the UI never calls it) | 11 |
+| ctrib061's **unmerged ST-7** favorites specs (`FavoritesFilter` absent from `origin/main` AND this worktree) | 6 |
+| `TST-057` cold-springdoc `swagger-openapi-discovery:63` (already A/B-proved change-independent) | 1 |
+
+`TST-059` documents **15** in its class and only **11** appeared: this slice re-pointed three
+(`search-url-facets:112/:143`, `search-class-tab-filter:101`) and ctrib061 deleted the fourth. **15 - 3 - 1 =
+11.** The baseline is corrected in `TST-059` so the next stream does not diff against a list that decayed.
+
+### The one that IS mine — and why "flake, bump the timeout" was the wrong answer
+
+`my-data-scope-narrows.spec.ts:210` (IT-153) failed on its *first* test, at the plainest assertion in the file
+— `baseline lists my entity` — while tests 2-4 passed **against the same fixture**. It had been 4/4 green in
+isolation, twice.
+
+The tempting reading is a load flake. It is not, and the distinction matters: **`openSearch` already waits for
+the results header, so the search had RESOLVED** — it simply did not contain the seeded row. The assertion was
+not the thing that needed to settle, so a longer timeout would have changed nothing except how long it took to
+fail.
+
+**The defect is structural and mine: the spec asserts a fixture is visible without first establishing that it
+IS searchable.** `integration-tests/TEMPLATE.md` prescribes `seed -> readiness -> run -> assert`; this spec had
+no readiness step. It only surfaces in suite context because a preceding `multi-stack` spec
+(`auth-mode-boundary`) tears the LOGIN_FORM stack down, so this file's `beforeAll` boots a **fresh** platform
+and its first query hits it cold — a condition no isolated run reproduces.
+
+Fixed with a real readiness gate (`waitUntilSearchable`) that polls the user surface until the seed is served
+and **fails loudly with a diagnostic if it never does**. That distinction is the point: a timeout bump would
+have silently converted a *readiness* failure into a *scope* failure, and the My-data assertions are
+meaningless against a catalog that cannot serve the fixture at all — a false green on the exact claim the
+protocol exists to prove.
+
+**This is the second sighting of the symptom.** §18 closed the pixel review's `0 results` as
+change-independent but explicitly *unexplained*, with the note that the stack had been destroyed before it
+could be probed. Same shape: a seeded fixture absent from search on a freshly-booted LOGIN_FORM stack. §18's
+disposition stands (this slice cannot reach an unscoped search), but the cause is now much more likely
+**platform readiness after boot** than anything about the fixture — and IT-153's gate is what will catch it
+next time instead of a screenshot nobody can re-probe.

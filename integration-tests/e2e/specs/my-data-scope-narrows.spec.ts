@@ -138,6 +138,42 @@ async function openSearch(page: Page, query: string): Promise<void> {
   ).toBeVisible({ timeout: 30_000 });
 }
 
+/**
+ * READINESS GATE — the step this spec was missing (`integration-tests/TEMPLATE.md`: seed -> READINESS -> run
+ * -> assert).
+ *
+ * WHY IT IS NEEDED, measured not guessed: in the ctrib062 full regression this spec was 4/4 green in isolation
+ * but its FIRST test failed on the plain baseline assertion (`baseline lists my entity`) while tests 2-4 passed
+ * against the same fixture. `openSearch` already waits for the results header, so the search had RESOLVED — it
+ * simply did not contain the seeded row yet. The distinguishing factor is that `beforeAll` brings the
+ * LOGIN_FORM stack up (a preceding multi-stack spec tears it down), so the first query in the file hits a
+ * just-booted platform.
+ *
+ * Asserting a fixture is visible without first establishing that it IS searchable is the defect; a longer
+ * timeout on the assertion would only have hidden it, because the assertion is not the thing that needs to
+ * settle. This polls the real user surface until the seed is served, then the assertions run against a known
+ * state — and it FAILS LOUDLY if the fixture never becomes searchable, which a bare timeout bump would not.
+ */
+async function waitUntilSearchable(page: Page, name: string): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        await page.goto(`${LOGINFORM_BASE_URL}/search?q=${TERM}`);
+        await expect(page.getByTestId('search-results-count')).toBeVisible({ timeout: 30_000 });
+        return rowOf(page, name).count();
+      },
+      {
+        timeout: 90_000,
+        intervals: [1_000, 2_000, 5_000, 5_000],
+        message:
+          `the seeded fixture "${name}" never became searchable on the freshly-booted LOGIN_FORM stack. ` +
+          'That is a readiness failure, not a scope failure — the My-data assertions below would be ' +
+          'meaningless against a catalog that cannot serve the fixture at all.',
+      },
+    )
+    .toBeGreaterThan(0);
+}
+
 test.describe('IT-153 — My-data scopes narrow the rendered results for a bound owner', () => {
   let ownerId: number;
 
@@ -212,6 +248,9 @@ test.describe('IT-153 — My-data scopes narrow the rendered results for a bound
   }) => {
     test.setTimeout(180_000);
     await signIn(page);
+
+    // Readiness FIRST: this is the file's first query against a stack this file just booted.
+    await waitUntilSearchable(page, NAME(MINE_ID));
 
     // baseline: everything the query matches is listed
     await openSearch(page, `q=${TERM}`);

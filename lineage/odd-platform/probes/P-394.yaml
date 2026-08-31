@@ -1,0 +1,135 @@
+---
+probe_id: P-394
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+emitted_at: 2026-08-31T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # ST-8 My-data lineage filter has no feature-flow anchor yet — grep of
+                   # lineage/odd-platform/feature-flows/detail for 'AssetSearch|unified-asset-search' returns zero
+test_class: performance
+verified_against_commit: 077313ad   # odd-platform contrib/CTRIB-062-my-data-filter
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A, Q2 + Category C, Q3): getNeighbourOddrnsFromOwnedSet and
+  getNeighbourOddrns issue `SELECT DISTINCT <neighbour> FROM lineage WHERE <anchor> IN (...)
+  AND is_deleted = false ORDER BY <neighbour> LIMIT ?`
+  (ReactiveLineageRepositoryImpl.java:173-181 and :198-203). MyDataScopeResolverImpl.java:142-143
+  passes `remaining + 1`, i.e. up to 10_001 on the first hop.
+
+  Hypothesis, statically inferred but NOT measurable from source: the LIMIT bounds the ROWS
+  RETURNED, not the WORK DONE. Because the projection is DISTINCT and the ORDER BY key is the
+  projected column, Postgres must build the complete distinct neighbour set and sort it before
+  it can emit the first row, so the cost of the hop is a function of the anchor's total fan-out
+  and is INDEPENDENT of `limit`. If true, a caller who owns a hub entity with 500k outgoing edges
+  pays the same sort at limit=1 as at limit=10001, and MyDataScopeResolverImpl's shrinking
+  `remaining` budget buys no work reduction on the hop that overruns it.
+
+  Falsifier: if Postgres uses an index-ordered path (e.g. an Index Scan on lineage_pkey emitting
+  parent_oddrn in order for the UPSTREAM neighbour column) and stops early, execution time and
+  rows-read scale with `limit`, and the hypothesis is wrong.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      -- One hub anchor with a wide, high-cardinality fan-out in BOTH directions.
+      INSERT INTO lineage (parent_oddrn, child_oddrn, establisher_oddrn, is_deleted)
+      SELECT '//probe/p250/hub',
+             '//probe/p250/child/' || lpad(i::text, 7, '0'),
+             '//probe/p250/hub',
+             false
+      FROM generate_series(1, 200000) AS i;
+  - kind: sql
+    query: |
+      INSERT INTO lineage (parent_oddrn, child_oddrn, establisher_oddrn, is_deleted)
+      SELECT '//probe/p250/parent/' || lpad(i::text, 7, '0'),
+             '//probe/p250/hub',
+             '//probe/p250/parent/' || lpad(i::text, 7, '0'),
+             false
+      FROM generate_series(1, 200000) AS i;
+  - kind: sql
+    query: "ANALYZE lineage;"
+act:
+  - kind: sql
+    query: |
+      -- DOWNSTREAM hop shape at limit = 1 (anchor = parent_oddrn, neighbour = child_oddrn)
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT DISTINCT child_oddrn FROM lineage
+      WHERE parent_oddrn IN ('//probe/p250/hub') AND is_deleted = false
+      ORDER BY child_oddrn LIMIT 1;
+    capture_as: down_limit_1
+  - kind: sql
+    query: |
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT DISTINCT child_oddrn FROM lineage
+      WHERE parent_oddrn IN ('//probe/p250/hub') AND is_deleted = false
+      ORDER BY child_oddrn LIMIT 10001;
+    capture_as: down_limit_10001
+  - kind: sql
+    query: |
+      -- UPSTREAM hop shape (anchor = child_oddrn — the column V0_0_101 indexes;
+      -- neighbour = parent_oddrn)
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT DISTINCT parent_oddrn FROM lineage
+      WHERE child_oddrn IN ('//probe/p250/hub') AND is_deleted = false
+      ORDER BY parent_oddrn LIMIT 1;
+    capture_as: up_limit_1
+  - kind: sql
+    query: |
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT DISTINCT parent_oddrn FROM lineage
+      WHERE child_oddrn IN ('//probe/p250/hub') AND is_deleted = false
+      ORDER BY parent_oddrn LIMIT 10001;
+    capture_as: up_limit_10001
+observe:
+  - capture: down_limit_1.Plan['Actual Total Time']
+    as: down_ms_1
+  - capture: down_limit_10001.Plan['Actual Total Time']
+    as: down_ms_10001
+  - capture: up_limit_1.Plan['Actual Total Time']
+    as: up_ms_1
+  - capture: up_limit_10001.Plan['Actual Total Time']
+    as: up_ms_10001
+  - capture: down_limit_1.Plan  # node-type tree, for the Sort-vs-Index-ordered discriminator
+    as: down_plan_1
+  - capture: up_limit_1.Plan
+    as: up_plan_1
+assert:
+  # HYPOTHESIS: the LIMIT does not reduce the work. Both directions cost within 30% of each other
+  # across a 10_000x difference in LIMIT.
+  - "down_ms_10001 < down_ms_1 * 1.3   # limit buys no work reduction downstream"
+  - "up_ms_10001   < up_ms_1   * 1.3   # limit buys no work reduction upstream"
+  # The mechanism: a blocking Sort/Unique (or HashAggregate) node above the scan, not an
+  # index-ordered early-terminating scan.
+  - "'Sort' in down_plan_1 or 'HashAggregate' in down_plan_1 or 'Unique' in down_plan_1"
+  - "'Sort' in up_plan_1 or 'HashAggregate' in up_plan_1 or 'Unique' in up_plan_1"
+  # Guard on the CTRIB-062 migration itself: the UPSTREAM anchor must use lineage_child_oddrn,
+  # never a Seq Scan (the 880ms case the migration comment measures).
+  - "'Seq Scan' not in up_plan_1"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM lineage WHERE establisher_oddrn LIKE '//probe/p250/%';"
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+  source_anchors:
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveLineageRepositoryImpl.java:173-181"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveLineageRepositoryImpl.java:198-203"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/MyDataScopeResolverImpl.java:139-143"
+    - "odd-platform-api/src/main/resources/db/migration/V0_0_101__lineage_child_oddrn_index.sql:12-18"
+  retrospectives: [LSN-019]
+realism_caveats: |
+  This probe measures ONE anchor oddrn per hop. The production shape binds an anchor SET — a
+  subquery over data_entity JOIN ownership at hop 1 (ReactiveLineageRepositoryImpl.java:175-178)
+  and a frontier IN-list of up to 10_001 elements at hops 2..n (:200). Both widen the scan; the
+  probe therefore establishes the LOWER bound on hop cost, not the production cost.
+
+  It also does not exercise the 5s wall-clock circuit breaker at MyDataScopeResolverImpl.java:103
+  (that is P-251), and it says nothing about which SUBSET the LIMIT keeps — that answer is
+  statically determined (ORDER BY <neighbour> ASC over a DISTINCT single-column projection has no
+  ties, so the prefix is the lexicographically smallest `limit` oddrns) and belongs in a
+  regression test, not a probe.

@@ -1,0 +1,139 @@
+---
+probe_id: P-395
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+emitted_at: 2026-08-31T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # ST-8 My-data lineage filter has no feature-flow anchor yet — grep of
+                   # lineage/odd-platform/feature-flows/detail for 'AssetSearch|unified-asset-search' returns zero
+test_class: performance
+verified_against_commit: 077313ad   # odd-platform contrib/CTRIB-062-my-data-filter
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E, Q1): the My-data walk issues up to 6 sequential statements per
+  search request (2 directions x 3 hops), each through
+  `jooqReactiveOperations.flux(query)` (ReactiveLineageRepositoryImpl.java:182 and :204), which
+  acquires a connection via DatabaseClient.inConnectionMany (JooqReactiveOperations.java:45-48).
+  The whole chain is wrapped in `.timeout(wallClockBudget)` — 5 seconds —
+  at MyDataScopeResolverImpl.java:103-108, which on expiry returns a TIMEOUT result to the caller.
+
+  Runtime-only question: when that Reactor timeout fires, does the in-flight Postgres statement
+  actually stop? Reactor cancels the upstream subscription; whether r2dbc-postgresql translates
+  that cancel into a backend CancelRequest (and whether the backend honours it mid-sort) is not
+  determinable from this repository's source.
+
+  Hypothesis: the cancel propagates and the backend terminates, so `pg_stat_activity` shows no
+  surviving `active` backend running the neighbour query ~2s after the HTTP response returns.
+
+  Why it matters operationally: if the hypothesis is FALSE, every timed-out My-data search leaves
+  an orphaned backend holding a connection and finishing an unbounded DISTINCT+Sort that nobody
+  will read (see P-250 — the LIMIT does not bound that work). A user who reacts to
+  "narrow your search" by retrying then stacks orphans, and the pool degrades under exactly the
+  load the circuit breaker exists to protect against.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      -- An owner whose owned set fans out wide enough that one hop cannot finish in 5s.
+      INSERT INTO owner (name) VALUES ('p251-owner') ON CONFLICT DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (oddrn, external_name, type_id, entity_class_ids, hollow,
+                               status, exclude_from_search)
+      SELECT '//probe/p251/n/' || lpad(i::text, 8, '0'),
+             'p251_n_' || i, 1, ARRAY[1], false, 1, false
+      FROM generate_series(0, 2000000) AS i;
+  - kind: sql
+    query: |
+      INSERT INTO ownership (data_entity_id, owner_id)
+      SELECT de.id, o.id
+      FROM data_entity de, owner o
+      WHERE de.oddrn = '//probe/p251/n/00000000' AND o.name = 'p251-owner';
+  - kind: sql
+    query: |
+      INSERT INTO lineage (parent_oddrn, child_oddrn, establisher_oddrn, is_deleted)
+      SELECT '//probe/p251/n/00000000',
+             '//probe/p251/n/' || lpad(i::text, 8, '0'),
+             '//probe/p251/n/00000000',
+             false
+      FROM generate_series(1, 2000000) AS i;
+  - kind: sql
+    query: "ANALYZE lineage; ANALYZE data_entity; ANALYZE ownership;"
+  - kind: env
+    note: |
+      Auth must resolve the p251-owner principal (LOGIN_FORM with a user mapped to p251-owner via
+      user_owner_mapping) — AssetSearchServiceImpl.java:77 resolves the owner id from
+      authIdentityProvider.fetchAssociatedOwner() and never from the request body.
+act:
+  - kind: rest
+    method: POST
+    path: /api/search/assets?size=10
+    body: |
+      {"my_data": ["DOWNSTREAM"], "downstream_depth": 3}
+    capture_as: search_response
+    capture_elapsed_as: search_elapsed_ms
+  - kind: wait
+    seconds: 2
+  - kind: sql
+    query: |
+      SELECT count(*) AS orphans
+      FROM pg_stat_activity
+      WHERE state = 'active'
+        AND query LIKE '%child_oddrn%'
+        AND query NOT LIKE '%pg_stat_activity%';
+    capture_as: orphan_rows
+observe:
+  - capture: search_response.page_info.scope_truncated
+    as: truncated
+  - capture: search_response.page_info.scope_truncation_reason
+    as: reason
+  - capture: search_elapsed_ms
+    as: elapsed_ms
+  - capture: orphan_rows[0].orphans
+    as: orphan_count
+assert:
+  # The circuit breaker fired and the caller was TOLD (MyDataScopeResolverImpl.java:104-108 ->
+  # AssetSearchServiceImpl.java:98-106).
+  - "elapsed_ms < 15000            # the request returned, it did not hang on the DB"
+  - "truncated == true"
+  - "reason == 'TIMEOUT'"
+  - "search_response.items == []  # TIMEOUT yields NO scope, never a partial impact set"
+  # THE HYPOTHESIS: the cancel reached Postgres.
+  - "orphan_count == 0            # no backend still grinding the abandoned neighbour query"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM lineage WHERE establisher_oddrn LIKE '//probe/p251/%';
+      DELETE FROM ownership WHERE owner_id IN (SELECT id FROM owner WHERE name = 'p251-owner');
+      DELETE FROM data_entity WHERE oddrn LIKE '//probe/p251/%';
+      DELETE FROM owner WHERE name = 'p251-owner';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+  source_anchors:
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveLineageRepositoryImpl.java:164-183"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveLineageRepositoryImpl.java:189-205"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/util/JooqReactiveOperations.java:44-49"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/MyDataScopeResolverImpl.java:101-108"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/AssetSearchServiceImpl.java:74-91"
+  retrospectives: []
+realism_caveats: |
+  The 2-million-row fixture is a blunt instrument for forcing a >5s hop; if hop 1 finishes inside
+  the budget the probe proves nothing about cancellation and must be re-run with a larger fixture
+  or a smaller WALL_CLOCK_BUDGET (the resolver's package-private constructor at
+  MyDataScopeResolverImpl.java:75-83 is the intended seam, but it is not reachable over HTTP —
+  a JUnit variant of this probe can use it directly and is the cheaper form if the fixture proves
+  unwieldy).
+
+  The pg_stat_activity poll is a 2-second single sample, so it detects a surviving backend but not
+  a backend that terminated late (between the response and the sample). A negative result is
+  therefore weaker evidence than a positive one.
+
+  This probe does NOT verify that the scope returned before the timeout would have been correct;
+  the TIMEOUT contract is explicitly "no scope at all" (MyDataScopeResolverImpl.java:38-40), and
+  the assertion above pins exactly that.

@@ -28,7 +28,7 @@ const BETA_NAME = `${TERM}_beta`;
 // brackets, so every URL matcher accepts either form — the IT-151 precedent.
 const SCOPE_IN_URL = /my_data(\[\]|%5B%5D)=UPSTREAM/;
 const UP_DEPTH_IN_URL = /upstream_depth=2/;
-const TAG_IN_URL = /tags(\[\]|%5B%5D)=\d+/;
+const STATUS_IN_URL = /statuses(\[\]|%5B%5D)=\d+/;
 
 async function runSearch(page: Page, term: string): Promise<void> {
   const box = page.getByPlaceholder('Search', { exact: true });
@@ -36,23 +36,14 @@ async function runSearch(page: Page, term: string): Promise<void> {
   await box.press('Enter');
 }
 
-// A tag on ALPHA only, so there is a real sidebar facet to toggle. SELECT-then-INSERT (tag.name is not a
-// reliable unique constraint — the db.ts seedEntityTag precedent) + DELETE-then-INSERT the link; idempotent.
-async function seedTagOnAlpha(tagName: string): Promise<number> {
-  const existing = await dbQuery<{ id: number }>('SELECT id FROM tag WHERE name = $1 LIMIT 1', [tagName]);
-  const tagId =
-    existing[0]?.id ??
-    (
-      await dbQuery<{ id: number }>('INSERT INTO tag (name, important) VALUES ($1, false) RETURNING id', [
-        tagName,
-      ])
-    )[0].id;
-  await dbQuery('DELETE FROM tag_to_data_entity WHERE data_entity_id = $1 AND tag_id = $2', [ALPHA_ID, tagId]);
-  await dbQuery('INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external) VALUES ($1, $2, false)', [
-    tagId,
-    ALPHA_ID,
-  ]);
-  return Number(tagId);
+// Give the two entities distinct lifecycle statuses so the Statuses sidebar facet has something real to
+// select. `statuses` is used rather than `tags` deliberately: it is a FIXED-option facet whose dropdown is
+// populated without an async fetch, which is the interaction IT-151 already proves works. (A first pass here
+// used `tags` and timed out waiting for its option — that facet's options only arrive with the session's
+// aggregated facet list.) DataEntityStatusDto: STABLE=3, DEPRECATED=4.
+async function seedDistinctStatuses(): Promise<void> {
+  await dbQuery('UPDATE data_entity SET status = 3 WHERE id = $1', [ALPHA_ID]); // STABLE
+  await dbQuery('UPDATE data_entity SET status = 4 WHERE id = $1', [BETA_ID]); // DEPRECATED
 }
 
 test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLED posture', () => {
@@ -62,10 +53,6 @@ test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLE
   });
 
   test.afterAll(async () => {
-    await dbQuery('DELETE FROM tag_to_data_entity WHERE data_entity_id = ANY($1::bigint[])', [
-      [ALPHA_ID, BETA_ID],
-    ]);
-    await dbQuery('DELETE FROM tag WHERE name = $1', [`${TERM}_tag`]);
     await dbQuery('DELETE FROM search_entrypoint WHERE data_entity_id = ANY($1::bigint[])', [
       [ALPHA_ID, BETA_ID],
     ]);
@@ -79,17 +66,28 @@ test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLE
   test('the scope + depth params SURVIVE a sidebar facet toggle (the #1858 mirror-merge class)', async ({
     page,
   }) => {
-    const tagId = await seedTagOnAlpha(`${TERM}_tag`);
+    await seedDistinctStatuses();
 
     await page.goto(`/search?q=${TERM}&my_data[]=UPSTREAM&upstream_depth=2`);
     await expect(page, 'the scope is in the URL on load').toHaveURL(SCOPE_IN_URL, { timeout: 15_000 });
     await expect(page, 'the depth is in the URL on load').toHaveURL(UP_DEPTH_IN_URL);
 
-    // Toggle a sidebar facet the ONLY way a user can — through the tag filter's autocomplete.
-    await page.locator('#filter-tags').click();
-    await page.getByRole('option', { name: `${TERM}_tag` }).click();
+    // WAIT FOR THE PAGE TO SETTLE BEFORE TOUCHING THE SIDEBAR. A facet's option list is fetched lazily
+    // (`getDataEntitySearchFacetOptions`) and needs the session's `searchId`, so a click that lands before the
+    // session exists opens an empty dropdown that never repopulates. The results-count element only renders
+    // once the asset search has resolved, so it is the honest "everything settled" signal — and under a
+    // My-data scope on an auth-disabled deployment the count is legitimately 0, which is exactly the
+    // fail-closed behaviour, not an error state.
+    await expect(
+      page.getByTestId('search-results-count'),
+      'the search settled (0 results under a My-data scope with no owner — fail-closed, as designed)',
+    ).toBeVisible({ timeout: 20_000 });
 
-    await expect(page, 'the toggled facet reaches the URL').toHaveURL(TAG_IN_URL, { timeout: 15_000 });
+    // Toggle a sidebar facet the only way a user can — through the Statuses filter's dropdown.
+    await page.locator('#filter-statuses').click();
+    await page.getByRole('option', { name: 'STABLE' }).click();
+
+    await expect(page, 'the toggled facet reaches the URL').toHaveURL(STATUS_IN_URL, { timeout: 15_000 });
     await expect(page, 'and the My-data scope is STILL there — not dropped by the mirror').toHaveURL(
       SCOPE_IN_URL,
     );
@@ -98,7 +96,6 @@ test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLE
     // Give the 400ms mirror debounce more than enough time to fire a late write that could still drop it.
     await page.waitForTimeout(1_500);
     await expect(page, 'no late mirror write drops the scope').toHaveURL(SCOPE_IN_URL);
-    expect(tagId).toBeGreaterThan(0);
   });
 
   test('the result tab strip is GONE, and the match count survives its retirement', async ({ page }) => {
@@ -110,10 +107,15 @@ test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLE
       'the seeded entity is found, so the page really rendered results',
     ).toBeVisible({ timeout: 15_000 });
 
-    await expect(
-      page.getByRole('tab'),
-      'ST-4 retired the seven class tabs and ST-8 retires the last (My Objects) — no tab strip remains',
-    ).toHaveCount(0);
+    // NB: scope this to the retired LABELS, not to `getByRole('tab')` wholesale — the app TOOLBAR
+    // (Catalog / Dictionary / Management / ...) is also a MUI tab strip, and this slice does not touch it.
+    // A blanket count-0 assertion fails against the toolbar and says nothing about the result strip.
+    for (const retired of ['My Objects', 'Datasets', 'Transformers', 'Quality Tests']) {
+      await expect(
+        page.getByRole('tab', { name: new RegExp(retired) }),
+        `the result-class tab "${retired}" is retired — ST-4 removed seven, ST-8 removed the last`,
+      ).toHaveCount(0);
+    }
 
     const count = page.getByTestId('search-results-count');
     await expect(count, 'the count moved into the results header — it was ONLY on the retired tab hint').toBeVisible(

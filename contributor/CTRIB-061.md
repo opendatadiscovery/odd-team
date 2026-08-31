@@ -535,7 +535,8 @@ Every row is RUN here before handoff. None may be recorded "NOT RUN" or "deferre
 |---|---|
 | Unit — full `:odd-platform-api:build` (test + checkstyle + assemble) | running (final, on the settled tree) |
 | Checkstyle (main + test), run in isolation | **BUILD SUCCESSFUL, 0 violations** — after fixing TWO of mine the gate caught: 2× `CustomImportOrder` (misplaced `FavoritesScopeDto` / `Tables.FAVORITE`) and 1× `Blank line at start of block` in `FavoritesScopeDto`. All three were invisible to a green test run, because Checkstyle emits no JUnit XML — the reason the local script runs `build`, not `test` |
-| Unit — the predicate cases, GREEN on fix / **RED on base**, both directions × 3 kinds | pending Phase D |
+| Unit — `AssetSearchFavoritesIntegrationTest`, 6 cases | **GREEN — BUILD SUCCESSFUL 5m53s** (2026-08-31), after the fixture fix below |
+| Unit — RED-on-base for those cases | **Not expressible as a failing run, and that is the honest answer.** `favorites` does not exist in `AssetSearchFormData` on `origin/main` (verified: 0 occurrences in main's schema), so the generated DTO has no accessor and the test **cannot compile** there. A new capability has no "fails then passes" run — the meaningful RED proof for this slice is the INTEGRATION one, where the same URL is driven against both SUTs and only the behaviour differs. That is why IT-148's narrowing oracle carries the weight |
 | Unit — FE vitest (`searchUrlState` 31 · `FavoritesFilter` 7 · i18n 17) | **GREEN — 55/55, 3 files** (2026-08-31) |
 | **`i18n-key-parity.test.ts`** — the repo's existing guard, run explicitly (CI does not) | **GREEN — 17/17**; all 7 catalogs at parity with the 2 new keys |
 | `tsc --noEmit` (Node 24.13) | **clean** — zero output |
@@ -721,3 +722,67 @@ when the box is idle — the same load signature. Not a defect; the same TST-057
 
 Neither is folded into this slice: TST-057 already owns the class, and adding a fourth instance to its list is
 the tests pillar's call, not this PR's.
+
+## 16. The full build found a real defect — in my own test
+
+`753 tests completed, 1 failed`, and the failure was mine:
+`favorites=false is a real filter` — `AssertionError at AssetSearchFavoritesIntegrationTest.java:119`.
+
+**The production code was correct; the test was wrong**, and it would have failed against a correct system.
+A substring trap:
+
+```
+"favnobetaunstarreddataentity".contains("starreddataentity")  ->  true
+```
+
+The never-starred fixture *contained* the starred fixture's token, so
+`noneMatch(name -> name.contains("starreddataentity"))` rejected the very asset the anti-join had correctly
+returned. Reading the test could not have found this; running it did — in the first minute of looking at the
+failure, and not before.
+
+Fixed by renaming the never-starred fixtures to `plain…`, with the invariant then **proved rather than
+eyeballed**:
+
+```
+fixture tokens: [keptasset, mineasset, plaindataentity, plainterm, removedasset,
+                 starreddataentity, starredqueryexample, starredterm, theirsasset]
+substring collisions: NONE
+```
+
+A comment at the `names()` helper records the trap so the next edit does not reintroduce it.
+
+**One correction to §15 while I am here.** `OpenApiDocsContractTest` **passed** in this run, on a quieter box.
+That weakens "it is TST-057" as a settled explanation and strengthens the load hypothesis — which is the right
+direction, but it also means §15's first entry should be read as what it is: a lead corroborated by one green
+run, not a closed attribution.
+
+## 17. Cross-stream agreement: the flock now covers heavy gradle, not just e2e
+
+`ctrib062` (#1842 ST-8) asked to serialize heavy Testcontainers builds, and brought a measurement worth more
+than the request: on **clean `origin/main @ 82e7e70e`, isolated**, `OpenApiDocsContractTest.platformApiGroupDocumentLoads`
+runs **59.693s against its 60s bound** — it passes by **307 ms with nobody's code in it**. It has also filed
+`TST-061` for the substrate gap: `state/active-streams.yaml` serializes *activities* and the heavy-e2e flock
+guards *e2e*, so **neither governs CPU or memory** — two unit builds can starve each other with nothing in the
+registry showing a conflict.
+
+**Adopted, from my next heavy run onward:** hold `state/locks/heavy-e2e.lock` around a bare `gradlew` /
+`run-platform-tests.sh` invocation too. Explicit caveat agreed with them so the convention cannot deadlock:
+`run-regression.sh` takes that flock **internally**, so it must be invoked *without* the lock held — hold it
+around bare gradle, release before the regression, never nest.
+
+**And I yielded the box.** They have four contaminated measurements and a ~70-minute regression outstanding;
+I have one build finishing and integration work that would be equally worthless under contention. They go
+first; this stream queues.
+
+**This retires the convenient story in §15.** My own `platformApiGroupDocumentLoads` RED is *probably* still
+contention — but "TST-057 covers it" was a half-verified explanation I reached for because it was available.
+Their number reframes it: the bound is 307 ms from failing at rest, so on this box the test is not a reliable
+signal for anyone. I owe them the three sibling timings (`platformApiGroupDocumentLoads`,
+`ingestionApiGroupDocumentLoads`, `swaggerConfigListsBothGroups`) from my build's JUnit XML — proportional
+inflation across all three supports contention, whereas **both** group documents hanging is the PLT-141 shape
+and a real defect.
+
+**Disclosed to them, unprompted:** my two `pkill -f 'scripts/run-platform-tests'` invocations (§14) may have
+killed one of their runs in the 10:35-10:50 window, which would have presented as an unexplained death rather
+than contention — i.e. it may be one of the four measurements they withdrew. They needed that to read their
+own data correctly.

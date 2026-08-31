@@ -99,7 +99,20 @@ async function seedTerm(name: string, ownerId: number | null): Promise<number> {
     [termId, name],
   );
   if (ownerId != null) {
-    await lfQuery('INSERT INTO term_ownership (term_id, owner_id) VALUES ($1, $2)', [termId, ownerId]);
+    // same title requirement as `ownership` above — resolve (or create) it here so the helper is standalone
+    const t = await lfQuery<{ id: number }>(`SELECT id FROM title WHERE name = 'it153_title' LIMIT 1`);
+    const titleId =
+      t.length > 0
+        ? Number(t[0].id)
+        : Number(
+            (await lfQuery<{ id: number }>(`INSERT INTO title (name) VALUES ('it153_title') RETURNING id`))[0]
+              .id,
+          );
+    await lfQuery('INSERT INTO term_ownership (term_id, owner_id, title_id) VALUES ($1, $2, $3)', [
+      termId,
+      ownerId,
+      titleId,
+    ]);
   }
   return termId;
 }
@@ -132,10 +145,17 @@ test.describe('IT-153 — My-data scopes narrow the rendered results for a bound
     test.setTimeout(300_000); // LOGIN_FORM stack bring-up
     await upLoginFormStack();
 
-    const owner = await lfQuery<{ id: number }>(
-      `INSERT INTO owner (name) VALUES ('it153_owner')
-       ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+    // NB: `owner`'s uniqueness is a PARTIAL index — `owner_name_unique ON owner(name) WHERE deleted_at IS
+    // NULL` (V0_0_36 dropped the plain constraint) — and ON CONFLICT cannot target a partial index without
+    // repeating its predicate. Same class as the `namespace` case below, so use the same robust shape:
+    // SELECT-then-INSERT, which does not care how the uniqueness is expressed.
+    const existingOwner = await lfQuery<{ id: number }>(
+      `SELECT id FROM owner WHERE name = 'it153_owner' AND deleted_at IS NULL LIMIT 1`,
     );
+    const owner =
+      existingOwner.length > 0
+        ? existingOwner
+        : await lfQuery<{ id: number }>(`INSERT INTO owner (name) VALUES ('it153_owner') RETURNING id`);
     ownerId = Number(owner[0].id);
 
     // The association the whole feature hangs on. provider = the auth.type, matching
@@ -162,7 +182,22 @@ test.describe('IT-153 — My-data scopes narrow the rendered results for a bound
       );
     }
     // ONLY `mine` is owned — so any other entity appearing under My Objects is a leak, not a fixture artefact.
-    await lfQuery('INSERT INTO ownership (data_entity_id, owner_id) VALUES ($1, $2)', [MINE_ID, ownerId]);
+    // The ownership row MUST carry a title_id: `DataEntityDtoMapper.extractOwnershipRelation` looks the title
+    // up in a dict and throws `There's no title with id null found in titleDict` on a NULL, which 500s the
+    // whole results page. `title_id` is nullable in the schema, so that is a real robustness gap (filed
+    // separately) — but a fixture must not depend on it, and db.ts's own seedEntityOwner always sets one.
+    const existingTitle = await lfQuery<{ id: number }>(
+      `SELECT id FROM title WHERE name = 'it153_title' LIMIT 1`,
+    );
+    const title =
+      existingTitle.length > 0
+        ? existingTitle
+        : await lfQuery<{ id: number }>(`INSERT INTO title (name) VALUES ('it153_title') RETURNING id`);
+    await lfQuery('INSERT INTO ownership (data_entity_id, owner_id, title_id) VALUES ($1, $2, $3)', [
+      MINE_ID,
+      ownerId,
+      Number(title[0].id),
+    ]);
     await seedTerm(MY_TERM, ownerId);
     await seedTerm(OTHER_TERM, null);
   });

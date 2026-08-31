@@ -855,3 +855,66 @@ ctrib062 was warned since their diagnostic has the same shape.
 I also confirmed a hole in my own box-quiet checks: `pgrep -f 'GradleWrapperMain'` does **not** match gradle's
 test workers (`java -Dorg.gradle.internal.worker.tmpdir=<worktree>/…`), which are the processes doing the work.
 Every "the box is quiet" claim I made earlier today rests on that check and should be treated as unverified.
+
+### 18a. Prediction RE-REGISTERED before my measurement (the baseline moved)
+
+ctrib062's clean-`main` uncensored run, quiet box, under the flock:
+
+```
+platformApiGroupDocumentLoads    24.156s
+swaggerConfigListsBothGroups      4.657s
+ingestionApiGroupDocumentLoads    2.626s      controls = 7.283s
+```
+
+My earlier prediction ("near 43.75s") was anchored to **their branch** number, which was taken with controls
+at 14.492s — i.e. a **loaded** box. They have since corrected that: 14.5s was never a quiet reference, it was
+2x loaded. The real quiet reference is **~7s of controls**, and the real baseline cost of this operation on
+this machine is **24.156s**, not ~43s.
+
+**So I am tightening my threshold BEFORE running, not after seeing a result** — which is the only direction a
+pre-registration may legitimately move:
+
+- **Contamination gate:** controls must land near **7s**. Materially above and the run is discarded, not
+  interpreted.
+- **Pass:** platformApi near **24s** ⇒ this slice costs nothing.
+- **I own it at >35s with quiet controls** (previously I had said >120s — that number was calibrated against a
+  baseline now known to be wrong by ~2x, and keeping it would have made the test unfalsifiable in practice).
+  At that point the PR is held and I go find what one scalar property is doing to a document build — which,
+  per the structural argument, should be impossible, and would mean the structural argument is wrong.
+
+### 18b. RESULT — measured, and this slice is clear
+
+**My branch, uncensored, quiet box, under the flock, using ctrib062's kill-safe script:**
+
+```
+platformApiGroupDocumentLoads    20.671s   PASSES
+swaggerConfigListsBothGroups      4.543s
+ingestionApiGroupDocumentLoads    2.653s
+controls = 7.196s
+```
+
+| run | platformApi | controls | verdict |
+|---|---|---|---|
+| clean `main` @ 82e7e70e (ctrib062) | 24.156s | 7.283s | baseline |
+| **this branch** | **20.671s** | **7.196s** | **3.485s FASTER than main** |
+
+Controls within **1.2%** of each other — as close to a controlled pair as this machine gives. Against the
+pre-registered threshold (own it above 35s with quiet controls): **PASSES at 20.671s.** This slice adds no
+measurable cost to the platform-api document build; the sign is even slightly negative, which at ~22s is
+run-to-run noise.
+
+**So the 60.191s failure was load, established by measurement rather than by the ticket that happened to
+describe the same symptom.** The bound has ~36s of headroom on a quiet box. `TST-057` (the bound is not sized
+against measured cost) and `TST-061` (the registry governs activities, not machine resources) own the class;
+nothing here is this slice's to fix.
+
+**The restore was verified by evidence, not habit:** the script's `trap` wrote `RESTORED 1` into the log, the
+annotation is back at `timeout = "60000"`, `git status` is empty on that path, and the whole worktree is down
+to this slice's own files.
+
+**What I got wrong along the way, in order:** I first reached for "TST-057 covers it" — an available
+explanation, half-verified. Then a discriminator that pointed *at* me, which I reported rather than sat on,
+and which turned out to be unsound in both directions. Then a threshold calibrated against a baseline that was
+2x wrong, which I tightened before measuring rather than after. Only the last step — an absolute, on a quiet
+box, at controls matching the baseline's — actually answered the question. Three arguments and one measurement;
+the measurement is the only one that counted.

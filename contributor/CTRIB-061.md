@@ -546,7 +546,7 @@ Every row is RUN here before handoff. None may be recorded "NOT RUN" or "deferre
 | Integration — `IT-148` re-grounded on the **narrowing** oracle (§7 step 9), GREEN on fix / RED on `ref:main` | pending Phase D |
 | FULL regression (`run-regression.sh ctrib061`): `feature-complete` green · `multi-stack` green · `known-bugs` still-RED · `ingestion-e2e` green | pending Phase D — queues on the heavy-e2e flock (held by co-active ctrib060; `run-regression.sh` blocks automatically) |
 | `EXPLAIN (ANALYZE, BUFFERS)` on both predicate directions, seeded corpus | pending Phase D |
-| Local patch-coverage (jacoco + the 98% changed-lines check) | pending Phase D |
+| Local patch-coverage (98% changed-lines aggregate, via ctrib062's `patch-coverage.py`) | **OPEN — blocked on a full test run for `jacocoTestReport.xml`**; expectation pre-registered at ~100% (§20). Not run ≠ assumed passing |
 | Docs read + authored + committed on `release/1.0.0` (5 locations, §7 step 11) | pending Phase D |
 | Ontology `/enrich --touched` + re-embed + commit | pending Phase D — queues behind ctrib060's `lineage/**` claim; **the PR stays `draft` until it runs** |
 | UI screenshot of the rendered filter, reviewed as a user (G-C12 step 5) | pending Phase D |
@@ -1009,3 +1009,37 @@ covered against a real Postgres by `searchAssets_favoritesFalse_narrowsToUnstarr
 in-app affordance produces `?favorites=no`, so an e2e case would spend stack time driving a URL nothing
 generates, to assert a rendering the component test already asserts. Bucket routing per `pillars/tests`:
 in-process where the question is in-process.
+
+## 20. A documented promise of mine with no measurement behind it
+
+ctrib062's patch-coverage finding reframed a gate I had been treating as due diligence. Their uncovered lines
+were not incidental — they were **behaviours their own OpenAPI description states as contract** (TIMEOUT vs
+NODE_CAP as distinct outcomes with different client advice), shipped unverified. Their framing: *the coverage
+number was the symptom; the defect was shipping documented promises unverified.*
+
+Applying that lens to this slice surfaces one:
+
+> "the correlated form probes `favorite_identity_asset_key` … and lets the planner choose a semi-/anti-join"
+> — `ReactiveAssetSearchRepositoryImpl` condition (5b), and the same claim in prose on the wire contract.
+
+**That is a documented performance claim with no measurement behind it.** It is already on the gate list as
+the `EXPLAIN (ANALYZE, BUFFERS)` run, but I had it filed as "SRE hygiene" rather than as *verifying an
+assertion I wrote into the source*. If the plan comes back a sequential scan, the comment is false no matter
+how green the tests are — and a future reader would trust the comment over re-measuring.
+
+**Patch coverage — pre-registered before running.** Most of the Java change is in `repository/reactive/`,
+which `odd-platform-api/build.gradle` excludes from jacoco, so those files should report **NOT IN REPORT**
+(correct, not a bug — CI's aggregate excludes them from both sides). The measurable changed lines are
+`service/AssetSearchServiceImpl.java` and `dto/FavoritesScopeDto.java`, both driven by all six behaviour
+tests. **Expectation: ~100%.** Whatever it actually returns gets recorded, and an uncovered *documented*
+behaviour is the finding — not the percentage.
+
+Blocked on a full test run for `jacocoTestReport.xml`: the last full build died at `:test` before the report
+task, and the targeted run only produced exec data for one class, which would understate everything. Queued
+behind ctrib062's regression with the IT work. **Not run ≠ assumed passing**; it stays open in the ledger.
+
+**Tooling reused, not rebuilt:** ctrib062's `patch-coverage.py`, reviewed line by line rather than adopted on
+trust. One latent trap reported back (`cur` leaks across a deleted file, because `+++ /dev/null` fails the
+`startswith('+++ b/')` reset — harmless only because a deletion's `+0,0` hunk yields an empty range). The rest
+checks out: three-dot diff, `ci > 0`, OR-merge across reports, and NOT-IN-REPORT rather than 0% for
+jacoco-excluded files, which correctly mirrors Madrapps.

@@ -918,3 +918,36 @@ and which turned out to be unsound in both directions. Then a threshold calibrat
 2x wrong, which I tightened before measuring rather than after. Only the last step — an absolute, on a quiet
 box, at controls matching the baseline's — actually answered the question. Three arguments and one measurement;
 the measurement is the only one that counted.
+
+### 18c. Closed — three measurements, both slices clear, and a phantom regression retracted
+
+ctrib062's quiet-box branch run landed at **23.122s @ 7.677s controls — 1.034s FASTER than clean main**. With
+mine, that is three independent uncensored measurements at comparable controls:
+
+| subject | controls | platformApi | vs main |
+|---|---|---|---|
+| clean `origin/main` @ 82e7e70e | 7.283s | 24.156s | baseline |
+| this branch (+1 scalar property) | 7.196s | 20.671s | −3.485s |
+| ctrib062 (+5 scalar properties) | 7.677s | 23.122s | −1.034s |
+
+Two spec-changing branches and clean main, indistinguishable. **The operation costs ~21-24s quiet; the 60s
+bound has ~36s of headroom quiet and effectively none under load.** Neither slice contributes anything
+measurable, exactly as the structural argument predicted — and it is now evidenced from opposite directions.
+
+**Logged where it will be found, not just here.** `backlog/tests/TST-057` gains the measurement table **and an
+explicit retraction** of three claims in its own previous section, which were written from the censored and
+control-normalised data both streams have since withdrawn: the "~116s loaded cost" projection (actual: 43.75s),
+the "genuine 3.4x regression in document-build cost that nobody has explained", and the "~17.8s -> ~59.7s
+degradation on `main` [that] deserves its own investigation". **There is no regression** — 17.8s and 59.7s are
+the same operation at different load. Left standing, that text would have sent the next reader hunting a
+phantom for hours; retracting it is worth more than the table.
+
+The section is appended and marked as superseding rather than rewritten in place, because the text it corrects
+is another stream's and they may want to fold it in themselves.
+
+**One methodological point worth carrying forward.** ctrib062 observed that their pre-registered rule *very
+nearly convicted a correct change*: had they honoured it literally against the first uncensored pair (main
+24.156 @ 7.283 vs branch 43.750 @ 14.492), they would have held a correct PR and hunted a 19s regression with
+no mechanism. Pre-registration prevents post-hoc rationalisation; it does **not** prevent comparing two runs
+taken under different conditions. Both disciplines were required, and either alone would have shipped a wrong
+conclusion.

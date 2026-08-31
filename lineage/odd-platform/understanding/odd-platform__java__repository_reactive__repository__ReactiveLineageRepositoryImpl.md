@@ -110,11 +110,11 @@ UPSTREAM (child→parent) convention is centralised in `anchorField` / `neighbou
 | MyDataScopeResolverImpl.hop (MyDataScopeResolverImpl.java:142) | `getNeighbourOddrnsFromOwnedSet(ownerId, kind, remaining+1)` | `rest:POST /api/search/assets` → `ui: search page, My-data scope filter` | **1 per selected direction** (max 2 — UPSTREAM then DOWNSTREAM, MyDataScopeResolverImpl.java:90-96), so 0, 1 or 2 per search request | **N/A at this caller — the owner id is a METHOD ARGUMENT here.** The identity chokepoint is two hops up: AssetSearchServiceImpl.java:77-79 resolves it from `authIdentityProvider.fetchAssociatedOwner()` and never from the request body. | Called only at `depth == 1` (MyDataScopeResolverImpl.java:141). Skipped entirely when `remaining <= 0` (:136-138) or when a previous direction already truncated (:120). |
 | MyDataScopeResolverImpl.hop (MyDataScopeResolverImpl.java:143) | `getNeighbourOddrns(frontier, kind, remaining+1)` | `rest:POST /api/search/assets` | **0..2 per direction** — hops 2..n, bounded by `clampDepth` ⇒ `MAX_DEPTH = 3` (MyDataScopeResolverImpl.java:53, 112-114). Worst case 2 directions x 2 = **4 calls per search request**; combined with hop 1, **≤ 6 lineage statements per request**. | Inherited from hop 1 — the frontier is already owner-derived. | Recursion stops early when the hop discovers nothing new or the budget bit (MyDataScopeResolverImpl.java:154-157). |
 | LineageServiceImpl.getLineage (LineageServiceImpl.java:95-97) | `getLineageRelations(Set, LineageDepth.of(N), kind)` | `rest:GET /api/dataentities/{id}/lineage/{upstream,downstream}` → `ui: entity-detail lineage canvas` | 1 per canvas open | NO — a single root oddrn with no owner filter | Unchanged by CTRIB-062. `lineage_depth` now carries `default: 1` + `minimum: 1` in the spec (openapi.yaml:1601-1608). |
-| LineageServiceImpl.getLineage (LineageServiceImpl.java:98-99) | `getLineageRelationsForDepthOne(rootIds, kind)` | same as above | 1 per canvas open (returns `Flux.empty()` when `expandedEntityIds` is empty, line 138-140) | NO | Progressive UI expansion. |
+| LineageServiceImpl.getLineage (LineageServiceImpl.java:98-99) | `getLineageRelationsForDepthOne(rootIds, kind)` | same as above | 1 per canvas open (returns `Flux.empty()` when `expandedEntityIds` is empty, lines 138-140) | NO | Progressive UI expansion. |
 | LineageServiceImpl.getLineage (LineageServiceImpl.java:113-114) | `getChildrenCount` + `getParentCount` | same as above | 2 per canvas open | NO — the oddrn set is the union of every oddrn in the CTE result | Fan-out badges per node. |
 | LineageServiceImpl.getDataEntityGroupLineage (LineageServiceImpl.java:66) | `getLineageRelations(List<String>)` | `rest:GET /api/dataentitygroups/{id}/lineage` | 1 | NO — the list comes from `groupEntityRelationRepository.getDEGEntitiesOddrns(...)` | Internal-DEG edges only. |
 | LineageServiceImpl.replaceLineagePaths (LineageServiceImpl.java:131-132) | `batchDeleteByEstablisherOddrn` THEN `batchInsertLineages` | `rest:POST /ingestion/entities` | 1 pair per ingested payload with lineage | N/A — ingestion | `@ReactiveTransactional` at LineageServiceImpl.java:125 is the atomicity boundary. |
-| DataEntityRelationsServiceImpl.getDependentOddrns (DataEntityRelationsServiceImpl.java:34) | `getLineageRelations(Set, LineageDepth.empty(), kind)` | `rest:GET /api/dataentities/my/{upstream,downstream}` | 1 | **YES at the anchor set** — the caller resolves the owner via `authIdentityProvider.fetchAssociatedOwner()` then passes the owner's entity-oddrn set as the root | `LineageDepth.empty()` ⇒ depth=-1 ⇒ seed-only (one hop). This was the file's ONLY owner-derived traversal before CTRIB-062 — and the owner filter lived in the CALLER, not the SQL. |
+| DataEntityRelationsServiceImpl.getDependentOddrns (DataEntityRelationsServiceImpl.java:34) | `getLineageRelations(Set, LineageDepth.empty(), kind)` | `rest:GET /api/dataentities/my/{upstream,downstream}` | 1 | **YES at the anchor set** — the caller resolves the owner via `authIdentityProvider.fetchAssociatedOwner()` (DataEntityRelationsServiceImpl.java:26) then passes the owner's entity-oddrn set as the root | `LineageDepth.empty()` ⇒ depth=-1 ⇒ seed-only (one hop). This was the file's ONLY owner-derived traversal before CTRIB-062 — and the owner filter lived in the CALLER, not the SQL. |
 | DataEntityServiceImpl (DataEntityServiceImpl.java:665) | `getTargetsCount(datasetOddrns)` | `rest:GET /api/dataentities/{id}` (dataset children badge) | 1 | NO | — |
 | DataEntityInternalStateServiceImpl (DataEntityInternalStateServiceImpl.java:126) | `softDeleteLineageRelations(oddrns)` | entity status transition → DELETED | 1 | N/A | Edges touching the entity on EITHER end (line 97). |
 | DataEntityInternalStateServiceImpl (DataEntityInternalStateServiceImpl.java:133) | `restoreLineageRelations(oddrns)` | entity status transition out of DELETED | 1 | N/A | `@ReactiveTransactional` on the parent method (:101). |
@@ -185,7 +185,7 @@ No side-effect class outside `db-read` / `db-write` is produced by this node: no
   - behaviour: "The ST-8 methods have NO repository-layer test at all. Search root: the WHOLE repo — `grep -rn 'getNeighbourOddrns|getNeighbourOddrnsFromOwnedSet' <odd-platform-repo> --include='*.java'` returns 7 hits, all in `odd-platform-api/src/main/java/` (interface x2, impl x2, resolver call sites x2 + one javadoc @link); ZERO in `odd-platform-api/src/test/java/`. All behavioural coverage is transitive through MyDataScopeResolverTest."
     test_class: integration
     criticality: MEDIUM
-    note: "Defensible as a design choice — the resolver is the meaningful unit — but it means a direct SQL regression (e.g. a swapped anchor/neighbour field) is only caught through the resolver's assertions."
+    note: "A deliberate boundary — the resolver is the meaningful unit — but it means a direct SQL regression (e.g. a swapped anchor/neighbour field) is only caught through the resolver's assertions."
   - behaviour: "Soft-delete filtering on the ST-8 path — no test inserts an `is_deleted = true` edge and asserts the neighbour walk skips it (lines 179, 201)."
     test_class: integration
     criticality: HIGH
@@ -202,11 +202,11 @@ No side-effect class outside `db-read` / `db-write` is produced by this node: no
   - behaviour: "Hop cost as a function of `limit` — whether the `ORDER BY` + `DISTINCT` forces full materialisation regardless of LIMIT."
     test_class: performance
     criticality: HIGH
-    note: "PROBE-NEEDED — P-394."
+    note: "PROBE-NEEDED — P-250."
   - behaviour: "Whether the 5s wall-clock cancel actually terminates the in-flight Postgres statement issued at lines 182/204."
     test_class: performance
     criticality: MEDIUM
-    note: "PROBE-NEEDED — P-395."
+    note: "PROBE-NEEDED — P-251."
   - behaviour: "The V0_0_101 index is load-bearing for the UPSTREAM hop but nothing asserts it exists or is used. A future `DROP INDEX` or a planner regression silently returns the walk to the 880 ms Seq Scan the migration measured (V0_0_101:15)."
     test_class: performance
     criticality: MEDIUM
@@ -293,7 +293,7 @@ No side-effect class outside `db-read` / `db-write` is produced by this node: no
 
 - "Ingestion atomicity via paired `batchDeleteByEstablisherOddrn` + `batchInsertLineages` under the CALLER's `@ReactiveTransactional` — the repository deliberately exposes the two primitives separately so the service can compose them in one transactional boundary." — evidence: ReactiveLineageRepositoryImpl.java:44-60 + LineageServiceImpl.java:124-133 — intent_anchor: `@ReactiveTransactional public Flux<LineagePojo> replaceLineagePaths(...) { return lineageRepository.batchDeleteByEstablisherOddrn(establishers).thenMany(lineageRepository.batchInsertLineages(pojos)); }` (LineageServiceImpl.java:125-133) — confidence: HIGH
 
-- "Establisher-keyed edge provenance — each edge carries the oddrn of the entity that DECLARED it, so re-publishing entity X rewrites only X's edges and leaves Y's untouched." — evidence: V0_0_17__add_establisher_into_lineage.sql:1-2, 116-117, 119 + ReactiveLineageRepositoryImpl.java:44-49 — intent_anchor: `CREATE INDEX lineage_establisher_oddrn ON lineage (establisher_oddrn)` (V0_0_17:119) — confidence: HIGH
+- "Establisher-keyed edge provenance — each edge carries the oddrn of the entity that DECLARED it, so re-publishing entity X rewrites only X's edges and leaves Y's untouched." — evidence: V0_0_17__add_establisher_into_lineage.sql:1-2, 116-117, 119 + ReactiveLineageRepositoryImpl.java:44-49 — intent_anchor: `CREATE INDEX lineage_establisher_oddrn ON lineage (establisher_oddrn);` (V0_0_17:119) — confidence: HIGH
 
 ## bugs_limitations_corner_cases
 
@@ -305,7 +305,7 @@ No side-effect class outside `db-read` / `db-write` is produced by this node: no
 
 - "**Truncation is deterministic but BIASED by oddrn lexicographic order.** `ORDER BY <neighbour>` (lines 180, 202) makes the surviving prefix reproducible — the stated goal — but the sort key is the ODDRN string, which begins with the data-source type (`//airflow/...`, `//postgresql/...`, `//snowflake/...`). A truncated My-data impact set therefore systematically over-represents alphabetically-early source types and can omit an entire platform. Neither Javadoc mentions this: ReactiveLineageRepository.java:34-36 frames the ordering purely as determinism." — evidence: ReactiveLineageRepositoryImpl.java:180, 202 + ReactiveLineageRepository.java:34-36 — severity: MEDIUM
 
-- "**The `LIMIT` bounds the rows returned, not the work done.** The projection is `SELECT DISTINCT <col> … ORDER BY <col> LIMIT ?` (lines 173-181, 198-203); a distinct-then-sort cannot emit its first row until the full matching set is aggregated and sorted unless the planner finds an index-ordered path, and the UPSTREAM hop's driving index (`lineage_child_oddrn`, V0_0_101:28) orders by the ANCHOR column while the ORDER BY is on the NEIGHBOUR column. Consequence: `MyDataScopeResolverImpl`'s shrinking `remaining` budget (MyDataScopeResolverImpl.java:135) buys no work reduction on the hop that overruns it — a hub anchor with a very wide fan-out costs the same at `limit=1` as at `limit=10001`. PROBE-NEEDED — P-394." — evidence: ReactiveLineageRepositoryImpl.java:173-181, 198-203 + V0_0_101__lineage_child_oddrn_index.sql:28 — severity: MEDIUM
+- "**The `LIMIT` bounds the rows returned, not the work done.** The projection is `SELECT DISTINCT <col> … ORDER BY <col> LIMIT ?` (lines 173-181, 198-203); a distinct-then-sort cannot emit its first row until the full matching set is aggregated and sorted unless the planner finds an index-ordered path, and the UPSTREAM hop's driving index (`lineage_child_oddrn`, V0_0_101:28) orders by the ANCHOR column while the ORDER BY is on the NEIGHBOUR column. Consequence: `MyDataScopeResolverImpl`'s shrinking `remaining` budget (MyDataScopeResolverImpl.java:135) buys no work reduction on the hop that overruns it — a hub anchor with a very wide fan-out costs the same at `limit=1` as at `limit=10001`. PROBE-NEEDED — P-250." — evidence: ReactiveLineageRepositoryImpl.java:173-181, 198-203 + V0_0_101__lineage_child_oddrn_index.sql:28 — severity: MEDIUM
 
 - "**The owned-set anchor subquery applies no predicate on `data_entity` beyond the ownership join.** Lines 175-178 select `data_entity.oddrn` filtered only by `ownership.owner_id`; there is no `status`, `hollow`, or `exclude_from_search` condition. Entity-level soft-delete is covered INDIRECTLY, because the delete cascade also soft-deletes the edges (DataEntityInternalStateServiceImpl.java:126 → softDeleteLineageRelations) and line 179 filters those. `hollow` and `exclude_from_search` entities are NOT covered by that cascade, so an owned hollow stub or a search-excluded entity still anchors the walk and its neighbours still consume budget." — evidence: ReactiveLineageRepositoryImpl.java:175-179 + DataEntityInternalStateServiceImpl.java:126 + the columns as seeded at MyDataScopeResolverTest.java:267-274 — severity: LOW
 
@@ -315,7 +315,7 @@ No side-effect class outside `db-read` / `db-write` is produced by this node: no
 
 - "No upper bound on `lineageDepth.getDepth()` at the repository layer — consumed directly at line 241 with no `Math.min`. The CTE path has no equivalent of the ST-8 `MAX_DEPTH = 3` clamp (MyDataScopeResolverImpl.java:53, 112-114); the two traversals in this file now have completely different depth-safety postures, and only the newer one is bounded." — evidence: ReactiveLineageRepositoryImpl.java:241 + LineageDepth.java:12-14 + MyDataScopeResolverImpl.java:53, 111-114 — severity: HIGH
 
-- "No JOIN-side owner filter in the recursive CTE: the seed and recursive step filter only on `is_deleted` (lines 234, 241). When invoked from `DataEntityRelationsServiceImpl.java:34`, owner-scoping relies entirely on the caller pre-filtering the seed oddrn set; the expansion that follows is not owner-scoped. This remains true after CTRIB-062 — the new owner predicate at line 178 belongs to the ST-8 methods only and does not touch the CTE." — evidence: ReactiveLineageRepositoryImpl.java:230-241 + V0_0_2__add_lineage.sql:1-7 + DataEntityRelationsServiceImpl.java:25-39 — severity: HIGH
+- "No JOIN-side owner filter in the recursive CTE: the seed and recursive step filter only on `is_deleted` (lines 234, 241). When invoked from `DataEntityRelationsServiceImpl.java:34`, owner-scoping relies entirely on the caller pre-filtering the seed oddrn set; the expansion that follows is not owner-scoped. This remains true after CTRIB-062 — the new owner predicate at line 178 belongs to the ST-8 methods only and does not touch the CTE." — evidence: ReactiveLineageRepositoryImpl.java:230-241 + V0_0_2__add_lineage.sql:1-7 + DataEntityRelationsServiceImpl.java:24-39 — severity: HIGH
 
 - "Empty-input behaviour is now inconsistent three ways across the file: `getLineageRelationsForDepthOne` short-circuits empty input (lines 138-140), both ST-8 methods short-circuit empty/non-positive input (lines 168-170, 193-195), and `getLineageRelations(Set, LineageDepth, kind)` does NOT — it builds a CTE with an empty `IN` list (line 234) and pays a round-trip to get an empty result." — evidence: ReactiveLineageRepositoryImpl.java:138-140, 168-170, 193-195 vs 123-133 — severity: LOW
 
@@ -323,7 +323,7 @@ No side-effect class outside `db-read` / `db-write` is produced by this node: no
 
 - "`LineageDepth.empty()` semantics remain call-site folklore: value -1 makes `t.depth < -1` false on the first iteration, so `empty()` means 'seed-only' (one hop), not 'no traversal'. The `boolean empty` flag is never read inside `lineageCte` (lines 217-243)." — evidence: LineageDepth.java:16-18 + ReactiveLineageRepositoryImpl.java:217-243 + DataEntityRelationsServiceImpl.java:34 — severity: MEDIUM
 
-- "Soft-delete on either end uses an OR predicate (lines 97, 107) that could not use an index on the CHILD_ODDRN leg before CTRIB-062. `V0_0_101`'s `lineage_child_oddrn` index (V0_0_101:28) now gives the planner a path for that leg as a side effect, although the migration's stated purpose is the ST-8 upstream hop. The improvement is real but incidental and unasserted by any test." — evidence: ReactiveLineageRepositoryImpl.java:97, 107 + V0_0_101__lineage_child_oddrn_index.sql:20-23 — severity: LOW
+- "Soft-delete on either end uses an OR predicate (lines 97, 107) that could not use an index on the CHILD_ODDRN leg before CTRIB-062. `V0_0_101`'s `lineage_child_oddrn` index (V0_0_101:28) now gives the planner a path for that leg as a side effect, although the migration's stated purpose is the ST-8 upstream hop and its SCOPE note claims 'no behaviour change to any existing query — the planner simply gains a path' (V0_0_101:20-21). The improvement is real but incidental and unasserted by any test." — evidence: ReactiveLineageRepositoryImpl.java:97, 107 + V0_0_101__lineage_child_oddrn_index.sql:20-23, 28 — severity: LOW
 
 - "No `@ReactiveTransactional` on this repository's mutation methods — atomicity is delegated to the caller. A future caller invoking `batchDeleteByEstablisherOddrn` outside a transaction observes a non-atomic delete with no rollback; nothing in the signature warns of this." — evidence: ReactiveLineageRepositoryImpl.java:39-41, 44-60 vs LineageServiceImpl.java:124-133 — severity: LOW
 
@@ -345,9 +345,9 @@ stress_findings:
           confidence: STATIC-INFERRED
           evidence: "ReactiveLineageRepositoryImpl.java:181 + MyDataScopeResolverImpl.java:55, 135, 142"
         - q: "Does a larger limit cost more work, or only return more rows?"
-          a: "PROBE-NEEDED. The DISTINCT + ORDER BY on the projected column suggests a blocking sort/aggregate whose cost is independent of LIMIT, but whether the planner finds an index-ordered early-terminating path is not statically determinable."
+          a: "PROBE-NEEDED. The DISTINCT + ORDER BY on the projected column points to a blocking sort/aggregate whose cost is independent of LIMIT, but whether the planner finds an index-ordered early-terminating path is not statically determinable."
           confidence: PROBE-NEEDED
-          evidence: "P-394"
+          evidence: "P-250"
         - q: "What does the operator see at each boundary?"
           a: "At the cap: MyDataScopeResolverImpl detects it by asking for remaining+1 and comparing sizes (MyDataScopeResolverImpl.java:139-146), sets truncated=true with reason NODE_CAP, and AssetSearchServiceImpl stamps scope_truncated / scope_truncation_reason on the page info (AssetSearchServiceImpl.java:98-106). The operator gets a partial impact set that is explicitly labelled partial. At limit<=0 they would get an empty scope indistinguishable from 'no neighbours' — unreachable in production."
           confidence: STATIC-INFERRED
@@ -400,9 +400,9 @@ stress_findings:
       promise: "the oddrns one hop from the supplied frontier"
       implementation: "Identical projection/ordering/limit, anchored on a materialised IN-list (line 200). Returns previously-visited nodes and frontier members themselves when edges point back — no cross-hop dedup."
       drift: NONE
-      operator_visible_consequence: "N/A — the split of responsibility is documented: cycle safety is the caller's visited set, stated at MyDataScopeResolverImpl.java:44-45 and asserted at MyDataScopeResolverTest.java:120-144."
+      operator_visible_consequence: "N/A — the split of responsibility is documented: cycle safety is the caller's visited set, stated at MyDataScopeResolverImpl.java:43-44 and asserted at MyDataScopeResolverTest.java:120-144."
       confidence: STATIC-INFERRED
-      evidence: "ReactiveLineageRepositoryImpl.java:189-205 + MyDataScopeResolverImpl.java:44-45, 148-153"
+      evidence: "ReactiveLineageRepositoryImpl.java:189-205 + MyDataScopeResolverImpl.java:43-44, 148-153"
     - name: "anchorField / neighbourField"
       promise: "one definition of DOWNSTREAM=parent->child, UPSTREAM=child->parent for the whole file"
       implementation: "Correct for the ST-8 pair (lines 210, 214, used at 171-172, 196-197). lineageCte encodes the SAME mapping INDEPENDENTLY in its `conditions` Pair (lines 226-228) — it does not call the helpers."
@@ -507,7 +507,7 @@ stress_findings:
         - q: "When the 5s wall-clock budget cancels the chain, does the in-flight statement stop?"
           a: "PROBE-NEEDED. Reactor cancels the upstream subscription (MyDataScopeResolverImpl.java:103); whether r2dbc-postgresql issues a backend CancelRequest and whether the backend honours it mid-sort is not determinable from source. If it does not, each timed-out search leaves an orphaned backend finishing work nobody reads."
           confidence: PROBE-NEEDED
-          evidence: "P-395"
+          evidence: "P-251"
     - location: "ReactiveLineageRepositoryImpl.java:44-60, 93-111"
       kind: transactional
       questions:
@@ -592,11 +592,11 @@ stress_findings:
           a: "MATCHES for the row count. It does NOT bound the WORK — the caller reading `limit` as a cost control would be wrong, because the DISTINCT + ORDER BY must resolve the full matching set first. The name promises a result bound and delivers exactly that; the misreading risk is the caller's (MyDataScopeResolverImpl.java:135 computes `remaining` as a budget, which is a set-size budget, not a cost budget)."
           drift: MINOR
           confidence: PROBE-NEEDED
-          evidence: "P-394"
+          evidence: "P-250"
         - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
           a: "An operator whose owned set touches a very-high-fan-out hub can hit the 5s wall-clock breaker (TIMEOUT, no scope at all) even though the node budget would have capped the RESULT at 10 000 — because shrinking `remaining` does not shrink the hop's cost."
           confidence: PROBE-NEEDED
-          evidence: "P-394 + MyDataScopeResolverImpl.java:103-108, 135"
+          evidence: "P-250 + MyDataScopeResolverImpl.java:103-108, 135"
         - q: "Is there a column / field that DOES match the input's name and is NOT being used?"
           a: "NONE."
           confidence: STATIC-INFERRED
@@ -629,12 +629,12 @@ stress_findings:
           evidence: "ReactiveLineageRepositoryImpl.java:198-203"
       routes_to_finding: "bugs_limitations_corner_cases (the 10 001-element IN-list entry)"
   probes_emitted:
-    - probe_id: P-394
+    - probe_id: P-250
       question: "Does the LIMIT on the neighbour hop bound the WORK, or only the rows returned?"
-      probe_path: "lineage/odd-platform/probes/P-394.yaml"
-    - probe_id: P-395
+      probe_path: "lineage/odd-platform/probes/P-250.yaml"
+    - probe_id: P-251
       question: "When the 5s wall-clock budget cancels the walk, does the in-flight Postgres statement issued at lines 182/204 actually terminate?"
-      probe_path: "lineage/odd-platform/probes/P-395.yaml"
+      probe_path: "lineage/odd-platform/probes/P-251.yaml"
   stress_summary:
     triggers_total: 16
     questions_total: 48
@@ -661,7 +661,7 @@ stress_findings:
 - known_security_gaps: [
     "No JOIN-side owner filter on the recursive CTE — unchanged by CTRIB-062. The two traversals in this file now have OPPOSITE owner-scoping postures, and only the newer one carries the predicate in SQL. — evidence: ReactiveLineageRepositoryImpl.java:230-241 (no owner predicate) vs 175-178 (owner predicate) — severity: HIGH",
     "No depth ceiling on the CTE — `lineageDepth.getDepth()` flows straight into line 241 with no clamp, while the ST-8 path clamps to 3 (MyDataScopeResolverImpl.java:112-114). Combined with the absent cycle guard this remains a DoS-amplification vector, and CTRIB-062's own measurement quantifies it (depth 3 from 200 roots did not complete in 25 s). — evidence: ReactiveLineageRepositoryImpl.java:241 + MyDataScopeResolverImpl.java:26-28, 112-114 — severity: HIGH",
-    "No statement_timeout at this repository — `jooqReactiveOperations.flux(query)` (lines 131, 182, 204) sets no per-statement timeout (JooqReactiveOperations.java:44-49). The ST-8 path has an APPLICATION-side 5s breaker (MyDataScopeResolverImpl.java:103) but whether it reaches the backend is unverified (P-395); the CTE path has no breaker at all. — evidence: ReactiveLineageRepositoryImpl.java:131, 182, 204 + JooqReactiveOperations.java:44-49 + MyDataScopeResolverImpl.java:103-108 — severity: MEDIUM"
+    "No statement_timeout at this repository — `jooqReactiveOperations.flux(query)` (lines 131, 182, 204) sets no per-statement timeout (JooqReactiveOperations.java:44-49). The ST-8 path has an APPLICATION-side 5s breaker (MyDataScopeResolverImpl.java:103) but whether it reaches the backend is unverified (P-251); the CTE path has no breaker at all. — evidence: ReactiveLineageRepositoryImpl.java:131, 182, 204 + JooqReactiveOperations.java:44-49 + MyDataScopeResolverImpl.java:103-108 — severity: MEDIUM"
   ]
 
 ## performance
@@ -681,11 +681,11 @@ stress_findings:
     "Reactive Flux throughout; each call acquires a connection via `databaseClient.inConnectionMany` (JooqReactiveOperations.java:45-48), so one My-data search consumes up to 6 connection acquisitions serially."
   ]
 - resource_allocation: [
-    "ST-8 hop: a DISTINCT + Sort over the anchor's full fan-out. The LIMIT caps the rows returned, not the sort input (see P-394) — so `work_mem` pressure is a function of the hub's degree, not of the budget.",
+    "ST-8 hop: a DISTINCT + Sort over the anchor's full fan-out. The LIMIT caps the rows returned, not the sort input (see P-250) — so `work_mem` pressure is a function of the hub's degree, not of the budget.",
     "ST-8 hops 2..n: up to 10 001 bind parameters in the IN-list (line 200), against Postgres's 65 535 ceiling. `JooqReactiveOperations.executeInPartition` (BATCH_SIZE 1000, JooqReactiveOperations.java:24, 51-67) is not applied.",
     "Recursive CTE: intermediate rows materialise in `work_mem`; the outer selectDistinct (lines 128-130) prunes only afterwards. The diamond/cycle amplification is O(paths), quantified above.",
     "JVM heap: `MyDataScopeResolverImpl` holds a `LinkedHashSet<String>` of up to 10 000 oddrns plus the per-hop `rows` list of up to 10 001 (MyDataScopeResolverImpl.java:145-151) — tens of KB per in-flight My-data search, not a concern in isolation but multiplied by concurrency.",
-    "Network: each LineagePojo carries three unbounded varchar oddrns (V0_0_26__remove_length_constraints.sql:39) + a boolean; the ST-8 methods are leaner, returning a single string column (line 182, 204)."
+    "Network: each LineagePojo carries three unbounded varchar oddrns (V0_0_26__remove_length_constraints.sql:39-41 widened parent_oddrn / child_oddrn from varchar(512) to varchar) + a boolean; the ST-8 methods are leaner, returning a single string column (lines 182, 204)."
   ]
 - scaling_characteristics: [
     "Stateless repository — scales horizontally; Postgres is the bottleneck.",
@@ -696,12 +696,12 @@ stress_findings:
 - known_performance_gaps: [
     "`ownership.owner_id` is unindexed, so the hop-1 anchor subquery's owner predicate cannot seek. Search roots named in the matching bugs entry. CTRIB-062 measured and fixed the `lineage` side of this join and left the `ownership` side unmeasured. — evidence: ReactiveLineageRepositoryImpl.java:175-178 + V0_0_3__add_ownership.sql:10-22 — severity: MEDIUM",
     "Hops 2..n bind a materialised IN-list of up to 10 001 elements while hop 1 deliberately uses a subquery. — evidence: ReactiveLineageRepositoryImpl.java:200 vs 175-178 + JooqReactiveOperations.java:51-67 — severity: MEDIUM",
-    "The LIMIT bounds rows, not work: a shrinking `remaining` budget does not shrink hop cost. PROBE-NEEDED — P-394. — evidence: ReactiveLineageRepositoryImpl.java:173-181, 198-203 — severity: MEDIUM",
+    "The LIMIT bounds rows, not work: a shrinking `remaining` budget does not shrink hop cost. PROBE-NEEDED — P-250. — evidence: ReactiveLineageRepositoryImpl.java:173-181, 198-203 — severity: MEDIUM",
     "Budget is spent on neighbours that are then discarded (owned-by-caller neighbours), so a dense team can hit `truncated=true` with a small returned set. — evidence: ReactiveLineageRepositoryImpl.java:173 + MyDataScopeResolverImpl.java:145-153, 167 — severity: MEDIUM",
     "No upper bound on recursive-CTE depth; no cycle guard; measured non-completion at depth 3 on a dense graph. — evidence: ReactiveLineageRepositoryImpl.java:241, 230-241 + MyDataScopeResolverImpl.java:26-28 — severity: HIGH",
     "No covering index for the `is_deleted = false` read filter — a partial index `(parent_oddrn, child_oddrn) WHERE is_deleted = false` is declared in no migration (V0_0_79__data_deprecation.sql:11-12 adds the column only). Now on nine read sites including both ST-8 hops. — evidence: V0_0_79__data_deprecation.sql:11-12 + ReactiveLineageRepositoryImpl.java:179, 201 — severity: MEDIUM",
     "No caching on the ST-8 path — every search request re-walks up to 6 statements. — evidence: ReactiveLineageRepositoryImpl.java:164-205 + MyDataScopeResolverImpl.java:1-181 — severity: LOW",
-    "Whether the 5s breaker actually releases the backend is unverified. PROBE-NEEDED — P-395. — evidence: MyDataScopeResolverImpl.java:103-108 + JooqReactiveOperations.java:44-49 — severity: MEDIUM"
+    "Whether the 5s breaker actually releases the backend is unverified. PROBE-NEEDED — P-251. — evidence: MyDataScopeResolverImpl.java:103-108 + JooqReactiveOperations.java:44-49 — severity: MEDIUM"
   ]
 
 ## sources
@@ -719,7 +719,7 @@ Tests are under `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatfor
 - dependencies_semantic.requires-config-schema ← V0_0_101__lineage_child_oddrn_index.sql:1-28
 - dependencies_semantic.requires-runtime ← ReactiveLineageRepositoryImpl.java:39-42, 48, 69, 80, 90, 99, 109, 120, 131, 148, 182, 204 + JooqReactiveOperations.java:28, 44-49 + Grep `lineageRepository\.|reactiveLineageRepository\.` across `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/` (11 hits / 5 files)
 - dependencies_semantic.couples-to ← ReactiveLineageRepositoryImpl.java:35-37, 142-146, 175-178 + V0_0_3__add_ownership.sql:10-22 + MyDataScopeResolverImpl.java:130-159
-- upstream_callers.* ← Grep `lineageRepository\.|reactiveLineageRepository\.` across `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/` + per-line reads of MyDataScopeResolverImpl.java:86-159, AssetSearchServiceImpl.java:40-93, AssetSearchController.java:25-33, LineageServiceImpl.java:66, 87-133, DataEntityRelationsServiceImpl.java:34, DataEntityServiceImpl.java:665, DataEntityInternalStateServiceImpl.java:126, 133
+- upstream_callers.* ← Grep `lineageRepository\.|reactiveLineageRepository\.` across `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/` + per-line reads of MyDataScopeResolverImpl.java:86-159, AssetSearchServiceImpl.java:40-93, AssetSearchController.java:25-33, LineageServiceImpl.java:66, 87-133, DataEntityRelationsServiceImpl.java:24-39, DataEntityServiceImpl.java:665, DataEntityInternalStateServiceImpl.java:126, 133
 - downstream_side_effects.* ← ReactiveLineageRepositoryImpl.java:44-243 (each method body) + JooqReactiveOperations.java:44-49 + MyDataScopeResolverImpl.java:130-159 + LineageServiceImpl.java:124-133
 - tests_coverage_semantic.covered_behaviours ← LineageRepositoryTest.java:47-311 + MyDataScopeResolverTest.java:53-231 (each @Test read)
 - tests_coverage_semantic.uncovered_behaviours ← Grep `getNeighbourOddrns|getNeighbourOddrnsFromOwnedSet` across `<odd-platform-repo>` `--include=*.java` (7 hits, all in `src/main/java`; zero in `src/test/java`) + absence inspection of LineageRepositoryTest.java:29-311 (7 @Test methods enumerated) and MyDataScopeResolverTest.java:53-231
@@ -727,7 +727,7 @@ Tests are under `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatfor
 - docs_link_semantic.inferred_docs.[1] ← WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage` 2026-08-31, status 200
 - docs_link_semantic.inferred_docs.[2] ← contributor/CTRIB-062.md:17, 470-475 (docs_routing + the authoring plan); no live fetch, per the release-train marker
 - docs_link_semantic.doc_drift_findings.[0] ← odd-platform-specification/openapi.yaml:1597, 1601-1608, 1632 + ReactiveLineageRepositoryImpl.java:241 + the api-reference WebFetch above
-- docs_link_semantic.doc_drift_findings.[1] ← the features/data-lineage WebFetch above + ReactiveLineageRepositoryImpl.java:175-178 + DataEntityRelationsServiceImpl.java:25-39
+- docs_link_semantic.doc_drift_findings.[1] ← the features/data-lineage WebFetch above + ReactiveLineageRepositoryImpl.java:175-178 + DataEntityRelationsServiceImpl.java:24-39
 - docs_link_semantic.doc_drift_findings.[2] ← the features/data-lineage WebFetch above + Grep `my_data|MY_OBJECTS|upstream_depth` across `<documentation-repo>/docs/` (3 hits, all in ADR-0022, all about the ACTIVITY feed) + contributor/CTRIB-062.md:17
 - docs_link_semantic.doc_drift_findings.[3] ← ReactiveLineageRepositoryImpl.java:235-241 + MyDataScopeResolverImpl.java:148-153 + the features/data-lineage WebFetch (explicit "no discussion of cycles")
 - implicit_adrs.[0] ← ReactiveLineageRepositoryImpl.java:164-205, 217-243 + MyDataScopeResolverImpl.java:24-29
@@ -747,11 +747,11 @@ Tests are under `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatfor
 - bugs_limitations_corner_cases.[6] ← ReactiveLineageRepositoryImpl.java:175-178 + V0_0_3__add_ownership.sql:10-22 + V0_0_101__lineage_child_oddrn_index.sql:8-10 + Grep `ON ownership|INDEX.*ownership` in the migration directory (only term_ownership hits) + Grep `CREATE INDEX` in `odd-platform-api/src/main/java/` (zero)
 - bugs_limitations_corner_cases.[7] ← ReactiveLineageRepositoryImpl.java:128-130, 230-241 + MyDataScopeResolverImpl.java:24-29
 - bugs_limitations_corner_cases.[8] ← ReactiveLineageRepositoryImpl.java:241 + LineageDepth.java:12-14 + MyDataScopeResolverImpl.java:53, 111-114
-- bugs_limitations_corner_cases.[9] ← ReactiveLineageRepositoryImpl.java:230-241 + V0_0_2__add_lineage.sql:1-7 + DataEntityRelationsServiceImpl.java:25-39
+- bugs_limitations_corner_cases.[9] ← ReactiveLineageRepositoryImpl.java:230-241 + V0_0_2__add_lineage.sql:1-7 + DataEntityRelationsServiceImpl.java:24-39
 - bugs_limitations_corner_cases.[10] ← ReactiveLineageRepositoryImpl.java:138-140, 168-170, 193-195 vs 123-133
 - bugs_limitations_corner_cases.[11] ← ReactiveLineageRepositoryImpl.java:113-121 + LineageRepositoryTest.java:111-128
 - bugs_limitations_corner_cases.[12] ← LineageDepth.java:16-18 + ReactiveLineageRepositoryImpl.java:217-243 + DataEntityRelationsServiceImpl.java:34
-- bugs_limitations_corner_cases.[13] ← ReactiveLineageRepositoryImpl.java:97, 107 + V0_0_101__lineage_child_oddrn_index.sql:20-23
+- bugs_limitations_corner_cases.[13] ← ReactiveLineageRepositoryImpl.java:97, 107 + V0_0_101__lineage_child_oddrn_index.sql:20-23, 28
 - bugs_limitations_corner_cases.[14] ← ReactiveLineageRepositoryImpl.java:39-41, 44-60 + LineageServiceImpl.java:124-133
 - stress_findings.tunables ← ReactiveLineageRepositoryImpl.java:168-170, 181, 193-195, 200, 203, 221, 238, 241 + MyDataScopeResolverImpl.java:53-57, 70-83, 103-108, 135-146
 - stress_findings.name_behavior_pairs ← ReactiveLineageRepositoryImpl.java:113-121, 164-183, 189-215, 226-241 + LineageDepth.java:16-18 + LineageRepositoryTest.java:130-281 + MyDataScopeResolverTest.java:120-144
@@ -760,15 +760,15 @@ Tests are under `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatfor
 - stress_findings.resource_boundaries ← ReactiveLineageRepositoryImpl.java:44-60, 93-111, 182, 204 + JooqReactiveOperations.java:44-49 + MyDataScopeResolverImpl.java:103-108, 130-159 + MyDataScopeResolverTest.java:146-180
 - stress_findings.request_inputs ← ReactiveLineageRepositoryImpl.java:165-215 + AssetSearchServiceImpl.java:77-79 + MyDataScopeResolverImpl.java:86, 135-158 + V0_0_35__add_terms.sql:1-14, 30-41 + odd-platform-specification/components.yaml:2480-2481, 2486-2487
 - security.auth_mode_relevance ← ReactiveLineageRepositoryImpl.java:39 + AssetSearchServiceImpl.java:74-91
-- security.owner_scoping ← ReactiveLineageRepositoryImpl.java:175-178 (RESPECTS) vs 189-205 (INHERITS) vs 230-241 (BYPASSES) + AssetSearchServiceImpl.java:77-79 + odd-platform-specification/components.yaml:2486-2487 + DataEntityRelationsServiceImpl.java:25-39
+- security.owner_scoping ← ReactiveLineageRepositoryImpl.java:175-178 (RESPECTS) vs 189-205 (INHERITS) vs 230-241 (BYPASSES) + AssetSearchServiceImpl.java:77-79 + odd-platform-specification/components.yaml:2486-2487 + DataEntityRelationsServiceImpl.java:24-39
 - security.data_exposure ← ReactiveLineageRepositoryImpl.java:164-205, 230-241 + MyDataScopeResolverImpl.java:53-57 + the api-reference WebFetch 2026-08-31
 - security.known_security_gaps ← ReactiveLineageRepositoryImpl.java:131, 175-178, 182, 204, 230-241 + JooqReactiveOperations.java:44-49 + MyDataScopeResolverImpl.java:26-28, 103-114
 - performance.hot_paths ← ReactiveLineageRepositoryImpl.java:44-205 + V0_0_101__lineage_child_oddrn_index.sql:4-18 + MyDataScopeResolverImpl.java:26-28 + DataEntityServiceImpl.java:665
 - performance.throughput_characteristics ← ReactiveLineageRepositoryImpl.java:53-59, 164-205 + MyDataScopeResolverImpl.java:116-125, 158 + JooqReactiveOperations.java:44-49
-- performance.resource_allocation ← ReactiveLineageRepositoryImpl.java:128-130, 173-181, 198-203 + MyDataScopeResolverImpl.java:135, 143-151 + JooqReactiveOperations.java:24, 51-67 + V0_0_26__remove_length_constraints.sql:39
+- performance.resource_allocation ← ReactiveLineageRepositoryImpl.java:128-130, 173-181, 198-203 + MyDataScopeResolverImpl.java:135, 143-151 + JooqReactiveOperations.java:24, 51-67 + V0_0_26__remove_length_constraints.sql:39-41
 - performance.scaling_characteristics ← ReactiveLineageRepositoryImpl.java:1-244 (no @Cacheable) + MyDataScopeResolverImpl.java:1-181 + AssetSearchServiceImpl.java:40-93 + V0_0_101__lineage_child_oddrn_index.sql:14-17, 28
 - performance.known_performance_gaps ← the corresponding bugs entries above + V0_0_79__data_deprecation.sql:11-12
-- probes ← lineage/odd-platform/probes/P-394.yaml, lineage/odd-platform/probes/P-395.yaml (next free ids: Glob `lineage/odd-platform/probes/P-2[5-9]*.yaml` returned no files; the highest existing id is P-249)
+- probes ← lineage/odd-platform/probes/P-250.yaml, lineage/odd-platform/probes/P-251.yaml (next free ids: Glob `lineage/odd-platform/probes/P-2[5-9]*.yaml` returned no files; the highest existing id is P-249)
 
 ## confidence_per_field
 
@@ -780,9 +780,9 @@ Tests are under `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatfor
 - tests_coverage_semantic: HIGH
 - docs_link_semantic: MEDIUM — the two live pages were fetched this session at status 200, but the excerpts are as reported by the WebFetch summariser rather than raw HTML, and the third entry (the ST-8 search docs) is release-train gated and therefore unverifiable live by construction.
 - implicit_adrs: HIGH
-- bugs_limitations_corner_cases: HIGH — except the LIMIT-bounds-rows-not-work entry, which is MEDIUM pending P-394.
+- bugs_limitations_corner_cases: HIGH — except the LIMIT-bounds-rows-not-work entry, which is MEDIUM pending P-250.
 - security: HIGH
-- performance: MEDIUM — the index and CTE numbers are quoted from CTRIB-062's own plan-time measurement (recorded verbatim in V0_0_101 and MyDataScopeResolverImpl's Javadoc), not re-measured in this session; the two open cost questions are P-394 / P-395.
+- performance: MEDIUM — the index and CTE numbers are quoted from CTRIB-062's own plan-time measurement (recorded verbatim in V0_0_101 and MyDataScopeResolverImpl's Javadoc), not re-measured in this session; the two open cost questions are P-250 / P-251.
 - stress_findings: HIGH — 45 of 48 answers are STATIC-INFERRED with file:line evidence; the 3 PROBE-NEEDED answers are genuinely runtime-only (query plan, statement cancellation) and both carry emitted probes.
 
 ## Maintainer notes
@@ -791,6 +791,6 @@ Tests are under `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatfor
 
 ## probe_verifications
 
-<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py. P-394 and P-395 were emitted by this
+<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py. P-250 and P-251 were emitted by this
      enrichment pass (2026-08-31) and are pending; when they run, flip the corresponding
      stress_findings answers from PROBE-NEEDED to PROBE-VERIFIED with the measured values inlined. -->

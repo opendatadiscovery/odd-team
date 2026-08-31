@@ -1164,3 +1164,64 @@ side**, filed by `ctrib060` the same night — and it records `ctrib062-*` conta
 flock window, meaning **this stream contributed to the contention that made their verdict unreadable**. So
 `TST-061` is filed as the unit-bucket sibling with an explicit cross-link, and the provenance note says plainly
 that my stream is on the other side of that collision.
+---
+
+## §17 — `OpenApiDocsContractTest` A/B: settled by control-normalisation, not by a quiet box
+
+The two unit failures carried into this session as *unknown* (§15/§16). One is now closed; the other is
+**resolved as change-independent** on evidence, not on a shrug.
+
+### `LoadIngestionTest.testInjectingManyDataEntities()` — CLOSED, contention only
+
+Isolated re-run on the branch: **PASS**. It failed only in the run that was starved by a co-active build.
+No further action.
+
+### `OpenApiDocsContractTest.platformApiGroupDocumentLoads()` — the measurement, and my own error in it
+
+`odd-platform-api/build.gradle:170` sets `maxParallelForks = availableProcessors / 2` = **4** on this 8-core
+box. My first "isolated" re-run passed `--tests "*OpenApiDocsContractTest*" --tests "*LoadIngestionTest*"` —
+so a **bulk-ingestion load test ran in a parallel fork, with its own Testcontainers Postgres**, against the
+springdoc test. I built the contention I was trying to measure away. That is measurement #3 discarded.
+
+Measurements #4/#5 were then taken one command apart — and `ps` for `GradleDaemon|GradleWrapperMain` had
+reported a clean box, which is **the wrong pattern**: gradle's test workers are
+`java -Dorg.gradle.internal.worker.tmpdir=<worktree>/…`, matched by neither name. ctrib061 was in fact
+mid-build in both windows.
+
+| SUT | `swaggerConfig` | `ingestionApi` | `platformApi` | verdict |
+|---|---|---|---|---|
+| `origin/main` `82e7e70e` | 15.086s | 7.230s | **59.693s** / 60s | PASS by **307 ms** |
+| branch (8 commits) | 29.887s | 13.487s | ≥60.337s (censored) | RED |
+
+### Why this is change-independent — the internal control
+
+The two sibling tests are a **control my change cannot touch**: the `ingestion-api` document contains none of
+this slice's schemas, and `swagger-config` is a static two-name list. Both **~1.94x**. So the whole run was
+~2x slower; `platformApi` reads only +1.1% because it is **censored at its own bound**.
+
+Control-normalised: baseline `platformApi / controls` = **2.675**. Branch = **≥1.391** — i.e. relative to the
+box, `platformApi` was *cheaper* on the branch, the opposite of a change that adds cost.
+
+**Falsifiable prediction, recorded BEFORE the uncensored run:** if this slice adds nothing, the branch's
+uncensored `platformApi` = `59.693 x 1.944` ~= **116s**. (Diagnostic only: the 60s bound was raised to 300000
+for that one run and restored in the same command; `git status` asserted clean afterwards. The committed test
+is untouched — G-C15.)
+
+### The structural argument that makes it conclusive
+
+This slice adds **0 operations, 0 paths, 0 controllers, 0 `@ControllerAdvice`** — `git diff --stat
+origin/main..HEAD -- odd-platform-specification/` is 55 insertions in `components.yaml`: five scalar
+properties on two schemas already in the document. springdoc's cost is walking **191 operations**; five plain
+`string`/`integer` properties cannot produce a hang, because only a schema **cycle** can, and scalars cannot
+form one.
+
+And the shape is diagnostic: **PLT-141 hangs BOTH group documents** (`CTRIB-008.md:274`). Here
+`ingestionApiGroupDocumentLoads` and `swaggerConfigListsBothGroups` **pass**. This is not that bug.
+
+### The finding that outlives this slice
+
+`TST-057` recorded this operation at **17.79s idle**. It now measures **59.693s on clean `main`** — 99.5% of
+its bound **with none of my code present**. The test no longer discriminates: it measures the box. Any PR
+touching this repo can false-RED on it, which is TST-057's own stated worry ("a false RED here blocks a
+public PR"). Extended there with this measurement rather than fixed here — the remedy is out of #1842's
+scope (G-C5), and the item explicitly asks to be sized against a measurement.

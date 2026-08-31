@@ -533,10 +533,14 @@ Every row is RUN here before handoff. None may be recorded "NOT RUN" or "deferre
 
 | Gate | Status |
 |---|---|
-| Unit — full `:odd-platform-api:build` (test + checkstyle + assemble) | pending Phase D |
+| Unit — full `:odd-platform-api:build` (test + checkstyle + assemble) | running (final, on the settled tree) |
+| Checkstyle (main + test), run in isolation | **BUILD SUCCESSFUL, 0 violations** — after fixing TWO of mine the gate caught: 2× `CustomImportOrder` (misplaced `FavoritesScopeDto` / `Tables.FAVORITE`) and 1× `Blank line at start of block` in `FavoritesScopeDto`. All three were invisible to a green test run, because Checkstyle emits no JUnit XML — the reason the local script runs `build`, not `test` |
 | Unit — the predicate cases, GREEN on fix / **RED on base**, both directions × 3 kinds | pending Phase D |
-| Unit — FE vitest: mirror-merge preservation, fail-closed parse, the R10 inline help | pending Phase D |
-| **`i18n-key-parity.test.ts`** — the repo's existing guard, run explicitly (CI does not) | pending Phase D |
+| Unit — FE vitest (`searchUrlState` 31 · `FavoritesFilter` 7 · i18n 17) | **GREEN — 55/55, 3 files** (2026-08-31) |
+| **`i18n-key-parity.test.ts`** — the repo's existing guard, run explicitly (CI does not) | **GREEN — 17/17**; all 7 catalogs at parity with the 2 new keys |
+| `tsc --noEmit` (Node 24.13) | **clean** — zero output |
+| ESLint on the 9 changed FE paths | **CLEAN** — 0 errors; 7 prettier warnings auto-fixed with `--fix`, then re-verified to 0 problems |
+| FE OpenAPI codegen (spec changed) | regenerated; `favorites?: boolean` present in the model |
 | **Changed** existing tests — each needs a per-test SoT + a surviving RED on base (G-C15). Expected set, with the ordering split out: `FavoritesAssetTypeFilter.test.tsx` + `Favorites/__tests__/lib.test.ts` (deleted with their subjects), `searchUrlState.test.ts` (extended, never weakened) | pending Phase D — enumerate exactly before committing |
 | Integration — `IT-148` re-grounded on the **narrowing** oracle (§7 step 9), GREEN on fix / RED on `ref:main` | pending Phase D |
 | FULL regression (`run-regression.sh ctrib061`): `feature-complete` green · `multi-stack` green · `known-bugs` still-RED · `ingestion-e2e` green | pending Phase D — queues on the heavy-e2e flock (held by co-active ctrib060; `run-regression.sh` blocks automatically) |
@@ -696,3 +700,24 @@ next stream will reach for the same shortcut.
 The second `pkill` also killed my own invoking shell (exit 144) mid-script, which silently dropped a Python
 edit I thought had applied — caught only by re-grepping the file afterwards. Another reason to scope the
 pattern narrowly.
+
+## 15. Two failures that were NOT mine — established, not assumed
+
+The full unit run surfaced one test failure and a FE re-run surfaced another. Both looked like my regressions.
+Neither was, and each was settled with evidence rather than a shrug.
+
+**`OpenApiDocsContractTest.platformApiGroupDocumentLoads()` — `TimeoutException`.** It is the regression guard
+for PLT-141 (springdoc 2.2.0 × Spring 6.2), and it carries `@AutoConfigureWebTestClient(timeout = "60000")`.
+It is **already tracked** as `backlog/tests/TST-057`, whose title names this exact test and whose body records
+the identical signature from ctrib059 the day before: *"747 tests completed, 1 failed … GREEN in isolation on
+the SAME tree, idle box → 3/3 PASS, with `platformApiGroupDocumentLoads` at **17.79s** against a **60s**
+bound."* Three gradle builds were running concurrently on this box (mine, ctrib062's, and a third). The
+plausible-but-unverified story is load; the **verification** is the isolation re-run recorded in the ledger —
+a ticket describing the same symptom is a strong lead, not proof that today's instance has the same cause.
+
+**`FavoritesFilter > is unchecked when the URL carries no favorites scope`.** Passed, then failed on a re-run,
+then **passed 7/7 in isolation**. The failing instance took **5325 ms** for an assertion that takes ~300 ms
+when the box is idle — the same load signature. Not a defect; the same TST-057 class, in the FE bucket.
+
+Neither is folded into this slice: TST-057 already owns the class, and adding a fourth instance to its list is
+the tests pillar's call, not this PR's.

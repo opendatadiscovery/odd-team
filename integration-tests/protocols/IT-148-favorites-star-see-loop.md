@@ -92,8 +92,11 @@ sentinel, so the stand seeds and asserts against that one bucket.
 
 **The control + the #1858 preservation class:**
 9. Navigate to `/search?q=it148` (unfiltered — confirm the foil IS listed). **Tick the Favorites checkbox**
-   (`[data-qa="filter-favorites"] input`). Confirm the URL gains `favorites=yes` and the list narrows.
-   Driving the control (not a crafted URL) is what proves the write path.
+   in the Filters sidebar — the one labelled **Favorites only** (or **Favorites (shared) only** under
+   DISABLED auth). Confirm the URL gains `favorites=yes` and the list narrows. Driving the control rather
+   than a crafted URL is what proves the write path. (The automation selects it by role + accessible name,
+   i.e. exactly what a human or a screen reader sees, not by a `data-qa` hook a styled wrapper might stop
+   forwarding.)
 10. Click **Clear All**. Confirm `favorites=` leaves the URL (it is a filter, so a filter reset clears it).
 11. From `/search?favorites=yes&q=it148`, untick the checkbox. Confirm the param is REMOVED entirely —
     not rewritten to `favorites=no`, which is a different filter.

@@ -786,3 +786,72 @@ and a real defect.
 killed one of their runs in the 10:35-10:50 window, which would have presented as an unexplained death rather
 than contention — i.e. it may be one of the four measurements they withdrew. They needed that to read their
 own data correctly.
+
+## 18. The springdoc timing question — and a near-miss that would have shipped
+
+The one non-mine failure in the final build was `OpenApiDocsContractTest.platformApiGroupDocumentLoads()`.
+Chasing it properly with `ctrib062` produced a better answer than either of us started with, and cost me a
+comfortable story twice.
+
+### The ratio discriminator is WITHDRAWN — in both directions
+
+ctrib062 proposed normalising `platformApi` against its two siblings as internal controls, since neither
+change can touch the ingestion document or the static swagger-config list. Applied to my numbers it pointed
+**at me**:
+
+| run | platform | controls | ratio |
+|---|---|---|---|
+| their main baseline | 59.693 | 22.316 | 2.675 |
+| their branch (censored) | ≥60.337 | 43.374 | ≥1.391 — reads exculpatory |
+| **my branch (censored)** | ≥60.191 | **9.877** | **≥6.094 — reads inculpatory** |
+
+My controls were *faster than their main baseline* yet `platformApi` still pinned the ceiling. That is the
+shape a real regression makes, and my change touches the platform-api document specifically.
+
+**It is not evidence, and the reason is structural.** `platformApi` and `ingestionApi` **share springdoc's
+lazily-built model**: whichever document is requested FIRST pays the reflection walk over every controller and
+`@ControllerAdvice`, and the second reuses it. The "control" is therefore *downstream of the subject*, ordered
+by a JUnit method order neither of us controls or observes. `swaggerConfigListsBothGroups` swinging
+**1.656 / 9.251 / 15.086s** across three runs is the proof — a control that varies 9× is not a control. My
+1.656s (the fastest anyone measured) most likely just means something else warmed the model first in that run.
+Add that the reflection walk is memory/GC-bound while the controls are cheap, and the normalisation compares
+two different resources. **So my ≥6.094 goes in the bin alongside their ≥1.391.**
+
+### What actually holds
+
+- **Not the PLT-141 shape.** ctrib062's uncensored branch run: `platformApi` **43.75s, PASSES, no hang**, with
+  both siblings green. A genuine springdoc break hangs *both* group documents.
+- **A structural argument, not a plausibility one.** springdoc's cost driver is the reflection walk over
+  operations, controllers and advice. Neither slice adds an operation, path, controller or advice (mine: one
+  scalar property; theirs: five scalar properties on two existing schemas). The only mechanism by which a
+  property can hang a document build is a schema **cycle**, and a scalar cannot form one. This holds
+  independently of any timing — which is why I accept it where I refused the property-count plausibility
+  argument (~0.124% of 804 properties ⇒ ~0.075s): that one was the same *kind* of reasoning that told me my
+  test fixture was fine an hour before it wasn't.
+- **The bound is the real problem.** 59.693s against a 60s bound on clean `main`, isolated — 307 ms of headroom
+  with nobody's code present. On this box the test is not a reliable signal for anyone. `TST-057` owns the
+  class; `TST-061` (ctrib062) owns the substrate gap.
+
+**Still owed:** my own uncensored absolute on a quiet box. Pre-registered *before* the result: near 43.75s with
+controls near the 14.492s quiet-box reference. **Above ~120s with quiet controls and this slice owns it, and
+the PR waits.**
+
+### The near-miss: a diagnostic patch that survived its own cleanup
+
+To measure uncensored I patched the bound `60000 → 300000`, in a one-liner that restored it afterwards and
+asserted the restore. ctrib062 and I then collided on the box; I killed my run — **and the kill skipped the
+restore.** The working tree was left with `@AutoConfigureWebTestClient(timeout = "300000")` on a regression
+guard.
+
+Had I not checked, this PR would have carried a **silently 5×-weakened bound on someone else's regression
+test** — the exact G-C15 failure ("a red test goes green just as easily by weakening it"), reached by accident
+rather than by a bad decision, and invisible in a diff skim because it is a three-character change in a file
+otherwise untouched by the slice. Restored and verified (`git status` clean on that file; whole-worktree diff
+back to this slice's own files). The re-run wraps the restore in a `trap … EXIT` so a kill cannot skip it, and
+ctrib062 was warned since their diagnostic has the same shape.
+
+### Cross-stream note
+
+I also confirmed a hole in my own box-quiet checks: `pgrep -f 'GradleWrapperMain'` does **not** match gradle's
+test workers (`java -Dorg.gradle.internal.worker.tmpdir=<worktree>/…`), which are the processes doing the work.
+Every "the box is quiet" claim I made earlier today rests on that check and should be treated as unverified.

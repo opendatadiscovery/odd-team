@@ -1141,3 +1141,26 @@ again. Logged as a follow-up rather than narrated.
 
 Nothing of ctrib061's is touched (O10) — the correct move is to wait for its build to finish, not to reclaim
 memory from a live neighbour.
+
+## A process failure of my own, recorded because it nearly destroyed a neighbour's work
+
+While filing the contention finding I ran the id check, **read output that said `TST-060` already existed**,
+and wrote to that path anyway. It was a tracked file belonging to the `ctrib060` stream (commit `030b2dc2`),
+and the write overwrote it.
+
+Caught within seconds by `git status` showing `M backlog/tests/TST-060.md` on a file I had believed to be new,
+and restored with `git checkout --` to its committed content (verified: the file is back, `git status` clean,
+nothing lost). My own draft was preserved to the scratchpad first, then re-filed as **`TST-061`**.
+
+This is not a near-miss worth glossing. It is precisely the failure `feedback_id_enumeration_canonical_tracker_only`
+and `LSN-009` exist to prevent, it happened **after** I had cited that discipline in this very record when I
+avoided duplicating `PLT-256`, and only luck of ordering (`ls` before `cat` in one command, whose output I then
+ignored) made it visible. The rule is not "run the check" — it is **read the answer before writing**. A
+`test -e` guard before any new-file write would have made it impossible; running the check and overriding it
+manually is worse than not running it, because it manufactures false confidence.
+
+The silver lining is substantive: `TST-060` turns out to be the **same coordination gap seen from the e2e
+side**, filed by `ctrib060` the same night — and it records `ctrib062-*` containers appearing inside their
+flock window, meaning **this stream contributed to the contention that made their verdict unreadable**. So
+`TST-061` is filed as the unit-bucket sibling with an explicit cross-link, and the provenance note says plainly
+that my stream is on the other side of that collision.

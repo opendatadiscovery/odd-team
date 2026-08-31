@@ -537,7 +537,7 @@ Every row is RUN here before handoff. None may be recorded "NOT RUN" or "deferre
 | Checkstyle (main + test), run in isolation | **BUILD SUCCESSFUL, 0 violations** — after fixing TWO of mine the gate caught: 2× `CustomImportOrder` (misplaced `FavoritesScopeDto` / `Tables.FAVORITE`) and 1× `Blank line at start of block` in `FavoritesScopeDto`. All three were invisible to a green test run, because Checkstyle emits no JUnit XML — the reason the local script runs `build`, not `test` |
 | Unit — `AssetSearchFavoritesIntegrationTest`, 6 cases | **GREEN — BUILD SUCCESSFUL 5m53s** (2026-08-31), after the fixture fix below |
 | Unit — RED-on-base for those cases | **Not expressible as a failing run, and that is the honest answer.** `favorites` does not exist in `AssetSearchFormData` on `origin/main` (verified: 0 occurrences in main's schema), so the generated DTO has no accessor and the test **cannot compile** there. A new capability has no "fails then passes" run — the meaningful RED proof for this slice is the INTEGRATION one, where the same URL is driven against both SUTs and only the behaviour differs. That is why IT-148's narrowing oracle carries the weight |
-| Unit — FE vitest (`searchUrlState` 31 · `FavoritesFilter` 7 · i18n 17) | **GREEN — 55/55, 3 files** (2026-08-31) |
+| Unit — FE vitest (`searchUrlState` 31 · `FavoritesFilter` **9** · i18n 17) | **GREEN — 57/57, 3 files** (2026-08-31). The two cases added for the inverted scope were each **re-run by name** (`-t 'INDETERMINATE'` → `1 passed \| 8 skipped`) rather than inferred from the total, because the default reporter had truncated their names out of the listing and "9 `it(` in the file, 9 reported" is arithmetic, not evidence |
 | **`i18n-key-parity.test.ts`** — the repo's existing guard, run explicitly (CI does not) | **GREEN — 17/17**; all 7 catalogs at parity with the 2 new keys |
 | `tsc --noEmit` (Node 24.13) | **clean** — zero output |
 | ESLint on the 9 changed FE paths | **CLEAN** — 0 errors; 7 prettier warnings auto-fixed with `--fix`, then re-verified to 0 problems |
@@ -1000,3 +1000,12 @@ and an acceptance criterion requiring **all three** surfaces plus a test that dr
 I had queued `/enrich` as a checkbox to clear before the PR. It found a user-visible defect and a tracked
 disclosure gap that seven component tests, 753 unit tests, tsc, ESLint and checkstyle had all passed over —
 because every one of those checks the code against what I believed it did.
+
+### 19a. Why the inverted scope needs no integration case
+
+The `favorites=no` *behaviour* — does the anti-join genuinely narrow through the real stack — is already
+covered against a real Postgres by `searchAssets_favoritesFalse_narrowsToUnstarred`. What was broken was the
+**rendered control state**, which is a component-level question and is now pinned by two vitest cases. No
+in-app affordance produces `?favorites=no`, so an e2e case would spend stack time driving a URL nothing
+generates, to assert a rendering the component test already asserts. Bucket routing per `pillars/tests`:
+in-process where the question is in-process.

@@ -89,9 +89,13 @@ test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLE
     // the list closed for good. TYPE into it instead — `pressSequentially` drives the same
     // `onInputChange -> handleFacetSearch` path a user does, and is this workspace's recorded technique for
     // this widget. (A click alone passed when the stack was already warm and hung on a freshly-recreated one.)
+    //
+    // Type the FULL value, not a prefix: the facet-options endpoint matches EXACTLY, measured live on this
+    // stack — `?query=STAB` returns [] while `?query=STABLE` returns ['STABLE']. A prefix filters the list to
+    // nothing, which is why an earlier attempt with 'STAB' found no option.
     const statuses = page.locator('#filter-statuses');
     await statuses.click();
-    await statuses.pressSequentially('STAB', { delay: 60 });
+    await statuses.pressSequentially('STABLE', { delay: 40 });
     const stableOption = page.getByRole('option', { name: 'STABLE' });
     await expect(stableOption, 'the Statuses dropdown offered STABLE').toBeVisible({ timeout: 30_000 });
     await stableOption.click();

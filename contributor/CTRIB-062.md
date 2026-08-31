@@ -1225,3 +1225,39 @@ its bound **with none of my code present**. The test no longer discriminates: it
 touching this repo can false-RED on it, which is TST-057's own stated worry ("a false RED here blocks a
 public PR"). Extended there with this measurement rather than fixed here — the remedy is out of #1842's
 scope (G-C5), and the item explicitly asks to be sized against a measurement.
+
+---
+
+## §18 — the pixel review's `0 results`: closed as change-independent, NOT as explained
+
+Carried in as OPEN. Two questions were conflated in it, and they have different answers.
+
+**Q1 — could this slice have caused it? No, structurally.** The pixel-review baseline screenshot had **no
+My-data scope applied**. `AssetSearchServiceImpl:92` takes the unscoped path and passes `scope = null`, and
+condition (5) in `ReactiveAssetSearchRepositoryImpl` is guarded by `if (scope != null && scope.active())`. The
+code this slice adds is **never entered** for an unscoped search, so it cannot alter that result set. This is a
+reachability argument, not a plausibility one: there is no input for which the new predicate participates in an
+unscoped query.
+
+Corroborating evidence from the opposite direction: **IT-153 passes 4/4 on a runner-provisioned LOGIN_FORM
+stack**, including the assertion that a bound owner's scoped search returns the owned entity — the same
+surface, the same auth mode, results present.
+
+**Q2 — what actually produced `0 results` on that stack? UNESTABLISHED, and I am not going to invent a
+cause.** The candidate explanations (an empty query term against an FTS index that requires one; a fixture
+that was seeded but not FTS-indexed via `updateDataEntityVectors`; a stack whose seed had not completed when
+the screenshot was taken) are all plausible and I have evidence for none of them, because **the stack was torn
+down (`down -v`) before it could be probed**. That was my error: the anomaly was observed, and the environment
+that produced it was destroyed before the observation was chased.
+
+**Disposition.** Closed as *not attributable to this change*, on the reachability argument plus IT-153's
+contrary evidence — and recorded as *unexplained* rather than resolved. If it recurs on any stack, the first
+move is to probe `search_entrypoint` for the fixture's row before touching application code; the memory
+`reference_odd_platform_search_fts_test_seeding` records that a raw `data_entity` INSERT is invisible to
+search until the vectors are updated, which is the most likely of the three candidates and the cheapest to
+check.
+
+**Process note:** "tear the stack down, then reason about what it showed" destroys the only evidence that could
+settle it. A stack that has produced an anomaly is evidence and should be probed *before* teardown, or
+preserved. This is the same class as `LSN-031` (verify the running system) reached from the other end — the
+running system was available and was discarded instead of interrogated.

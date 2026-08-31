@@ -34,7 +34,14 @@ identity**, so they run on the shared `odd-minimal` stack:
 3. **The match count survives that retirement.** The tab hint was the ONLY place `/search` showed a count, so
    the results header must render it — including `0 results` on an empty search, which distinguishes "nothing
    matched" from "still loading".
-4. **The My-data group is HIDDEN under `auth.type=DISABLED`.** There is no user-owner identity on such a
+4. **"Clear All" clears the My-data scope and its depths, and keeps the query and the sort.** The scope is a
+   FILTER — it lives in the Filters panel, next to Asset type — so the panel's single "Clear All" must take it,
+   its two depths and the sidebar facets, while the query and the ordering (which are not filters) survive.
+   This is a deliberate change to a shipped control: before ST-8 the handler rebuilt the URL from
+   `{query, sort, myObjects}` and preserved the owned scope by design. **Operator consequence if it FAILS:** you
+   press the one control that means "start over", the sidebar goes blank, and your results stay silently scoped
+   to your own data — or, in the other direction, Clear All wipes the query you were still working on.
+5. **The My-data group is HIDDEN under `auth.type=DISABLED`.** There is no user-owner identity on such a
    deployment, so nobody can ever use the filter. This mirrors what the manual already publishes for the twin
    surface — the Recommended panel "is hidden from the home page entirely" under DISABLED
    (`data-discovery/catalog-overview.md`). A permanently-dead control is clutter with no remedy; the
@@ -69,6 +76,9 @@ under test.
 3. Assert no `role=tab` element exists anywhere on the page.
 4. Navigate to `/search?q=it152mydata&my_data[]=UPSTREAM&upstream_depth=2`.
 5. Toggle a sidebar facet (select the seeded tag), wait for the URL to settle, and re-read the URL.
+6. From `/search?q=it152mydata&sort=NAME&my_data[]=UPSTREAM&upstream_depth=2&downstream_depth=3&statuses[]=3`,
+   press **Clear All**; re-read the URL. `my_data`, both depths and `statuses` are gone; `q` and `sort` remain.
+   Wait out the mirror debounce (~1.5s) and re-read once more — a late write must not resurrect the scope.
 6. Open `/search` with a query that matches nothing and read the header.
 7. Open `/search` and inspect the Filters sidebar for a "My data" control.
 

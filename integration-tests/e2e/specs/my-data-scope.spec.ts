@@ -146,6 +146,54 @@ test.describe('ST-8 My-data scope — URL contract, retired tabs, count, DISABLE
     await expect(page.getByTestId('search-results-count')).toHaveText(/0 results/, { timeout: 15_000 });
   });
 
+  // Spec R7b — "Clear All" clears the My-data scope. This is a DELIBERATE change to a shipped control and it
+  // is named in the public scope comment on the issue, so it needs a lock. Before ST-8 the handler rebuilt the
+  // URL from `{query, sort, myObjects}` and its own comment said "Query, sort and My-Objects are preserved
+  // (they are not filters)". The My-data scope IS a filter — it sits in this very panel, next to Asset type —
+  // so it must clear with the facets while the query and the ordering survive.
+  //
+  // Runs on the auth-disabled stack even though the control itself is hidden here: the claim under test is
+  // the URL contract, and the scope params parse, mirror and clear identically whether or not the group is
+  // rendered. That is also the harder case — nothing on screen reminds the handler the params exist.
+  test('"Clear All" clears the My-data scope and its depths, and keeps the query and the sort (R7b)', async ({
+    page,
+  }) => {
+    await seedDistinctStatuses();
+    await page.goto(
+      `/search?q=${TERM}&sort=name&my_data[]=UPSTREAM&upstream_depth=2&downstream_depth=3&statuses[]=3`,
+    );
+
+    // Assert the BEFORE state explicitly. Without it every "is gone" assertion below could pass vacuously
+    // on a param that never survived the load in the first place.
+    await expect(page, 'the scope loaded from the URL').toHaveURL(SCOPE_IN_URL, { timeout: 15_000 });
+    await expect(page, 'both depths loaded').toHaveURL(UP_DEPTH_IN_URL);
+    await expect(page, 'both depths loaded').toHaveURL(/downstream_depth=3/);
+    await expect(page, 'the sidebar facet loaded too').toHaveURL(STATUS_IN_URL);
+    await expect(page, 'and so did the ordering').toHaveURL(/sort=name/);
+    await expect(
+      page.getByTestId('search-results-count'),
+      'the search settled before the control is touched',
+    ).toBeVisible({ timeout: 20_000 });
+
+    await page.getByRole('button', { name: 'Clear All' }).click();
+
+    // Everything that is a FILTER goes...
+    await expect(page, 'the My-data scope is cleared').not.toHaveURL(SCOPE_IN_URL, { timeout: 15_000 });
+    await expect(page, 'the upstream depth goes with it').not.toHaveURL(UP_DEPTH_IN_URL);
+    await expect(page, 'and so does the downstream depth').not.toHaveURL(/downstream_depth=/);
+    await expect(page, 'and the sidebar facet it sits beside').not.toHaveURL(STATUS_IN_URL);
+    // ...and everything that is NOT a filter stays.
+    await expect(page, 'the query survives — it is not a filter').toHaveURL(new RegExp(`q=${TERM}`));
+    await expect(page, 'and neither is the ordering').toHaveURL(/sort=name/);
+
+    // The facet->URL mirror is debounced; a late write must not resurrect what Clear All removed.
+    await page.waitForTimeout(1_500);
+    await expect(page, 'no late mirror write brings the scope back').not.toHaveURL(SCOPE_IN_URL);
+    await expect(page, 'and the query is still there after the mirror settles').toHaveURL(
+      new RegExp(`q=${TERM}`),
+    );
+  });
+
   // The DISABLED posture (spec R7). There is no user-owner identity on this deployment, so the filter could
   // only ever be empty — and a permanently-dead control is clutter with no remedy. This mirrors what the
   // manual already publishes for the twin surface: the Recommended panel is hidden entirely under DISABLED.

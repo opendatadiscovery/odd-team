@@ -1093,3 +1093,39 @@ box-blocked, but it will now measure the query the platform actually issues. Sav
 it.** ctrib062 is right that this is a pattern, not a coincidence, and it deserves a retrospective once both
 slices are through — the failure is not laziness, it is that a hand-written query *feels* like the thing you
 shipped.
+
+## 21. Traps ctrib062 walked into first, adopted before my IT run
+
+Three of their findings landed on exactly my next step, so they are recorded here as *applied*, not admired.
+
+**1. A bare `run-suite.sh IT-NNN` builds the SUT from the SHARED `../odd-platform` worktree.** No `ODD_STREAM`,
+no `ODD_PLATFORM_DIR`, and it silently uses whatever branch the shared checkout happens to be on — for them,
+`WORKING TREE @ c54b9c61`, a SUT with none of their feature, so every test failed. Pure `LSN-033`.
+`run-regression.sh <id>` had been doing that plumbing silently, which is precisely why the bare form is a trap.
+**Applied:** every IT invocation here passes `ODD_STREAM=ctrib061 ODD_PLATFORM_DIR=<my worktree> ODD_SUT=working`
+explicitly, and the SUT identity is read out of the run log before any verdict is believed.
+
+**2. `EXIT=0` came back with 4 failures.** Read counts, never exit codes. My own false green earlier today (a
+vitest run that exited 0 while failing to start on a bad reporter flag) is the same shape in a different tool.
+**Applied:** the monitor greps for pass/fail counts and the SUT line, and the wrapper echoes that the exit code
+is not the verdict.
+
+**3. Two ways to catch a wrong-SUT run before trusting it:** the failure is **uniform** — tests that cannot
+touch your change fail identically — and a reused prebuilt image must be checked by **digest**, not tag name.
+
+**And the one that generalises past this slice.** They wrote a waiter as
+`while pgrep -f "run-regression"; do sleep 15; done` — whose own command line contains that literal, so it
+matched **itself** and never exited. Silent: process alive, log empty, indistinguishable from a slow job. That
+is the same root as my two shared-pattern `pkill`s (§14), in the opposite direction — one killed other people's
+processes, the other refused to stop for its own. **The rule now in `TST-061`: address a process by PID, never
+by a pattern.** A PID is the process you started; a pattern is a guess evaluated against a list that includes
+you.
+
+**One thing their IT-153 debugging says about mine.** Their first test failed on the plainest assertion while
+2-4 passed on the same fixture, and had been 4/4 green in isolation twice — every signal pointing at "flake".
+It was not: `openSearch` already waits for the results header, so the search had **resolved** and simply did
+not contain the seeded row. A timeout bump would have changed nothing but time-to-fail. The real defect was a
+missing **readiness** step (`TEMPLATE.md`: seed -> readiness -> run -> assert), visible only in suite context
+because a preceding multi-stack spec tears the stack down and leaves `beforeAll` booting cold. My re-grounded
+IT-148 has the same exposure — it seeds through real ingestion and then navigates — so if it fails on a plain
+assertion I will look for a missing readiness gate before reaching for "flake" or a timeout.

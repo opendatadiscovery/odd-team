@@ -1043,3 +1043,53 @@ trust. One latent trap reported back (`cur` leaks across a deleted file, because
 `startswith('+++ b/')` reset — harmless only because a deletion's `+0,0` hunk yields an empty range). The rest
 checks out: three-dot diff, `ci > 0`, OR-merge across reports, and NOT-IN-REPORT rather than 0% for
 jacoco-excluded files, which correctly mirrors Madrapps.
+
+### 20a. Measure the GENERATED SQL, not the SQL you reasoned about
+
+ctrib062 caught a flaw in their own perf evidence that applies directly to my pending `EXPLAIN`, and it is the
+sharpest methodological point of the day. Their M1-M5 measurements are genuinely good — real EXPLAINs, a 218x
+design error caught, a 22x missing index caught, an "obvious" optimisation rejected for measuring slower — and
+**every one was taken against hand-written probe SQL on a throwaway Postgres, never through the running
+application.** Their claim is about a predicate *shape*; **jOOQ generates the shipped query, not them.** A cast,
+a different join order, a materialised subquery, and the measured plan describes a query the platform never
+issues.
+
+My planned `EXPLAIN` was about to make exactly that mistake: paste my *intended* `EXISTS` into psql. That would
+prove the planner **can** choose an anti-join, not that **mine does** — a different claim from the one my
+source comment makes.
+
+**So I captured the generated SQL from the running application instead** — the r2dbc `QUERY` debug log of my
+own unit run, which drives the real service against a real Postgres. 8 positive and 2 negative occurrences.
+Verbatim:
+
+```sql
+-- favorites=true
+and exists (select 1 as "one" from "public"."favorite"
+            where ("public"."favorite"."oidc_username" = $9
+              and "public"."favorite"."provider" = $10
+              and "public"."favorite"."deleted_at" is null
+              and "public"."favorite"."asset_kind" = "public"."asset_search_entrypoint"."asset_kind"
+              and "public"."favorite"."asset_id"   = "public"."asset_search_entrypoint"."asset_id"))
+
+-- favorites=false
+and not exists (select 1 as "one" from "public"."favorite" where ( … same correlation … ))
+```
+
+**Two things this settles that I had left open:**
+
+1. **jOOQ emits canonical `not exists (…)`, not `not (exists (…))`.** I wrote `DSL.not(DSL.exists(…))`, noted
+   that the redundant wrapper was cosmetically imperfect, decided it was plan-equivalent and deferred the check
+   to the EXPLAIN. Measured: **0 occurrences of `not (exists`, 2 of `not exists`** — jOOQ normalises it. The
+   deferral was right, but it is now *verified* rather than *reasoned*.
+2. **The correlation is exactly the intended 4-tuple** — `oidc_username`, `provider`, `deleted_at is null`, and
+   both halves of the polymorphic key — with no cast and no join added to `searchFrom()`. That is the shape
+   `favorite_identity_asset_key` indexes.
+
+**What remains** is running `EXPLAIN (ANALYZE, BUFFERS)` on *this captured text* against a seeded stack — still
+box-blocked, but it will now measure the query the platform actually issues. Saved to
+`scratchpad/generated-sql.txt` so the EXPLAIN cannot silently drift back to a hand-written proxy.
+
+**Two of us independently wrote a performance sentence into a public artifact and then verified a proxy for
+it.** ctrib062 is right that this is a pattern, not a coincidence, and it deserves a retrospective once both
+slices are through — the failure is not laziness, it is that a hand-written query *feels* like the thing you
+shipped.

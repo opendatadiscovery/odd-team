@@ -1106,3 +1106,38 @@ Both failures **reproduce in isolation on a freed machine** (`BUILD FAILED in 12
 | Baseline **GREEN** | **the failures are mine** | **no PR.** Bisect the branch's 8 commits against these two tests — the contract commit `54f3cb91` is the first suspect, since it is the only one that changes what springdoc reflects over |
 
 Recording the decision rule **before** the result so the conclusion is not fitted to whichever answer arrives.
+
+## CORRECTION — my "isolated" re-run was not isolated, and the A/B is not yet valid
+
+The A/B baseline run was killed mid-flight, and checking the machine explains why — and invalidates the
+inference I had started to build on it.
+
+`ps aux --sort=-%mem` shows **`ctrib061` running its own gradle test build**: four worker JVMs under
+`odd-platform-ctrib061/odd-platform-api/build/tmp/test/work` totalling **~4.6 GB**, plus its Testcontainers
+(five live ryuk containers), on a **15 GB box with ~2 GB available**.
+
+So the sequence was:
+
+| Run | What I believed | What was actually true |
+|---|---|---|
+| full build, 37 m, 2/765 timeouts | "two stacks + a browser were competing" | ALSO competing with ctrib061's build |
+| "isolated" re-run, 12 m 41 s, same 2 timeouts | "machine freed — so this is real, not load" | **NOT freed.** I tore down *my* stacks; the neighbouring stream's build was untouched and invisible to me until I looked |
+
+**Both of my data points are contaminated, so the conclusion drawn from them — "reproduces in isolation,
+therefore deterministic and probably mine" — is withdrawn.** Two `WebTestClient` tests with a 60 s client
+timeout are exactly what memory starvation looks like, and `LoadIngestionTest` is by name the heaviest test in
+the suite.
+
+This does not prove the failures are environmental either. It proves **I do not yet have a clean measurement**,
+and the honest state is *unknown*, not *inherited* and not *mine*. The decision rule recorded above still
+stands; it simply cannot be evaluated until the box is genuinely quiet.
+
+**Methodology finding, worth more than this slice.** `playbooks/stream-coordination.md` serialises the heavy
+e2e regression behind a machine-wide flock but states that "the cheap buckets (unit …) parallelise freely".
+That is true for CPU and **false for memory on this box**: two concurrent Testcontainers-backed unit suites
+starve each other, and the symptom is not an obvious OOM — it is a handful of 60-second `WebTestClient`
+timeouts that read exactly like a product defect. It cost a full investigation cycle here, and it will do so
+again. Logged as a follow-up rather than narrated.
+
+Nothing of ctrib061's is touched (O10) — the correct move is to wait for its build to finish, not to reclaim
+memory from a live neighbour.

@@ -1,0 +1,147 @@
+---
+probe_id: P-396
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__FavoritesFilter
+emitted_at: 2026-08-31T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # no feature-flow anchors Favorites yet — `grep -ril favorit
+                   # lineage/odd-platform/feature-flows/detail` returns ZERO files (2026-08-31)
+test_class: integration
+verified_against_commit: 82e7e70e   # branch tip of contrib/CTRIB-061-favorites-filter == its
+                                    # origin/main base; the ST-7 change is UNCOMMITTED worktree
+                                    # state, so re-resolve line numbers before running
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B, `isOn`; Category A, the `'yes'` magic string): the Favorites control
+  is a two-state checkbox over a THREE-state URL param. `isOn` is computed as
+  `paramsToSearchState(location.search).favorites === 'yes'`
+  (FavoritesFilter.tsx:39-42), while the fail-closed parser accepts BOTH `yes` and `no`
+  (searchUrlState.ts:57-60, 252-260) and the wire projection maps `'no'` to the real boolean
+  `false` (searchUrlState.ts:300-303), which the repository turns into
+  `DSL.not(exists(...))` — an anti-join over the caller's favorites
+  (ReactiveAssetSearchRepositoryImpl.java:328-337).
+
+  Hypothesis: on `/search?favorites=no&q=<token>` the sidebar checkbox renders UNCHECKED (no
+  visible filter is active anywhere in the Filters rail) while the result list IS narrowed to the
+  assets the caller has NOT starred. The operator sees a filtered list with no on-screen
+  explanation for why their starred asset vanished, and the only way out of the state is to check
+  the box (-> `favorites=yes`) and uncheck it again (-> param removed), or to press Clear All.
+
+  This state is reachable today by a hand-written URL and by anyone editing a shared link, and it
+  is the state the API-level negative direction (`{"favorites": false}`, kept deliberately per the
+  GATE-1 decision recorded in contributor/CTRIB-061.md section 6.1) renders into. Neither the
+  vitest file (FavoritesFilter.test.tsx — 7 cases, none for `no`) nor IT-148
+  (integration-tests/e2e/specs/favorites-star-see-loop.spec.ts — no `favorites=no` case) covers it.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    note: |
+      The odd-minimal stand runs AUTH_TYPE=DISABLED, so every caller resolves to the shared
+      sentinel identity `(__shared__, DISABLED)`
+      (CurrentUserIdentityResolver.java:21-22, 26-29). That is sufficient for this probe: it tests
+      the DIRECTION of the predicate, not per-user scoping.
+  - kind: rest
+    method: POST
+    path: /ingestion/entities
+    note: |
+      Seed TWO searchable data entities that both match one FTS token and whose names do NOT
+      share a substring (the CTRIB-061 fixture trap: "favnobetaunstarreddataentity" contains
+      "starreddataentity"). Reuse the IT-148 helpers `seedIngestionDataSource` +
+      `seedSearchableEntity` if running inside the odd-team e2e harness.
+    body: |
+      two entities with external names "p396starred" and "p396plain",
+      both matching the search token "p396"
+  - kind: rest
+    method: PUT
+    path: /api/favorites/DATA_ENTITY/{id_of_p396starred}
+    capture_as: star_response
+  - kind: rest
+    method: DELETE
+    path: /api/favorites/DATA_ENTITY/{id_of_p396plain}
+    note: idempotent no-op — guarantees the foil is not starred from an earlier run
+act:
+  - kind: dom-probe
+    steps:
+      - navigate to {BASE_URL}/search?favorites=no&q=p396
+      - wait for the POST /api/search/assets response to settle (react-query/redux initialData
+        masks early assertions — see reference_odd_platform_e2e_route_interception)
+    capture_as: negative_scope_view
+  - kind: rest
+    method: POST
+    path: /api/search/assets?size=30
+    body: |
+      {"query": "p396", "filters": {}, "favorites": false}
+    capture_as: api_negative
+  - kind: rest
+    method: POST
+    path: /api/search/assets?size=30
+    body: |
+      {"query": "p396", "filters": {}}
+    capture_as: api_absent
+observe:
+  - kind: dom-probe
+    capture:
+      - js: "document.querySelector('[data-qa=\"filter-favorites\"] input[type=checkbox]').checked"
+        capture_as: checkbox_checked
+      - js: "document.querySelector('[data-qa=\"filter-favorites\"]').innerText.trim()"
+        capture_as: filter_label
+      - js: "[...document.querySelectorAll('body *')].some(el => (el.textContent || '').includes('p396starred'))"
+        capture_as: starred_listed
+      - js: "[...document.querySelectorAll('body *')].some(el => (el.textContent || '').includes('p396plain'))"
+        capture_as: plain_listed
+      - js: "document.location.search"
+        capture_as: final_search
+  - capture: api_negative.items[*].externalName
+    as: api_negative_names
+  - capture: api_absent.items[*].externalName
+    as: api_absent_names
+assert:
+  # THE HYPOTHESIS: the list is narrowed while the control shows nothing active.
+  - "checkbox_checked == false        # the control does not reflect an active favorites narrowing"
+  - "plain_listed == true             # the un-starred foil IS listed"
+  - "starred_listed == false          # THE NARROWING: the starred asset is excluded"
+  - "final_search contains 'favorites=no'   # the URL was not rewritten away by Search.tsx's mirror"
+  # The wire contract behaves as specified (this half is expected to PASS — it is the control that drifts).
+  - "'p396plain' in api_negative_names"
+  - "'p396starred' not in api_negative_names"
+  - "'p396plain' in api_absent_names and 'p396starred' in api_absent_names   # absent != false"
+cleanup:
+  - kind: rest
+    method: DELETE
+    path: /api/favorites/DATA_ENTITY/{id_of_p396starred}
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__FavoritesFilter
+  source_anchors:
+    - "odd-platform-ui/src/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx:39-42"
+    - "odd-platform-ui/src/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx:44-56"
+    - "odd-platform-ui/src/lib/search/searchUrlState.ts:57-60"
+    - "odd-platform-ui/src/lib/search/searchUrlState.ts:252-260"
+    - "odd-platform-ui/src/lib/search/searchUrlState.ts:300-303"
+    - "odd-platform-ui/src/components/Search/Results/Results.tsx:94-97"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/AssetSearchServiceImpl.java:73-78"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveAssetSearchRepositoryImpl.java:328-337"
+  retrospectives:
+    - LSN-020   # Category F — a named input whose rendered control does not represent its full domain
+realism_caveats: |
+  This probe does NOT claim `favorites=no` is a defect in the wire contract — the optional boolean
+  is a deliberate, maintainer-approved decision (contributor/CTRIB-061.md section 6.1 / GATE 1),
+  and the API half of the assertions is expected to pass. What it pins is the RENDERED consequence:
+  a URL-reachable filter state with no on-screen representation.
+
+  If `checkbox_checked == false` AND `starred_listed == false` both hold, the finding is confirmed
+  and the fix space is a product decision, not a bug fix: render the checkbox as indeterminate for
+  `no`, surface a dismissible "showing assets you have not starred" chip, or drop `no` from the
+  accepted parse values so the URL fails closed to All.
+
+  If `final_search` has lost `favorites=no`, the finding changes shape entirely — it would mean the
+  Search.tsx merge-back (Search.tsx:105-112) or the reader is normalising the value, which no read
+  of the source predicts; re-read the chain before recording anything.
+
+  The odd-minimal stand is AUTH_TYPE=DISABLED, so this probe cannot distinguish "the anti-join is
+  scoped to MY bucket" from "the anti-join is scoped to the shared bucket". Per-identity scoping is
+  proved in the backend unit bucket (AssetSearchFavoritesIntegrationTest), not here.

@@ -1,0 +1,141 @@
+---
+probe_id: P-397
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__FavoritesFilter
+emitted_at: 2026-08-31T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # no feature-flow anchors Favorites yet — `grep -ril favorit
+                   # lineage/odd-platform/feature-flows/detail` returns ZERO files (2026-08-31)
+test_class: security
+verified_against_commit: 82e7e70e   # branch tip of contrib/CTRIB-061-favorites-filter == its
+                                    # origin/main base; the ST-7 change is UNCOMMITTED worktree
+                                    # state, so re-resolve line numbers before running
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A, the `'DISABLED'` magic string; Category E, the react-query cache):
+  the shared-bucket disclosure — the `(shared)` label AND the inline-help sentence that carries the
+  CONSEQUENCE ("anyone on this instance can see and remove these stars") — is gated on
+  `appInfo?.authType === 'DISABLED'` (FavoritesFilter.tsx:36-37). `appInfo` comes from
+  `useAppInfo()`, a react-query `useQuery(['appInfo'])` (lib/hooks/api/appInfo.ts:4-9) on a client
+  configured with `retry: false` and NO `staleTime` / `initialData`
+  (index.tsx:30-48). So `data` is `undefined` (a) on every cold mount until `GET /api/info`
+  resolves, and (b) FOREVER if that single attempt fails.
+
+  In both windows `isShared` evaluates to `false`, which is the SAME value a properly authenticated
+  instance produces. The disclosure therefore fails OPEN: the absence of the warning is
+  indistinguishable from "auth is on, your favorites are private".
+
+  Two hypotheses, one probe:
+    H1 (transient) — a cold hard-load of /search under AUTH_TYPE=DISABLED first paints
+       "Favorites only" with no info icon, then flips to "Favorites (shared) only" + icon once
+       /api/info resolves.
+    H2 (fail-open, the load-bearing one) — when /api/info fails, the control renders
+       "Favorites only" with NO info icon and NO error, on an instance where every caller shares
+       one favorites bucket. The operator is told nothing.
+
+  R10 of the approved spec (contributor/CTRIB-061.md section 4) is explicitly about not losing the
+  retired tab's warning banner in the move to a filter. This probe measures whether the replacement
+  actually survives an /api/info outage — the one condition under which the banner it replaced,
+  being static page copy, could not have failed.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    note: |
+      The odd-minimal stand runs AUTH_TYPE=DISABLED — the only mode in which the disclosure is
+      supposed to render, and therefore the only mode in which its absence is a defect.
+  - kind: env
+    note: |
+      No seeding required: the control renders unconditionally in the Filters rail
+      (Filters.tsx:66-68) regardless of catalog contents.
+act:
+  # H1 — the cold-mount transient. A hard navigation, NOT an in-app click: an in-app hop from the
+  # Overview page warms the SHARED ['appInfo'] cache key via FavoritesColumn.tsx:45 /
+  # RecentlyViewedColumn.tsx:32 / Overview.tsx:27, which hides the transient entirely.
+  - kind: dom-probe
+    steps:
+      - open a fresh browser context (no service worker, no cache)
+      - route-intercept GET **/api/info and delay the response by 1500 ms, setting an `injected`
+        flag on the page so the assertion can prove the interception actually applied
+        (reference_odd_platform_e2e_route_interception — an unapplied route false-greens)
+      - navigate to {BASE_URL}/search
+      - sample the filter row at +300 ms (before /api/info can resolve)
+      - wait for the GET /api/info response, then sample again
+    capture_as: cold_mount
+  # H2 — the outage. /api/info returns 500 once; retry:false means there is no second attempt.
+  - kind: dom-probe
+    steps:
+      - open a fresh browser context
+      - route-intercept GET **/api/info -> 500, with the same `injected` applied-guard
+      - navigate to {BASE_URL}/search
+      - wait for network idle, then wait a further 3 s (retry:false — nothing more will be sent)
+    capture_as: info_outage
+observe:
+  - kind: dom-probe
+    capture:
+      - js: "window.__p397_injected === true"
+        capture_as: interception_applied
+      - js: "cold_mount.sample_at_300ms.label"
+        capture_as: early_label
+      - js: "cold_mount.sample_at_300ms.info_icon_present"
+        capture_as: early_icon
+      - js: "cold_mount.sample_after_info.label"
+        capture_as: settled_label
+      - js: "cold_mount.sample_after_info.info_icon_present"
+        capture_as: settled_icon
+      - js: "info_outage.label"
+        capture_as: outage_label
+      - js: "info_outage.info_icon_present"
+        capture_as: outage_icon
+      - js: "info_outage.any_visible_auth_warning"
+        capture_as: outage_other_warning
+    note: |
+      label  = document.querySelector('[data-qa="filter-favorites"]').innerText.trim()
+      icon   = !!document.querySelector('[data-qa="filter-favorites-info"]')
+      other  = [...document.querySelectorAll('body *')].some(el =>
+                 /shared by everyone on this instance/i.test(el.textContent || ''))
+assert:
+  - "interception_applied == true        # the guard: an unapplied route intercept false-greens everything below"
+  # H1 — the transient.
+  - "early_label == 'Favorites only'"
+  - "early_icon == false"
+  - "settled_label == 'Favorites (shared) only'"
+  - "settled_icon == true"
+  # H2 — the fail-open. These are the assertions that matter.
+  - "outage_label == 'Favorites only'    # identical to what a secured instance renders"
+  - "outage_icon == false"
+  - "outage_other_warning == false       # nothing else on the page discloses the shared bucket"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__FavoritesFilter
+  source_anchors:
+    - "odd-platform-ui/src/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx:36-37"
+    - "odd-platform-ui/src/components/Search/Filters/FavoritesFilter/FavoritesFilter.tsx:58-83"
+    - "odd-platform-ui/src/lib/hooks/api/appInfo.ts:4-9"
+    - "odd-platform-ui/src/index.tsx:30-48"
+    - "odd-platform-ui/src/components/Overview/OwnerAssociation/OwnerEntitiesList/FavoritesColumn/FavoritesColumn.tsx:45-46"
+    - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/CurrentUserIdentityResolver.java:21-29"
+  retrospectives: []
+realism_caveats: |
+  This probe measures the DISCLOSURE, not the data. Under an /api/info outage the backend still
+  resolves the shared sentinel and the favorites bucket is still instance-wide
+  (CurrentUserIdentityResolver.java:26-29) — nothing about the stored data changes. The finding, if
+  H2 confirms, is that the operator is not told, in exactly the mode where the platform's own
+  documentation posture says they must be.
+
+  The 300 ms early sample is timing-sensitive: on a warm machine /api/info can resolve inside it
+  even with the 1500 ms route delay if the delay is applied after the response is already cached by
+  a previous context. A fresh browser context per act step is mandatory; if `early_label` already
+  reads "(shared)", H1 is UNPROVEN rather than disproven — re-run with a longer delay.
+
+  H1 alone is cosmetic and would not justify a change on its own. H2 is the load-bearing half; if
+  H1 fails and H2 holds, record only H2.
+
+  The same `appInfo?.authType === 'DISABLED'` gate is used by FavoritesColumn.tsx:46,
+  RecentlyViewedColumn.tsx:32 and Overview.tsx:27, so a confirmed H2 is a CLASS finding across four
+  surfaces, not a FavoritesFilter defect. Route it accordingly — the fix belongs at the hook or at
+  a shared `useIsSharedFavoritesBucket()` seam, not in this component.

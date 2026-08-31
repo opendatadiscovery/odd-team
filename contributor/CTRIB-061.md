@@ -951,3 +951,52 @@ nearly convicted a correct change*: had they honoured it literally against the f
 no mechanism. Pre-registration prevents post-hoc rationalisation; it does **not** prevent comparing two runs
 taken under different conditions. Both disciplines were required, and either alone would have shipped a wrong
 conclusion.
+
+## 19. The ontology gate found two defects the tests had passed over
+
+`/enrich` on the new component is a G-C10 gate I had treated as bookkeeping. It returned two findings in my
+own code. **Both were verified first-hand before being acted on** — an agent finding is a lead.
+
+### Finding 1 — MINE, new, FIXED: the control lied about an applied filter
+
+`?favorites=no` is honoured end to end — `paramsToSearchState` keeps the token (`searchUrlState.ts:256`), the
+projection sends `favorites: false` (`:302`), and the backend applies the `NOT EXISTS` anti-join. But `isOn`
+tested `favorites === 'yes'`, so the checkbox rendered **unchecked over a list narrowed to everything the
+caller has NOT starred**. The control asserted "no filter" while a filter was applied — the
+FE-contradicts-BE class (`feedback_user_facing_impact_mandatory`, PLT-176).
+
+This is a direct consequence of the GATE-1 decision to ship a two-state toggle over a three-state contract. I
+had anticipated *"`no` has no UI control"* (recorded as T2b) and stopped there. I had not asked the next
+question — **what does the control show when that state is nonetheless reached** — and the honest answer was
+"a lie".
+
+**Fixed:** the inverted scope renders **indeterminate**, and a click **escapes** it (clears to unfiltered)
+rather than flipping to `yes`. The handler derives from the URL scope rather than the event's `checked`,
+because an indeterminate box reports `checked=true` on click — deriving from the event would have made the
+state inescapable through the UI. Required widening the shared `Checkbox` wrapper's prop allow-list by one
+pass-through prop (`indeterminate`), justified in a comment at the type.
+
+Two vitest cases pin both halves; the FavoritesFilter suite goes 7 → 9 cases, all green.
+
+**What this says about my test design:** I wrote seven component cases and none covered `?favorites=no`,
+because I had reasoned it was "API-only" and let the reasoning substitute for a case. The analyser read the
+code; I had tested my intent.
+
+### Finding 2 — REAL but pre-existing and shared: logged as TST-062, deliberately not fixed here
+
+The `(shared)` disclosure **fails open**. `useAppInfo` is a plain `useQuery` and `retry: false` is a global
+default (`index.tsx:41`), so one failed `GET /api/info` leaves `isShared` false and the shared-bucket warning
+silently disappears — on precisely the deployment that needs it.
+
+**Not fixed in this slice, for two stated reasons.** The pattern is in **three** surfaces
+(`FavoritesColumn.tsx:46`, `RecentlyViewedColumn.tsx:32`, both shipped before ST-7, and my filter at `:37`
+following the convention) — fixing one would leave three siblings disclosing the same fact by two rules. And
+the correct semantics are a genuine decision, not an oversight: assuming *shared* when the mode is unknown
+raises a false alarm on a healthy OAUTH2 instance during a blip. `backlog/tests/TST-062` carries the analysis
+and an acceptance criterion requiring **all three** surfaces plus a test that drives the failure path.
+
+### What the gate was worth
+
+I had queued `/enrich` as a checkbox to clear before the PR. It found a user-visible defect and a tracked
+disclosure gap that seven component tests, 753 unit tests, tsc, ESLint and checkstyle had all passed over —
+because every one of those checks the code against what I believed it did.

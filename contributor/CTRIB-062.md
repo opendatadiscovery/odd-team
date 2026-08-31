@@ -1299,3 +1299,54 @@ its own interest, and it is right.
 So the mechanism says impossible and one measurement pair says 19s. One of them is wrong. Resolving which is
 the next action, and it gates the PR: **if the cost is real, this does not ship** — the structural argument
 would then be broken, which matters far beyond this slice.
+
+---
+
+## §20 — RESOLVED: the slice costs nothing; the 43.750s was load
+
+The like-for-like measurement, flock-held, quiet box, uncensored:
+
+| SUT | controls | `platformApi` | delta vs main |
+|---|---|---|---|
+| clean `origin/main` `82e7e70e` | 7.283s | 24.156s | — |
+| **this branch** | **7.677s** | **23.122s** | **-1.034s** |
+| ctrib061's branch (independent slice, 1 added property) | 7.196s | 20.671s | -3.485s |
+| this branch, earlier, at 2x load | 14.492s | 43.750s | (the number that reopened it) |
+
+**Three measurements at controls 7.2-7.7s all land in 20.7-24.2s.** Two independently spec-changing branches
+and one clean main are indistinguishable. This slice is **1.034s FASTER** than main under equivalent
+conditions. The 43.750s was the box.
+
+**Verdict: change-independent — now established by measurement, not by argument.** §17 reached the right
+conclusion on wrong evidence (censored data + an unsound control-normalisation); §19 correctly reopened it;
+§20 settles it. The intermediate wrong-for-the-right-reasons state is left in the record deliberately.
+
+### The methodological lesson — pre-registration is necessary and NOT sufficient
+
+The rule pre-registered in §19 (*"main near 25s => the slice costs ~18s, hold the PR"*) **fired, and it very
+nearly convicted a correct change.** Honouring it literally would have held a good PR and sent me hunting a
+19s regression that does not exist, in code with no mechanism to produce one.
+
+What prevented that was **refusing to resolve the rule on a comparison whose two arms were taken under
+different load** (controls 7.283 vs 14.492 — a 2x difference). So:
+
+- **Pre-registration** protects against post-hoc rationalisation — choosing the reading that suits you *after*
+  seeing the number. It is why the PR was held rather than explained away.
+- **Like-for-like conditions** protect against a different failure: a rule firing correctly on an
+  **incomparable pair**. Pre-registration is silent about this, because it fixes the *interpretation* in
+  advance, not the *validity of the inputs*.
+
+Either discipline alone ships a wrong conclusion here. The pair of them is the actual method:
+**fix the interpretation before the result AND refuse to interpret arms that are not comparable.**
+
+### What the whole episode cost, and the one guard that would have prevented all of it
+
+Six measurements were taken and **five discarded**: one killed by a neighbour's unscoped `pkill`, one where I
+paired the subject with a load test under `maxParallelForks=4`, two taken while a neighbour build was live and
+invisible to a `pgrep GradleDaemon|GradleWrapperMain` check that cannot match gradle's workers, and one
+censored at its own bound. The single guard that would have made every one of them valid is the one now agreed
+between the two streams and filed in `TST-061`: **anything that starts a JVM test worker takes the flock.**
+
+`TST-057`'s remedy sizing is now measurable: **~21-24s quiet, 48-60s loaded, against a 60s bound.** Quiet, the
+bound has ~36s of headroom; loaded, essentially none. The remedy is not a bigger number — it is that a
+correctness guard must not be gated on a wall-clock bound whose margin varies 3x with unrelated machine load.

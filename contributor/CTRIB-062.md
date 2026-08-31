@@ -4,7 +4,7 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: review-ready
+status: blocked
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
@@ -1524,3 +1524,102 @@ is not presented as satisfied.
 `TST-057` — retracted a **phantom regression** this stream had written into it, which would have sent the next
 reader hunting a non-existent 3.4x slowdown. `TST-059` — baseline corrected from **15 to 11**, since three
 specs this slice re-points now pass and one was deleted by a sibling stream.
+
+---
+
+## Review (2026-08-31, session: review-ctrib062) — REJECTED → `blocked`
+
+Separate-session gate satisfied (implement was the prior `ctrib062` session; this session opened cold on the
+committed branch). Reviewed: `contrib/CTRIB-062-my-data-filter` @ **`94b2a2c8`** (10 commits off `origin/main`
+`82e7e70e`, draft PR #1871) + `documentation@docs/CTRIB-062-my-data-filter` @ **`b4c5889`** (2 commits off
+`origin/release/1.0.0`, draft PR #110).
+
+**No 2-minute precondition bounce.** The DoD carries no "NOT RUN" admission, and run-logs exist for all four
+suites at SUT digest `sha256:c763c52a…` — which I verified *is* the reviewed tree: the image was built
+2026-08-31T11:21:44Z, after `f8edfdb2` (10:59Z) and before `94b2a2c8` (13:57Z), and `git show 94b2a2c8` is
+**one file, 11 insertions, every changed line a `//` comment**. So the SUT is functionally the reviewed commit.
+
+This is a strong, unusually honest slice. The rejection is **not** a re-litigation of its record — most of what
+it claims, I re-derived and it holds. It is rejected on four things that are not yet true.
+
+### Acceptance criteria (the item's own Spec R1-R8)
+
+| | Verdict |
+|---|---|
+| **R1** scope group narrows the cross-kind search | **PASS** — `AssetSearchScopePredicateTest` (Testcontainers, real Postgres) covers narrow-per-kind / lineage-excludes-terms / MY_OBJECTS ∪ lineage / empty-lineage-narrows-to-nothing / no-scope-unnarrowed; IT-153 drives the rendered list through a real login, 5 PASS entries at digest `c763c52a` in `integration-tests/run-log/2026-08-31-IT-153.md`. |
+| **R2** ownership per kind | **PASS** — `ReactiveAssetSearchRepositoryImpl.java:331-360` (`OWNERSHIP` branch ∪ `TERM_OWNERSHIP` branch, kind-guarded outright, no pass-through); query examples are unreachable by both branches, so they are excluded by construction. Caption rendered (`MyDataFilter.tsx:135-139`) and documented (`search.md`). |
+| **R3** per-direction depth, default 1, ceiling 3 | **PASS** — `MyDataScopeResolverImpl.clampDepth:112-114`; FE `parseDepth` (`searchUrlState.ts:240-244`); the spec descriptions were corrected *after* the running system contradicted them (§ Live-system verification, the 200/200/200/400 matrix). Gap, minor: the resolver's clamp is tested only upward (`MAX_DEPTH + 5`), never at `0`/negative. |
+| **R4** bounded expansion, truncation visible | **FAIL** — see B1, B3, B4 below. (a) determinism + `NODE_CAP` + the response stamp: PASS. (b) "the page shows the strip and a qualified count": **no automated coverage at any level**. (c) EXPLAIN + FTS-driver + `< 1 s`: **never measured on the shipped query**. |
+| **R5** tab retired, count survives | **PASS** — strip deleted; `SearchResultsHeader` rendered **outside** the `!routerSearchId` gate (`Results.tsx:158-165`), which is the W5 trap correctly avoided; IT-152 asserts no `role=tab`, the count, and `0 results`. |
+| **R6** panel deep-links | **PASS** — `OwnerEntitiesList.tsx:107,113,121` via the shared `buildSearchLink`, so a link-written URL is byte-identical to the mirror's. Note: `DataEntityList.tsx:80` hides *View all* when the panel is empty; defensible, outside R6's stated acceptance. |
+| **R7** posture | **PASS on the two asserted arms** (DISABLED-hidden in IT-152, bound-enabled in IT-153). The **unbound** arm has no automated coverage at all, and the doc mis-describes it — S6. |
+| **R7b** Clear All clears the scope | **PASS by code read** (`Filters.tsx:36-41` drops `myData` + both depths, preserves query + sort) — **no test anywhere**. S3. |
+| **R8** additive contract | **PASS** — `MyDataScopeDto.resolve`; FE legacy `?my=true` → `['MY_OBJECTS']`; still emits `my_objects` for the DE session so the shipped sidebar behaviour is unchanged. Covered in `MyDataScopeDtoTest`, `AssetSearchServiceMyDataTest`, `searchUrlState.test.ts`, `searchFormDataToUrlState.test.ts`, and live (`my_objects: true` alone → 200). |
+
+### Quality Bar
+
+- **Gate 1 — No duplicates: PASS.** `FixedOptionsMultiFilter` reused rather than a parallel multiselect; `buildSearchLink` extracted so the navigator, the three `<Link>`s and the mirror share one construction; `PLT-256` cited, not re-filed.
+- **Gate 2 — Aliases: PASS.** `my_objects → my_data` is the alias, declared `deprecated: true` with the mapping rule stated in the schema description (`components.yaml:2467-2474`) and honoured in one place (`MyDataScopeDto.resolve`).
+- **Gate 3 — Caveats as admonitions: PARTIAL.** The NODE_CAP partial-set caveat is a `{% hint style="warning" %}` in `search.md`, correctly. The **TIMEOUT** outcome — a different message and a different result — has no doc coverage at all (S5).
+- **Gate 4 — Consumer-read: PASS.** Verified first-hand end-to-end: `searchUrlState.ts:340` → `FacetStateMapperImpl.mapForm:78` → `SearchFacetsData.my_objects` (`components.yaml:1723`) → `dataEntitySearch.slice.ts:150` → `dataentitySearch.selectors.ts:113` → `Filters.tsx:77`. That read is also what produced S1.
+- **Gate 5 — Unset-parameter audit: N/A** (no SDK builder in scope).
+- **Gate 6 — Bidirectional code ↔ doc: FAIL.** Three user-visible paths this change ships have no doc coverage or wrong doc coverage: the TIMEOUT outcome (S5), the unbound posture as actually rendered (S6), and the Type-facet interaction (S1, where the doc says the opposite of the code).
+- **Gate 7 — Layout: PASS.** No inbound anchor pointed at the retired `#result-class-tabs` (grepped the whole `docs/` tree + `SUMMARY.md`); all four links added by the doc diff resolve (`search.md#my-data`, `catalog-overview.md#recommended`, `../data-lineage.md`, the user-owner-association page); no new page, so no SUMMARY entry due.
+- **Gate 8 — Publishing: PENDING-RELEASE (1.0.0), branch-verifiable half PASS.** The doc is genuinely **authored on the train** — `origin/release/1.0.0` exists and `docs/CTRIB-062-my-data-filter` carries `e692c43` + `b4c5889` — so this is not the CTRIB-040 "drafted, never authored" failure. Frontmatter parses; both `description:` values are unchanged and well under 200 chars; links are tree-relative. Live verification is owed at the 1.0.0 gate.
+- **Gate 9 — Factual claim provenance: PASS.** No `Sources:` footer (the contributor pillar does not use one — same posture accepted at `/review CTRIB-059`); provenance is inline in the commit bodies and I re-derived the load-bearing ones rather than trusting them: the SUT-digest↔commit correspondence (above), the IT-153 5×PASS run-log, the FE suite (below), the migration lane (`V0_0_101` free — `V0_0_100` is ST-5c's in all four worktrees), and the i18n claim. The one claim the record itself marks unproven (the perf comment) is now scoped correctly in-code by `94b2a2c8` — the *comment* is honest; the *criterion* is still unmet.
+- **Gate 10 — Content-type homing: PASS.** Filter semantics on `search.md`, panel behaviour on `catalog-overview.md`, wire contract in `components.yaml`. Nothing API-reference-shaped embedded in a feature page.
+- **Gate 11 — Audience isolation: PASS.** Mechanical grep over every `+` line of the doc diff for `Cornerstone N` / `Gate N` / `LSN-` / `ST-N` / `CTRIB-` / `DOC-` / `IT-` / `TST-` / `PLT-` / `#18xx` / `backlog` / `sidecar` / `playbook` / `retrospective` → **zero hits**. The operator-facing prose names no workspace-internal artefact.
+
+### What I measured myself
+
+- **FE typecheck** — `tsc --noEmit` on `94b2a2c8`: **clean**, against locally-regenerated `generated-sources` that do carry `myData` / `upstreamDepth` / `scopeTruncated`.
+- **FE unit suite** — `vitest run`: **163 passed / 1 failed (164), 33 files**. The one failure is `DataSourceItem.test.tsx > REJECTED delete → the dialog STAYS OPEN` (a 5000ms timeout, `Management/DataSourcesList` — outside every file this diff touches). **A/B-proved change-independent rather than assumed**: run alone it is **2/2 GREEN on the base `82e7e70e`** and **2/2 GREEN on the reviewed `94b2a2c8`**; it fails only inside the full suite under load. This confirms the implementer's "163/164, 1 unrelated flake" — first-hand, not on trust.
+- **i18n** — all **11** new keys present in **all 7** locales, all genuinely translated (0 identical-to-English outside `en`); the two removed keys (`Upstream dependents`, `Downstream dependents`) have **no remaining consumer** in `src/` — so no fallback leak.
+- **Ontology** — `lineage/**` clean; the `ReactiveLineageRepositoryImpl` sidecar is current (`enriched_at_commit: 077313ad`, and that file is untouched from `077313ad..94b2a2c8`) and genuinely re-derived, down to the per-request statement budget (`≤ 6 lineage statements per request`) — which is itself evidence for B1.
+
+**I did NOT run the full unit build or the four-suite regression, and that is a deliberate choice, stated so it is not mistaken for a pass.** The item requires rework that changes production code (B3, S1) and test code (B4, S2, S3); a confirmation regression run now would be invalidated by the fix and would burn the shared box while `ctrib061` is live on it. The confirmation run belongs to the re-review, on the reworked SHA — and B2 means it has to happen anyway.
+
+### The fix-list — one pass, not a loop
+
+**BLOCKERS**
+
+**B1 — the perf gate, which is this issue's headline deliverable, is still unmeasured on the query the platform actually issues.** §21 says so itself and disposes it as *"OWED, and it gates the PR"*; §23 then opened the PR with it narrowed to `TST-063` for GATE 2 to decide. That is the maintainer being made the QA gate for a measurement this stream can take. Run the four steps §21 already wrote: seed the dense fixture on the SUT stack (≥100k indexed assets, a scope reaching the 10k cap), capture the **generated** SQL (jOOQ debug logging / `pg_stat_statements`), `EXPLAIN (ANALYZE, BUFFERS)` it — assert the FTS bitmap is still the driver and the scope is a hashed semi-join, not a per-row rescan — and time `POST /api/search/assets` at `downstream_depth=3` against the `< 1 s` bound. Include the **per-page** cost: the resolver re-runs on every infinite-scroll page, so the sidecar's own `≤ 6 lineage statements per request` plus the `count()` query is paid per scroll, not once per search. If the generated plan differs from M3's, fix the shape — the same way R3's overclaim was corrected rather than explained away.
+
+**B2 — the `multi-stack` suite never went green at the reviewed SHA.** `integration-tests/run-log/2026-08-31-multi-stack.md`, digest `c763c52a`: `outcome: e2e:FAIL`. The IT-153 defect was then closed with five targeted `run-suite.sh IT-153` runs — but §22's own root cause is that the failure *only surfaces in suite context*, because a preceding `multi-stack` spec (`auth-mode-boundary`) tears the LOGIN_FORM stack down and this file's `beforeAll` then boots cold. A targeted run does not reproduce the condition the fix targets. Re-run `multi-stack` **whole**, read the pass/fail counts (not the exit code), and record the counts in the run-log entry.
+
+**B3 — on `TIMEOUT` the results header prints a bare, unqualified total, and the warning contradicts the code.** `SearchResultsHeader.tsx:37` excludes `TIMEOUT` from `isPartialCount`, so the header renders `t('{{total}} results')` → **"0 results"**. But the scope *is* applied: `MyDataScopeResolverImpl.java:104-108` returns `truncated(Set.of(), TIMEOUT)`, `AssetSearchServiceImpl` passes `lineageSelected=true` with an empty id set, and `ReactiveAssetSearchRepositoryImpl` turns that into `DSL.falseCondition()`. With only a lineage scope ticked the user sees **"0 results"** next to a strip reading *"…so it was not applied."* Both halves are wrong in the same direction R4 exists to prevent: an operator scanning "Downstream of my data → 0 results" concludes nothing depends on their assets. Fix the count (suppress or de-qualify it on TIMEOUT) **and** the copy (it was applied; nothing could be resolved), or make TIMEOUT genuinely not narrow. Note the same wording is in all 7 locales, so the copy fix is 7 files.
+
+**B4 — the truncation UI has zero regression protection.** R4's *"the page shows the strip and a qualified count"* is evidenced by exactly one manual screenshot taken with the response intercepted at the network boundary. There is no component test and no e2e. A future edit that drops `scopeTruncated` from `assetSearch.thunks.ts:31-33` — precisely the mapping that was already dropping `total` before this slice — ships silently, and the page then presents a partial impact set as complete. A `SearchResultsHeader` component test is cheap, deterministic and needs no stack: assert the `NODE_CAP` qualified count + strip, the `TIMEOUT` copy + count (this is where B3 gets locked), and the untruncated bare total.
+
+**SHOULD-FIX — fold into the same pass**
+
+**S1 — ticking "My Objects" hides the *Type* facet and the "Create Data Entity Group" button, and the doc this change ships says otherwise.** Verified chain: `searchUrlState.ts:340` emits `myObjects: true` → the session echoes `my_objects` → `dataEntitySearch.slice.ts:150` → `dataentitySearch.selectors.ts:113` (`if (search.myObjects) return 'my'`) → `Filters.tsx:77` (`typeof searchClass === 'number' && searchClass > 0`) hides *Type*, and `Results.tsx:78-80` never matches, hiding the DEG button. The record's out-of-scope note is right that this is byte-identical to today's *mechanism* — but not to today's *reachability*: before ST-8 "My Objects" was one option in a one-of-N tab strip, mutually exclusive with a class selection by construction; it is now an independent sidebar multiselect sitting three rows from **Data entity type**, so "My Objects + Datasets" is an ordinary combination. And `search.md` now states *"**Type** — Only shown once a single **Data entity type** is selected"*, which is false in exactly that state. The `'my'` short-circuit exists only to serve the tab this slice deleted; drop it, or gate the *Type* facet on the URL's `entityClasses` instead of the session class.
+
+**S2 — cursor stability under a My-data scope has no test.** The plan named an `AssetSearchKeysetPaginationTest` extension for it (and the bot's own pre-work comment raised it); `git diff --stat 82e7e70e..94b2a2c8 -- '*AssetSearchKeysetPaginationTest*'` is empty. The risk is concrete, not theoretical: the resolver re-runs per page, so a `TIMEOUT` on page 2 (or a differing `NODE_CAP` prefix) silently changes the scope mid-scroll while the cursor keeps walking.
+
+**S3 — "Clear All" clearing the scope has no test.** R7b calls it *"a deliberate change to a shipped control"* and it is named in the public scope comment on #1842; nothing asserts it at any level.
+
+**S4 — two internal contradictions on the two pages this change edits.** Fold them, since the pages are open. (i) `catalog-overview.md`: the slice adds *"Each of the first three columns carries a **View all** link"* while the same page still says *"there is no per-column 'view more' affordance"* about those four columns, ~10 lines below. (ii) `search.md` § Known limitations: *"**Facet selections are not yet in the URL** … a shared link reproduces the query but not the facet selections"* is false on this very branch — ST-1b put the facets in the URL, ST-2b `sort`, ST-4 `asset_kinds`/`entityClasses`, and this slice `my_data` + the depths — and it contradicts the new **My data** section ~30 lines above it, which promises the scope reproduces for whoever you send the link to.
+
+**S5 — document the TIMEOUT outcome.** `search.md`'s warning hint covers only the NODE_CAP partial case; TIMEOUT is a distinct message and a distinct result an operator can hit.
+
+**S6 — `search.md` says the unbound-user filter is "shown but disabled".** `MyDataFilter.tsx:96-107` renders a heading plus one hint sentence — no control, disabled or otherwise. Either match the copy to what renders, or render what the doc (and R7) promise.
+
+**MINOR — fix or note, your call**
+
+- **M1** `MyDataScopeResolverImpl.hop:145` computes `capped = rows.size() > remaining` **before** filtering already-visited oddrns, and neither hop query excludes the visited set. In a dense overlapping graph a hop can return mostly-already-visited rows, trip the cap, and flag `truncated=true` while the real node count is far under budget — a false "partial" banner. It errs safe, but it is a false claim in the opposite direction; either count discovered nodes rather than returned rows, or say in the javadoc that the budget deliberately counts traversed rows including revisits.
+- **M2** `Results.tsx:68` and `:83` still describe "the All / My-Objects tabs" and "my_objects" in the file that just deleted them.
+- **M3** `t('{{total}} results')` has no plural form, so a single-match search renders **"1 results"** on every locale.
+- **M4** The cross-surface vocabulary split this slice creates (Recommended + search say "Upstream of my data"; the Activity Feed still says "Upstream Dependents", documented at `documentation:docs/configuration-and-deployment/enable-security/authorization/owners.md:111`) was correctly scoped out but left untracked → filed as **`backlog/docs/DOC-506.md`** (`milestone: 1.0.0`). Separately tracked rather than folded because it needs a product decision and an odd-platform issue, which this rework will not touch.
+- **M5** All three `2026-08-31-*` ctrib062 run-log entries leave `runner:` and `evidence/notes:` as unfilled template placeholders, so the pass/fail counts exist only in this ledger. Pre-existing pattern, but the run-log is the audit trail a later release review reads.
+
+### Verdict
+
+- **Result**: **REJECTED** → `status: review-ready` → **`blocked`**.
+- **Outbound URL sweep**: 4 doc links added, all resolve tree-relative; 0 broken. Live-site verification is PENDING-RELEASE (1.0.0), correctly.
+- **Banned-phrase check**: none used; every verdict above ends in a citation or an explicit "not measured".
+- **Regressions**: FE suite 163/164 with the one failure A/B-proved change-independent. The unit + IT confirmation runs are deferred to the re-review by design (see above) — B2 requires a fresh `multi-stack` regardless.
+- **Navigation**: consistent. `navigation/domains/search.md` was refreshed for the unified-search subsystem at CTRIB-059 and the new nodes are reachable through it; the three new backend classes carry no sidecar, which matches the corpus's selective 216-node coverage rather than a gap this slice opened.
+- **Upstream issues logged**: none new (PLT-258 / PLT-259 already filed by this stream and verified present).
+- **Doc-product editorial findings** — **Coverage this run**: `docs/data-discovery/**` read end-to-end on `docs/CTRIB-062-my-data-filter` (the train), plus the inbound-anchor sweep across all of `docs/` + `SUMMARY.md`. **Queued (carried forward from the CTRIB-059 partition): `integrations/**`, `master-data-management/**`, `developer-guides/**` beyond the ADR log, `data-modelling/**`, `management/**`, `use-cases/**`.** **Findings**: the two internal contradictions are **not** logged as separate DOC items — they are on the two pages this rework is already editing, so they are S4 in the fix-list above (LSN-009 / the don't-over-log rule). One genuinely separable finding filed: **DOC-506** (medium, *parallel surfaces with drift*) — one lineage relationship, two names across surfaces.
+- **Notes**: the honesty of this ledger is the reason the review was cheap — §21 named its own unmeasured gate, §22b caught its own fossil-SUT read, and R3's overclaim was corrected against the running system instead of argued. **VERIFIED via** the re-derivations listed under "What I measured myself". What it cannot do is close the gate on the maintainer's behalf: B1 and B2 are measurements this stream can take, and "GATE 2 decides whether it blocks merge" hands the maintainer a QA job. Take them, fold B3/B4/S1-S6, and the re-review is a confirmation run.

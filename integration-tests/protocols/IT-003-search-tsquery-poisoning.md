@@ -10,7 +10,7 @@ stack: odd-minimal
 automation: "e2e:specs/search-tsquery-poisoning.spec.ts"
 plan_ref: "I7 (search/session poisoning) — Tier-1 UI scenario; lead item of the e2e build-out. EXTENDED 2026-08-30 by CTRIB-060 (#1840 / ST-6) with operator-shaped payloads on both query surfaces."
 status: ready
-expected_result: "GREEN as of CTRIB-016 / odd-platform#1756 (metacharacters) and CTRIB-060 / odd-platform#1840 (operator shapes) (ships 0.28.0) — JooqFTSHelper.tsQuery strips the full tsquery operator set, so a `(`/`)`/`:`/`'`/`<` returns results or \"No matches found\" and never persists a poisoned session. Was RED (the unescaped to_tsquery 500); moved known-bugs -> feature-complete 2026-06-16. Flips on main when the CTRIB-016 PR merges."
+expected_result: "GREEN as of CTRIB-016 / odd-platform#1756 (metacharacters, ships 0.28.0) and CTRIB-060 / odd-platform#1840 (operator shapes, ships 1.0.0) — JooqFTSHelper.tsQuery strips the full tsquery operator set, so a `(`/`)`/`:`/`'`/`<` returns results or \"No matches found\" and never persists a poisoned session. Was RED (the unescaped to_tsquery 500); moved known-bugs -> feature-complete 2026-06-16. Flips on main when the CTRIB-016 PR merges."
 ---
 
 # IT-003 — search tsquery poisoning (the persistent-500 footgun)

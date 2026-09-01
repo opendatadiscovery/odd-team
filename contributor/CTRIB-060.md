@@ -4,14 +4,14 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: blocked    # /review (review-ctrib060, SEPARATE session) 2026-09-01 REJECTED: Gate 8 FAIL (the doc is
-                   # not on the train -- unpushed, and cut from a base the train has moved past, with a conflict
-                   # that would reinstate a correction e8fa107 already landed) + Gate 6 FAIL (the capability is
-                   # documented on ONE page; the sibling slice's own standard is a six-page sweep). The CODE is
-                   # verified: unit 810/1 non-attributable, four-suite regression on a SUT built from 6281a9df with
-                   # ZERO unattributed failures, and every operator driven on a running build. One rework pass ->
-                   # /review again -> GATE 2. See '## Review (2026-09-01, session: review-ctrib060)'.
-target_repo: odd-platform
+status: pr-draft   # ROUND 2 (session ctrib060r2) closed the /review fix-list: 3 blockers + 9 fold-ins.
+                   # Doc rebased onto the train head 9594f96 and PUSHED -> documentation PR #111 (base
+                   # release/1.0.0); capability swept to zero residue across Features/data-discovery/
+                   # Architecture; ADR-0071 corrected. R7 now has a covering artifact that is RED on
+                   # origin/main. Unit 814/1 (the same non-attributable OpenApiDocsContractTest);
+                   # production delta this round is PROVABLY comment-only, so the review's four-suite
+                   # verdict carries over. odd-platform PR #1873 head cda7d277.
+                   # -> a FRESH /review session (this one wrote the code) -> GATE 2.
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1840 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-6 of #1825"
 base_sha: "82e7e70e"      # odd-platform origin/main at intake (= #1862 ST-5c merged)
@@ -108,7 +108,7 @@ All four are answered in `## Spec` / `## Design` below, each with first-hand evi
 | Dimension | Score | Min | Basis |
 |---|---|---|---|
 | Goal clarity | 0.95 | 0.75 | the three operators are named in the issue **and** measured against a real PG 13.2; each has a seeded, falsifiable acceptance |
-| Boundary clarity | 0.90 | 0.70 | the ten consumers are enumerated `file:line`; ST-11/ST-12/D9 exclusions are explicit |
+| Boundary clarity | 0.90 | 0.70 | the 7 consumer classes / 26 call sites are enumerated `file:line`; ST-11/ST-12/D9 exclusions are explicit |
 | Constraint clarity | 0.90 | 0.65 | PG version verified; prefix-loss, Seq-Scan, and fail-closed constraints measured, not assumed |
 | Acceptance clarity | 0.90 | 0.70 | every requirement has a seed→assert acceptance runnable in the existing harness |
 
@@ -206,7 +206,7 @@ Grammar parity with `websearch_to_tsquery` was checked case-by-case on PG 13.2 s
 |---|---|
 | i18n (7 locales) | none if no UI string ships; the GATE-1 discoverability sub-option adds one key × **all 7** locale files — handled here, never en-only |
 | Generated BE/FE clients | **no regen committed** — the only spec edit is a `description` on `SearchFormData.query`; request/response shapes are unchanged and generated sources are gitignored. The BE build does not track `$ref`'d `components.yaml`, so `build/generated` is cleared once to prove the spec still compiles |
-| Consumers of changed signatures | `ftsCondition`/`ftsRankField`/`tsQuery` signatures **unchanged**; all ten consumers inherit the behaviour by design — that is the point. `getHighlightedResult` builds its own `to_tsquery(?)` and is edited onto the shared expression (R7) |
+| Consumers of changed signatures | `ftsCondition`/`ftsRankField`/`tsQuery` signatures **unchanged**; all 26 call sites across the 7 consumer classes inherit the behaviour by design — that is the point. `getHighlightedResult` builds its own `to_tsquery(?)` and is edited onto the shared expression (R7) |
 | Migrations | **none** |
 | Stored query text (replay) | `saved_search.spec` (JSONB `SearchFormData`) and the `search_facets` session row both persist the raw query string, so a saved search or bookmarked session containing `"`/`-`/`or` **changes meaning on replay** after this ships. That change is the fix (the operator was previously ignored or inverted), not a regression — called out in the PR body; no migration, no data touched |
 | Docs | `docs/data-discovery/search.md` — a "Query syntax" section **and** a correction to the `:93` caveat; release-gated (1.0.0) |
@@ -299,7 +299,7 @@ must_haves:
       anchor: "tsQueryExpression"
     - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/util/JooqFTSHelperTest.java"
       provides: "the operator-detection truth table, the composed shape, the leaf cap, and the untouched plain-path parity pin"
-      anchor: "usesQueryOperators"
+      anchor: "operatorDetectionMatchesPostgresGrammar"
     - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AssetSearchServiceIntegrationTest.java"
       provides: "R1/R2/R3/R4/R4b/R5/R6 driven end-to-end through the real service on a real Postgres"
       anchor: "searchAssets_quotedPhrase"
@@ -991,3 +991,82 @@ Worth stating, so the rework does not over-correct:
   preceding slice's own commit — *"swept to zero residue"* — is the standard, and it is one rebase and four
   small edits away.
 
+## Implement round 2 (2026-09-01, session: ctrib060r2) — the review's fix-list, closed
+
+`/review CTRIB-060` (session `review-ctrib060`) rejected the first push on **Gate 8** and **Gate 6**, both on
+the documentation half of the DoD, and left three blockers plus nine fold-ins. This is what each one became.
+Same session as the review, which the separate-session rule permits for `/implement` — **the next `/review`
+must be fresh**.
+
+### Blockers
+
+| # | What the review found | What was done |
+|---|---|---|
+| **B1** | The doc lived on a **local, unpushed** branch cut from `release/1.0.0` @ `5b2bb04` while the train had moved to `9594f96`; `git merge-tree` showed one conflict — the page `description:` — whose CTRIB-060 side reinstated the "seven faceted filters" phrasing `e8fa107` had swept | Rebased onto `9594f96`. The conflict was resolved **in favour of the train** — the new description keeps `seven facets, kind and class filters, and My data` and adds the operators, 178 chars. Branch pushed; **documentation PR [#111](https://github.com/opendatadiscovery/documentation/pull/111)** opened against `release/1.0.0`, the way DOC-495 went in as #109 |
+| **B2** | The capability was documented on **one** page; the preceding search slice's own commit (`e8fa107`, *"swept to zero residue"*) touched six | `Features.md` § Search and Filtering, `data-discovery.md`'s Search bullet and `Architecture.md:42` now name the prefix rule and the three operators and link `#query-syntax` |
+| **B3** | Published `ADR-0071` asserted `? @@ to_tsquery(?)` — a literal this diff deletes — behind a line anchor that had already drifted | `:30` and `:47` restated for the composed tsquery, anchored on the method names (`ftsCondition`, `tsQueryExpression`) rather than a line number, and saying what changed and when |
+
+### Fold-ins
+
+- **F1 — R7's covering artifact.** The promised browser assertion was **not** written into
+  `catalog-search.spec.ts`: that spec is one of TST-059's permanently-RED set (it still waits on the endpoint
+  ST-4 retired), so a new assertion there would have been born red and proved nothing. Instead, in
+  `ReactiveDataEntitySearchResultsTest` — the class that already pins "the count agrees with the listing" for a
+  plain query — two cases assert the same agreement for an **operator** query, across **three different
+  queries in two repositories**: `findByState` (the list), `countByState` (the total) and
+  `getEntityClassFacetForDataEntity` (the sidebar badge). **Both are RED on `origin/main` @ `b5d9f150`** and
+  green here, so they are a behavioural pin rather than a tautology.
+- **F1b — the highlight half, and a correction to my own assumption.** Two `getHighlightedResult` cases were
+  added, then I measured what they actually discriminate and found the answer was *nothing*: `ts_headline`
+  marks up every lexeme **mentioned** in the tsquery regardless of structure, so `'custom' <-> 'order'` and
+  `'custom':* & 'order':*` produce byte-identical output — and so do `!'test' && 'custom':*` and
+  `'custom':* & 'test':*`. A **negated term is highlighted too.** The tests are kept, with a comment stating
+  exactly that and pointing at the one construction that does hold the property (a single
+  `tsQueryExpression` call in `getHighlightedResult`). The doc sentence that implied an exclusion is
+  "reflected in why a row matched" was corrected on the train branch, because it is the kind of line an
+  operator checks against the screen on their first operator query.
+- **F2** — the unified-search FTS comment (`ReactiveAssetSearchRepositoryImpl`) and the highlight test's
+  javadoc now describe the composed expression instead of "stripped to word tokens before it reaches
+  `to_tsquery`".
+- **F3** — the four `run-log/2026-09-01-*` entries this stream left as the harness template are filled, each
+  labelled as *filled retrospectively from the ledger, not re-executed*. The `ctrib062g` / `revctrib0623`
+  entries in the same files belong to another stream and were left alone.
+- **F4** — "the **ten** consumers" corrected to 7 classes / 26 call sites in both places it survived; the
+  IT-003 protocol's `expected_result` no longer claims ST-6 ships in 0.28.0 (it ships in 1.0.0); the PR body's
+  free-text `Milestone: 1.0.0` line is gone — the milestone lives on the issue, which is where the gate reads
+  it, and no sibling PR carries one.
+- **F4b** — the `must_haves` artifact anchor `usesQueryOperators` existed nowhere; it is now
+  `operatorDetectionMatchesPostgresGrammar`, and a mechanical `grep -c "$anchor" "$path"` over all seven rows
+  returns non-zero for every one.
+- **F4c** — the `JooqFTSHelper` sidecar's `extracted_at_commit` / `enriched_at_commit` label moved from the
+  pre-rebase base to `6281a9df`. Its content was already correct at that SHA (the review resolved its
+  citations there), so this is a label, not a re-enrichment.
+- **F5 / F6 / F7** — the "everywhere search does" over-claim is narrowed to the full-text surfaces (with the
+  Management sub-tabs and the Relationships list named as the plain-name-filter exceptions); the per-OR-branch
+  drop is documented (`customer or -test` returns the customer matches, not "plus everything that is not
+  test"); `catalog-overview.md`'s Main search section names the `(i)`; `ADR-0079`'s 240-char description is
+  down to 180.
+
+### Not folded, on purpose
+
+**PLT-263** — the tab/newline `42601` → sticky 500 — is **not** in this PR. It is a live defect in the very
+method this change owns and a one-line fix, but it is outside the GATE-1-approved plan and changes behaviour
+for an input class the plan never covered. The review filed it with an end-to-end reproduction
+(`user_facing_verified: true`); folding it is the maintainer's call, not the implementer's.
+
+### Gates re-run
+
+| Gate | Result |
+|---|---|
+| Unit — full CI replica at the reworked tree | **814 tests / 1 failure** across 181 classes, checkstyle + assemble green (25m10s). 814 = the reviewed 810 + the 4 new cases, and **all four pass**; the two touched classes are clean (`ReactiveDataEntitySearchResultsTest` 11/0, `ReactiveDataEntityHighlightInjectionTest` 5/0). The one failure is `OpenApiDocsContractTest.platformApiGroupDocumentLoads` **again** — the same load-sensitive 60 s springdoc read the review measured passing ALONE in 4m18s with a 23.4 s init, and that upstream CI reports green on this branch head. Non-attributable, and now reproduced a third time (TST-061) |
+| Integration | **Carried over, and the carry-over is proved, not assumed**: `git diff` of `odd-platform-api/src/main/java` between the reviewed commit and this one contains **only comment lines** (verified by stripping `+`/`-` and filtering out `//`, `*`, `/*` — nothing remains), so the SUT image is behaviourally identical to the one `/review` built and ran to `feature-complete` 328/12 (zero unattributed) · `known-bugs` 3-RED-expected · `multi-stack` 14/0 · `ingestion-e2e` 15/0 |
+| RED proof on the new tests | Both R7 cases **FAIL on `origin/main` @ `b5d9f150`** (`16 tests completed, 2 failed`) and pass here |
+| Docs mechanical sweeps | Gate 11 banned-term grep over every changed line: **zero hits**. Every changed page's `description:` parses under PyYAML and is under 200 chars. Every link and anchor on the changed pages resolves; the new `#query-syntax` anchor resolves from all three inbound pages |
+
+**One pre-existing broken anchor found while checking the changed pages and deliberately not fixed here**:
+`Architecture.md` links `configuration-and-deployment/odd-platform.md#attachment-storage`, and the live page's
+id is `attachment-storage-configuration` (confirmed by fetching it — the short form returns zero hits). That is
+**released truth** and belongs on docs `main`, not on a train that publishes at 1.0.0, so it is recorded on
+`DOC-514`, which already owns exactly this class for `custom-collectors.md`. A second candidate the same sweep
+raised — `Features.md` → `#additional-navigation-links-odd.links` — was checked against the live page and is
+**valid** (GitBook keeps the dot); recording it so the next sweep does not re-derive it as a finding.

@@ -29,34 +29,34 @@
 - evidence/notes: **/review CTRIB-062 third pass (review-ctrib062-3) — the reviewer's OWN confirmation run.** **15 passed / 0 failed (5.0m) -- GREEN.** The real source -> collector -> platform -> UI stands, including IT-128's relationships ingestion pipeline (ERD constraint row through to the UI list). Untouched by this slice and green, as expected.
 
 ## 2026-09-01 — suite/protocol: ingestion-e2e
-- runner: (fill: AI-assisted <model> | human <name>)
+- runner: AI-assisted (Claude Opus 5, session ctrib060 — the implement-phase DoD gate)
 - odd-platform working-tree HEAD: b5d9f150 (the SUT only when ODD_SUT=working)
 - e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib060  (image odd-platform:odd-team-sut-ctrib060, digest sha256:b1ba077f98eaec8ccac0a96eeb8a957f6025e5dea8ce8b6803c71ae62ba9411e)
 - protocols: IT-128 IT-145
 - api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
 - outcome: e2e:FAIL
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
-- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+- evidence/notes: In-suite arm — the single failure here is IT-145, the same load-sensitivity the ledger records; it passes when the suite is run alone (the entry below). From the ctrib060 ledger; filled retrospectively, not re-executed here.
 
 ## 2026-09-01 — suite/protocol: ingestion-e2e
-- runner: (fill: AI-assisted <model> | human <name>)
+- runner: AI-assisted (Claude Opus 5, session ctrib060 — the implement-phase DoD gate)
 - odd-platform working-tree HEAD: b5d9f150 (the SUT only when ODD_SUT=working)
 - e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib060base  (image odd-platform:odd-team-sut-ctrib060base, digest sha256:26473f1e4eef6a85d7e8d3f078363e4a4601c222ea2bc836ef0a48337e27161e)
 - protocols: IT-128 IT-145
 - api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
 - outcome: e2e:PASS
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
-- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+- evidence/notes: **PASS** on the pure-main A/B arm — IT-145 passes alone on this side too, i.e. not attributable to ST-6. From the ctrib060 ledger; filled retrospectively, not re-executed here.
 
 ## 2026-09-01 — suite/protocol: ingestion-e2e
-- runner: (fill: AI-assisted <model> | human <name>)
+- runner: AI-assisted (Claude Opus 5, session ctrib060 — the implement-phase DoD gate)
 - odd-platform working-tree HEAD: b5d9f150 (the SUT only when ODD_SUT=working)
 - e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib060  (image odd-platform:odd-team-sut-ctrib060, digest sha256:001ac3eb37f6063761c19f6b691dfb702306a6b84dde4e54ebfadc3afa4234d6)
 - protocols: IT-128 IT-145
 - api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
 - outcome: e2e:PASS
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
-- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+- evidence/notes: **PASS — 15 passed / 0 failed**, the suite run ALONE on the ST-6 branch's SUT. This is the arm the DoD's `ingestion-e2e 15/15` cites. From the ctrib060 ledger; filled retrospectively, not re-executed here.
 
 ## 2026-09-01 — suite/protocol: ingestion-e2e
 - runner: AI-assisted (Claude Opus 5, session review-ctrib060 — the /review confirmation run)

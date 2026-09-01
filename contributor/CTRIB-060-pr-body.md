@@ -140,11 +140,41 @@ The assurance is behavioural: 60 tests across the two buckets, a 6-case RED proo
 
 ## Docs
 
-`Docs: documentation@release/1.0.0 — publishes with the 1.0.0 release.` A new "Query syntax" section on
-`docs/data-discovery/search.md` plus a correction to the metacharacter caveat, which until now told readers that
-*all* punctuation is a word separator. A separate item corrects the **currently published** page, where the same
-caveat omits `"` and `-` and never mentions that `-word` is read as a required word.
+`Docs: documentation@release/1.0.0 — publishes with the 1.0.0 release.` Documentation PR
+[opendatadiscovery/documentation#111](https://github.com/opendatadiscovery/documentation/pull/111), based on the
+`release/1.0.0` train: a new "Query syntax" section on `docs/data-discovery/search.md`, a correction to the
+metacharacter caveat (which until now told readers that *all* punctuation is a word separator), the same
+capability swept through the three pages that summarise search (`Features.md`, `data-discovery.md`,
+`Architecture.md`), and a correction to `ADR-0071`, whose Evidence line asserted a `? @@ to_tsquery(?)` literal
+this change deletes. A separate item corrects the **currently published** page, where the same caveat omits `"`
+and `-` and never mentions that `-word` is read as a required word.
 
-Milestone: 1.0.0
+## Review round 2 — what changed after the first review
+
+A separate-session review rejected the first push on the documentation half of the Definition of Done: the doc
+existed as one good page on a branch that had never been pushed, cut from a train head that had since moved, and
+three summary surfaces plus a published ADR still described the search box as plain free text. The code passed
+that review — the reviewer re-derived the grammar against a compiled build and supplied the GIN-index `EXPLAIN`
+the plan-check had recorded as missing. This push closes the review's list:
+
+- the doc branch is rebased onto the current train and pushed (PR #111 above), with the one conflict — the page
+  description — resolved in favour of the train's framing rather than reinstating a phrase a merged commit had
+  already corrected;
+- the capability is swept to zero residue across the summary surfaces, matching the shape the preceding search
+  slice used;
+- **`ReactiveDataEntitySearchResultsTest`** gains the covering artifact the plan promised for "the list, the
+  total and the sidebar facet all agree": two cases assert that a quoted-phrase query and a `-exclusion` query
+  partition `findByState`, `countByState` and `getEntityClassFacetForDataEntity` identically. Both are **RED on
+  `main`** and green here — a count badge that disagrees with the rows it counts is exactly what the shared sink
+  exists to prevent;
+- **`ReactiveDataEntityHighlightInjectionTest`** gains two operator cases on `getHighlightedResult`. They are
+  documented for what they actually pin: `ts_headline` marks up every lexeme *mentioned* in the tsquery — a
+  negated one included — so it cannot discriminate the old dialect from the new, and the shared-expression
+  property is held by construction rather than asserted. The doc sentence that implied otherwise was corrected;
+- two comments the change had made imprecise (the unified-search FTS note, the highlight test's javadoc) now
+  describe the composed expression.
+
+The production delta in this round is **comment-only**, so the four-suite regression's verdict carries over
+unchanged; the unit build was re-run in full.
 
 Closes #1840

@@ -59,14 +59,14 @@
 - evidence/notes: **/review CTRIB-062 third pass (review-ctrib062-3) — the reviewer's OWN confirmation run.** **14 passed / 0 failed (10.8m) -- GREEN, whole suite, one process, in suite order.** All five IT-153 cases passed, including the C0 case (the R2 pass-through-regression test, formerly `:259`, now `:388` after Phase G's failure-time instrumentation grew the file) and `:477`, the S7 locale arm that failed twice during Phase G. **This is the SEVENTH whole-suite multi-stack sample of C0 across four sessions: green / red / green / green / green / green / GREEN -- one red in SEVEN**, an independent sample better than the 'once in six' PR #1871 discloses. The single red remains unexplained and TST-064 owns it; this run does not close it, it lowers the estimate again and adds a fourth consecutive pass of the case.
 
 ## 2026-09-01 — suite/protocol: multi-stack
-- runner: (fill: AI-assisted <model> | human <name>)
+- runner: AI-assisted (Claude Opus 5, session ctrib060 — the implement-phase DoD gate)
 - odd-platform working-tree HEAD: b5d9f150 (the SUT only when ODD_SUT=working)
 - e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib060  (image odd-platform:odd-team-sut-ctrib060, digest sha256:b1ba077f98eaec8ccac0a96eeb8a957f6025e5dea8ce8b6803c71ae62ba9411e)
 - protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153
 - api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts; manual: none
 - outcome: e2e:PASS
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
-- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+- evidence/notes: **14 passed / 0 failed.** From the ctrib060 ledger; filled retrospectively, not re-executed here.
 
 ## 2026-09-01 — suite/protocol: multi-stack
 - runner: AI-assisted (Claude Opus 5, session review-ctrib060 — the /review confirmation run)

@@ -2,8 +2,8 @@
 node_id: "odd-platform java odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/util file:JooqFTSHelper.java"
 node_kind: file
 axis: files
-extracted_at_commit: 82e7e70e29f05902640a2f69490f33fc65c68ba3
-enriched_at_commit: 82e7e70e29f05902640a2f69490f33fc65c68ba3
+extracted_at_commit: 6281a9df09b9592ce152ce4affd28caf9837dbce
+enriched_at_commit: 6281a9df09b9592ce152ce4affd28caf9837dbce
 extractor_version: 0.1.0
 prompt_version: file-analyser/0.5.0
 enrichment_status: complete

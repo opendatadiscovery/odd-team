@@ -4,7 +4,7 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: blocked
+status: review-ready
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
@@ -2327,8 +2327,18 @@ root causes ruled out *by the source* (so nobody re-derives them), the standing 
 instrumentation already does, and three ways to close it ranked by cost. Filed regardless of the merge
 decision, because an unexplained intermittent with no owner is how a suite quietly stops being trusted.
 
-**Status: stays `blocked`.** Not because the work is unfinished — C1, C2/C2b, S7, S8, S9 and M6-M11 are all
-closed and verified — but because **C0 is a decision I do not own.** The measurement is n=6 (one red, five
-green), the cause is unknown, the failure now self-diagnoses, and the PR discloses all of it in plain language.
-Whether that is mergeable is GATE 2's call. Flipping to `review-ready` while a blocker I raised myself is
-still open would be exactly the "closed on assertion rather than evidence" move this review rejected.
+**Status: `blocked` → `review-ready`, on the maintainer's explicit decision (2026-09-01).**
+
+The work was complete except C0, and C0 was never mine to dispose of: I raised it as a blocker in the
+re-review, so flipping it myself would have been the "closed on assertion rather than evidence" move this
+review rejected. The question was put to the maintainer with the measurement, its denominator, the three
+causes ruled out by the source, and three options ranked by cost. **The decision was to hand off now** —
+ship the verified slice, carry the residual risk knowingly, and let `TST-064` own the flake.
+
+So the record is precise about who decided what: **every gate below is evidence; the disposition of C0 is a
+judgement, and it is the maintainer's, not this stream's.** What ships with it is a known ~1-in-6 red on
+`my-data-scope-narrows.spec.ts:259` in whole-suite runs until TST-064 closes — disclosed in PR #1871, tracked
+on disk, and self-diagnosing the next time it fires.
+
+Next: a **fresh** `/review` session (this phase ran in the same session as the re-review, which the
+separate-session rule permits for `/implement` but not for `/review`), then human GATE 2 owns the merge.

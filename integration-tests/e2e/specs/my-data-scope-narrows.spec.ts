@@ -479,43 +479,52 @@ test.describe('IT-153 — My-data scopes narrow the rendered results for a bound
   }) => {
     test.setTimeout(180_000);
     await signIn(page);
-    await openSearch(page, `q=${TERM}`);
 
-    // baseline English — assert first, so a failure after the switch cannot be "it never rendered at all"
-    await expect(
-      page.getByText('My data', { exact: true }),
-      'baseline: the English "My data" group heading must render before switching',
-    ).toBeVisible({ timeout: 20_000 });
+    // Both scopes are selected IN THE URL rather than clicked, because of how the control renders: the option
+    // list lives inside an MUI Autocomplete that is closed by default, so no option label is in the DOM until
+    // someone opens it — asserting against it directly is asserting against nothing. Selected scopes render
+    // as CHIPS (`FixedOptionsMultiFilter` -> `<Typography>{option.name}</Typography>`), which carry the same
+    // `scopeLabels` strings and are always present. Picking UPSTREAM also makes its depth label render, since
+    // DepthSelect is gated on that scope being selected.
+    await openSearch(page, `q=${TERM}&my_data[]=MY_OBJECTS&my_data[]=UPSTREAM`);
+
+    // Baseline English FIRST — without it, every "is translated" assertion below could pass vacuously on a
+    // label that never rendered at all.
+    for (const [label, why] of [
+      ['My data', 'the group heading'],
+      ['My Objects', 'the owned-scope chip'],
+      ['Upstream of my data', 'the lineage-scope chip'],
+      ['Upstream depth', 'the per-direction depth label'],
+    ] as const) {
+      await expect(
+        page.getByText(label, { exact: true }),
+        `baseline: ${why} must render in English before switching`,
+      ).toBeVisible({ timeout: 20_000 });
+    }
 
     await switchLanguageViaUi(page, 'Ukrainian');
 
-    // the group heading, one scope option and one depth label — three different render paths (Typography,
-    // the FixedOptionsMultiFilter option list built outside JSX, and the DepthSelect label)
-    await expect(
-      page.getByText(UA.heading, { exact: true }),
-      `after switching to ua the group heading must read ua.json "${UA.heading}"`,
-    ).toBeVisible({ timeout: 20_000 });
-    await expect(
-      page.getByText(UA.myObjects, { exact: true }),
-      `the "My Objects" option must read ua.json "${UA.myObjects}" — the outside-JSX option-array class`,
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(
-      page.getByText(UA.upstream, { exact: true }),
-      `the lineage option must read ua.json "${UA.upstream}"`,
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(
-      page.getByText(UA.upstreamDepth, { exact: true }),
-      `the depth label must read ua.json "${UA.upstreamDepth}"`,
-    ).toBeVisible({ timeout: 10_000 });
+    // Four different render paths: the Autocomplete's input label, two chips built from an object array
+    // OUTSIDE JSX (the #1751 / PLT-205 blind spot), and a Typography inside DepthSelect.
+    for (const [expected, why] of [
+      [UA.heading, 'the group heading'],
+      [UA.myObjects, 'the owned-scope chip — the outside-JSX object-array class'],
+      [UA.upstream, 'the lineage-scope chip'],
+      [UA.upstreamDepth, 'the per-direction depth label'],
+    ] as const) {
+      await expect(
+        page.getByText(expected, { exact: true }),
+        `after switching to ua, ${why} must read ua.json "${expected}"`,
+      ).toBeVisible({ timeout: 20_000 });
+    }
 
-    // and the English is GONE — presence alone would pass on a page that renders both
-    await expect(
-      page.getByText('My data', { exact: true }),
-      'the raw English "My data" heading must be gone under ua',
-    ).toHaveCount(0);
-    await expect(
-      page.getByText('Upstream of my data', { exact: true }),
-      'the raw English lineage option must be gone under ua',
-    ).toHaveCount(0);
+    // …and the English is GONE. Presence alone would pass on a page rendering both, which is exactly what a
+    // partially-translated surface looks like.
+    for (const label of ['My Objects', 'Upstream of my data', 'Upstream depth'] as const) {
+      await expect(
+        page.getByText(label, { exact: true }),
+        `the raw English "${label}" must be gone under ua`,
+      ).toHaveCount(0);
+    }
   });
 });

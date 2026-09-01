@@ -233,7 +233,7 @@ these.
   leaving the query and the sort — a deliberate change to a shipped control that previously had no assertion
   at any level.
 - **Full regression** — all four suites on a SUT built from this branch: `feature-complete` 328 passed /
-  12 failed, `known-bugs` 3 RED (its pass condition, with no unexpected greens), **`multi-stack` 13 passed**,
+  12 failed, `known-bugs` 3 RED (its pass condition, with no unexpected greens), **`multi-stack` 13 passed** (but see the known-issue section below — it is not reliably green),
   `ingestion-e2e` 15 passed. Every `feature-complete` failure is reconciled by **exact `spec:line`** rather
   than by arithmetic: 11 are the documented stale-spec class (specs still gating on
   `GET /api/search/{id}/results`, which ST-4 retired) and 1 is a known cold-start instance — **zero
@@ -251,6 +251,39 @@ these.
   platform at 120 000 assets with `auto_explain` reading the executed plans — the FTS bitmap still drives, the
   latency target was found both missed *and* mis-specified and is restated against the unscoped baseline, and
   a follow-up optimisation of mine was reverted for measuring slower. See the performance section above.
+
+## Known issue at merge time: one of this PR's own tests is flaky in suite context
+
+Stated up front rather than left in a run-log, because it is the one thing here that
+should affect the merge decision.
+
+**What happens.** `IT-153` (`my-data-scope-narrows.spec.ts`) — the integration test that proves the My Objects
+scope stops returning other people's terms — fails roughly **one whole-suite run in three**, and only when the
+`multi-stack` suite runs as a suite. Run on its own it passes every time. When it fails, it fails in its own
+readiness gate: the seeded fixture never becomes searchable on the freshly-booted LOGIN_FORM stack within 90
+seconds.
+
+**Sample so far: green, red, green.** Three whole-suite runs across two sessions, on two independently-built
+images. It is a race, not a broken assertion — the feature itself is not implicated, and every other suite
+reconciles exactly.
+
+**What I could not do.** I could not find the cause, and I would rather say so than ship a plausible-looking
+fix. Three explanations were argued and each was ruled out *by the source*: there is no background indexing
+race (`V0_0_98` keeps `asset_search_entrypoint` in step with **synchronous** AFTER triggers); the generated
+`search_vector` cannot be nulled by the seed (`V0_0_14` wraps every term in `coalesce`); and the stack
+readiness probe cannot accept a half-started platform (health details are off, so the body is exactly
+`{"status":"UP"}`). The database client also opens a fresh connection per call, so a stale pool is out too.
+
+**What I did instead.** Made the next failure name its own cause. The readiness gate now reads every layer
+between the seed and the screen *at the moment it fails, while the stack is still up* — migration state, the
+row itself, the legacy entrypoint, the unified index, and the API's own answer — and prints which one lost the
+row. It also asserts the fixture reached the unified index immediately after seeding, so a seeding problem
+reports at the seed rather than ninety seconds later at the UI. Previously the stack was torn down before
+anyone could look.
+
+**The decision this leaves you.** Either merge accepting a known ~1-in-3 flaky spec that will now diagnose
+itself the next time it goes red, or hold the slice until an occurrence is caught and fixed. I have not closed
+it by declaring it closed.
 
 ## Docs
 

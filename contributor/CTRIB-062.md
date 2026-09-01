@@ -2243,3 +2243,37 @@ the next red will name its own cause in one line. What I cannot say is that it w
 is a GATE-2 decision, stated plainly rather than buried:** merge with a known ~1-in-3 flaky
 `my-data-scope-narrows` and a self-diagnosing failure, or hold the slice until an occurrence is caught and
 fixed. I am not closing it by declaring it closed — that is precisely the call this review rejected.
+
+### Phase G — pushed, and both PR bodies brought in line with reality
+
+| Artefact | State |
+|---|---|
+| Code | `contrib/CTRIB-062-my-data-filter` **`966d3053..5b20c3da`** (fast-forward) → draft PR **#1871**, head `5b20c3da` |
+| Docs | `docs/CTRIB-062-my-data-filter` **`07ae18e..e8fa107`** (fast-forward) → draft PR **#110**, head `e8fa107`, base `release/1.0.0` |
+
+**Push safety re-asserted before each push (LSN-038):** no upstream configured on either branch,
+`branch.merge` unset, `push.default=current` (same-name refspec, LSN-034), both worktrees clean, and
+`origin/main` verified unmoved at `82e7e70e`. Both remain **draft** and bot-authored — G-C4 means this stream
+cannot merge them.
+
+**The code delta is provably comment-only in `main/`.** `git diff 966d3053 5b20c3da -- odd-platform-api/src/main/`
+filtered of comment and blank lines returns **zero** lines, so the SUT is functionally identical to the one
+the re-review measured and the running regression's verdict carries over unchanged. The only behavioural
+change in this commit is two extra assertions in an existing test.
+
+**PR #1871's body now discloses the flake.** It previously read `multi-stack 13 passed` with nothing to
+suggest that is not reliably reproducible — which would have handed the maintainer the same false picture this
+review rejected the slice for. It now carries a `## Known issue at merge time` section in plain language: what
+fails, how often (green/red/green across three whole-suite runs), that the feature is not implicated, the
+three root causes that were argued and ruled out *by the source*, what the instrumentation now does instead,
+and the merge-or-hold decision left to GATE 2. The per-scroll-page framing (S8) and the corrected test count
+(27, not 25 — and not the 29 I briefly wrote before counting) are in the same update.
+
+**PR #110's body** gained the residue-sweep section, including the admission that two of the six pages were
+not on the review's list and were found only by grepping the claim across the whole tree afterwards.
+
+**Live regression cross-check while pushing:** `feature-complete` came back **318+ passed / 12 failed**, and
+the 12 reconcile to **zero unattributed** — TST-059's eleven plus TST-057's `swagger-openapi-discovery:63`
+(the cold-springdoc instance the re-review's own run happened not to reproduce). Note
+`search-class-tab-filter.spec.ts:`**`149`** in that list: the re-anchoring done earlier in this phase is what
+keeps it attributed rather than reading as a twelfth unexplained failure.

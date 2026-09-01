@@ -2322,6 +2322,11 @@ language.**
 | 4 | Ontology | `lineage/**` untouched. The `F-148` retirement is owned by `playbooks/release-review.md` check 5 at the released tag — stated as the disposition rather than claimed as done (M11). |
 | 5 | Principal sufficiency | Every fix-list item closed **except C0**, which is stated as open with its denominator. One test I wrote failed twice and was fixed and re-run rather than explained. |
 
+**C0 now has a tracked home: `backlog/tests/TST-064.md`** — the measurement with its denominator, the three
+root causes ruled out *by the source* (so nobody re-derives them), the standing unproven hypothesis, what the
+instrumentation already does, and three ways to close it ranked by cost. Filed regardless of the merge
+decision, because an unexplained intermittent with no owner is how a suite quietly stops being trusted.
+
 **Status: stays `blocked`.** Not because the work is unfinished — C1, C2/C2b, S7, S8, S9 and M6-M11 are all
 closed and verified — but because **C0 is a decision I do not own.** The measurement is n=6 (one red, five
 green), the cause is unknown, the failure now self-diagnoses, and the PR discloses all of it in plain language.

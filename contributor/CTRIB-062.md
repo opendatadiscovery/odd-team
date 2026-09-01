@@ -4,7 +4,7 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: review-ready
+status: blocked
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
@@ -1760,3 +1760,410 @@ analogy"*.
 | `TST-057` | extended — `LoadIngestionTest` at 57.02s against a 60s bound (seventh instance) |
 | `TST-063` | its question is now ANSWERED — the FTS bitmap does still drive the shipped query; the item can close at review |
 | `DOC-506` | one lineage relationship, two names across surfaces (filed at review) |
+
+---
+
+## Review (2026-09-01, session: review-ctrib062-2) — RE-REVIEW of the Phase-F rework
+
+Fresh session (the §24 rework ran inside the *first* review's session, which said so and deferred the
+re-review — so the separate-session gate is satisfied). Reviewed `contrib/CTRIB-062-my-data-filter` @
+**`966d3053`** — 16 commits off `origin/main` `82e7e70e`, **pushed** (`git ls-remote origin` confirms the
+remote branch is at `966d3053`) and carried by draft PR **#1871** (live API: `open`, `draft: true`, head
+`966d3053`, 16 commits / 49 files) — plus `documentation@docs/CTRIB-062-my-data-filter` @ **`07ae18e`**
+(3 commits off `origin/release/1.0.0` `5b2bb04`, **pushed**, draft PR #110).
+
+**No 2-minute precondition bounce.** §24's DoD carries no "NOT RUN" admission, and the four suite run-logs
+exist at SUT digest `sha256:bd7cddec…`, built from `991e0499`. I checked that digest *is* the reviewed tree
+rather than assuming it: `git diff 991e0499 966d3053` is **one file, 14 insertions, every line javadoc**
+(the "tried, measured, reverted" note on `listIdsByOddrnsExcludingOwnedBy`). So the implementer's regression
+subject is functionally the reviewed commit, and this run is the *confirmation* it is supposed to be.
+
+**The rework is real, and all but one of the fix-list is genuinely closed.** Three of the four blockers, all
+six should-fixes and all five minors from the 2026-08-31 verdict are addressed with evidence I re-derived
+rather than accepted; the fourth (B2) is the exception and is C0 below. B1 —
+the perf gate the issue is named for — was taken on the running platform and, more to the point, was reported
+*against* the item: the original bound is recorded as **missed**, the number that replaced it is justified
+from a measured unscoped baseline, and an optimisation the implementer wrote was reverted because measuring
+it destroyed it. That is the standard this workspace exists to hold.
+
+**It is rejected on four things.** One of them is the blocker the first review already raised: **B2 was
+closed on a single sample.** My own four-suite regression, on a SUT I built from the reviewed tree, ran `multi-stack` **whole** —
+and it came back **12 passed / 1 failed**, the failure being this slice's own `IT-153` at the very case that
+proves R2. I re-ran the suite whole a second time — **13 passed, green**. So across both sessions the tally is
+**n=3: green, red, green**. The finding is not "the fix does not work"; it is that **B2 was closed on n=1** and
+this slice's own newest test goes red in suite context about one run in three. The other three are claims that contradict what this
+same change proves elsewhere, and those are a prose/comment pass.
+
+
+### Acceptance criteria (the item's own Spec R1-R8)
+
+| | Verdict |
+|---|---|
+| **R1** scope group narrows the cross-kind search | **PASS** — `AssetSearchScopePredicateTest` **6/6** green in my own build (Testcontainers, real Postgres); IT-153 drives the rendered list through a real login. |
+| **R2** ownership per kind | **PASS** — `ReactiveAssetSearchRepositoryImpl.java:343-360`: the DE branch ORs `OWNERSHIP` (my objects) with the resolved lineage ids, the TERM branch is `TERM_OWNERSHIP`-only and `falseCondition()` when `MY_OBJECTS` is unselected, and query examples are unreachable by both — excluded by construction, not by a filter that could be dropped. Caption rendered + documented. |
+| **R3** per-direction depth, default 1, ceiling 3 | **PASS** — `MyDataScopeResolverImpl.clampDepth:126-128`; FE `parseDepth`; the spec descriptions were corrected *against the running system* rather than argued. Residual (unchanged from the first review): the clamp is asserted only upward — M8. |
+| **R4** bounded expansion, truncation visible | **PASS**, and this is the one that was FAIL. (a) determinism + `NODE_CAP` + the response stamp: unchanged and green. (b) *"the page shows the strip and a qualified count"* — now locked by `SearchResultsHeader.test.tsx`, **8 cases**, including the exact `TIMEOUT`-prints-a-bare-`0 results` regression and a case pinning that the two reasons carry **different** remedies. (c) the EXPLAIN + FTS-driver + latency clause — **measured on the shipped query at last** (§24 B1). See the note on the re-specified bound below. |
+| **R5** tab retired, count survives | **PASS** — `SearchResultsHeader` still rendered **outside** the `!routerSearchId` gate (`Results.tsx:158-166`), the W5 trap correctly avoided; and now also `'1 result'` rather than `'1 results'` (M3). |
+| **R6** panel deep-links | **PASS** — unchanged from the first review. |
+| **R7** posture | **PASS**, improved — the unbound arm now renders an actual **link** to the association surface (`MyDataFilter.tsx:99-111`) instead of a sentence naming a page the reader then has to find, and `search.md` was rewritten to describe what actually renders (S6). |
+| **R7b** Clear All clears the scope | **PASS with a test at last** — `my-data-scope.spec.ts:158-194` asserts the BEFORE state explicitly (so no "is gone" assertion can pass vacuously on a param that never loaded), clicks the shipped control, checks each param individually, and then waits out the debounced facet→URL mirror to prove no late write resurrects the scope. That last guard is the one a weaker test would have missed. |
+| **R8** additive contract | **PASS** — and the reapply direction is now covered both ways (`searchFormDataToUrlState.test.ts`: a spec saved before ST-8 reapplies as `[MY_OBJECTS]`; a stored scope wins over the legacy flag; an unknown stored token fails closed). |
+
+**On the re-specified R4 bound — the thing a reviewer must not wave through.** Changing an acceptance
+criterion *after* failing it is the classic way a gate stops meaning anything, so I checked the justification
+rather than the arithmetic. It holds: the load-bearing claim is that an **unscoped** search over the same
+120 000-asset catalog measures **1.17-1.25 s**, which makes "< 1 s at the ceiling" a bound no search of any
+kind could meet at that scale — so it was never a bound on *this feature*. The reported numbers are also
+mutually consistent with the per-statement figures on the same stand (ranked page 508 ms and `count(*)`
+median 274 ms run as a `Mono.zip`, so ≈ max(508, 274) plus a ≤ 3-hop walk plus HTTP lands exactly where the
+end-to-end numbers land; `MY_OBJECTS`-only at 0.23-0.29 s with no walk at all is the control that makes the
+set coherent). **Two things the maintainer owns at GATE 2, stated so they are not buried**: the 1.5x
+threshold was chosen *after* measuring 1.32x, and 1.6 s per interaction at the ceiling is a product call, not
+a test result. Both are disclosed in the PR body — which is the part that matters, and which the first review
+could not say.
+
+
+### Quality Bar
+
+- **Gate 1 — No duplicates: PASS.** `FixedOptionsMultiFilter` / `AppSelect` / `buildSearchLink` reused rather than paralleled; the rework added no new component — `SearchResultsHeader` gained cases, not a sibling. **VERIFIED via** `git diff --stat 94b2a2c8 966d3053` (21 files, one new test file per fixed surface, zero new production classes).
+- **Gate 2 — Aliases: PASS.** `my_objects → my_data` declared `deprecated: true` with the mapping rule in the schema description and honoured in exactly one place (`MyDataScopeDto.resolve`). Unchanged by the rework. **VERIFIED via** read of `components.yaml` + the reapply tests.
+- **Gate 3 — Caveats as admonitions: PASS** (was PARTIAL). The first review's gap was the undocumented `TIMEOUT` outcome; `search.md` now carries a two-row table inside the warning hint distinguishing `NODE_CAP` (a real, repeatable subset) from `TIMEOUT` (the lineage half contributed nothing, and it is load-dependent so a retry may work), each with its own remedy. **VERIFIED via** `git diff 5b2bb04 07ae18e`.
+- **Gate 4 — Consumer-read: PASS.** The chain that produced S1 was re-walked at `966d3053`: `getSearchEntityClass` no longer short-circuits on `myObjects`, `SearchClass` is `number | 'all'`, and `grep -rn "'my'" src/` returns only comments and the new test's own negative assertion — no residual consumer. The `dataEntitySearch.slice` reducer no longer returns `myObjects`, so the field is preserved through a facet mutation via the spread rather than reset. **VERIFIED via** grep + read.
+- **Gate 5 — Unset-parameter audit: N/A** (no SDK builder in scope).
+- **Gate 6 — Bidirectional code ↔ doc: FAIL.** The three paths the first review named are now covered (`TIMEOUT` documented, the unbound posture matches what renders, the Type-facet interaction fixed rather than described). The remaining direction fails: this change adds three controls plus two depth selects to the Filters panel, and the count of that panel is stale on the page the change authors and on three more pages — C2 / C2b. On the other axis, one negative check worth recording: the slice changes `SearchFormData` + `AssetPageInfo`, and `developer-guides/api-reference/**` has **no search sub-page** (`api-reference.md` says so explicitly — the search family is one of the groups with no per-feature page), so no API-reference update is owed. **VERIFIED via** the facet/tab-count sweep across `docs/**` + read of the api-reference index.
+- **Gate 7 — Layout: PASS.** Two existing pages, no new page ⇒ no `SUMMARY.md` entry due (`git diff --stat 5b2bb04 07ae18e` = 2 files). Both anchors this change introduces resolve — `search.md` has `## My data` and `catalog-overview.md` has `### Recommended`. The three anchors my link-sweep flagged (`#general-panel-view-count-caveats`, `#alert-views-all-my-objects-downstream-upstream`) are **pre-existing and valid** — GitBook drops the em dash and the commas, which my naive slugger did not; checked against the real headings rather than left as a finding.
+- **Gate 8 — Publishing: PENDING-RELEASE (1.0.0); branch-verifiable half PASS.** The doc is genuinely authored **and pushed** on the train — `git ls-remote origin` shows `refs/heads/docs/CTRIB-062-my-data-filter` at `07ae18e` and `refs/heads/release/1.0.0` at `5b2bb04`, so this is not the CTRIB-040 "drafted, never authored" failure. Frontmatter parses under PyYAML; `description` lengths **129** and **191** chars (both under the 200-char GitBook truncation); no `: ` hazard; every link tree-relative. Live verification is owed at the 1.0.0 gate.
+- **Gate 9 — Factual claim provenance: FAIL.** The contributor pillar uses no `Sources:` footer (the posture accepted at `/review CTRIB-059` and by the first review), and provenance is inline in the commit bodies — most of which I re-derived and which hold. But C1 is squarely this gate: a claim shipped in production source that the same change's own measurement refutes, pointing the reader at a tracker item the ledger says is answered. The banned-phrase check on the reviewed artefacts is otherwise clean.
+- **Gate 10 — Content-type homing: PASS.** Filter semantics on `search.md`, panel behaviour on `catalog-overview.md`, the wire contract in `components.yaml`, the perf evidence in the code comment + the PR body. Nothing API-reference-shaped embedded in a feature page.
+- **Gate 11 — Audience isolation: PASS.** Mechanical grep over **every** `+` line of the full doc diff (`5b2bb04..07ae18e`, i.e. including the rework commit the first review could not see) for `Cornerstone N` / `Gate N` / `LSN-` / `SHB-` / `DOC-` / `IT-` / `TST-` / `PLT-` / `CTRIB-` / `ST-N` / `#18xx` / `feature-flow` / `Quality Bar` / `sidecar` / `playbook` / `retrospective` / `backlog` / `scanner` / `lineage/` → **zero hits**.
+
+
+### What I measured myself, rather than read
+
+**Unit bucket — my own full CI-replica build at the reviewed SHA.**
+`ODD_PLATFORM_DIR=../odd-platform-ctrib062 scripts/run-platform-tests.sh` (the no-arg form: `build` =
+`test` + `checkstyleMain` + `checkstyleTest` + `assemble` + `jacocoTestReport`), run under the heavy-e2e flock
+so nothing else had the box:
+
+> **BUILD SUCCESSFUL in 24m 50s** — **774 tests / 0 failures / 0 errors / 0 skipped** across **181 test
+> classes**, parsed from `build/test-results/test/*.xml` rather than read off the console.
+
+**Both tests the implementer recorded as failing PASSED on my run**, which settles §24's A/B by a third,
+independent measurement rather than by argument:
+
+| test | my run | note |
+|---|---|---|
+| `LoadIngestionTest.testInjectingManyDataEntities()` | **PASS**, 80.77s | |
+| `OpenApiDocsContractTest.platformApiGroupDocumentLoads()` | **PASS**, 54.65s | against its **60s** `@AutoConfigureWebTestClient` bound — **8.9% margin** |
+| `OpenApiDocsContractTest.ingestionApiGroupDocumentLoads()` | PASS, 5.65s | |
+| `MyDataScopeResolverTest` 9/9 · `AssetSearchScopePredicateTest` 6/6 · `AssetSearchServiceMyDataTest` 6/6 · `MyDataScopeDtoTest` 6/6 | PASS | the slice's own behavioural set, on a real Postgres |
+
+So the load hypothesis is confirmed and the index hypothesis stays disproved. **TST-057 is corroborated, not
+closed** — 54.65s against a 60s bound is a test that will keep flipping, and my box was not idle either
+(an IDE and sibling agent sessions were live throughout).
+
+**The reviewer's own four-suite regression, on the reviewer's own SUT.** Built by me from the reviewed tree —
+`SUT_DESC=built from source: the odd-platform WORKING TREE @ 966d3053`, image
+`odd-platform:odd-team-sut-revctrib062`, digest `sha256:6acff772…` — deliberately **not** the implementer's
+`bd7cddec`, so the SUT is independent evidence rather than the same artefact re-read.
+
+| suite | my result | reading |
+|---|---|---|
+| `feature-complete` | **329 passed / 11 failed** (29.8m) | **zero unattributed** — the 11 are **set-equal** to TST-059's named eleven (`catalog-search` 48/62 · `entity-class-type-badge-list` 59/77 · `recently-viewed-record-see-loop` 117/213 · `search-url-state` 38 · `search-result-stale-signal` 62 · `search-result-row-click` 45 · `search-class-tab-filter` 148 · `popular-entities-ranking` 62). Reconciled by exact `spec:line` set-comparison, not by count. **One cleaner than §24's run**: my box did not reproduce its 12th failure (`swagger-openapi-discovery:63`, TST-057's order-dependent springdoc instance). |
+| `known-bugs` | **3 failed** | EXPECTED — RED is this suite's pass condition. The three are IT-004 (`quality-dashboard-unknown-status:33`), IT-006 (`error-boundary-containment:29`), IT-007 (`attachment-local-durability:35`). **Zero unexpected GREENs**, so no un-flipped fix is hiding here. |
+| **`multi-stack`** | **12 passed / 1 failed** (12.3m) | **RED — B2 is not closed.** The failure is `my-data-scope-narrows.spec.ts:259` (IT-153, this slice's own test). §24 reports 13 passed. See **C0**. |
+| `ingestion-e2e` | **15 passed** (4.9m) | green |
+| `multi-stack` **re-run** | **13 passed** (9.4m) | green, `:259` included — run a second time because one disagreeing sample is a measurement, not a verdict. **n=3 across both sessions: green (§24) / red (mine) / green (mine).** |
+
+**Re-derived rather than trusted (the load-bearing claims):**
+* **The SUT ↔ commit correspondence** for the implementer's own regression: `git diff 991e0499 966d3053` is one file, **14 insertions, every line javadoc** — so digest `bd7cddec` genuinely is the reviewed tree.
+* **Both branches are pushed.** `git ls-remote origin` → `refs/heads/contrib/CTRIB-062-my-data-filter` at `966d3053` and `refs/heads/docs/CTRIB-062-my-data-filter` at `07ae18e`. PR #1871 live: `open`, `draft: true`, head `966d3053`, 16 commits / 49 files.
+* **The published PR body is current and honest.** I read it live rather than reading the on-disk copy — it carries the 774/2 unit figure, `multi-stack` **13 passed**, the *"latency target was **missed** — and was also mis-specified"* heading, the 1.32x / 0.69x marginal numbers, and the reverted-optimisation A/B. (The on-disk `CTRIB-062-pr-body.md` is the stale pre-rework text — M7 — which is why reading the file instead of the API would have produced the opposite conclusion.)
+* **i18n, mechanically:** 688 keys × **7** locales, **0 missing / 0 extra**; all 7 new keys present in every locale and genuinely translated; all 4 retired keys (`Your My data scope … was not applied`, `Link your user to an Owner **on the main page** …`, `Upstream dependents`, `Downstream dependents`) gone from **all seven** files symmetrically, with **no** remaining `src/` consumer — so no fallback leak.
+* **The FE count arithmetic:** the first review measured 163/164; §24 claims 175/176 with the same single failure. The two new FE test files carry exactly **8 + 4 = 12** cases. 163 + 12 = 175. The claim reconciles to the case, not to a round number.
+* **G-C15 on every CHANGED test** (not just added), across the whole slice: `searchUrlState.test.ts`'s rework diff is pure prettier reflow; `useNavigateToSearch.test.tsx` replaces the `myObjects` case with two *stronger* ones; `searchFormDataToUrlState.test.ts` adds the legacy-alias arm rather than dropping it; the three re-pointed e2e specs keep the same three-part shape (English baseline → switch → translated present **and** English absent) and `aac1e908`'s body records the IT-068 plan deviation with its reasoning. **No matcher weakened, nothing `.skip`/`@Disabled`/deleted.**
+* **Gate 8's branch-verifiable half**: PyYAML parses both frontmatters; `description` 129 and 191 chars; every link tree-relative; both new anchors resolve against the real headings.
+
+
+### The fix-list
+
+**BLOCKERS**
+
+**C0 — B2 was closed on one sample; three samples say the gate is intermittent.**
+My four-suite regression, on a SUT I built from the reviewed tree (`sha256:6acff772…`), ran `multi-stack`
+**whole, in one process, in suite order** — the run §24 correctly insisted on. Result:
+
+> **12 passed / 1 failed (12.3m)** · the failure is
+> `my-data-scope-narrows.spec.ts:259` — *"IT-153 — My Objects returns what I own across kinds — and nothing
+> else (**the pass-through regression**)"* — i.e. the RED-proof case for R2, the shipped ST-4 defect this
+> whole slice exists to close.
+
+§24 reports the same suite as **13 passed**. Same 13 tests (12 + 1 = 13), one red. **A gate that is green once
+and red once is not a closed gate**, and this is the exact failure mode §22 diagnosed: it surfaces only in
+suite context, so neither of us can dispose of it with a targeted run.
+
+*What the failure says, in the test's own words:*
+
+> `READINESS: the seeded fixture "it153mydata_21530" never became searchable on the freshly-booted LOGIN_FORM
+> stack within 90s. This is a readiness failure, NOT a scope failure…`
+> `  last observed page state: header="0 results" renderedRows=[]`
+
+The helper's own diagnostic is what makes this readable: *"if renderedRows is non-empty but lacks the name,
+the catalog IS serving and the fixture specifically is missing from the unified index"*. `renderedRows` is
+**empty**, so for ninety seconds the catalog served **nothing at all** — the stack was answering and the
+fixture was not there. That rules out the unified-index path (and I confirmed independently that it is not a
+background-job race: `V0_0_98` maintains `asset_search_entrypoint` with **synchronous AFTER
+INSERT/UPDATE/DELETE triggers** on `search_entrypoint` / `term_search_entrypoint`, so the seed's own
+transaction populates it).
+
+*The class, not the instance.* Three specs in the `multi-stack` suite share **one** compose project on **one**
+fixed port, and each tears the other's database out from under it:
+
+| spec | protocol | lifecycle |
+|---|---|---|
+| `auth-mode-boundary.spec.ts` | IT-009 | `upLoginFormStack()` :42 → **`downLoginFormStack()` :47** |
+| `my-data-scope-narrows.spec.ts` | **IT-153 (this slice)** | `upLoginFormStack()` :195 → `downLoginFormStack()` :256 |
+| `session-cookie-posture.spec.ts` | — | `upLoginFormStack()` :64 |
+
+`loginform-stack.ts` pins `PROJECT = 'oddlf'` and `LOGINFORM_BASE_URL = …:18082`, and `stack.ts:40`'s
+`composeDown` is `docker compose -p oddlf … **down -v**` — the **volume** goes, so the next consumer replays
+every migration from `V0_0_1`. `composeUp` then polls `/actuator/health` for `UP` (`stack.ts:24-27`) and
+returns. **That readiness check cannot distinguish "my new stack is up" from "the previous spec's stack has
+not finished dying yet"** — a health probe against a fixed port answers either way. Seed into the wrong one
+and the search is empty forever, which is precisely the observed 90 seconds of `0 results`.
+
+The `oddlf` sharing is **pre-existing harness debt** — IT-009 and `session-cookie-posture` had it before ST-8.
+What is new is that IT-153 is the first consumer that **seeds data and then reads it back**, so it is the
+first that cannot tolerate the ambiguity; and B2 was closed on a single green run of exactly that test.
+
+**Do not bump the 90s.** §24 says so itself — *"why 'flake, bump the timeout' was the wrong answer"* — and it
+is right. The fix is to remove the ambiguity: give IT-153 its own compose project + port (the per-stream
+isolation model this workspace already uses everywhere else), **or** make `upLoginFormStack()` prove it is
+talking to *its own* freshly-migrated stack (a canary row written after bring-up and read back through the
+API) rather than trusting a health probe on a shared port, **or** order the three LOGIN_FORM specs adjacently
+behind one bring-up. Then re-run `multi-stack` whole **twice consecutively** — one green run is exactly what got us here, and n=3 is now on record.
+
+*I re-ran `multi-stack` whole a second time before writing this, because one disagreeing sample is a
+measurement and not a verdict.* **It came back 13 passed (9.4m) — green, including `:259`.** So the honest
+tally across the two sessions is **n=3: green (§24), red (mine), green (mine)**. That is the finding, stated
+exactly: **IT-153 is intermittent in suite context — roughly one whole-suite run in three — and B2 was closed
+on n=1.**
+
+**This is not "the fix does not work".** §22b's readiness gate is a real improvement and the case passes most
+of the time; when it fails it now says why, which is how I could root-cause it in one pass instead of guessing.
+The claim is narrower and it is the one that matters for a gate: **a regression suite whose own newest test
+goes red about a third of the time is not a gate any more** — the next reader who sees `my-data-scope-narrows`
+red will assume "that one's flaky" and stop reading, which is precisely how a suite stops catching things. And
+the stream itself set this standard: §24 wrote *"why 'flake, bump the timeout' was the wrong answer"* about
+the previous instance of this same test.
+
+**C1 — the shipped source says the perf question is open; the same PR proves it closed.**
+`ReactiveAssetSearchRepositoryImpl.java:330-336` still ends:
+
+> *"…What is NOT yet confirmed is that the FTS bitmap still drives once every other clause is present at
+> catalog scale. Tracked as TST-063."*
+
+Every word of that was true at `94b2a2c8`. At `966d3053` the last two sentences are false: §24 took exactly
+that measurement on a LOGIN_FORM stack at 120 000 assets with `auto_explain`, quotes the executed plan
+(`Bitmap Index Scan on asset_search_entrypoint_search_vector_gin_idx` driving, the scope applied as a filter
+on the bitmap heap scan, 120 000 → 10 000), and the **published PR body says so** — *"the gate has since been
+taken on the running platform … the FTS bitmap still drives"*. One PR, two opposite claims about its own
+headline deliverable, and the false one is in the source a future engineer reads before touching the
+predicate. §24's own follow-up table already says *"`TST-063` — its question is now ANSWERED … the item can
+close at review"*, but neither the comment nor `backlog/tests/TST-063.md` (still `status: backlog`, title
+still asserting *"no EXPLAIN confirms the FTS bitmap still drives"*) was updated. Rewrite the
+SCOPE-OF-EVIDENCE paragraph to what is now measured, and close TST-063 with the plan quoted.
+
+**C2 — this change deletes a control that four published pages still describe, and the page it authors
+contradicts itself about the panel it adds to.** One claim, five lines, all on the `release/1.0.0` train the
+doc already rides.
+
+*The definitely-wrong half — a control that will not exist:*
+* `data-discovery.md:13` — the screenshot caption still reads *"entity-class **tabs along the top** (All / My
+  Objects / Datasets / Transformers / Data Consumers / Data Inputs / Quality Tests / Groups / Relationships)
+  with per-class counts"*. ST-4 removed seven of those tabs; **this slice removes the last one and deletes the
+  components**. The pillar landing page for the very page this change rewrites will tell a reader to look for
+  a strip that is gone.
+* `data-discovery/vector-stores.md:39` — *"Vector Stores surface on the Type facet (multi-select on the
+  **entity-class tab strip**)"*. Same retired control.
+
+*The self-contradicting half — a count that no longer describes the panel:*
+* `search.md:19` — *"The Filters panel on the Catalog page exposes **seven facets**"*, and the frontmatter
+  `description` (`:2`) repeats *"plus **seven** faceted filters"*. Three sections later the same page
+  documents *"Two filters **in the sidebar**"* (Asset type, Data entity type) and then a **My data** group
+  with three checkboxes and two depth selects — which R7b calls *"a filter — it lives in the Filters panel
+  next to Asset type"* and which `Filters.tsx:36-41` clears with the facets for exactly that reason. The
+  sentence attributes a count to the **panel**, and the panel now holds ten controls. Reading "facets" as a
+  term of art for the seven server-aggregated ones is the charitable reading, and the sentence still needs the
+  word "server-aggregated" in it to survive.
+* `data-discovery.md:23` and `Features.md:60` + `:62` repeat the *"seven facets (Datasource / Type / Namespace
+  / Owner / Tag / Groups / Statuses)"* enumeration as the whole summary of what search can narrow by.
+  `Features.md:60` also still says search finds *"**data entities** across names and metadata"* — already
+  wrong since ST-4 made the result cross-kind.
+
+`DOC-499` is the umbrella for the ST-3/4/5 doc debt, but its `affected_files` names only `search.md`, so
+nothing else would have caught these. Sweep them here rather than widening DOC-499: the branch is open, the
+item is going back to implement, and an accuracy fix that leaves four copies of the claim standing is the
+fix→review→log→fix loop the converge directive exists to stop.
+
+**SHOULD-FIX — same pass**
+
+**S7 — the 11 new i18n keys have no rendered-locale coverage at any level.** Catalog parity is verified and
+clean (I re-derived it: 688 keys × 7 locales, 0 missing / 0 extra, every new key genuinely translated, the
+four retired keys gone from all seven with no remaining `src/` consumer). But the maintainer's standing
+directive is that i18n "done" means **driving the page under a non-en locale**, not parity % — and the one
+guard that existed for this exact class on this exact page (`IT-102`, the #1751 / PLT-205 "labels built in a
+TS object array outside JSX" lock) was **re-pointed by this slice onto `Asset type` / `Data entity type`**,
+the ST-4 controls. It could not cover the new group: `IT-102` runs on the auth-disabled stack, where R7 hides
+My data. So the group this slice introduces — heading, three option labels, two depth labels, the QE caption,
+the unbound remedy, both truncation strings — is never rendered under a non-en locale by any test. `IT-153`
+already has a LOGIN_FORM stack with a bound owner where the group *does* render; add a locale arm there
+(extract `switchLanguageViaUi`, currently a local function at `multilingual-i18n.spec.ts:36`, into
+`e2e/helpers/`).
+
+**S8 — the measured latency is per scroll page, and nothing says so.** B1 asked for this in as many words
+("the resolver re-runs on every infinite-scroll page … paid per scroll, not once per search"). §24 answers it
+implicitly — every scroll page *is* a `POST /api/search/assets` of the same shape, so 1.51-1.76 s at the
+ceiling **is** the per-page figure — but never states it, and "1.6 s once" versus "1.6 s per scroll page" are
+different product facts for the human deciding at GATE 2. Say it plainly in §24 and in the PR body, and
+either file the follow-up (the resolved scope is deterministic for a given URL state, so it is cacheable) or
+record why not. `PLT-260` covers the `count(*)` only.
+
+**S9 — the item's own plan contract still asserts the bound that was missed.**
+* `contributor/CTRIB-062.md:518` — `must_haves.truths` still reads *"At depth 3 over a cap-reaching scope on a 100k+ asset catalog the search still returns **in under a second** (Spec R4)"*, while R4 was re-specified to the marginal form and §24 records **1.51-1.76 s**. A plan contract that disagrees with the shipped measurement is worse than none.
+* `contributor/CTRIB-062.md:562-564` — the `must_haves` artifact row still says IT-068 is *"retired with a stated reason … anchor: `superseded`"*. It was **re-pointed** instead, and the reasoning is recorded properly in `aac1e908`'s body (*"reading the spec showed that would be over-subtraction"*) — a better call than the plan's. Only the contract row is stale.
+
+**MINOR — fix or note**
+
+* **M6** — `integration-tests/e2e/specs/search-class-tab-filter.spec.ts:5-22`: the header doc-comment still
+  describes the 9-tab strip as the surface under test and cites `SearchResultsTabs.tsx:29-31`, a file this
+  slice **deletes**. The test body at `:118-123` is correctly re-pointed with a note; the comment above it,
+  and the test names (`'clicking the Datasets tab …'`, `:101`), are not. Same class as M2, which the rework
+  fixed in `Results.tsx`.
+* **M7** — `contributor/CTRIB-062-pr-body.md` is the pre-rework text (last written 16:19, before the 19:00-21:08
+  rework), and its commit `0f141985` calls it *"PR body as published"*, which is no longer true. **The
+  published PR body is correct and complete** — I read it live; this is the on-disk copy only. While that body
+  is being edited for S8 anyway: it says *"**25** new behavioural tests"*; the four new backend test classes
+  carry **27** `@Test` methods (`MyDataScopeResolverTest` 9 + `AssetSearchScopePredicateTest` 6 +
+  `AssetSearchServiceMyDataTest` 6 + `MyDataScopeDtoTest` 6), which the JUnit XML confirms. It understates, so
+  nothing is at risk — but the number is in a public artefact and it is one character to make exact.
+* **M8** — `MyDataScopeResolverImpl.clampDepth` is still exercised only upward (`MAX_DEPTH + 5`). `0` and
+  negative are correct by inspection (`Math.min(Math.max(requested, 1), MAX_DEPTH)`) but unasserted. Carried
+  from the first review's R3 note, not regressed.
+* **M9** — `V0_0_101__lineage_child_oddrn_index.sql` creates **three** indexes (`lineage_child_oddrn`,
+  `ownership_owner_id`, `term_ownership_owner_id`); the filename names one. A reader grepping the migration
+  set for the ownership index will not find it.
+* **M10** — the four rework suite run-logs fill `runner:` correctly, but the per-protocol
+  `run-log/2026-08-31-IT-152.md` / `-IT-153.md` entries still carry the `(fill: …)` / `<captured values…>`
+  template placeholders. The first review's M5, half-closed.
+* **M11** — **the DoD's ontology row claims more than it did, and the thing it did not do is correctly deferred
+  — so say that instead.** The plan's impact checklist named three feature-flow nodes (`F-017`, **`F-148` "the
+  class-tab filter this retires"**, `F-015`) with `/enrich --touched` in Phase D. Both DoDs answer with a
+  *sidecar* fact about `ReactiveLineageRepositoryImpl` — a different artefact and a different node — under the
+  heading "Ontology refreshed + committed". `lineage/odd-platform/feature-flows/detail/F-148.yaml` still models
+  *"the 9-tab strip at the top of the /search results (All / My Objects / Datasets / …)"* and cites
+  `SearchResultsTabs.tsx`, the file this slice **deletes**; last touched `c4066140`, 2026-06-04. **I nearly
+  called this a gap and it is not**: the ontology models `origin/main`, this branch is unmerged, and
+  `playbooks/release-review.md` check 5 (`lineage-extractor scan --full` at the released tag) is the designed
+  owner of the retirement. So the fix is one honest line — "ontology: F-148 retires with this slice; deferred
+  to the 1.0.0 release-gate refresh, which owns it" — not an enrich run. Worth recording alongside it: **two
+  protocols carry `validates: [… F-148 …]`** (`IT-068`, re-pointed by this slice, and the new `IT-152`, whose
+  claim is that the strip is *gone*), so whoever retires F-148 has two `gates:` blocks to re-point, and
+  `IT-152` validating a feature by asserting its absence is a labelling question for that same pass.
+
+
+### Doc-product editorial audit (mandatory step, ran)
+
+**Coverage this run — the partition the last two reviews queued.** `master-data-management/**`, `management/**`,
+`data-modelling/**`, `use-cases/**`, `integrations/**` (README, ingestion-filters, integration-wizard,
+odd-collector, odd-collector-aws, odd-collector-profiler, odd-cli, odd-great-expectations,
+odd-tracing-gateway) and `developer-guides/**` outside the ADR log (api-reference hub, the query-examples /
+relationships / integrations / lineage / directory sub-pages, github-organization-overview, how-to-contribute,
+build-and-run). Plus five cross-tree claim sweeps run over **all** of `docs/**` rather than per page: adapter
+counts, "Fixed in *version*" claims, `housekeeping.ttl.*` defaults, the four auth-mode claims, and
+facet / tab / permission counts.
+
+**The corpus is in good shape and I want that on the record, because a reviewer who only ever reports findings
+is not measuring anything.** The sweeps came back clean: 41/11/4/4 adapter counts agree between
+`integrations/README.md` and every per-collector page; the 30-day `housekeeping.ttl` defaults agree across
+`statuses.md`, `alerting.md`, `use-cases/de-deprecation.md` and `odd-platform.md` (the TTL-inversion finding
+from 2026-06-08 is fully applied); and every checkable claim on
+`developer-guides/build-and-run/build-and-run-odd-platform.md` verifies against the repo — `.nvmrc` really is
+`v24.13.0`, `engines` really is node `>=24.8.0 <25` / pnpm `>=9.12.3 <10`, `injector/inject.py` and
+`docker/config/injector` exist, `pnpm test` really is vitest.
+
+**Findings** (each logged on disk, none narrated):
+
+* **`DOC-508`** (medium, *cross-audience absence*) — **the Integration Wizard ships with an empty registry and
+  only the developer page says so.** `developer-guides/api-reference/integrations.md` states plainly that
+  `GET /api/integrations` returns `{ "items": [] }` on a stock build because the platform ships no
+  `META-INF/wizard/*.yaml` manifests. **Verified in the source rather than taken from the page**:
+  `IntegrationRegistryFactory.java:26` scans `classpath*:META-INF/wizard/*.yaml`, and
+  `find . -path '*META-INF/wizard*'` over the whole odd-platform repo returns nothing. Meanwhile the three
+  pages an operator reads all describe a populated wizard —
+  `integrations/integration-wizard.md`'s step 2 is literally *"**Pick** an integration card (PostgreSQL,
+  Snowflake, …)"*, `management.md`'s Integrations row promises "pick an integration template", and
+  `integrations/README.md` says "the platform **ships an Integration Wizard**". So an operator opens
+  Management → Integrations, sees an empty pane, and has nothing — no UI empty state, no doc sentence — to
+  distinguish "nothing configured" from "broken". Same defect class as `DOC-393`.
+* **`DOC-507`** (low, *reader-flow defect* + *false completeness claim*) — two traps in `developer-guides/**`.
+  (i) ODD deliberately **swaps** the two springdoc paths (`application.yml`: `api-docs.path =
+  /api/v3/swagger-ui.html`, `swagger-ui.path = /api/v3/api-docs`), so `api-reference.md`'s two path statements
+  are each *correct* and together read as a typo to anyone who knows springdoc — the platform's own
+  `OpenApiDocsContractTest` javadoc calls the swap out explicitly; the published page does not. (I flagged
+  this as an inversion first and checked `application.yml` before writing it down — the page is right, the
+  disambiguation is what is missing.) (ii) `how-to-contribute.md:13` and `integrations/README.md` both promise
+  the org overview "lists **every** repository"; it lists **16**, and the org has **35** public repos
+  (`GET /orgs/opendatadiscovery` → `public_repos: 35`, checked 2026-09-01).
+* **`DOC-452` already covers** the `Features.md` (seven) vs `activity-feed.md` (eight) Activity-facet
+  contradiction — found again this run, **not** re-filed (LSN-009). Worth noting for triage that it is still
+  `status: pending` on `milestone: "0.28.0"`.
+
+**Not logged, folded instead:** the `search.md` seven-facet self-contradiction and the four residue lines on
+`data-discovery.md` / `Features.md` / `vector-stores.md` are C2 / C2b in the fix-list above — the branch is
+open and the item is going back to implement, so logging them would be the over-logging the rule warns about.
+
+**Queued for the next `/review`:** `integrations/collectors/{azure,gcp}`,
+`integrations/push-adapters/{airflow-2,dbt,spark}`, `developer-guides/api-reference/{alerts,data-collaboration,
+genai,glossary,reference-data}`, `developer-guides/build-and-run/{odd-collectors,custom-collectors}`, and the
+whole `developer-guides/architecture-decision-log/**` set. `data-discovery/**` was covered end-to-end by the
+first CTRIB-062 review; `configuration-and-deployment/**` has only ever been covered *partially* (the
+scheduled-job surfaces of `odd-platform.md`, at `/review CTRIB-059`) and `active-platform-features/**` has
+never been claimed by any run — I am not carrying either forward as "done", because neither is.
+
+
+### Verdict
+
+- **Result**: **REJECTED** → `status: review-ready` → **`blocked`**.
+- **Acceptance criteria**: **8 of 8 PASS** — R4, the one the first review failed, is now genuinely met, including the measurement the issue is named for.
+- **Quality Bar**: Gates 1, 2, 3, 4, 7, 10, 11 **PASS**; Gate 5 **N/A**; Gate 8 **PENDING-RELEASE (1.0.0)** with the branch-verifiable half passing; Gate 6 **FAIL** (C2 / C2b); Gate 9 **FAIL** (C1).
+- **Outbound URL sweep**: every link on the two changed pages checked; the two anchors this change adds resolve; the three my slugger flagged are pre-existing and valid (GitBook drops the em dash — verified against the real headings, not left as a false finding). 0 broken.
+- **Banned-phrase check**: none used — every verdict line above ends in a citation, a measured number, or an explicit "not measured".
+- **Regressions**: **one, and it is C0** — `multi-stack` red on `my-data-scope-narrows.spec.ts:259` (this slice's own IT-153) in my whole-suite run, green in my re-run; n=3 across both sessions = green/red/green. Everything else reconciles: `feature-complete`'s 11 failures are set-equal to TST-059's named eleven with zero unattributed, `known-bugs` is 3-RED-expected with zero unexpected GREENs, `ingestion-e2e` is 15/15, and the unit bucket is 774/0 at the reviewed SHA.
+- **Navigation**: consistent. `navigation/domains/search.md` was refreshed for the unified-search subsystem at CTRIB-059 and the new classes are reachable through it; no pointer moved in this rework.
+- **Upstream issues logged**: none new. `PLT-258` / `PLT-259` / `PLT-260` were filed by the stream and verified present on disk.
+- **Doc-product editorial findings**: `DOC-508` (medium), `DOC-507` (low); `DOC-452` re-confirmed, not re-filed. Full detail + coverage / queue above.
+
+**Why this is a reject.** **C0 stands on its own**, and it is worth being exact about what it does and does
+not say. It does *not* say the B2 fix failed — my second whole-suite run was green. It says the gate was
+closed on **one** sample, and three samples show this slice's own newest test going red in suite context about
+one run in three, on an independently-built SUT, in the exact condition the item's own §22 named as the root
+cause. A suite whose newest member is a coin-weighted red is not a regression gate, and §24 itself ruled that
+"flake, bump the timeout" is not an answer here.
+
+The other three are the same defect in three places: a claim that was true before the rework, refuted by the
+rework, and left standing. `ReactiveAssetSearchRepositoryImpl.java:336` says the FTS-driver question is open
+while the PR body says it is answered. `must_haves` line 518 promises "under a second" while §24 records
+1.62 s. `search.md:19` says the panel has seven controls while the same page documents ten. Each is one line.
+Together they are the state a change should never ship in: **the artefact disagrees with its own evidence** —
+which is exactly what this slice's own perf work spent two days proving is the thing to avoid.
+
+**What this reject is not.** It is not a re-litigation of the rework, and C0 is not a claim that the fix was
+faked. B1 was taken and reported honestly against the item's own interest — the missed bound named as missed,
+the replacement justified from a measured baseline, one of the implementer's own optimisations reverted
+because the A/B destroyed it. B3 and B4 came back with RED proofs and an 8-case lock. S1 removed the dead
+`'my'` short-circuit rather than documenting around it. S3's Clear-All test even guards the debounced mirror
+race that a weaker test would have missed. I re-derived all of that and it holds, and the unit bucket is
+**774/0** at the reviewed SHA. What C0 says is narrower and harder: **one green run of a known
+cold-boot-sensitive test is not evidence that a suite is green** — and rather than assert that, I went and got
+the third sample. The next step is the harness fix plus two consecutive whole-suite runs.

@@ -8,3 +8,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **15 passed (4.9m).** Green.
 
+## 2026-09-01 — suite/protocol: ingestion-e2e
+- runner: AI-assisted (Claude Opus 5, session ctrib062g — the Phase-G rework of the 2026-09-01 /review fix-list)
+- odd-platform working-tree HEAD: 5b20c3da in ../odd-platform-ctrib062 (the SUT source; the `c54b9c61` the harness prints is the SHARED ../odd-platform checkout — LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib062g  (image odd-platform:odd-team-sut-ctrib062g, digest sha256:838ad9847f3d4ecb4321f52a204d23581f4c89716c8d1f40ab1f36871c399f57)
+- protocols: IT-128 IT-145
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **15 passed (5.1m).** Green.
+

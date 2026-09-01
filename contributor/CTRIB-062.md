@@ -2277,3 +2277,53 @@ the 12 reconcile to **zero unattributed** — TST-059's eleven plus TST-057's `s
 (the cold-springdoc instance the re-review's own run happened not to reproduce). Note
 `search-class-tab-filter.spec.ts:`**`149`** in that list: the re-anchoring done earlier in this phase is what
 keeps it attributed rather than reading as a twelfth unexplained failure.
+
+### Phase G — the regression, and the C0 tally corrected
+
+**Four suites plus a deliberate second `multi-stack` sample**, on a SUT built from the worktree at
+`5b20c3da` (`run-regression.sh ctrib062g`), flock held throughout:
+
+| suite | result | reading |
+|---|---|---|
+| `feature-complete` | 328 passed / 12 failed (28.6m) | **zero unattributed** — TST-059's eleven + TST-057's `swagger-openapi-discovery:63`. Note `search-class-tab-filter:`**`149`**: the re-anchoring done in this phase is what keeps it attributed. |
+| `known-bugs` | 3 failed | EXPECTED — the three pins, zero unexpected GREENs |
+| `multi-stack` #1 | 13 passed / 1 failed | the failure was **my own new locale arm**, not C0 |
+| `ingestion-e2e` | 15 passed (5.1m) | green |
+| `multi-stack` #2 | 13 passed / 1 failed | same — `:477`, twice, deterministically |
+| `multi-stack` #3 (after the fix) | **14 passed / 0 failed** (9.4m) | green, `:477` in 7.6s |
+
+**I shipped a failing test and the suite caught it.** The S7 locale arm asserted against an MUI Autocomplete
+that is closed by default, so the option labels it checked were never in the DOM; `DepthSelect` had the same
+flaw, since it only renders once its scope is selected. The group heading is a plain `Input` label, which is
+why that one assertion passed and hid how wrong the others were. **No product defect** — `scopeLabels` is
+properly `t()`-wrapped and the heading demonstrably translated at runtime. Fixed by selecting both scopes in
+the URL so the labels render as chips, and re-run rather than re-reasoned.
+
+**C0's tally is corrected, and it is better than the review's estimate.** Across three sessions and six
+whole-suite `multi-stack` runs: **green / red / green / green / green / green** — **one red in six**, not the
+one-in-three the first two samples implied. `:259` has now passed four consecutive times, including twice on
+the reworked branch. The single red remains **unexplained**; the instrumentation that would explain it did not
+get a chance to fire.
+
+**What that changes, and what it does not.** It lowers the estimated risk; it does not close B2. A test that
+fails once in six whole-suite runs still trains readers to discount a red, and the cause is still unknown.
+What is different from the state this review rejected is that the claim is now *measured* (n=6, stated with
+its denominator) rather than asserted from n=1, and the next red will name its own cause instead of costing
+another session of hypotheses. **The merge-or-hold call is the maintainer's, and PR #1871 carries it in plain
+language.**
+
+### Definition of Done — Phase G
+
+| # | Gate | Evidence |
+|---|---|---|
+| 1 | Full unit build | **BUILD SUCCESSFUL 21m02s — 774 tests / 0 failures / 0 errors / 0 skipped** across 181 classes, parsed from the JUnit XML. `checkstyleMain` + `checkstyleTest` + `assemble` + `jacocoTestReport` green. Count unchanged at 774 because M8's two cases are assertions inside an existing method, not new `@Test`s — which is also why the PR body says 27 and not 29. |
+| 2 | FULL integration regression | 4 suites + **three** `multi-stack` samples. `feature-complete` 328/12 with **zero unattributed**; `known-bugs` 3-RED-expected, zero unexpected GREENs; `ingestion-e2e` 15/15; `multi-stack` finally **14/0** once my own broken locale arm was fixed. |
+| 3 | Docs | 1 further commit on the `release/1.0.0` train (`e8fa107`), pushed; all three pre-commit sweeps clean; the claim swept tree-wide to zero residue. |
+| 4 | Ontology | `lineage/**` untouched. The `F-148` retirement is owned by `playbooks/release-review.md` check 5 at the released tag — stated as the disposition rather than claimed as done (M11). |
+| 5 | Principal sufficiency | Every fix-list item closed **except C0**, which is stated as open with its denominator. One test I wrote failed twice and was fixed and re-run rather than explained. |
+
+**Status: stays `blocked`.** Not because the work is unfinished — C1, C2/C2b, S7, S8, S9 and M6-M11 are all
+closed and verified — but because **C0 is a decision I do not own.** The measurement is n=6 (one red, five
+green), the cause is unknown, the failure now self-diagnoses, and the PR discloses all of it in plain language.
+Whether that is mergeable is GATE 2's call. Flipping to `review-ready` while a blocker I raised myself is
+still open would be exactly the "closed on assertion rather than evidence" move this review rejected.

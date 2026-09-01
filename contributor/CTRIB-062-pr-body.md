@@ -258,14 +258,17 @@ Stated up front rather than left in a run-log, because it is the one thing here 
 should affect the merge decision.
 
 **What happens.** `IT-153` (`my-data-scope-narrows.spec.ts`) — the integration test that proves the My Objects
-scope stops returning other people's terms — fails roughly **one whole-suite run in three**, and only when the
-`multi-stack` suite runs as a suite. Run on its own it passes every time. When it fails, it fails in its own
-readiness gate: the seeded fixture never becomes searchable on the freshly-booted LOGIN_FORM stack within 90
+scope stops returning other people's terms — has failed **once in six** whole-suite runs, and only when the
+`multi-stack` suite runs as a suite. Run on its own it passes every time. When it failed, it failed in its own
+readiness gate: the seeded fixture never became searchable on the freshly-booted LOGIN_FORM stack within 90
 seconds.
 
-**Sample so far: green, red, green.** Three whole-suite runs across two sessions, on two independently-built
-images. It is a race, not a broken assertion — the feature itself is not implicated, and every other suite
-reconciles exactly.
+**The measurement, with its denominator: green / red / green / green / green / green.** Six whole-suite runs
+across three sessions on three independently-built images. The first two samples suggested one-in-three; four
+more runs put it at one-in-six, and the case has now passed four consecutive times. It is a race, not a broken
+assertion — the feature itself is not implicated, and every other suite reconciles exactly. The single red
+remains **unexplained**: the instrumentation described below did not get a chance to fire, because it did not
+recur.
 
 **What I could not do.** I could not find the cause, and I would rather say so than ship a plausible-looking
 fix. Three explanations were argued and each was ruled out *by the source*: there is no background indexing

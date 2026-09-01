@@ -18,3 +18,33 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **RUN 2 (deliberate re-run of the WHOLE suite) -- 13 passed (9.4m), GREEN, `:259` included.** Run because one disagreeing sample is a measurement, not a verdict. Tally across both sessions is n=3: GREEN (implementer, 2026-08-31) / RED (run 1 above) / GREEN (this run). So the section-22b fix is not broken -- the gate is INTERMITTENT (~1 whole-suite run in 3), and B2 was closed on n=1. NB this run's SUT digest differs from run 1's only because run-regression.sh rebuilt the image; both were built by build-sut.sh from ../odd-platform-ctrib062, clean at 966d3053.
 
+## 2026-09-01 — suite/protocol: multi-stack
+- runner: AI-assisted (Claude Opus 5, session ctrib062g — the Phase-G rework of the 2026-09-01 /review fix-list)
+- odd-platform working-tree HEAD: 5b20c3da in ../odd-platform-ctrib062 (the SUT source; the `c54b9c61` the harness prints is the SHARED ../odd-platform checkout — LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib062g  (image odd-platform:odd-team-sut-ctrib062g, digest sha256:838ad9847f3d4ecb4321f52a204d23581f4c89716c8d1f40ab1f36871c399f57)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **SAMPLE 1 of Phase G — 13 passed / 1 failed.** The failure is `my-data-scope-narrows.spec.ts:477`, the S7 locale arm added EARLIER IN THIS PHASE — my own defect, not the C0 intermittent and not a product bug. `:259` (the C0 case) PASSED. Cause: FixedOptionsMultiFilter renders its options inside an MUI Autocomplete that is closed by default, so the option labels asserted on were never in the DOM; DepthSelect likewise only renders once its scope is selected. scopeLabels is properly t()-wrapped and the heading translated at runtime, so there is no i18n defect here.
+
+## 2026-09-01 — suite/protocol: multi-stack
+- runner: AI-assisted (Claude Opus 5, session ctrib062g — the Phase-G rework of the 2026-09-01 /review fix-list)
+- odd-platform working-tree HEAD: 5b20c3da in ../odd-platform-ctrib062 (the SUT source; the `c54b9c61` the harness prints is the SHARED ../odd-platform checkout — LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib062g  (image odd-platform:odd-team-sut-ctrib062g, digest sha256:838ad9847f3d4ecb4321f52a204d23581f4c89716c8d1f40ab1f36871c399f57)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **SAMPLE 2 of Phase G — 13 passed / 1 failed, identical.** `:477` again, deterministically, which is what identified it as my test bug rather than a flake. `:259` PASSED again.
+
+## 2026-09-01 — suite/protocol: multi-stack
+- runner: AI-assisted (Claude Opus 5, session ctrib062g — the Phase-G rework of the 2026-09-01 /review fix-list)
+- odd-platform working-tree HEAD: 5b20c3da in ../odd-platform-ctrib062 (the SUT source; the `c54b9c61` the harness prints is the SHARED ../odd-platform checkout — LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib062g  (image odd-platform:odd-team-sut-ctrib062g, digest sha256:4ecdd6f7d143cd7c32a1ee70fd6eee504fd914b752b4e1c95d0b7edc704eff79)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **SAMPLE 3 of Phase G, after fixing :477 — 14 passed / 0 failed (9.4m).** The locale arm now selects both scopes in the URL so the labels render as chips (always in the DOM) and the depth label renders; green in 7.6s. `:259` PASSED a third time. Running C0 tally across three sessions and SIX whole-suite runs: green/red/green/green/green/green — ONE RED IN SIX, cause still unknown.
+

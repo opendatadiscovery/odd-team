@@ -2441,10 +2441,19 @@ highest-risk half first-hand rather than inheriting all of it.
   `## Result-class tabs` heading has **no** inbound anchor anywhere in `docs/` (swept); the four added links and
   both anchors (`search.md#my-data` → `:51`, `catalog-overview.md#recommended` → `:49`) resolve; the ADR log is
   set-equal across files ≡ README index ≡ SUMMARY (30/30/30).
-- **Gate 8 — Publishing standards**: **PENDING-RELEASE (1.0.0)**. The doc is genuinely **authored and pushed on
-  the train**, not parked as a backlog draft (the CTRIB-040 failure mode): `origin/release/1.0.0` exists at
-  `5b2bb04`, `origin/main` is **contained in** it (so the train is not behind), and `docs/CTRIB-062-my-data-filter`
-  @ `e8fa107` carries the change across 7 files. Branch-verifiable sub-checks against the train commit all pass:
+- **Gate 8 — Publishing standards**: **PENDING-RELEASE (1.0.0)**, with one precision the release gate must not
+  read past. The doc is genuinely **authored and pushed**, not parked as a backlog draft (the CTRIB-040 failure
+  mode Gate 8 exists to catch): `origin/release/1.0.0` exists at `5b2bb04`, `origin/main` is **contained in** it
+  (so the train is not behind), and `docs/CTRIB-062-my-data-filter` @ `e8fa107` carries the change across 7
+  files. **But it is on a branch TARGETING the train, not on the train itself** — `git merge-base --is-ancestor
+  origin/docs/CTRIB-062-my-data-filter origin/release/1.0.0` is **false**, and `origin/release/1.0.0`'s own
+  `search.md` contains no `My data` section and no posture table. The CTRIB-048 precedent is that the doc PR is
+  **merged into** `release/{version}` before the item is called train-ready (there: "PR #109 merged →
+  origin/release/1.0.0 @ 61cd0a8"). **`documentation` PR #110 is still an open bot-authored draft**
+  (`mergeable_state: clean`), so a human must mark it ready and merge it — G-C4, exactly as for the code PR.
+  **Until that merge, a 1.0.0 cut would ship the My-data filter with no published documentation at all.**
+  Corrected 2026-09-01 after the maintainer asked whether the behaviour is on the train; the first wording of
+  this line said "authored and pushed on the train", which overstated it. Branch-verifiable sub-checks against the train commit all pass:
   PyYAML parses every frontmatter; all 7 `description:` values are ≤200 chars (127-191, under the GitBook
   truncation limit); every relative link and image resolves. Post-merge verification list recorded below.
 - **Gate 9 — Factual claim provenance**: PASS. The C1 correction is real — the shipped comment now carries the

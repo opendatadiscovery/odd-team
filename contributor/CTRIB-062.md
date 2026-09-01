@@ -4,7 +4,7 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: review-ready
+status: review-ready   # /review THIRD pass (review-ctrib062-3, 2026-09-01, fresh session) -> **ACCEPTED = GATE-2-ready**. Every AC (R1-R8) + every applicable gate PASS on the reviewer's OWN measurements at 5b20c3da: unit BUILD SUCCESSFUL 24m25s 181 classes/774 tests/0/0/0 (JUnit XML, this run); changed-lines coverage 115/115 = 100.00% recomputed from my own jacoco XML (CI gate 98); four-suite regression on my OWN SUT sha256:82983e32 -> feature-complete 328/11/1-skipped with the 11 SET-EQUAL to TST-059's eleven (ZERO unattributed, incl. search-class-tab-filter:149 validating Phase G's re-anchor), known-bugs 3-RED-expected/0-unexpected-GREEN, multi-stack 14/0 GREEN, ingestion-e2e 15/0; i18n 688x7 0-missing/0-extra. C0: my run is the SEVENTH whole-suite multi-stack sample and it is GREEN -> one red in SEVEN (better than the 'once in six' PR #1871 discloses); still unexplained, TST-064 owns it. Gate 5 N/A, Gate 8 PENDING-RELEASE (1.0.0; doc AUTHORED+PUSHED on release/1.0.0 @ e8fa107, origin/main contained in the train). OWED-not-blocking: PR #1871's decision sentence still says ~1-in-3 vs the measured 1-in-6; M9 silently dropped from the Phase-G fix-list; DOC-512. Editorial audit ran (active-platform-features/** — never claimed before): DOC-510 CRITICAL (ingestion-auth 0.29.0 fix contradicted on 6 live pages), DOC-511, DOC-509, DOC-512, DOC-513, TST-065; DOC-506 extended. STAYS review-ready: human GATE-2 merge of draft PR #1871 -> pending-release -> /review release:1.0.0 owns done. Verdict: '## Review (2026-09-01, session: review-ctrib062-3)'.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
@@ -2342,3 +2342,343 @@ on disk, and self-diagnosing the next time it fires.
 
 Next: a **fresh** `/review` session (this phase ran in the same session as the re-review, which the
 separate-session rule permits for `/implement` but not for `/review`), then human GATE 2 owns the merge.
+
+## Review (2026-09-01, session: review-ctrib062-3) — THIRD pass, on the Phase-G rework
+
+Fresh session (Phase G ran inside `review-ctrib062-2`'s session and said so, which the separate-session rule
+permits for `/implement` but not for `/review`). Reviewed `contrib/CTRIB-062-my-data-filter` @ **`5b20c3da`** —
+17 commits off `origin/main` `82e7e70e`, pushed (`git ls-remote` confirms), carried by draft PR **#1871**
+(live API: `open`, `draft: true`, head `5b20c3da`, 17 commits / 49 files, `mergeable_state: blocked`) — plus
+`documentation@docs/CTRIB-062-my-data-filter` @ **`e8fa107`** (4 commits off `origin/release/1.0.0` `5b2bb04`,
+pushed, draft PR **#110**, base `release/1.0.0`, `mergeable_state: clean`).
+
+- **Result**: **ACCEPTED** — GATE-2-ready. Status stays `review-ready` (the `review-ctrib048` / `review-ctrib051`
+  precedent: on PASS with an unmerged draft PR the item stays `review-ready`; the human GATE-2 merge moves it to
+  `pending-release`, and `/review release:1.0.0` owns `done`).
+
+**No 2-minute precondition bounce.** The Phase-G DoD records all five gates as RUN at `5b20c3da` and admits
+nothing unrun; four suite run-logs exist at `run-log/2026-09-01-*` and the SUT image
+`odd-platform:odd-team-sut-ctrib062g` is still on disk with id `4ecdd6f7`, matching the digest its sample-3
+entry cites. **C0 is open by disposition, not by omission** — the stream raised it as its own blocker and
+records the maintainer as having decided to hand off; per `memory/feedback_maintainer_driven_close_no_bounce`
+a maintainer-driven close is not a bounce. See the honesty note at the end for what I could and could not
+corroborate about that decision.
+
+**`Sources:` footer — N/A, not waived.** `pillars/contributor/gates.md` defines no `Sources:`/`Consumer-read:`
+footer; the contributor pillar puts provenance in the CTRIB ledger (G-C2 running-system verification + G-C13),
+which cites `file:line` throughout and which I sampled against the source below. Both prior reviews read it the
+same way.
+
+### Acceptance criteria (the item's own Spec R1-R8)
+
+The `main/` delta from the last-reviewed `966d3053` to `5b20c3da` is **provably comment-only** — I re-derived
+it rather than accepting the claim: `git diff -U0 966d3053 5b20c3da -- odd-platform-api/src/main/`, stripped of
+comment and blank lines, is **empty**. The only behavioural change in that commit is two added assertions in an
+existing test. So the prior pass's 8/8 verdict on product behaviour carries, and I re-derived the
+highest-risk half first-hand rather than inheriting all of it.
+
+- [x] **R1** — scope group narrows the cross-kind search — PASS. Union semantics in
+  `ReactiveAssetSearchRepositoryImpl.java:355-376` (`dataEntityBranches` OR-ed, then `dataEntityScoped.or(termScoped)`);
+  exercised end-to-end by IT-153 in my own `multi-stack` run below.
+- [x] **R2** — ownership per kind by that kind's own relation — PASS, read first-hand. DE via
+  `OWNERSHIP.DATA_ENTITY_ID`; Terms **only** via `TERM_OWNERSHIP` and **only** when `MY_OBJECTS` is selected
+  (`scope.myObjects() ? … : DSL.falseCondition()`); query examples have no branch at all, so they fall out of
+  `dataEntityScoped.or(termScoped)` — the pass-through defect this slice exists to close.
+- [x] **R3** — per-direction depth, default 1, ceiling 3 — PASS. `clampDepth` is
+  `Math.min(Math.max(requested, 1), MAX_DEPTH)`; **both** sides now asserted (`MyDataScopeResolverTest:94` above
+  the ceiling, `:102` at `-7`, `:100` at `0`) — M8 genuinely closed. Wire types stay permissive
+  (`components.yaml`: `my_data` a plain string array, depths plain `integer` with no `minimum`/`maximum`), with
+  the reason documented inline; a hand-edited URL clamps rather than 400s.
+- [x] **R4** — bounded expansion, server-declared visible truncation — PASS. `withTruncation` stamps
+  `scopeTruncated` + reason once on the way out (`AssetSearchServiceImpl.java:96-105`); `MAX_SCOPE_NODES` is
+  documented as the only set-determining bound and `WALL_CLOCK_BUDGET` as a circuit breaker that yields TIMEOUT
+  with **no** scope. The perf half was measured by the implementer on the running platform in Phase F and the
+  executed plan is now quoted in the shipped comment (C1) — I verified the comment matches the claim.
+- [x] **R5** — tab strip retired, count survives — PASS. `SearchResultsTabs.tsx` / `SearchTabsSkeleton.tsx`
+  deleted; `SearchResultsHeader` is rendered **outside** the `{!routerSearchId && …}` gate
+  (`Results.tsx:159-162`, with the reason in a comment) — the plan-check W5 trap is closed, so the legacy
+  `/search/{sessionId}` route keeps its count.
+- [x] **R6** — the three panels deep-link — PASS. `OwnerEntitiesList.tsx:107/115/123` pass
+  `viewAllTo={buildSearchLink({ myData: ['MY_OBJECTS'|'UPSTREAM'|'DOWNSTREAM'] })}`.
+- [x] **R7** — explicit posture when it cannot personalise — PASS server-side:
+  `AssetSearchServiceImpl.java:90` `switchIfEmpty(Mono.just(new AssetList(List.of(), new AssetPageInfo(0L, false))))`
+  — a scope with no resolvable owner returns an empty page, never an unscoped one. Both UI arms are asserted by
+  IT-152 against real stacks.
+- [x] **R7b** — "Clear All" clears the scope — PASS. `Filters.tsx:37-43` rebuilds from `{query, sort}` only,
+  dropping facets, `asset_kinds`, `my_data` and both depths, with the deliberate-change rationale in the comment.
+- [x] **R8** — additive contract, no break — PASS. `MyDataScopeDto.resolve(getMyData(), getMyObjects())`;
+  `my_objects` marked `deprecated: true` with the alias semantics in its description. The FE back-compat
+  coverage was **migrated forward, not deleted** (G-C15): `searchUrlState.test.ts:99-106` keeps the fail-closed
+  cases (`?my=true → ['MY_OBJECTS']`, `?my=1`/`?my=yes` → undefined) and **adds** one — explicit `my_data` wins
+  over the legacy flag.
+
+### Quality Bar
+
+- **Gate 1 — No duplicates**: PASS. The new BFS is not a parallel copy of the lineage CTE; `MyDataScopeResolverImpl`'s
+  javadoc states the reuse decision and *measures* it (the `UNION ALL` CTE materialised 130 000 rows for 800
+  distinct nodes at depth 2 and did not finish depth 3 inside a 25 s statement timeout; the BFS answers depth 3
+  in ~281 ms), and explicitly leaves the graph view's CTE unchanged. A reuse scan answered, not skipped.
+- **Gate 2 — Aliases**: PASS for this PR, with a scope gap logged. The vocabulary split (Upstream Dependencies /
+  Dependents / "of my data") is tracked by `DOC-506`; its `affected_files` did **not** include
+  `main-concepts.md`, whose "Terms & Aliases" table (`:97-128`) is the canonical alias register and carries no
+  row for this relationship. **`DOC-506` extended in place** (not duplicated — LSN-009) with the register as an
+  affected file, a proposed two-row table, and a matching acceptance criterion.
+- **Gate 3 — Caveats as admonitions**: PASS. Both truncation outcomes are a `hint style="warning"` on
+  `search.md` with a two-row table separating NODE_CAP (deterministic subset) from TIMEOUT (lineage contributed
+  nothing), each with its own remedy; the direction-semantics caveat is a `hint style="info"` on
+  `catalog-overview.md`. Not buried in prose.
+- **Gate 4 — Consumer-read**: PASS. Every runtime claim I sampled traces to the enforcing code —
+  `SecurityConstants.WHITELIST_PATHS:95-96`, `HousekeepingTTLProperties`, `GenAIProperties`/`WebClientConfiguration:23`,
+  `IngestionAuthenticationFilter:49-64`, `GenAIServiceImpl:22/47` — all read directly, none inferred.
+- **Gate 5 — Unset-parameter audit**: N/A — no SDK builder in scope.
+- **Gate 6 — Bidirectional code ↔ doc**: PASS with one logged finding. Every user-visible path the slice touches
+  has doc coverage on the train (the filter, the depths, both truncation states, the retired strip, the panel
+  deep-links, the three postures). The finding is in the other direction and is logged, not narrated:
+  **`DOC-512`** — `data-discovery.md:13`'s screenshot still shows the nine-tab strip while the caption this
+  slice rewrote describes the new sidebar, so caption and figure now contradict each other. Verified by opening
+  the PNG, not inferred.
+- **Gate 7 — Layout and completeness**: PASS. No new pages, so `SUMMARY.md` correctly unchanged; the removed
+  `## Result-class tabs` heading has **no** inbound anchor anywhere in `docs/` (swept); the four added links and
+  both anchors (`search.md#my-data` → `:51`, `catalog-overview.md#recommended` → `:49`) resolve; the ADR log is
+  set-equal across files ≡ README index ≡ SUMMARY (30/30/30).
+- **Gate 8 — Publishing standards**: **PENDING-RELEASE (1.0.0)**. The doc is genuinely **authored and pushed on
+  the train**, not parked as a backlog draft (the CTRIB-040 failure mode): `origin/release/1.0.0` exists at
+  `5b2bb04`, `origin/main` is **contained in** it (so the train is not behind), and `docs/CTRIB-062-my-data-filter`
+  @ `e8fa107` carries the change across 7 files. Branch-verifiable sub-checks against the train commit all pass:
+  PyYAML parses every frontmatter; all 7 `description:` values are ≤200 chars (127-191, under the GitBook
+  truncation limit); every relative link and image resolves. Post-merge verification list recorded below.
+- **Gate 9 — Factual claim provenance**: PASS. The C1 correction is real — the shipped comment now carries the
+  executed plan (`Bitmap Index Scan on asset_search_entrypoint_search_vector_gin_idx`, 120 000 → 10 000, ranked
+  page 507.77 ms), the PLT-260 attribution for the dominant `count(*)`, and the per-scroll-page framing (S8);
+  `TST-063` is closed with the same evidence. The PR body's one remaining number problem is under "still owed".
+- **Gate 10 — Content-type homing**: PASS. The contract lives in `components.yaml`, the operator description on
+  `search.md` under the pillar it belongs to, the config-free feature narrative on `catalog-overview.md`. No
+  API-reference fragment embedded on a feature page; no configuration reference smuggled in.
+- **Gate 11 — Audience isolation**: PASS. The mechanical grep over every `+` line of the train diff for
+  `Cornerstone N` / `Gate N` / `LSN-NNN` / `DOC-NNN` / `CTRIB-NNN` / `TST-NNN` / `IT-NNN` / `feature-flow` /
+  `Quality Bar` / `sidecar` / `backlog` / `playbook` / `pillar` / `retrospective` / `scanner` / `lineage/` /
+  `ontology` returns **zero** hits.
+
+### What I measured myself, rather than read
+
+- **Full CI-replica unit build at `5b20c3da`** (my own, in `../odd-platform-ctrib062`): **BUILD SUCCESSFUL 24m25s
+  — 181 classes / 774 tests / 0 failures / 0 errors / 0 skipped**, parsed from the JUnit XML and checked that
+  the XMLs were written *by this run* (mtimes 12:22, not a stale artefact). `checkstyleMain`, `checkstyleTest`,
+  `assemble` and `jacocoTestReport` all ran. Exactly reproduces the Phase-G figure. Both TST-057 suspects
+  (`LoadIngestionTest`, `OpenApiDocsContractTest`) passed here too — a fourth box on which they do not fail.
+- **Changed-lines coverage, computed from my own JaCoCo XML rather than quoted**: I extracted every added line
+  in `odd-platform-api/src/main/java` from `git diff -U0 82e7e70e 5b20c3da` and joined it against
+  `jacocoTestReport.xml`: **115/115 = 100.00%** (`AssetSearchScope` 2/2, `MyDataScopeDto` 25/25,
+  `MyDataScopeResult` 3/3, `AssetSearchServiceImpl` 25/25, `MyDataScopeResolverImpl` 60/60). CI's
+  `min-coverage-changed-files: 98` clears with margin. The repository classes correctly do not appear — jacoco
+  excludes `repository`.
+- **FULL four-suite integration regression, on a SUT I built myself** from the reviewed worktree
+  (`odd-platform:odd-team-sut-revctrib0623`, digest `sha256:82983e32`, independent of the implementer's
+  `sha256:4ecdd6f7`), whole suites, one process, under the flock:
+
+  | suite | result | reading |
+  |---|---|---|
+  | `feature-complete` | **328 passed / 11 failed / 1 skipped** of 340 (31.2m) | the 11 **set-equal to TST-059's named eleven** by exact `spec:line` — **zero unattributed** |
+  | `known-bugs` | **3 failed** of 3 | exactly the pins IT-007/IT-006/IT-004 — **zero unexpected GREENs**, so no flip-on-fix is owed |
+  | `multi-stack` | **14 passed / 0 failed** (10.8m) | **GREEN**, whole suite, in suite order |
+  | `ingestion-e2e` | **15 passed / 0 failed** (5.0m) | GREEN |
+
+  The eleven, listed so the set-equality is checkable and not asserted: `catalog-search` 48/62 ·
+  `entity-class-type-badge-list` 59/77 · `recently-viewed-record-see-loop` 117/213 · `search-url-state` 38 ·
+  `search-result-stale-signal` 62 · `search-result-row-click` 45 · `search-class-tab-filter` **149** ·
+  `popular-entities-ranking` 62. Note the last-but-one: it reports at exactly the line Phase G re-anchored
+  TST-059 to (`:148 → :149`), which independently validates that bookkeeping rather than taking it on trust.
+  No TST-057 springdoc instance on this box, so 328/11 is one cleaner than the implementer's 328/12.
+- **The `api:FAIL` on `feature-complete` is not this change, and I ran it down rather than reading past it.**
+  The probe rail cannot *build*: `uv` fails on `lineage/_extractor/pyproject.toml:9` (`readme = "../README.md"`
+  is outside the project directory, which hatchling rejects), so `P-001` never executes. Every recorded
+  `feature-complete` entry across three sessions carries the same `api:FAIL`, and that file was last touched by
+  CTRIB-027 and the graph-query-layer work — nothing to do with ST-8. Filed as **`TST-065`** (high) so the red
+  is attributed and the dead rail gets an owner.
+- **C0 — my run is the seventh sample, and it is green.** `multi-stack` passed **14/0** including all five
+  IT-153 cases: the C0 case itself (the R2 pass-through-regression test, formerly `:259`, now `:388` after
+  Phase G's failure-time instrumentation grew the file) and `:477`, the S7 locale arm that failed twice during
+  Phase G. **Running tally across four sessions and seven whole-suite runs: green / red / green / green /
+  green / green / green — one red in SEVEN.** That is an independent sample better than the "once in six" PR
+  #1871 discloses, and the fifth consecutive pass of the case. It does **not** close C0 — the single red is
+  still unexplained and `TST-064` owns it — but it lowers the estimate again on evidence rather than assertion.
+- **Doc train, checked against the remote rather than the local tree**: `origin/main` is *contained in*
+  `origin/release/1.0.0` (so the train is not behind main and will not regress anything on merge), and
+  `docs/CTRIB-062-my-data-filter` @ `e8fa107` carries the change across 7 files. PyYAML parses every
+  frontmatter; all 7 `description:` values are 127-191 chars, under the 200-char GitBook truncation limit; every
+  relative link and image resolves; both anchors resolve; the removed `## Result-class tabs` heading has no
+  inbound anchor anywhere in `docs/`.
+- **i18n, re-derived**: 688 keys x 7 locales, **0 missing / 0 extra**, every new key genuinely translated.
+- **Live site**: all 7 affected pages return 200 today under their real GitBook slugs (recorded below for the
+  release gate); the `DOC-510` contradiction I found during the editorial audit was confirmed by `curl`-ing the
+  published page, not only by reading the repo.
+
+- **G-C15 on the Phase-G test delta** (the part the last review could not have seen): `multilingual-i18n.spec.ts`
+  is a **verbatim extraction** of `switchLanguageViaUi` into `helpers/locale.ts` — same three steps, same
+  selectors, no assertion touched. `helpers/stack.ts`'s `composeUp` was **strengthened**, not weakened: a
+  substring test (`body.includes('UP')`) became a parsed top-level `status === 'UP'`, with non-JSON treated as
+  "not up yet". A changed test asserting more truth is the right direction.
+- **LSN-033 orphan check**: IT-152 is registered in `feature-complete` **and** `ui-e2e`; IT-153 in `multi-stack`;
+  IT-068 and IT-151 retained in place. All four protocol files exist. No protocol authored-but-unregistered.
+- **G-C5 scope comment**: posted on #1842 (`2026-08-30T22:41:41Z`, `odd-contributor[bot]`), ASCII-only, and its
+  three corrections match what shipped (no "All" option, the panels get a *new* View all, the cross-kind
+  semantics fixed as part of "each scope narrows correctly").
+- **Undeclared but correct scope addition**: the slice also adds the missing catalog key `"Saved search deleted"`
+  in all 7 locales. It has a live consumer (`savedSearch.thunks.ts:73` calls `i18n.t('Saved search deleted')`),
+  so this closes a pre-existing gap where a shipped call site had no key — right to fix, but it means the "11
+  new i18n keys" figure in the item and the PR body is really 13 ST-8 keys + 1 pre-existing repair. Noted, not
+  charged against the item.
+
+### Still owed before GATE 2 — none of these is a gate failure
+
+1. **PR #1871's decision paragraph carries the superseded number.** Inside the same `## Known issue at merge
+   time` section, `:261`/`:268` correctly say *"failed **once in six** whole-suite runs"* and *"four more runs
+   put it at one-in-six"*, but `:287` — the sentence that actually poses the merge decision — still reads
+   *"merge accepting a known **~1-in-3** flaky spec"*. The on-disk copy is byte-identical to the published body
+   (M7 verified), so both carry it. It errs toward caution and the correct denominator is two paragraphs above,
+   so it cannot cause a bad merge — but it is the single number the GATE-2 decision turns on, in a public
+   artefact, and it is one word.
+2. **M9 was dropped from the Phase-G fix-list without a note.** The re-review's minor —
+   `V0_0_101__lineage_child_oddrn_index.sql` creates **three** indexes (`lineage_child_oddrn`,
+   `ownership_owner_id`, `term_ownership_owner_id`) while the filename names one — is neither fixed nor
+   dispositioned; `grep M9` over the item returns only the original finding. The migration's own body documents
+   all three thoroughly, so the impact is a reader grepping the migration set for the ownership index and not
+   finding it. Fix or record a "won't fix, and why" — silently dropping a fix-list row is the habit worth not
+   forming, more than this row is worth.
+3. **`DOC-512`** — the screenshot, logged above, to land on the 1.0.0 train before it publishes.
+
+### Gate 8 — post-release verification list (for `/review release:1.0.0`)
+
+Live GitBook slugs resolved by following redirects today; all 7 return 200:
+
+| Page (train) | Live URL |
+|---|---|
+| `docs/Architecture.md` | `https://docs.opendatadiscovery.org/introduction/architecture` |
+| `docs/Features.md` | `https://docs.opendatadiscovery.org/features/features` |
+| `docs/data-discovery.md` | `https://docs.opendatadiscovery.org/features/data-discovery` |
+| `docs/data-discovery/search.md` | `https://docs.opendatadiscovery.org/features/data-discovery/search` |
+| `docs/data-discovery/catalog-overview.md` | `https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview` |
+| `docs/data-discovery/directory.md` | `https://docs.opendatadiscovery.org/features/data-discovery/directory` |
+| `docs/data-discovery/vector-stores.md` | `https://docs.opendatadiscovery.org/features/data-discovery/vector-stores` |
+
+Phrases to assert post-merge: *"three kinds of control"*, *"seven aggregated facets"*, *"My data"*,
+*"Upstream of my data"* / *"Downstream of my data"*, *"View all"*, *"results (partial)"*, *"Only part of your
+My data lineage scope was searched"*, *"could not be resolved in time"*. And assert the **absence** of
+*"seven facets"* (unqualified) and *"entity-class tab strip"* outside the Activity-Feed panel (DOC-452).
+
+- **Outbound URL sweep**: 7 live pages verified 200 with their real GitBook slugs; every relative link and both
+  anchors on the changed pages resolve; 4 external repo/release URLs checked live during the editorial audit.
+- **Banned-phrase check**: none used. Every verdict line above ends in a `read`/`grep`/`run`/`fetch` citation.
+- **Navigation**: consistent — the slice adds no new bean factory or SDK builder; `MyDataScopeResolver` is a
+  service reachable from the search domain already mapped.
+- **Upstream issues logged**: none new (the C0 flake has a home in `TST-064`, filed by the implementer).
+
+### Honesty note on the C0 disposition
+
+The item, the commit `c262128d`, and `state/active-streams.yaml` all record C0's disposition as *"the
+maintainer's explicit decision (2026-09-01)"*. **All three are the same stream's own assertion**, and I found
+no independent artefact: issue #1842 carries exactly two comments, both `odd-contributor[bot]` (the pre-work
+notes and the G-C5 scope comment), and there is no maintainer comment or commit recording that call.
+
+I record that as unverified rather than accept it as evidence — but it does not change the verdict, and it
+should not, because the substance does not depend on it: the residual risk is **measured with its denominator**
+(one red in six whole-suite runs, three sessions, three independently-built SUT images), **disclosed in plain
+language in the published PR body**, **tracked on disk in `TST-064`** with the three ruled-out causes so nobody
+re-derives them, and **self-diagnosing** the next time it fires. The actual merge-or-hold decision belongs to
+GATE 2 either way. A known, quantified, disclosed, owned intermittent handed to a human with the evidence is a
+legitimate state to review; it is the opposite of the "closed on assertion" move the second review rejected.
+
+### Doc-product editorial audit (mandatory step, ran)
+
+**Coverage this run — the partition the last review queued, plus the subtree nobody had ever claimed.**
+`developer-guides/api-reference/{alerts, data-collaboration, genai, glossary, reference-data}` (all five
+queued) · `integrations/push-adapters/{odd-airflow-2, odd-dbt, odd-spark-adapter}` ·
+`integrations/collectors/{odd-collector-azure, odd-collector-gcp}` ·
+`developer-guides/build-and-run/{build-and-run-odd-collectors, custom-collectors}` ·
+`developer-guides/architecture-decision-log/**` (structural) · **`active-platform-features/**`** — which the
+last review explicitly recorded as *"never been claimed by any run"* — and a full config-key sweep of
+`configuration-and-deployment/odd-platform.md`.
+
+**Most of what I checked is right, and that is the finding worth stating first.** Claims were verified against
+*source*, not cross-page consistency: all four collector adapter counts match their `PLUGIN_FACTORY` dicts
+exactly (`odd-collector` 41, `-aws` 11, `-azure` 4, `-gcp` 4, type literals included); the six monorepo
+`pyproject.toml` files really do all pin `python = "^3.9"`; every one of the ten SDK module paths
+`custom-collectors.md` cites exists, and its behavioural claims check out to the line (three adapter contracts,
+`class Plugin(BaseSettings, extra="allow")`, `load_adapters` importing `{root_package}.{plugin.type}`);
+`odd-airflow-2`'s "latest release `v0.0.8`, default branch `master`" and `odd-spark-adapter`'s `v0.0.1` are both
+correct against the live GitHub API; `glossary.md`'s strongest claim — that `DATA_ENTITY_ADD_TERM` never fires
+because the rule is registered on the singular path — is confirmed at `SecurityConstants.java:238/241`;
+`genai.md`'s `/query_data` + un-quote/unescape contract is exact at `GenAIServiceImpl.java:22/47`; and
+**every** documented endpoint path across all ten api-reference pages (166 spec paths cross-checked) resolves,
+with the only four non-matches each run down and each legitimate. The ADR log is set-equal across files ≡
+README index ≡ SUMMARY (30/30/30), all `accepted`, none superseded-but-unmarked.
+
+**Findings** (each logged on disk, none narrated, none blocking this item):
+
+* **`DOC-510`** (**critical**, *internal contradiction* + *parallel surfaces with drift*) — **six published
+  pages still tell operators that `auth.ingestion.filter.enabled` covers only `/ingestion/entities`, when
+  ADR-0079 shipped whole-namespace coverage in 0.29.0 — the latest release.** Verified in source
+  (`IngestionAuthenticationFilter:49-64` matches `/ingestion/**` minus the two dedicated paths) and in git
+  (`4028b4a6`, 2026-06-22; `git tag --contains` → `0.29.0`). `odd-platform.md` **contradicts itself 73 lines
+  apart on the live site** — `:640-641` tells you to configure the AlertManager token via `http_config`,
+  `:713` says *"Toggling `auth.ingestion.filter.enabled` has no effect on this endpoint"* — and I confirmed
+  both render by `curl`-ing the published page, not just reading the repo. The dangerous direction is an
+  operator concluding the flag would not help and leaving it off, keeping `/ingestion/metrics`,
+  `/ingestion/alert/alertmanager` and the stats path open when one config line closes all three. Survived
+  because `DOC-479` corrected the surfaces it *named* and verified that the new text renders — never that the
+  old text was gone.
+* **`DOC-511`** (high, `milestone: 1.0.0`, *cross-audience absence* with a data-loss edge) — the housekeeping
+  reference enumerates **five** cleanup tasks and **three** TTL keys; the platform has **six** jobs and
+  `HousekeepingTTLProperties` declares **five** `private int` fields. `grep -rn "recently_viewed" docs/` returns
+  **zero hits tree-wide**. The sharp end: the page's own remediation YAML for its primitive-`int`-binds-to-`0`
+  danger admonition lists three keys, so an operator who follows it binds `recentlyViewedDays` and
+  `recentlyViewedMaxPerUser` to `0` — and `RecentlyViewedHousekeepingJob` then deletes with `cutoff = now` and
+  trims to `rn > 0`, i.e. wipes Recently Viewed every 15 minutes, silently. **Routed to the 1.0.0 train, not
+  main**: the job landed in `9097c548` (2026-06-29), *after* the 0.29.0 tag, and `git tag --contains` is empty —
+  so the live manual is not currently wrong, and this must land before 1.0.0 publishes rather than after.
+* **`DOC-509`** (medium, *internal contradiction*) — `active-platform-features.md:15` still describes the Alerts
+  view as three tabs (`All / My Objects / Dependents`) that list *"open alerts only; resolved history is read on
+  each entity's own Alerts tab"*, while the page it links to says four tabs and states in as many words that
+  *"in the previous release the global tabs were hardwired to `OPEN` … the Status filter removes that
+  restriction"*. `DOC-291` and `DOC-474` both fixed this claim on the pages they named; the pillar landing page
+  was in neither one's `affected_files`.
+* **`DOC-512`** (medium, `milestone: 1.0.0`, *Gate 6*) — the stale Catalog-Search screenshot, above.
+* **`DOC-513`** (low, *parallel surfaces with drift*) — two of the ten api-reference pages use a different
+  endpoint-table shape and drop the **Operation ID** column, the field that joins a documented row to the
+  generated client method; `lineage.md` also abbreviates the spec's `{data_entity_group_id}` to `{id}`.
+* **`TST-065`** (high) — the dead API-probe rail, above; extended in the same pass with the corpus-scale
+  measurement that **855 run-log entries** still carry the unfilled `<captured values…>` template (the
+  corpus-scale version of this review's own M10, fixable once in `run-suite.sh` from the Playwright JSON).
+* **`DOC-506` extended, not duplicated** (LSN-009) — its `affected_files` gained `main-concepts.md`, whose
+  "Terms & Aliases" table is the manual's canonical alias register and carries **no** row for the
+  lineage-neighbour vocabulary, plus a proposed two-row table and a matching acceptance criterion.
+* **`DOC-452` re-confirmed, not re-filed.**
+
+**Queued for the next `/review`:** `integrations/collectors/{odd-collector, odd-collector-aws,
+odd-collector-profiler}`, `integrations/push-adapters/{odd-cli, odd-great-expectations}`,
+`developer-guides/api-reference/{directory, integrations, lineage, query-examples, relationships}` as *content*
+(paths verified this run, prose not), the ADR-log **content** (structure only this run),
+`active-platform-features/{activity-feed, data-collaboration}` as full reads, and the rest of
+`configuration-and-deployment/**` (`deployment.md`, `trylocally.md`, the EKS page,
+`collectors-secrets-backend.md`, and `enable-security/**` beyond its README). I am not carrying any of these
+forward as "done", because they are not.
+
+### Verdict
+
+**ACCEPTED — GATE-2-ready. `status: review-ready` is retained**, per the `review-ctrib048` / `review-ctrib051`
+precedent: with the PR still an unmerged draft, the human GATE-2 merge is what moves the item to
+`pending-release`, and `/review release:1.0.0` owns the flip to `done`. The bot cannot merge its own PR (G-C4),
+and `mergeable_state: blocked` on #1871 confirms the branch protection is doing its job.
+
+Every acceptance criterion and every applicable Quality Bar gate passes with cited, first-hand evidence; Gate 5
+is N/A and Gate 8 is PENDING-RELEASE with its verification list recorded. The unit build, the changed-lines
+coverage gate, the four-suite regression, the i18n parity and the doc-train checks were all re-measured on this
+session's own artefacts rather than accepted from the ledger, and each reproduced.
+
+Three things are **owed but not blocking**, listed above: the PR body's stale `~1-in-3` in the sentence that
+poses the merge decision, the silently-dropped M9, and `DOC-512`. The first is one word in the public artefact
+the GATE-2 call turns on and is worth fixing before the merge; the other two are tracked.
+
+What ships with this slice is a known, measured, disclosed and owned intermittent — now **one red in seven**
+whole-suite runs on my own independent sample — with the merge-or-hold call left to the human, in plain
+language, in the PR. That is a legitimate state to hand to GATE 2.

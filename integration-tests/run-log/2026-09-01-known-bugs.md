@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **3 failed — EXPECTED; RED is this suite's pass condition.** IT-004, IT-006, IT-007. Zero unexpected GREENs, so no un-flipped fix is hiding here.
 
+## 2026-09-01 — suite/protocol: known-bugs
+- runner: (fill: AI-assisted <model> | human <name>)
+- odd-platform working-tree HEAD: 5b20c3da in ../odd-platform-ctrib062 (the SUT source, passed via ODD_PLATFORM_DIR; the `c54b9c61` the harness prints is the SHARED ../odd-platform checkout, NOT the SUT source -- LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib0623  (image odd-platform:odd-team-sut-revctrib0623, digest sha256:82983e32b125d8752ee72a10539a8a397b538e7d2ae79a42489432fd54deb26a)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **/review CTRIB-062 third pass (review-ctrib062-3).** **3 tests, 3 failed -- EXPECTED.** Exactly the three registered pins and nothing else: IT-007 `attachment-local-durability.spec.ts:35`, IT-006 `error-boundary-containment.spec.ts:29`, IT-004 `quality-dashboard-unknown-status.spec.ts:33`. **Zero unexpected GREENs**, so no flip-on-fix is owed. A RED here is the suite working as designed (the quarantine lane).
+

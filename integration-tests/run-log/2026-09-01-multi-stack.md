@@ -48,3 +48,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **SAMPLE 3 of Phase G, after fixing :477 — 14 passed / 0 failed (9.4m).** The locale arm now selects both scopes in the URL so the labels render as chips (always in the DOM) and the depth label renders; green in 7.6s. `:259` PASSED a third time. Running C0 tally across three sessions and SIX whole-suite runs: green/red/green/green/green/green — ONE RED IN SIX, cause still unknown.
 
+## 2026-09-01 — suite/protocol: multi-stack
+- runner: (fill: AI-assisted <model> | human <name>)
+- odd-platform working-tree HEAD: 5b20c3da in ../odd-platform-ctrib062 (the SUT source, passed via ODD_PLATFORM_DIR; the `c54b9c61` the harness prints is the SHARED ../odd-platform checkout, NOT the SUT source -- LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib0623  (image odd-platform:odd-team-sut-revctrib0623, digest sha256:82983e32b125d8752ee72a10539a8a397b538e7d2ae79a42489432fd54deb26a)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **/review CTRIB-062 third pass (review-ctrib062-3) — the reviewer's OWN confirmation run.** **14 passed / 0 failed (10.8m) -- GREEN, whole suite, one process, in suite order.** All five IT-153 cases passed, including the C0 case (the R2 pass-through-regression test, formerly `:259`, now `:388` after Phase G's failure-time instrumentation grew the file) and `:477`, the S7 locale arm that failed twice during Phase G. **This is the SEVENTH whole-suite multi-stack sample of C0 across four sessions: green / red / green / green / green / green / GREEN -- one red in SEVEN**, an independent sample better than the 'once in six' PR #1871 discloses. The single red remains unexplained and TST-064 owns it; this run does not close it, it lowers the estimate again and adds a fourth consecutive pass of the case.
+

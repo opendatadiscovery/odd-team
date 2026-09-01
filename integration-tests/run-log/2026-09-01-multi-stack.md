@@ -68,3 +68,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-09-01 — suite/protocol: multi-stack
+- runner: AI-assisted (Claude Opus 5, session review-ctrib060 — the /review confirmation run)
+- odd-platform working-tree HEAD: 6281a9df in ../odd-platform-ctrib060 (the REVIEWED SHA; the `b5d9f150` the harness prints is the SHARED ../odd-platform checkout, not the SUT source — LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib060  (image odd-platform:odd-team-sut-revctrib060, digest sha256:a154cc2b8a2aa5fd157c218b170292803fd2dd9efba81533fadf3159d3cf5b26)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **14 passed / 0 failed** (11.4m). Includes IT-153 `my-data-scope-narrows` - CTRIB-062's TST-064 flake did not fire on this sample.
+

@@ -58,3 +58,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-09-01 — suite/protocol: ingestion-e2e
+- runner: AI-assisted (Claude Opus 5, session review-ctrib060 — the /review confirmation run)
+- odd-platform working-tree HEAD: 6281a9df in ../odd-platform-ctrib060 (the REVIEWED SHA; the `b5d9f150` the harness prints is the SHARED ../odd-platform checkout, not the SUT source — LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib060  (image odd-platform:odd-team-sut-revctrib060, digest sha256:a154cc2b8a2aa5fd157c218b170292803fd2dd9efba81533fadf3159d3cf5b26)
+- protocols: IT-128 IT-145
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **15 passed / 0 failed** (5.7m). IT-128 + IT-145 both green; real source -> collector -> platform stands.
+

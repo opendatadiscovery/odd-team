@@ -4,7 +4,13 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: pr-draft   # all five DoD gates RUN at 6281a9df (rebased onto b5d9f150/ST-8). DRAFT PR #1873. -> /review (separate session) -> GATE 2.
+status: blocked    # /review (review-ctrib060, SEPARATE session) 2026-09-01 REJECTED: Gate 8 FAIL (the doc is
+                   # not on the train -- unpushed, and cut from a base the train has moved past, with a conflict
+                   # that would reinstate a correction e8fa107 already landed) + Gate 6 FAIL (the capability is
+                   # documented on ONE page; the sibling slice's own standard is a six-page sweep). The CODE is
+                   # verified: unit 810/1 non-attributable, four-suite regression on a SUT built from 6281a9df with
+                   # ZERO unattributed failures, and every operator driven on a running build. One rework pass ->
+                   # /review again -> GATE 2. See '## Review (2026-09-01, session: review-ctrib060)'.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1840 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-6 of #1825"
@@ -549,3 +555,439 @@ posture short-circuits my-objects to an empty page).
 **In the same message the maintainer corrected a false claim in the prior revision** (the 1.0.0 doc train does exist). Correction recorded under `### Docs`; DOC-501 deleted; DOC-497 amended.
 
 `plan_approved_by: RamanDamayeu` · `plan_approved_at: 2026-08-30`. Scope comment posted to the thread before any code (G-C5).
+
+## Review (2026-09-01, session: review-ctrib060)
+
+- **Result**: **REJECTED** — `pr-draft` → **`blocked`**. The **code is right and I re-derived it end to end**; what is
+  missing is the documentation half of the Definition of Done. Two gates fail, both on the doc side, both
+  mechanical: the manual's operator-facing capability was documented on **one** page when the immediately
+  preceding slice's own precedent is a **six-page sweep**, and the doc commit is **not on the train** — it is
+  unpushed and cut from a base the train has since moved past, with a live conflict that would put back a
+  sentence CTRIB-062 deliberately removed.
+- **Session boundary**: fresh session; `/implement` was the prior ctrib060 session (odd-team `7f90a7bb`, 19:30).
+  Self-review gate satisfied.
+- **Cheap precondition (the 2-minute bounce)**: NOT triggered. The DoD records all five gates as RUN at the
+  committed SHA with no "NOT RUN"/deferred admission. The runs below are the *confirmation* of gates implement
+  already passed, not their first execution.
+
+### Reviewed subject (verified, not assumed)
+
+| fact | value | how verified |
+|---|---|---|
+| worktree | `../odd-platform-ctrib060` @ `6281a9df`, **clean**, exactly 1 commit ahead of `origin/main` `b5d9f150` (ST-8 #1871) | `git status` + `git log` |
+| diff | 16 files, **+572/−56**; both test files are pure appends (`137/0`, `145/0`) — **no test was changed**, so G-C15's dangerous zone does not fire | `git show --numstat` |
+| PR #1873 | head SHA == `6281a9df`, `draft: true`, author `odd-contributor[bot]`, base `main` `b5d9f150`, 16 files +572/−56, `mergeable_state: clean` | GitHub PR API |
+| upstream CI at that SHA | **6/6 SUCCESS** — `run_tests`, `Test Results`, `run_playwright_tests/{test,lint,format-check}`, `update_release_draft` | GitHub check-runs API |
+| milestone (G-C11) | issue **#1840** OPEN with the **OPEN** milestone `1.0.0` | GitHub issues API |
+| scope comment (G-C5) | posted **before** the code commit — [issuecomment-5471090867](https://github.com/opendatadiscovery/odd-platform/issues/1840#issuecomment-5471090867), 2026-08-30 20:31Z; the commit is 23:39 | GitHub comments API |
+
+### What I measured myself, rather than read
+
+The central risk in this change is that its correctness lives in generated SQL, so I did not take the ledger's
+Postgres numbers on trust — I re-derived them from the **compiled artefact**.
+
+1. **An independent tokenizer harness.** I put `odd-platform-api/build/classes/java/main` + jOOQ 3.18.4 on a
+   classpath and called the real `JooqFTSHelper.tsQueryExpression(...)` over a **48-case** grammar table, then
+   evaluated **every generated expression** on a throwaway `postgres:13.2-alpine` beside
+   `websearch_to_tsquery` on the same input. Every row matches websearch **modulo the two deliberate
+   divergences** (bare terms keep their prefix; a branch with no positive term collapses). Including the
+   non-obvious ones: `my-table` / `e-mail` / `2024-01-01` / `foo--bar` / `trailing dash -` take the untouched
+   plain path; `oracle` / `ORdering` / `sales_or_ops` do not trigger OR; `"customer or orders"` stays one
+   phrase; `-"foo bar"` negates a phrase; `"unbalanced` runs to end-of-input; `-my-table` produces exactly
+   websearch's `!( 'my-tabl' & 'tabl' )`; `?` and `{0}` in user text reach `to_tsquery` as data, not as jOOQ
+   template markers.
+2. **The algebra the design rests on.** `''::tsquery && X == X` and `''::tsquery || X == X` (the empty tsquery
+   really is the identity, so dropping a branch is safe); `querytree(!'test') = 'T'`;
+   **`querytree('cust':* || !'test') = 'T'` too** — which is the whole reason the guard has to be per-branch.
+3. **The index-searchability claim, with the EXPLAIN the plan-check recorded as uncovered.** On a 40 000-row
+   GIN-indexed table (`postgres:13.2-alpine`, ANALYZEd):
+   - unguarded `-testfixture` → **`Seq Scan`**, 20 000 rows — the hazard is real;
+   - guarded `-testfixture` → **`Bitmap Index Scan on sv_gin`**, `Index Cond` = the whole `CASE` expression,
+     **0 rows** — the guard neutralises the scan *and* the composed expression is still pushed into the index
+     qual rather than degraded to a filter;
+   - guarded `customer` AND `-testfixture` → **`Bitmap Index Scan`**;
+   - `customer or -absentword`: **per-branch guard → 20 000 rows**, **whole-expression guard → 0 rows.**
+     Plan-check Blocker 1's fix is necessary, not decorative. **R6 is fully verified, both halves.**
+4. **`ts_headline` on the composed shapes** (the one path with no test coverage): phrase → both words marked;
+   negation → only the kept term marked; `or` → the matching branch marked; empty tsquery → the head of the
+   text, no error. So R7's highlight half is **functionally correct** — see the fix-list for the missing test.
+5. **The consumer census.** Exactly **7 repository classes / 26 `ftsCondition`+`ftsRankField` call sites**
+   (`grep` over `repository/reactive/*.java`), plus `getHighlightedResult`'s direct `tsQueryExpression`. The
+   navigation pointer's figure is exact. `grep` for `to_tsquery|plainto_tsquery|phraseto_tsquery|websearch_`
+   over `src/main` returns only `JooqFTSHelper` — no second dialect anywhere.
+6. **The patch-coverage disclosure.** `odd-platform-api/build.gradle:181-188` `jacocoExcludes` really does
+   carry `'**/repository/**'`, and `.github/workflows/run-pr-tests.yaml:85` really is
+   `min-coverage-changed-files: 98`. Both changed production files live under `repository/`, so the gate is
+   genuinely **inert** here. The ledger's refusal to report "100 %" is the honest call.
+7. **i18n.** All seven locale catalogues carry **689** keys each — exact parity — and the repo's own
+   `src/locales/__tests__/i18n-key-parity.test.ts` guard ran green in CI at this SHA.
+8. **PLT-262's premise**, spot-checked: `JooqFTSHelper.java:158-162` does drop `ENTITY_CLASSES` when
+   `state.isMyObjects()`, with no comment defending it. The filed issue is accurate.
+
+### Unit bucket — my own full CI-replica run at the reviewed SHA
+
+`ODD_PLATFORM_DIR=../odd-platform-ctrib060 scripts/run-platform-tests.sh` (the no-arg `build` lifecycle:
+`test` + `checkstyleMain` + `checkstyleTest` + `assemble`), 27m47s:
+
+**810 tests completed, 1 failed** across 181 test classes — 0 errors, 0 skipped; both checkstyle tasks passed.
+**Byte-identical to the implementer's ledger.** (Parsed from that run's JUnit XML — every `<failure>`/`<error>`
+across all 181 classes enumerated, exactly one — and cross-checked against gradle's own console tally. The
+XML directory was subsequently overwritten by the targeted A/B run below, which is why the numbers are
+quoted rather than re-derivable from the tree now; the console tally survives in the run log.)
+
+The single failure is `OpenApiDocsContractTest.platformApiGroupDocumentLoads()` —
+`IllegalStateException: Timeout on blocking read for 60000000000 NANOSECONDS`. My own same-conditions A/B, same
+SHA, quiet box: the class **alone** → `BUILD SUCCESSFUL in 4m18s`, with
+`Init duration for springdoc-openapi is: 23398 ms` — a 23.4-second idle init against a 60-second bound, which a
+loaded full build pushes over. Upstream CI's `run_tests` (the same `odd-platform-api:build`) is **GREEN** on
+this exact SHA. **Non-attributable, independently reproduced; TST-061's diagnosis corroborated.**
+
+### Acceptance criteria — the `must_haves` truths, one by one
+
+- [x] **R1 quoted phrase** — PASS. `"customer orders"` compiles to `'custom' <-> 'order'`, identical to
+  `websearch_to_tsquery` (my measurement); behaviourally pinned by
+  `searchAssets_quotedPhrase_matchesOnlyAdjacentWords`, RED on `main` (2 rows, quotes dropped).
+- [x] **R2 negation EXCLUDES instead of requiring** — PASS. `customer -test` → `!'test' & 'custom':*`
+  (AND is commutative, so the leaf order is immaterial). The RED-on-base proof is the strongest kind
+  available: on `main` the query returns *the very asset it was asked to exclude*.
+- [x] **R3 `or`** — PASS. `'custom':* | 'order':*`; RED on `main` (`[]`, the branches were ANDed).
+- [x] **R4 plain-term parity** — PASS, and **structural rather than test-dependent**: an operator-free query
+  takes the identical single `to_tsquery(tsQuery(q))` call. `tsQueryExpression("customer orders")` renders
+  exactly `to_tsquery('customer:*&orders:*')`, and all 13 pre-existing `tsQuery` parity pins are untouched.
+- [x] **R4b prefix survives inside an operator query** — PASS. `cust -test` → `!'test' && to_tsquery('cust:*')`;
+  the bare terms go through the *same* sanitiser call the plain path uses. The published `search.md`
+  prefix promise stays true — which is the entire reason the issue's named mechanism was replaced.
+- [x] **R5 fail-closed** — PASS **for the scope this item owns**. 20 operator-shaped payloads at service level +
+  10 through both UI query paths (IT-003), all returning a page. I re-ran the whole poison set through the real
+  compiled builder onto real Postgres: no leaf can raise. **But see PLT-263** — a *pre-existing* input class
+  (tab / newline) still reaches `to_tsquery` unsplit and 500s. Not a regression; logged, not folded.
+- [x] **R6 no positive term → empty page, no sequential scan** — PASS, and now with the EXPLAIN evidence the
+  plan-check recorded as missing (measurement 3 above). Also proved by mutation in the item: disabling the
+  guard REDs both guard tests.
+- [ ] **R7 list / total / facet counts / ranking / highlights all agree** — **PARTIAL.** The *truth* holds and I
+  verified it: one sink means the list predicate, the count predicate, the rank field and `ts_headline` are
+  built from the same expression, and I drove `ts_headline` through every composed shape by hand. What is
+  missing is the **covering artifact the plan promised**: "one browser assertion that an operator query narrows
+  the rendered result list **and** the count badge agrees with the listed rows — extend the existing
+  catalog-search IT". `integration-tests/e2e/specs/catalog-search.spec.ts` is **untouched** by this slice, and
+  no test anywhere drives an operator query through the facet-count or highlight paths. Same shape as
+  plan-check Blocker 5, which was fixed for R6 and not for R7.
+
+### Quality Bar
+
+- **Gate 1 — No duplicates: PASS.** `JooqFTSHelper` is the only FTS builder in the tree (grep above), and the
+  change *reuses* it rather than adding a second dialect. On the FE, `TooltipBody` was **moved** out of
+  `Activity.styles.ts` next to `AppTooltip` and **re-exported**, so the existing call sites are unchanged and
+  `SearchSyntaxHint` is its second consumer, not a copy — exactly the reuse posture LSN-035 asks for.
+- **Gate 2 — Aliases: N/A.** No new alias or synonym is introduced; "quoted phrase" / "exclusion" / "operator"
+  are ordinary English in the operator's voice, not platform vocabulary needing a `main-concepts.md` row.
+- **Gate 3 — Caveats captured: PASS.** The metacharacter caveat is an admonition (`{% hint style="info" %}`),
+  correctly *amended* rather than duplicated, and it now tells the reader what `"` and `-` did **before**
+  (silently ignored, with `-word` read as *required*). The no-positive-term surprise is called out in the
+  section's own "details worth knowing" list. One gap is on the fix-list (the per-OR-branch drop).
+- **Gate 4 — Consumer-read: PASS.** Every runtime claim traced to enforcing code: the 7-class/26-site census;
+  `getQuerySuggestions` (`:480`) and the facet-count paths (`ReactiveSearchFacetRepositoryImpl:120,148,185,270,472,662`)
+  do go through the sink, so the doc's "the same syntax applies to the Dictionary search, query examples,
+  lookup tables and the suggestions dropdown" is true; `jacocoExcludes`; `min-coverage-changed-files`;
+  the 689-key locale parity; the springdoc timing.
+- **Gate 5 — Unset-parameter audit: N/A** (no SDK builder in scope).
+- **Gate 6 — Bidirectional code ↔ doc: FAIL.** Forward direction is fine — every claim on `search.md` is true
+  (I re-derived each one). The **reverse** direction is where it fails: a user-visible capability shipped with
+  coverage on **one** page. The immediately-preceding search slice set the standard one commit earlier —
+  CTRIB-062's `e8fa107`, subject *"the sidebar has three kinds of filter, not seven facets — **swept to zero
+  residue**"*, touched `Architecture.md` · `Features.md` · `data-discovery.md` · `directory.md` · `search.md` ·
+  `vector-stores.md`. This slice touched `search.md` only, and three summary surfaces still describe search as
+  plain free text:
+  * `docs/Features.md:58-62` — "type a term, narrow by seven aggregated facets … See the dedicated page for all
+    three kinds of filter, the per-result icons, and the indexing / ranking technical detail."
+  * `docs/data-discovery.md` (pillar landing, Search bullet) — "**Free-text search across entity names**, seven
+    aggregated facets …, and the My data scope." (CTRIB-062 updated this bullet for *its* capability.)
+  * `docs/Architecture.md:42` — "**Search.** Free-text across one ranked cross-kind list, narrowed by seven
+    aggregated facets …"
+  Plus a **published** developer page this change makes wrong:
+  `docs/developer-guides/architecture-decision-log/ADR-0071-postgres-only-runtime-dependency.md` — `:30` "matched
+  with the `@@ to_tsquery(...)` operator" and `:47` "`JooqFTSHelper.java:103` … matched with `? @@ to_tsquery(?)`".
+  The `? @@ to_tsquery(?)` literal is **deleted** by this diff (`ftsCondition` is now
+  `DSL.condition("{0} @@ {1}", …)` over a composed expression), and the `:103` anchor was already stale.
+  Finally, the new `(i)` inline-help affordance now ships on the Catalog Overview's own search bar and
+  `catalog-overview.md` § "Main search" does not mention it.
+- **Gate 7 — Layout and completeness: PASS.** No `SUMMARY.md` change is needed (no new page); the new
+  `## Query syntax` H2 sits before `## Faceted search`, which is the right reading order (you type first, then
+  filter); both new anchors resolve against real headings.
+- **Gate 8 — Publishing: FAIL** (release-gated item, milestone `1.0.0`). The train exists —
+  `origin/release/1.0.0` @ `9594f96` — but **no train commit carries this change**:
+  * `git ls-remote --heads origin` on `documentation` returns exactly four refs —
+    `contrib/CTRIB-024-docs-runs-history`, `fix/regate-0.29.0-docs-off-main`, `main`, `release/1.0.0` — and
+    **none of them is `docs/CTRIB-060-*`**; `git branch -a --contains 693a31e` names only the local worktree
+    branch, with no `remotes/` entry. The doc lives on a **local, unpushed** branch, so no train PR can exist
+    for it (the `documentation` PR API is not readable unauthenticated, but a PR cannot exist without the
+    ref). DOC-502's own
+    routing says it is "to be merged into the train the way DOC-495 was (PR #109)" — with nothing pushed, there
+    is no PR to make, and the content is reachable only from this machine.
+  * The branch is cut from `release/1.0.0` @ `5b2bb04`; the train has since advanced to `9594f96`.
+    `git merge-tree 5b2bb04 origin/release/1.0.0 <branch>` returns **exactly one conflict** — the
+    `description:` frontmatter — and this slice's side reads *"…plus seven faceted filters"*, the phrasing
+    CTRIB-062's `e8fa107` explicitly swept. Resolved carelessly, the merge **reinstates a sentence the train
+    already corrected**. (The rest merges cleanly; the retired "Result-class tabs" section is *not* resurrected.)
+  * The branch-verifiable sub-checks all **PASS** against `693a31e`: PyYAML parses the frontmatter;
+    `description` is **172** chars (under GitBook's 200-char meta cap); no `: ` YAML hazard; 15 tree-relative
+    links; the one outbound URL (`FTSConstants.java` on GitHub) returns **200**.
+  * Live verification is owed at the 1.0.0 gate. The page as published today
+    (`https://docs.opendatadiscovery.org/features/data-discovery/search`, 200) still carries the 0.29.0
+    description, as expected for a release-gated change.
+- **Gate 9 — Factual claim provenance: PASS.** The contributor pillar uses no `Sources:` footer (the posture
+  accepted at `/review CTRIB-059` and `/review CTRIB-062`); provenance is inline in the commit body and the
+  ledger, and I re-derived every load-bearing claim rather than trusting it (the eight measurements above).
+  Two accuracy slips in the *record* (not the code) are on the fix-list: the ledger still says "the **ten**
+  consumers" in two places after correcting the figure to 7 classes / 26 sites elsewhere in the same file, and
+  both the ledger and the commit body state "Milestone: 1.0.0" for PR #1873 — the PR carries **no** milestone
+  (nor do #1871 / #1862 / #1864; the milestone lives on the issue, which is correct).
+- **Gate 10 — Content-type homing: PASS.** Operator-facing syntax on `data-discovery/search.md`; the wire
+  contract as a `description` on `SearchFormData.query` in `components.yaml` (Swagger is the API-reference
+  surface, and there is no `api-reference/search.md` page to compete with it). Nothing API-reference-shaped
+  embedded in a feature page.
+- **Gate 11 — Audience isolation: PASS.** Mechanical grep over every `+` line of the doc diff for
+  `Cornerstone N` / `Gate N` / `LSN-` / `SHB-` / `DOC-` / `IT-` / `TST-` / `PLT-` / `CTRIB-` / `ST-N` /
+  `#18xx` / `feature-flow` / `Quality Bar` / `sidecar` / `playbook` / `retrospective` / `backlog` / `scanner` /
+  `lineage/` — and for the implementation names `websearch_to_tsquery` / `JooqFTSHelper` → **zero hits**. The
+  operator prose names no workspace-internal artefact and no Java class.
+
+### The live drive — the feature as a user meets it, on the reviewed build
+
+Per `feedback_user_facing_impact_mandatory` I did not stop at the suites. I brought up a stack from the
+**reviewed SUT image**, seeded six entities through the **real ingestion API**, and drove the queries:
+
+| I typed | HTTP | total | what came back |
+|---|---|---|---|
+| `revcust` | 200 | 6 | all six |
+| `revcust "customer orders"` | 200 | **1** | only `revcust customer orders daily` — the adjacent one (**R1**) |
+| `revcust customer -test` | 200 | **4** | `revcust customer test table` **excluded** (**R2** — the pre-ST-6 build returns exactly the opposite row) |
+| `revcust customer or revcust orders` | 200 | 5 | either branch (**R3**) |
+| `revcus -test` | 200 | **5** | `revcus` **still prefix-matches** inside an operator query (**R4b** — `websearch_to_tsquery` would return 0 here) |
+| `-revcust` | 200 | **0** | an empty page, not a scan and not a 500 (**R6**) |
+| `revcust or -absentword` | 200 | 6 | the indexable branch answers; the non-indexable one is dropped (the per-branch guard) |
+
+**And the UI, as pixels rather than as a green test.** On the home hero at 1280×800: the `(i)` sits beside the
+box, the box keeps its width (616 px), and hovering renders the hint as a **padded, bordered, shadowed card**,
+364×160 px, right edge at **950 px against a 1280 px viewport — no overflow**. The LSN-035 unstyled-row failure
+is avoided, and the overflow I suspected from the implementer's cropped screenshot is **not** real — that was
+the crop, not the layout.
+
+**The one thing that does NOT return a page** is the finding below: a **tab or newline** between two words.
+Measured on this same stack — `{"query":"revcust\tcustomer"}` returns **HTTP 500 `SYS001`** on
+`/api/search/assets` **and** on the legacy `/api/search`, with
+`PostgresqlBadGrammarException: [42601] syntax error in tsquery: "revcust<TAB>customer:*"` in the log; the raw
+tab is then **persisted** in `search_facets.query_string`, and `GET /api/search/{uuid}`, `/results` and
+`/facet/OWNERS` each return **500 on every later read**. That is the #1756 sticky-500 the manual says was fixed
+in 0.28.0. It is **pre-existing**, and ST-6 makes it inconsistent rather than worse:
+`{"query":"revcust\tcustomer \"customer orders\""}` returns **200**, because the operator tokenizer
+normalises whitespace and the plain path does not. Filed as **PLT-263**, `user_facing_verified: true`.
+
+### The fix-list — one rework pass, not a queue of tickets
+
+Per the review rule on not over-logging: this item is going back anyway, so everything the rework will touch is
+folded here rather than spawned as separate items. Only the one genuinely-separable upstream discovery gets its
+own artefact.
+
+**BLOCKERS**
+
+- **B1 — Put the doc on the train, from the train's current head.** Rebase
+  `documentation@docs/CTRIB-060-search-query-operators` onto `origin/release/1.0.0` @ `9594f96`. Resolve the one
+  `description:` conflict by **keeping the train's** framing ("seven aggregated facets, kind and class filters,
+  and the My data scope") and weaving the operators into it — do **not** take this branch's side, which reads
+  "plus seven faceted filters" and would undo `e8fa107`. Re-check ≤200 chars + PyYAML after the merge. Then
+  **push it** and open the train PR (the way DOC-495 went in as PR #109). Until it is pushed, the 1.0.0 release
+  gate has nothing to publish.
+- **B2 — Sweep the capability to zero residue**, the way `e8fa107` did for the filter framing, on the same
+  rebased branch: `docs/Features.md` § Search and Filtering, `docs/data-discovery.md`'s Search bullet, and
+  `docs/Architecture.md:42` each still describe the box as plain free text.
+- **B3 — Correct ADR-0071.** `:30` and `:47` assert `@@ to_tsquery(...)` / `? @@ to_tsquery(?)` as the match
+  expression; this change deletes that literal. Restate it for the composed expression and refresh the stale
+  `JooqFTSHelper.java:103` anchor. Same train branch (the claim only becomes wrong when 1.0.0 ships).
+
+**FOLD INTO THE SAME PASS**
+
+- **F1 — R7's covering artifact.** Author the browser assertion the plan promised: an operator query narrows
+  the rendered result list *and* the count badge agrees with the rows listed (extend
+  `integration-tests/e2e/specs/catalog-search.spec.ts`). Cheaper alternative if you prefer: one
+  `AssetSearchServiceIntegrationTest` case asserting an operator query's DE facet count equals the DE rows
+  returned, plus one `getHighlightedResult` case with a phrase/negation query. I verified both paths correct by
+  hand — this is coverage, not a defect — but the must_have currently has no artifact behind it.
+- **F2 — Two comments the change made imprecise.**
+  `ReactiveAssetSearchRepositoryImpl:270-272` ("a metacharacter query is stripped to word tokens by the shared
+  injection-safe helper **before it reaches to_tsquery**") no longer describes the phrase/negation leaves; and
+  `ReactiveDataEntityHighlightInjectionTest`'s javadoc still says the query is "operator-**stripped** upstream
+  by `JooqFTSHelper.tsQuery` (#1788)".
+- **F3 — Fill the run-logs.** All four `integration-tests/run-log/2026-09-01-*.md` entries were committed with
+  the template placeholders intact (`runner: (fill: …)`, `evidence/notes: <captured values …>`), so the shared
+  artefact does not record the 328/12 the ledger claims. The run-log is what the next session reads.
+- **F4 — Ledger accuracy.** "the **ten** consumers are enumerated `file:line`" (Ambiguity table) and "all
+  **ten** consumers inherit the behaviour" (Design (d)) survive from before the correction to 7 classes /
+  26 call sites. And drop "Milestone: 1.0.0" from the PR description of #1873 — the PR has none, and none of
+  its siblings do either. And `integration-tests/protocols/IT-003-search-tsquery-poisoning.md`'s
+  `expected_result` now reads "GREEN as of CTRIB-016 / #1756 (metacharacters) **and CTRIB-060 / #1840
+  (operator shapes)** (ships **0.28.0**)" — the version parenthetical was true of #1756 and is wrong for
+  #1840, which ships in **1.0.0**.
+- **F4b — one `must_haves` anchor does not resolve.** I ran the contract's own check mechanically:
+  `grep -c "$anchor" "$path"` over all seven `must_haves.artifacts` rows returns 2 / 1 / **0** / 1 / 8 /
+  11 / 2. The zero is `JooqFTSHelperTest.java` declared with `anchor: "usesQueryOperators"` — that
+  identifier exists nowhere in the file; the real names are `operatorDetection` /
+  `operatorDetectionMatchesPostgresGrammar` (the string `usesOperators` appears only inside the
+  `@ParameterizedTest(name = …)` template). A falsifiable contract that cannot be mechanically checked
+  is the one thing G-C19 exists to prevent; point the anchor at a real symbol.
+- **F4c — the sidecar's commit label is one base behind.** The `JooqFTSHelper` sidecar records
+  `extracted_at_commit`/`enriched_at_commit: 82e7e70e` (the pre-rebase base), while the reviewed commit is
+  `6281a9df`. Its **content is fine** — I resolved its citations at the reviewed SHA and `:122`, `:174`,
+  `:215` and `:274-285` all land exactly where it says, and `JooqFTSHelper.java` is byte-identical
+  between `a256a9a1` and `6281a9df` — so this is a label a future reader would misread as staleness.
+- **F5 — Two doc gaps inside the section you are already editing.** (a) The section opens with "The same
+  syntax applies **everywhere search does**", but the same page's "Where else search appears" lists the
+  Management sub-tabs, whose list-level filters do **not** run through the FTS sink (nor does the
+  Relationships list search, which `data-modelling/relationships.md:90` documents as a case-insensitive
+  substring match) — narrow the claim to the surfaces you enumerate. (b) The page documents the whole-query
+  no-positive-term case but not the **per-branch** one: `customer or -test` silently returns only the
+  `customer` matches (measured — 20 000 vs 0 in my EXPLAIN run). One sentence closes it.
+- **F6 — `catalog-overview.md` § "Main search"** does not mention the `(i)` query-syntax hint that this slice
+  now ships on that very surface.
+- **F7 — one line, same branch, free while you are there.**
+  `docs/developer-guides/architecture-decision-log/ADR-0079-ingestion-authentication-filter-coverage.md`
+  carries a **240-character** `description:` — over GitBook's 200-char meta cap, so its live
+  `<meta name="description">` and `og:description` will be silently truncated mid-word. It is train-only
+  (publishes at 1.0.0), i.e. still fixable before anyone reads it. (Not its own item: nothing else in the
+  backlog covers it and you are editing that directory for B3 anyway.)
+
+**SEPARATE — logged, not folded**
+
+- **`issues/odd-platform/PLT-263-tab-newline-in-search-query-500s.md`** (severity high, `status: draft`). A tab
+  or newline in the query still reaches `to_tsquery` unsplit — `tsQuery()` strips only `[!&'()*:<>|\\]` and
+  splits on a *literal single space* — so `to_tsquery(E'foo\tbar:*')` raises `42601` → HTTP 500, and the legacy
+  path persists the query in the `search_facets` session row, reproducing the #1756 sticky-500 shape the manual
+  says was fixed in 0.28.0. Reachable through `POST /api/search` and through a shared `/search?q=foo%09bar`
+  link (the FE passes `q` through verbatim), and anonymously under `auth.type=DISABLED`. **Pre-existing — not a
+  regression from this change** — but this change makes it *inconsistent*: inside the new operator path the
+  tokenizer splits on `Character.isWhitespace`, so `foo<TAB>bar "x"` is safe while `foo<TAB>bar` still 500s.
+  It is a one-line fix (`split("\\s+")`) inside the very method this PR owns; fold it into the rework if you
+  want it closed in one change rather than two — that is a maintainer call, since it is outside the approved
+  plan.
+- **`backlog/docs/DOC-514`** (high, `status: pending`). Three links on the **published**
+  `developer-guides/build-and-run/custom-collectors.md` are written one directory too high, so GitBook
+  renders them as raw `github.com/.../blob/main/...` URLs — I curl'd all three and all three **404**. It is
+  released truth on docs `main`, a different page and a different branch from this rework, and nobody else is
+  about to touch it — hence its own item rather than the fix-list.
+
+### What I am NOT holding against this item
+
+Worth stating, so the rework does not over-correct:
+
+- **The mechanism substitution is right, and the reasoning is the best I have reviewed in this workspace.**
+  Replacing the issue's named `websearch_to_tsquery` with a compositional build was not a preference — it
+  preserves a promise the manual makes in print (`search.md`: "matches the remaining words **as prefixes**"),
+  and I confirmed the cost first-hand: under `websearch_to_tsquery`, `cust` stops matching "Customers", so
+  refining `cust` to `cust -test` would return nothing. The divergence was surfaced at GATE 1 rather than
+  absorbed silently, and the public thread carries it.
+- **The sink, not the endpoint, is the right unit of change.** The facet counts run through the same helper;
+  operators on the list but not the count path would have reproduced the PLT-176 count-badge-contradicts-list
+  class. Widening the scope *reduced* the diff.
+- **The guard is proved by mutation, not by assertion**, and the OR assertion was hardened (a neighbour seeded
+  and asserted absent) after the ontology pass showed a presence-only assertion would pass with the guard
+  disabled. That is the standard this workspace asks for and rarely gets.
+- **The patch-coverage gate is reported as inert rather than as "100 %".** I checked; it is inert. Saying so is
+  the harder and correct call.
+- **The FE reuses the platform's inline-help pattern** (ADR-0076 `InformationIcon` + `AppTooltip`) and *moves*
+  the shared `TooltipBody` rather than copying it, with the string in all seven locales at exact key parity.
+  The screenshots in `contributor/evidence/` show the tooltip rendering as a padded, bordered card — the
+  LSN-035 unstyled-row failure avoided.
+- **The e2e attribution work was done honestly.** The overnight 20-failure run was not written up as
+  "environmental"; it was held as UNRESOLVED until a quiet-box A/B produced a `diff`-empty, test-name-identical
+  failing set against a pure-`main` SUT, and the two harness traps hit on the way (the LSN-033 shared-checkout
+  rebuild; `run-suite.sh` warning-but-proceeding on a digest mismatch) were self-caught and filed as TST-060.
+
+### Summary lines
+
+- **Outbound URL sweep**: on the changed doc page — 9 unique relative links, all resolving against the tree;
+  2 same-page anchors, both resolving against real headings; 1 external URL (`FTSConstants.java` on GitHub)
+  **200 via curl**. 0 broken. Tree-wide (the editorial audit, `origin/release/1.0.0`, 137 pages): 5 unresolvable
+  relative targets, of which 2 are markdown-escaped underscores (false positives) and **3 are real and live** —
+  filed as DOC-514 with the three GitHub-fallback URLs curl'd to 404.
+- **Banned-phrase check**: none used. Every verdict line above ends in a citation, a measured number, or an
+  explicit "not measured".
+- **Regressions**: **none attributable.** My own four-suite run on a SUT **I built** from the reviewed
+  commit (`ODD_SUT=ref:6281a9df`, throwaway worktree, image `sha256:a154cc2b`, independent of the
+  implementer's): `feature-complete` **328 passed / 12 failed** (33.4m) · `known-bugs` **3 RED — exactly
+  the three pins, zero unexpected GREENs** · `multi-stack` **14/0** · `ingestion-e2e` **15/0**. The 12 are
+  **fully attributed with zero residue**: TST-059's named eleven (`catalog-search` 48/62 ·
+  `entity-class-type-badge-list` 59/77 · `recently-viewed-record-see-loop` 117/213 · `search-url-state` 38 ·
+  `search-result-stale-signal` 62 · `search-result-row-click` 45 · `search-class-tab-filter` 149 ·
+  `popular-entities-ranking` 62) **plus** `swagger-openapi-discovery:63`, which TST-059 itself names as
+  TST-057's order-dependent cold-springdoc instance — the same springdoc slowness as my one unit failure.
+  Byte-identical to the implementer's 328/12 and to their pure-`main` A/B. `api:FAIL` is TST-058, the dead
+  `lineage/_extractor` rail (hatchling rejects `readme = "../README.md"`), reproduced verbatim.
+  **The unit build's own numbers are above.** I filled my four run-log entries by hand rather than leaving
+  the harness template — which is the same defect F3 raises against the implementer's.
+- **Navigation**: **consistent, and improved.** `navigation/domains/search.md` gains an accurate
+  `JooqFTSHelper` entry (I re-counted the "7 repository classes / 26 call sites" figure — it is exact),
+  a `ReactiveDataEntityRepositoryImpl` entry naming `getHighlightedResult` + `getQuerySuggestions`, and a
+  `MainSearchInput` / `SearchSyntaxHint` UI pointer. No pointer went stale.
+- **Upstream issues logged**: `issues/odd-platform/PLT-263-tab-newline-in-search-query-500s.md` (draft, high).
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: `docs/data-discovery/**` read end-to-end (all 17 pages); `docs/data-glossary/**`,
+    `docs/data-modelling/**`, `docs/master-data-management/**` and `docs/developer-guides/**` covered by a
+    targeted read of every surface whose search behaviour this change alters plus an FTS-claim sweep; plus a
+    **tree-wide mechanical sweep of all 137 pages** on `origin/release/1.0.0` for unresolvable relative links,
+    duplicate heading/anchor slugs, YAML-parse failures and >200-char descriptions. **Queued for the next
+    `/review`**: `docs/active-platform-features/**`, `docs/configuration-and-deployment/**`,
+    `docs/integrations/**`, `docs/data-lineage/**`, `docs/data-quality/**`, `docs/use-cases/**` and the root
+    pages, read end-to-end rather than swept.
+  - **Findings**:
+    - **DOC-510 re-derived, not re-filed** (critical, internal contradiction — security posture). My
+      duplicate-anchor sweep surfaced two `### Authentication` headings under one H2 on `odd-platform.md`;
+      reading both showed them contradicting each other on whether `auth.ingestion.filter.enabled` protects
+      the AlertManager webhook (`:641` says yes from 0.29.0 per ADR-0079; `:713`, a `danger` admonition, says
+      the flag "has no effect on this endpoint" and the fix has not shipped). I confirmed both are on the
+      **live** page and that `metrics-ingestion.md:76` carries a third copy — and only then grepped the
+      backlog and found **DOC-510** already owns it, filed by the previous `/review` from a completely
+      different entry path (`active-platform-features/**`) and covering **six** pages rather than my three.
+      Nothing new to add, so **no item was created** (LSN-009). Recording it because an independent
+      re-derivation from a different direction is convergent evidence that DOC-510's `critical` priority is
+      right. *(I drafted a DOC-515 before grepping, then deleted it — grep-the-backlog-first is the rule and
+      I ran it second.)*
+    - **DOC-514** (high, cross-link mismatch / LSN-004 GitHub-fallback shape) — three links on the published
+      `developer-guides/build-and-run/custom-collectors.md` are written one directory too high; GitBook
+      renders them as raw `github.com/.../blob/main/...` URLs that **all 404** (curl'd). Source:
+      `docs/developer-guides/build-and-run/custom-collectors.md:386,465,471`.
+    - Three findings that belong to this item's own rework rather than to a new ticket are on the fix-list
+      above instead of being logged separately (F5a "everywhere search does", F5b the per-OR-branch drop,
+      F6 the `(i)` affordance on `catalog-overview.md`), per the do-not-over-log rule — the implementer is
+      editing those exact files in the same pass.
+  - **Verified non-findings** (recorded so the next audit does not re-derive them): the three inbound links to
+    ambiguous anchors on `odd-platform.md` (`#authentication` ×2, `#known-limitations`) all resolve to their
+    *intended* section, because in each case the intended target is the first occurrence; the repeated
+    sub-headings on `deployment.md` / `trylocally.md` are parallel-structure siblings with no inbound bare-slug
+    links; `business-names.md`'s claim that search matches both the technical and the business name is true
+    (`FTSConstants` weights `DATA_ENTITY.INTERNAL_NAME` and `EXTERNAL_NAME` at 'A').
+
+### Notes
+
+- **The reviewer's own resource discipline.** The heavy-e2e flock was acquired by `run-regression.sh
+  revctrib060` and released on exit; the stack was torn down. `lineage/**` was **not** written — this review
+  ran no `/enrich` and no probe, and `git status --short lineage/` is empty. This review commits exactly the
+  verdict, `state/PROGRESS.md`, its own `state/active-streams.yaml` entry, and the three follow-up artefacts
+  (PLT-263, DOC-514, DOC-515).
+- **A process slip of mine, disclosed rather than hidden.** While reading train content I ran
+  `git checkout origin/release/1.0.0 -- .` in `../documentation`, which staged 25 files and added 3 in the
+  shared checkout. Fully reverted (`git reset HEAD -- .`, `git checkout -- .`, `git clean -f` on exactly those
+  three paths); the tree is verified clean at `0032ef3` on `contrib/CTRIB-026-docs-entity-detail-truncation`.
+  The correct read is `git show <ref>:<path>`, which is what the rest of the audit used.
+- **One environmental note for the next stream.** The first SUT build died with
+  `java.lang.OutOfMemoryError: Java heap space` in `:odd-platform-api:compileJava` ten minutes in, immediately
+  after the 28-minute full unit build — the same shape the ledger already records, and it left a **799 MB**
+  `java_pid2576983.hprof` in the odd-team root (`.gitignore:248` covers `*.hprof`, so it is untracked, but it
+  is still 799 MB on disk). The retry, on a box with the daemon gone, succeeded. Worth folding into TST-060's
+  "the flock guards regressions but not resource pressure" framing rather than a new item.
+- **On the verdict.** Everything that makes this change *work* is verified and, in several places, verified
+  more strictly than the item claims. What is missing is the half of the Definition of Done that the manual
+  depends on: the doc exists as one good page on a branch nobody can reach, cut from a base the train has
+  moved past, while three summary surfaces and one published ADR still describe the old behaviour. The
+  preceding slice's own commit — *"swept to zero residue"* — is the standard, and it is one rebase and four
+  small edits away.
+

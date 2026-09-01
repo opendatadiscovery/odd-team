@@ -38,3 +38,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
 
+## 2026-09-01 — suite/protocol: known-bugs
+- runner: AI-assisted (Claude Opus 5, session review-ctrib060 — the /review confirmation run)
+- odd-platform working-tree HEAD: 6281a9df in ../odd-platform-ctrib060 (the REVIEWED SHA; the `b5d9f150` the harness prints is the SHARED ../odd-platform checkout, not the SUT source — LSN-033)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib060  (image odd-platform:odd-team-sut-revctrib060, digest sha256:a154cc2b8a2aa5fd157c218b170292803fd2dd9efba81533fadf3159d3cf5b26)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **3 RED - exactly the three pins, zero unexpected GREENs.** IT-007 attachment-local-durability:35, IT-006 error-boundary-containment:29, IT-004 quality-dashboard-unknown-status:33. Expected state; no un-flipped fix.
+

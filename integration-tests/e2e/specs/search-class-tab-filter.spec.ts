@@ -2,25 +2,26 @@ import { test, expect } from '@playwright/test';
 import { seedSearchableEntity, dbQuery } from '../helpers/db';
 
 /**
- * IT-068 — F-148 Search Result Class-Tab Filter (the tab strip atop /search results).
+ * IT-068 — F-148: selecting a data-entity class narrows the /search result list.
  *
  * Protocol: integration-tests/protocols/IT-068-search-class-tab-filter.md
- * Gates: validates F-148 (UC-001 — clicking the Datasets tab narrows the result list to dataset-class
+ * Gates: validates F-148 (UC-001 — selecting the Datasets class narrows the result list to dataset-class
  *        entities); regresses PLT-147/#1755 (FIXED 2026-06-12: a null-details transformer used to NPE
  *        the results list AND the detail page; the former GREEN-while-broken pin is re-grounded to a
  *        regression lock asserting both surfaces work — LSN-029 flip, CTRIB-009).
  *
- * The 9-tab strip (All / My Objects / Datasets / Transformers / ...) is a distinct UX surface from the
- * 7-facet sidebar (SearchResultsTabs.tsx). A class tab carries the numeric backend class id as its value
- * (SearchResultsTabs.tsx:29-31 — `value: totals[DataEntityClassNameEnum.SET]?.id`); clicking it dispatches
- * a facet mutation on the `entityClasses` facet (Results.tsx:83-100) that flows through the F-017 backbone
- * (PUT /api/search/{id}/facets -> re-fetch). Verified live: applying entityClasses=[SET] to a session with
- * a dataset + a group (same term) returns ONLY the dataset.
+ * THE CONTROL THIS DRIVES HAS MOVED, and the file name has not. It was written against the nine-tab class
+ * strip atop /search (All / My Objects / Datasets / …), rendered by a `SearchResultsTabs.tsx` that no longer
+ * exists: ST-4 (#1838) moved class selection into the Filters sidebar's **Data entity type** control, and
+ * ST-8 (#1842) retired the last remaining tab and DELETED the component. Both claims below are unchanged in
+ * substance and strength — only step 1's control moved, from a `role=tab` to the sidebar option. The name
+ * `search-class-tab-filter` is kept deliberately: renaming the spec would break its suite registration in
+ * `suites.yaml` and orphan the PLT-147 lock from every suite, which is the exact defect LSN-033 records.
  *
- * GROUND TRUTH: the tab renders as a MUI Tab (role="tab") whose label is the literal "Datasets" string
- * (SearchResultsTabs.tsx:29 — no t() wrapping) plus a catalog-wide count hint. The class-id facet semantics
- * are read from SearchResultsTabs.tsx + Results.tsx and confirmed against the live PUT-facets round-trip.
- * react-query caveat: every search/facet results GET is awaited before asserting.
+ * GROUND TRUTH (re-read 2026-09-01): the class options render as `role=option` entries in the sidebar's
+ * Data-entity-type filter, carrying the numeric backend class id; selecting one writes the `entityClasses`
+ * URL param, which has driven the search since ST-4. The PLT-147 regression lock never touched a tab and is
+ * untouched by any of this.
  *
  * Class choice for the SUCCESS test: DATA_SET (class 1) vs DATA_ENTITY_GROUP (class 8). Both render cleanly
  * through DataEntityMapperImpl. The obvious second class — DATA_TRANSFORMER (class 2) — was originally
@@ -98,7 +99,7 @@ test.describe('F-148 Search Class-Tab Filter — narrows results by entity class
     ]);
   });
 
-  test('clicking the Datasets tab filters the results to dataset-class entities', async ({ page }) => {
+  test('selecting the Datasets class filters the results to dataset-class entities', async ({ page }) => {
     await seedSearchableEntity(DATASET_ID, DATASET_NAME); // DATA_SET class {1}, type TABLE
     await seedSearchableOfClass(GROUP_ID, GROUP_NAME, '{8}', 17); // DATA_ENTITY_GROUP class {8}, type DAG
 
@@ -108,10 +109,10 @@ test.describe('F-148 Search Class-Tab Filter — narrows results by entity class
     const datasetRow = page.getByTestId('search-result-item').filter({ hasText: DATASET_NAME });
     const groupRow = page.getByTestId('search-result-item').filter({ hasText: GROUP_NAME });
 
-    // ---- precondition: the All tab shows BOTH classes (poll the rendered rows; react-query retries a
+    // ---- precondition: the unfiltered list shows BOTH classes (poll the rendered rows; react-query retries a
     //      cold-session GET, so we wait for the UI to settle rather than racing a single response) ----
-    await expect(datasetRow, 'the dataset must appear under the All tab').toBeVisible({ timeout: 15_000 });
-    await expect(groupRow, 'the group must appear under the All tab').toBeVisible({ timeout: 15_000 });
+    await expect(datasetRow, 'the dataset must appear unfiltered, before any class is selected').toBeVisible({ timeout: 15_000 });
+    await expect(groupRow, 'the group must appear unfiltered, before any class is selected').toBeVisible({ timeout: 15_000 });
 
     // ---- act: apply the "Datasets" entity class (a facet write -> re-fetch) ----
     // RE-POINTED by ST-8 (#1842 / CTRIB-062): this clicked the "Datasets" CLASS TAB. ST-4 retired the seven
@@ -127,11 +128,11 @@ test.describe('F-148 Search Class-Tab Filter — narrows results by entity class
     //      latch onto a specific response, which is racy on a freshly-seeded cold session. ----
     await expect(
       groupRow,
-      'the group-class entity must be filtered OUT by the Datasets tab',
+      'the group-class entity must be filtered OUT by the Datasets class',
     ).toHaveCount(0, { timeout: 15_000 });
     await expect(
       datasetRow,
-      'the dataset-class entity must remain after the Datasets tab is applied',
+      'the dataset-class entity must remain after the Datasets class is applied',
     ).toBeVisible({ timeout: 15_000 });
   });
 

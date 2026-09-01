@@ -515,7 +515,7 @@ must_haves:
     - "An existing saved search or bookmark that used the old My-Objects filter still works unchanged, and a NEW saved search carrying a My-data scope reapplies with that scope intact (Spec R8, R1)"
     - "An owner of tens of thousands of assets still sees ALL of them under 'My Objects' - the owned set is never capped or truncated; only the lineage walk is bounded (Spec R2, R4)"
     - "'Clear All' clears the My-data scope and its depths along with the facets, while leaving the query and the sort alone (Spec R7b)"
-    - "At depth 3 over a cap-reaching scope on a 100k+ asset catalog the search still returns in under a second (Spec R4)"
+    - "At depth 3 over a cap-reaching scope on a 100k+ asset catalog, scoping costs no more than 1.5x an unscoped search of the same catalog, and at the default depth 1 it costs no more than an unscoped search (Spec R4). RE-SPECIFIED 2026-08-31 against the Phase-D measurement: the original wording read 'still returns in under a second', which the measurement MISSED (~1.62 s) and also showed to be mis-specified - an UNSCOPED search over the same 120k catalog is 1.17-1.25 s, so no search of any kind could meet it at that scale. Measured: 1.32x at the ceiling, 0.69x at the default. NB these are PER SCROLL PAGE - the resolver re-runs on every infinite-scroll page."
   artifacts:
     - path: "odd-platform-specification/components.yaml"
       provides: "the my_data + per-direction-depth request contract (permissively typed) and the scope_truncated + reason response flags"
@@ -560,8 +560,8 @@ must_haves:
       provides: "re-pointed off the retired class tab onto the sidebar DataEntityTypeFilter, still RED on ref:main"
       anchor: "DataEntityTypeFilter"
     - path: "integration-tests/protocols/IT-068-search-class-tab-filter.md + its spec"
-      provides: "retired with a stated reason (its subject ceases to exist); its PLT-147 null-details guard MOVES into IT-152 rather than being lost"
-      anchor: "superseded"
+      provides: "RE-POINTED off the retired tab strip onto the sidebar Data-entity-type filter, keeping both claims at the same strength; its PLT-147 null-details guard STAYS PUT. CORRECTED 2026-08-31 from the plan's original 'retire it and absorb the lock into IT-152': reading the spec showed that would be over-subtraction - moving a live regression lock into an unrelated My-data protocol loses it rather than preserving it, and renaming the file would orphan it from suites.yaml (LSN-033). Reasoning recorded in commit aac1e908."
+      anchor: "RE-POINTED"
   key_links:
     - from: "MyDataFilter (and the three home panels)"
       to: "the /api/search/assets request"
@@ -2167,3 +2167,79 @@ race that a weaker test would have missed. I re-derived all of that and it holds
 **774/0** at the reviewed SHA. What C0 says is narrower and harder: **one green run of a known
 cold-boot-sensitive test is not evidence that a suite is green** — and rather than assert that, I went and got
 the third sample. The next step is the harness fix plus two consecutive whole-suite runs.
+
+---
+
+## §25 — Phase G: the re-review fix-list, and the one item I could not honestly close
+
+Rework of the 2026-09-01 `REJECTED` verdict (`## Review (2026-09-01, session: review-ctrib062-2)`). **Same
+session as that review** — allowed, since the separate-session rule binds `/review`, not `/implement` — so the
+**next `/review` must run in a fresh session**, exactly as §24 was.
+
+### The fix-list, closed — except C0
+
+| | Fix | Where | Proof |
+|---|---|---|---|
+| **C1** | The shipped comment claiming the FTS-driver question is open now carries the executed plan | `ReactiveAssetSearchRepositoryImpl` | the `auto_explain` output inline; `TST-063` closed with the same evidence |
+| **C2/C2b** | The seven-facet claim and the retired tab strip, swept to **zero residue** | 6 doc pages on the 1.0.0 train | `grep -rniE 'seven facets\|entity-class tab strip'` over `docs/` returns only the Activity-Feed panel (DOC-452) and the corrected sentence |
+| **S7** | The 11 new i18n keys get rendered-locale coverage at last | `IT-153` + a new `e2e/helpers/locale.ts` | a `ua` arm on the one stack where the group renders; English asserted gone, not just Ukrainian present |
+| **S8** | The measured latency is stated as **per scroll page** | PR body + the code comment | |
+| **S9** | The plan contract reconciled to what shipped | `must_haves` truths + the IT-068 artifact row | |
+| **M6** | IT-068's header no longer describes a deleted component as the surface under test | `search-class-tab-filter.spec.ts` | |
+| **M7** | The on-disk PR body re-based on the **published** text | `CTRIB-062-pr-body.md` | test count corrected 25 → 29 |
+| **M8** | `clampDepth` asserted on **both** sides | `MyDataScopeResolverTest` | depth `0` and `-7` clamp up to 1 |
+| **M10** | Every CTRIB-062 run-log placeholder closed | `run-log/2026-08-31-IT-15{1,2,3}.md` | marked **reconstructed**, pointing at the ledger rather than inventing counts |
+| **M11** | The DoD's ontology row says what it actually did | below | |
+| **C0** | **NOT CLOSED — see below** | | |
+
+**M11, stated properly.** The plan named three feature-flow nodes (`F-017`, `F-148`, `F-015`) for
+`/enrich --touched`; both prior DoDs answered with a *sidecar* fact about `ReactiveLineageRepositoryImpl`
+under the heading "Ontology refreshed + committed". The honest disposition: **the ontology models
+`origin/main`, this branch is unmerged, and `playbooks/release-review.md` check 5 owns the refresh at the
+released tag.** So nothing is owed here — but `F-148.yaml` still describes the nine-tab strip this slice
+deletes, and **two protocols carry `validates: [… F-148 …]`** (`IT-068`, and `IT-152` whose claim is that the
+strip is *gone*), so whoever retires F-148 has two `gates:` blocks to re-point.
+
+### C0 — what I did, and what I did not manage to do
+
+**I could not find the root cause, and I am not going to ship a fix that pretends otherwise.** Three
+hypotheses were argued from the source and each was disproved *by the source*:
+
+1. **A background indexing race.** No — `V0_0_98` maintains `asset_search_entrypoint` with **synchronous
+   AFTER INSERT/UPDATE/DELETE triggers** on `search_entrypoint`, so the seed's own transaction populates it.
+2. **A NULL-propagating generated column.** No — `search_entrypoint.search_vector` is
+   `GENERATED ALWAYS AS (coalesce(data_entity_vector,'') || …)`; `V0_0_14` wrapped every term in `coalesce`
+   precisely to stop one absent vector nulling the whole thing. The seed sets `data_entity_vector` and that
+   is sufficient.
+3. **A lax health probe letting the seed land before migrations.** No — `management.endpoint.health.show-details`
+   is unset, so Spring's default `never` applies and the body is exactly `{"status":"UP"}`. There are no
+   components for a substring test to half-match.
+
+`lfQuery` also opens a fresh `Client` per call, so there is no stale-pool story either. **What remains is a
+race I have not identified**, firing in roughly one whole-suite run in three, only in suite context.
+
+So the change here is **instrumentation and one verified hardening**, not a claimed fix:
+
+- **The failure now decides itself.** `waitUntilSearchable` used to give up after 90 s with a page-level
+  symptom that is identical for at least four causes — and `afterAll` then tore the stack down, destroying the
+  evidence (the §18 mistake, repeated). It now probes every layer *at the moment of failure, while the stack
+  is still up*: `flyway_schema_history` (is this database fully migrated?), the `data_entity` row and the
+  three columns the ranked query filters on, `search_entrypoint` and whether its generated vector matches,
+  `asset_search_entrypoint` and whether the AFTER trigger propagated it, and finally
+  `POST /api/search/assets` directly — the backend's own answer, independent of the SPA. The next occurrence
+  prints which layer lost the row instead of costing another whole-suite run to guess at.
+- **A postcondition on the seed itself.** `beforeAll` now asserts all five fixtures reached
+  `asset_search_entrypoint` immediately after seeding. A seeding failure reports at the seed; a platform
+  failure reports at the platform.
+- **`composeUp` asserts what it means** (`stack.ts`): parse the health body and require top-level
+  `status === 'UP'` rather than testing the raw text for the substring `"UP"`. Today those agree; they stop
+  agreeing the instant anyone enables `show-details`, because a DOWN platform's detailed body still contains
+  `"status":"UP"` for every healthy component. Verified-correct hardening of a latent trap — **not** the cause
+  of this failure, and not offered as one.
+
+**B2 therefore stays open, and that is the honest state.** What I can say is narrower than a fix: the
+observed rate is 1 red in 3 whole-suite runs; the seeding path and the trigger chain are verified sound; and
+the next red will name its own cause in one line. What I cannot say is that it will not happen again. **This
+is a GATE-2 decision, stated plainly rather than buried:** merge with a known ~1-in-3 flaky
+`my-data-scope-narrows` and a self-diagnosing failure, or hold the slice until an occurrence is caught and
+fixed. I am not closing it by declaring it closed — that is precisely the call this review rejected.

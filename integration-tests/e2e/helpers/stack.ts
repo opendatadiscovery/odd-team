@@ -22,10 +22,25 @@ export async function composeUp(opts: StackOpts): Promise<void> {
   for (let i = 0; i < 60; i += 1) {
     try {
       const r = await fetch(opts.healthUrl);
-      if (r.ok && (await r.text()).includes('UP')) {
-        // eslint-disable-next-line no-console
-        console.log(`[e2e] ${opts.label} healthy after ~${i * 3}s`);
-        return;
+      // Require the TOP-LEVEL status to be UP, rather than testing the raw body for the substring "UP".
+      // Today those agree, because `management.endpoint.health.show-details` is unset (Spring's default is
+      // `never`), so the body is exactly `{"status":"UP"}`. They stop agreeing the moment anyone turns
+      // details on: the detailed body of a DOWN platform still contains `"status":"UP"` for every component
+      // that IS healthy, so a substring test would wave a half-started stack through and the spec would seed
+      // into a database that is not ready. Assert what we mean instead of what happens to be equivalent.
+      if (r.ok) {
+        const body = await r.text();
+        let status: unknown;
+        try {
+          status = (JSON.parse(body) as { status?: unknown }).status;
+        } catch {
+          status = undefined; // not JSON yet — the container is still coming up
+        }
+        if (status === 'UP') {
+          // eslint-disable-next-line no-console
+          console.log(`[e2e] ${opts.label} healthy after ~${i * 3}s`);
+          return;
+        }
       }
     } catch {
       /* not up yet */

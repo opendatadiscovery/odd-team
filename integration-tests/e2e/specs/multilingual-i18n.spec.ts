@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { switchLanguageViaUi } from '../helpers/locale';
 
 /**
  * IT-102 — F-043 Multilingual UI: the six-locale i18next translation layer.
@@ -30,17 +31,8 @@ const DISMISS_OVERLAYS = async (page: Page) => {
   await page.keyboard.press('Escape').catch(() => {});
 };
 
-// Drive the REAL locale switcher: open the user menu, open "Select language", pick a
-// language by its English LANGUAGES_MAP name. This exercises SelectLanguage.tsx's
-// i18n.changeLanguage + localStorage write — the production switch path.
-async function switchLanguageViaUi(page: Page, languageName: string) {
-  // 1. open the user-account menu (the clickable user cluster, AppToolbar.tsx:68-73)
-  await page.getByRole('button', { name: 'account of current user' }).click();
-  // 2. open the "Select language" entry (the SelectLanguage openBtn)
-  await page.getByText('Select language', { exact: true }).click();
-  // 3. the dialog lists the six languages — pick one by name
-  await page.getByRole('dialog').getByText(languageName, { exact: true }).click();
-}
+// The locale switcher now lives in a shared helper — IT-153 needs the same production switch path to prove
+// the ST-8 My-data labels render translated on the stack where that group is actually visible.
 
 test.describe('F-043 Multilingual UI — locale switching + fallback', () => {
   test.beforeEach(async ({ context }) => {

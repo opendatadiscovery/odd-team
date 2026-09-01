@@ -5,6 +5,7 @@ import {
   downLoginFormStack,
   LOGINFORM_BASE_URL,
 } from '../helpers/loginform-stack';
+import { switchLanguageViaUi } from '../helpers/locale';
 
 /**
  * IT-153 — the My-data scopes actually NARROW the rendered result list, for a real signed-in owner
@@ -36,6 +37,17 @@ const IDS = [MINE_ID, UP1_ID, DOWN1_ID, DOWN2_ID, STRANGER_ID];
 
 const NAME = (id: number) => `${TERM}_${id}`;
 const ODDRN = (id: number) => `//e2e-it153/db/${id}`;
+// The ua.json values for the ST-8 My-data labels, copied verbatim from
+// odd-platform-ui/src/locales/translations/ua.json. Pinned as literals on purpose: reading them out of the
+// catalogue at runtime would make the test agree with whatever the catalogue says, which is exactly the
+// tautology that let the #1751 class ship — the assertion has to carry its own expected value.
+const UA = {
+  heading: "Мої дані",
+  myObjects: "Мої об'єкти",
+  upstream: "Верхній рівень моїх даних",
+  upstreamDepth: "Глибина верхнього рівня",
+};
+
 const MY_TERM = `${TERM}_myterm`;
 const OTHER_TERM = `${TERM}_otherterm`;
 
@@ -176,15 +188,111 @@ async function waitUntilSearchable(page: Page, name: string): Promise<void> {
       )
       .toBeGreaterThan(0);
   } catch {
+    // The page-level symptom ("0 results") is the same for at least four different causes, and the stack is
+    // torn down in afterAll before anyone can go and look — so read every layer between the seed and the
+    // screen HERE, while the evidence still exists, and print the answer instead of a hypothesis.
+    //
+    // This exists because the failure is INTERMITTENT (~1 whole-suite run in 3, only in suite context) and
+    // three plausible root causes were each argued and then disproved from the source alone: a background
+    // indexing race (there is none — V0_0_98 syncs asset_search_entrypoint with SYNCHRONOUS AFTER triggers),
+    // a NULL-propagating generated column (V0_0_14 wraps every term in coalesce), and a lax health probe
+    // letting the seed land before migrations (the body is `{"status":"UP"}`; there are no components to
+    // half-match). Reasoning from the source could not settle it. Measurement at the moment of failure can.
+    const diag = await diagnoseSearchability(name);
     throw new Error(
       `READINESS: the seeded fixture "${name}" never became searchable on the freshly-booted LOGIN_FORM ` +
         `stack within 90s. This is a readiness failure, NOT a scope failure — the My-data assertions below ` +
         `would be meaningless against a catalog that cannot serve the fixture at all.\n` +
         `  last observed page state: ${lastSeen}\n` +
-        `  (if renderedRows is non-empty but lacks "${name}", the catalog IS serving and the fixture ` +
-        `specifically is missing from the unified index — probe asset_search_entrypoint, not the stack.)`,
+        `${diag}`,
     );
   }
+}
+
+/**
+ * Read every layer the fixture must pass through, at the moment it failed to appear, and say which one lost
+ * it. Each line answers one question that would otherwise cost a whole re-run to guess at:
+ *
+ *   flyway      — is this database fully migrated? A seed that lands before V0_0_98 creates its triggers
+ *                 would leave asset_search_entrypoint empty forever, and nothing downstream would say so.
+ *   data_entity — did the row land at all, and are the three columns the ranked query filters on
+ *                 (status / hollow / exclude_from_search) the values the seed intends? The seed relies on
+ *                 defaults for all three.
+ *   search_ep   — did the legacy DE entrypoint get the row, and does its GENERATED search_vector match?
+ *   asset_ep    — did the AFTER trigger propagate it into the unified index the search actually reads?
+ *   api         — does the backend itself return it, independent of the SPA?
+ *
+ * Deliberately best-effort: a diagnostic that throws while diagnosing destroys the evidence it exists to
+ * capture, so every probe is individually guarded and reports its own failure inline.
+ */
+async function diagnoseSearchability(name: string): Promise<string> {
+  const line = async (label: string, fn: () => Promise<string>): Promise<string> => {
+    try {
+      return `  ${label}: ${await fn()}`;
+    } catch (e) {
+      return `  ${label}: PROBE FAILED — ${(e as Error).message}`;
+    }
+  };
+  const out: string[] = ['  --- layer probe at the moment of failure (the stack is still up here) ---'];
+  out.push(
+    await line('flyway', async () => {
+      const r = await lfQuery<{ n: string; v: string }>(
+        `SELECT count(*)::text AS n, coalesce(max(version), '(none)') AS v
+           FROM flyway_schema_history WHERE success`,
+      );
+      return `${r[0]?.n} migrations applied, max version ${r[0]?.v} (V0_0_98 creates the ASE triggers)`;
+    }),
+  );
+  out.push(
+    await line('data_entity', async () => {
+      const r = await lfQuery<Record<string, unknown>>(
+        `SELECT id, external_name, status, hollow, exclude_from_search
+           FROM data_entity WHERE external_name = $1`,
+        [name],
+      );
+      return r.length === 0 ? 'ROW ABSENT — the seed did not reach this database' : JSON.stringify(r[0]);
+    }),
+  );
+  out.push(
+    await line('search_entrypoint', async () => {
+      const r = await lfQuery<{ n: string; matches: boolean }>(
+        `SELECT count(*)::text AS n,
+                bool_or(se.search_vector @@ to_tsquery('english', $1 || ':*')) AS matches
+           FROM search_entrypoint se
+           JOIN data_entity de ON de.id = se.data_entity_id
+          WHERE de.external_name = $2`,
+        [TERM, name],
+      );
+      return `${r[0]?.n} row(s), search_vector matches the query token: ${r[0]?.matches}`;
+    }),
+  );
+  out.push(
+    await line('asset_search_entrypoint', async () => {
+      const r = await lfQuery<{ n: string; matches: boolean }>(
+        `SELECT count(*)::text AS n,
+                bool_or(ase.search_vector @@ to_tsquery('english', $1 || ':*')) AS matches
+           FROM asset_search_entrypoint ase
+           JOIN data_entity de ON de.id = ase.asset_id AND ase.asset_kind = 'DATA_ENTITY'
+          WHERE de.external_name = $2`,
+        [TERM, name],
+      );
+      return `${r[0]?.n} row(s), search_vector matches: ${r[0]?.matches} `
+        + `(0 rows here with a present search_entrypoint row = the AFTER trigger did not fire, i.e. the seed `
+        + `predates V0_0_98 on this database)`;
+    }),
+  );
+  out.push(
+    await line('api', async () => {
+      const r = await fetch(`${LOGINFORM_BASE_URL}/api/search/assets?size=5`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: TERM, filters: {} }),
+      });
+      const body = await r.text();
+      return `POST /api/search/assets -> HTTP ${r.status}, body[0..300]=${body.slice(0, 300)}`;
+    }),
+  );
+  return out.join('\n');
 }
 
 test.describe('IT-153 — My-data scopes narrow the rendered results for a bound owner', () => {
@@ -218,6 +326,27 @@ test.describe('IT-153 — My-data scopes narrow the rendered results for a bound
     );
 
     for (const id of IDS) await seedEntity(id);
+
+    // POSTCONDITION on the seed itself, asserted where the seed happens rather than 90s later at the UI.
+    // Everything below assumes these five rows are present in the UNIFIED index (asset_search_entrypoint) —
+    // the table the cross-kind search actually reads — and the path from the seed to that table runs through
+    // a generated column and an AFTER trigger. If any link in it is broken on this freshly-booted stack, the
+    // page-level symptom is an indistinguishable "0 results", so pin it at the source: a failure here names
+    // the seed, a failure later names the platform.
+    const indexed = await lfQuery<{ n: string }>(
+      `SELECT count(*)::text AS n
+         FROM asset_search_entrypoint ase
+         JOIN data_entity de ON de.id = ase.asset_id AND ase.asset_kind = 'DATA_ENTITY'
+        WHERE de.external_name LIKE $1
+          AND ase.search_vector @@ to_tsquery('english', $2 || ':*')`,
+      [`${TERM}\_%`, TERM],
+    );
+    expect(
+      Number(indexed[0]?.n ?? 0),
+      `the ${IDS.length} seeded entities must reach asset_search_entrypoint (via search_entrypoint's ` +
+        `generated search_vector and the V0_0_98 AFTER trigger) before any assertion below means anything`,
+    ).toBe(IDS.length);
+
     // up1 -> mine -> down1 -> down2 ; stranger is unconnected and unowned.
     for (const [parent, child] of [
       [UP1_ID, MINE_ID],
@@ -336,5 +465,57 @@ test.describe('IT-153 — My-data scopes narrow the rendered results for a bound
       page.locator('#filter-my_data'),
       'a signed-in, owner-bound user gets the filter — IT-152 asserts its ABSENCE under DISABLED',
     ).toBeVisible({ timeout: 20_000 });
+  });
+
+  // The i18n guard for the labels ST-8 introduces. It has to live HERE and nowhere else: IT-102 owns this
+  // regression class for /search, but it runs on the auth-disabled stack, where the My-data group is HIDDEN
+  // by design (spec R7) — so after ST-8 re-pointed IT-102 onto the Asset-type / Data-entity-type controls,
+  // the eleven keys this slice adds had no rendered-locale coverage at any level. Catalog key-parity does not
+  // substitute: the recurring ODD defect (#1751 / PLT-205) is a label built in a TS object array outside JSX,
+  // where the key exists in every locale file and the component simply never calls t() on it. Only driving
+  // the page under a non-English locale catches that, and this is the one stack where the group renders.
+  test('the My-data labels render TRANSLATED under a non-English locale (#1751 / PLT-205 class)', async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await signIn(page);
+    await openSearch(page, `q=${TERM}`);
+
+    // baseline English — assert first, so a failure after the switch cannot be "it never rendered at all"
+    await expect(
+      page.getByText('My data', { exact: true }),
+      'baseline: the English "My data" group heading must render before switching',
+    ).toBeVisible({ timeout: 20_000 });
+
+    await switchLanguageViaUi(page, 'Ukrainian');
+
+    // the group heading, one scope option and one depth label — three different render paths (Typography,
+    // the FixedOptionsMultiFilter option list built outside JSX, and the DepthSelect label)
+    await expect(
+      page.getByText(UA.heading, { exact: true }),
+      `after switching to ua the group heading must read ua.json "${UA.heading}"`,
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(
+      page.getByText(UA.myObjects, { exact: true }),
+      `the "My Objects" option must read ua.json "${UA.myObjects}" — the outside-JSX option-array class`,
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByText(UA.upstream, { exact: true }),
+      `the lineage option must read ua.json "${UA.upstream}"`,
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByText(UA.upstreamDepth, { exact: true }),
+      `the depth label must read ua.json "${UA.upstreamDepth}"`,
+    ).toBeVisible({ timeout: 10_000 });
+
+    // and the English is GONE — presence alone would pass on a page that renders both
+    await expect(
+      page.getByText('My data', { exact: true }),
+      'the raw English "My data" heading must be gone under ua',
+    ).toHaveCount(0);
+    await expect(
+      page.getByText('Upstream of my data', { exact: true }),
+      'the raw English lineage option must be gone under ua',
+    ).toHaveCount(0);
   });
 });

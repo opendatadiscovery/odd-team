@@ -54,6 +54,67 @@ joined `data_entity.id` measured **54 443 ms** with a 10 000-id scope over a 200
 Postgres evaluates linearly *per candidate row*, and PG13 has no hashed-ScalarArrayOp optimisation — so a
 literal `IN` list is no better. That 218× difference is invisible on a small fixture.
 
+### And then the gate was taken on the query the platform actually issues
+
+Everything above is **plan-time probe SQL**. A predicate measured in isolation is not the query the service
+builds, so the gate was re-run against a running platform: a LOGIN_FORM stack on this branch's image, a real
+user-owner binding, **120 000 indexed assets**, 30 000 lineage edges, and `auto_explain` capturing the plans
+PostgreSQL *executed* — scope genuinely resolved (`scopeTruncated: true`, `NODE_CAP`, `total: 10000`).
+
+**The shape holds in the shipped query.** The concern was that once three left joins, kind guards, facet
+semi-joins, sort and keyset pagination are present, the FTS bitmap might stop driving and every number above
+would describe a query the platform never issues. It does not:
+
+```
+->  Bitmap Heap Scan on asset_search_entrypoint        (actual time=99.1..216.0 rows=10000)
+      ->  Bitmap Index Scan on asset_search_entrypoint_search_vector_gin_idx
+                                                       (actual time=74.9 rows=120000)
+            Index Cond: (search_vector @@ to_tsquery('...'))
+```
+
+The GIN index drives, 120 000 candidates come back, and the scope is applied as a **filter on the bitmap heap
+scan**, narrowing to exactly 10 000 — not a separate join, not a per-row rescan. Ranked page: **507.77 ms**.
+The lineage hops never crossed the 200 ms logging threshold, so `V0_0_101` is doing its job.
+
+**The latency target was missed — and was also mis-specified.** Warm, on that stand:
+
+| request | measured |
+|---|---|
+| depth 3, cap-reaching scope | **1.51 - 1.76 s** |
+| depth 1 — the default | 0.72 - 0.91 s |
+| `MY_OBJECTS` only (uncapped semi-join, no walk) | 0.23 - 0.29 s |
+| **unscoped**, same 120k catalog | **1.17 - 1.25 s** |
+
+The original target was "under a second at the ceiling". An **unscoped** search over the same catalog is
+1.23 s, so that number was unreachable for *any* search at this scale — it was projected from probe SQL that
+omitted the `count(*)` and the joins. The target is therefore restated as the scope's **marginal** cost, which
+is the part this change controls: **1.32x** an unscoped search at the ceiling, and **0.69x** at the default
+depth — i.e. scoping is *faster* than not scoping, because it narrows. Per-statement, the dominant cost is the
+pre-existing `count(*)` (median 274 ms, max 397 ms), which every search pays with or without a filter; that is
+filed separately rather than absorbed here.
+
+**Read those figures as per SCROLL PAGE, not per search.** The scope resolver re-runs on every
+infinite-scroll page — the request shape is identical — so ~1.6 s at the ceiling is what each page of
+results costs, not a one-off. At the default depth 1 that is 0.72-0.91 s per page, below the unscoped
+baseline. Stating it explicitly because "1.6 s once" and "1.6 s per scroll" are different product facts,
+and the resolved scope is deterministic for a given URL state, so caching it per request-state is the
+obvious lever if the ceiling case ever needs to get cheaper.
+
+**One optimisation was tried after that and reverted, because measuring it destroyed it.** The walk's
+ODDRN-to-id lookup was moved to the same array-bind shape, reasoning from the note above. Direct SQL A/B, same
+database, same 10 000 oddrns, `EXPLAIN ANALYZE`:
+
+```
+.in(collection)         planning 19-24 ms   execution 115-149 ms   (~150 ms)
+IN (SELECT unnest(?))   planning  7    ms   execution 207-217 ms   (~220 ms)
+```
+
+~70 ms **slower**. The two call sites are opposite access patterns — the ranked query matches 10k ids against a
+120k-row FTS bitmap where a hashable semi-join wins; this one does 10 000 *exact lookups on a unique btree
+index*, where constants known at plan time are what the planner wants. So the array-bind note is **not** a
+blanket rule; the numbers and an explicit "tried, measured, reverted - do not re-apply by analogy" now sit on
+that method.
+
 ## Bounds, and which of them shapes the result
 
 - **Depth** ≤ 3 per direction, independently settable, default 1.
@@ -82,14 +143,49 @@ downstream consumer.
   returns what your data depends *on* — so leaving it would mean the panel you click and the chip you land on
   disagree.
 - **Posture when the filter cannot personalise** (never a silent empty): hidden under `auth.type=DISABLED`
-  (matching the documented posture of the Recommended panel, the twin surface); rendered *disabled with the
-  remedy named* for a signed-in user with no Owner binding, because that user has a fix and hiding it hides
-  the fix.
+  (matching the documented posture of the Recommended panel, the twin surface); rendered greyed-out for a
+  signed-in user with no Owner binding **with the remedy as a link** to the owner-association page, because
+  that user has a fix and neither hiding it nor merely naming it gets them there.
 - **Back-compat (ADR D9):** `my_objects` still works — when `my_data` is absent it reads as `[MY_OBJECTS]` — so
   bookmarked `?my=true` URLs and saved searches stored before this keep working. `/api/search` and the per-kind
   searches are untouched.
 - **i18n across all 7 locales**, including *removing* the two inverted keys (key-parity guards parity, not
   orphans).
+
+## Two user-visible defects an independent review pass caught, fixed here
+
+Both were live in the first draft of this PR and neither was covered by a test.
+
+**A timed-out scope printed a bare total next to its own warning.** On the wall-clock circuit breaker the
+resolver returns an empty id set with the lineage directions still *selected*, so the predicate turns them
+into `false` — the lineage half contributes no rows. But the header excluded `TIMEOUT` from the "partial"
+qualifier, so with only Upstream or Downstream ticked a user saw:
+
+```
+0 results
+Your My data scope could not be resolved in time, so it was not applied.
+```
+
+Both halves wrong, in the same direction this whole mechanism exists to prevent: "Downstream of my data ->
+0 results" reads as *nothing depends on my assets*, and the copy then sends the reader looking for an
+unfiltered catalog they are not being shown. Both truncation reasons mean the true set is a strict superset of
+what is on screen, so both now qualify the count, and the timeout copy says what actually happened. Locked by
+a new component test that is **red on the pre-fix component** (3 of its 8 cases fail there; the 5 that assert
+unchanged behaviour pass on both sides, which is what makes them guards rather than restatements).
+
+**Ticking "My Objects" silently switched off the Type filter** — and the Create-Data-Entity-Group button with
+it. `getSearchEntityClass` opened with `if (search.myObjects) return 'my'`, and both surfaces gate on that
+selector returning a number. That was *correct* while "My Objects" was one option in a one-of-N result tab
+strip: picking it was mutually exclusive with picking a class by construction. This PR retires that strip and
+makes the owned scope an ordinary sidebar filter three rows below **Data entity type**, so "My Objects +
+Datasets" is now an ordinary two-checkbox combination — in which a filter the user never touched vanished with
+nothing on screen to explain it, and the page this PR ships said the opposite. The short-circuit existed only
+to serve the retired tab, so it is gone. `my_objects` itself is untouched and still rides the legacy
+`/api/search` session exactly as before.
+
+The same pass also removed a *dead-and-dangerous* branch in the facet reducer: its only writer was the tab
+handler, but had any generic facet control ever dispatched `entityClasses`, it would have reset `myObjects` to
+false and dropped the user's scope from the session without a trace.
 
 ## Scope exclusions
 
@@ -101,8 +197,16 @@ these.
 
 ## Verification
 
-- **Unit** — full `:odd-platform-api:build` **green: 773 tests, 0 failures, 0 skipped** (test + checkstyle +
-  assemble, the CI replica). 24 new behavioural tests against a real Postgres and real wiring: direction
+- **Unit** — full `:odd-platform-api:build`, the CI replica: **774 tests, 2 failed**; `checkstyleMain`,
+  `checkstyleTest`, `assemble` and `bootJar` all green. Both failures are 60-second *bounds*, not assertions
+  (`OpenApiDocsContractTest.platformApiGroupDocumentLoads`, `LoadIngestionTest.testInjectingManyDataEntities`),
+  and both were settled by an A/B with the decision rule fixed **before** the run: the same targeted pair, same
+  box, on this branch and on its merge base — **both arms green, 4/4**, so they are load-driven. The raw A-vs-B
+  timings are deliberately *not* quoted as a regression: every measurement including the control moved ~1.6x,
+  so the arms ran at different load; normalised against the control the subjects move 1.037x / 1.049x / 0.938x.
+  The hypothesis a reviewer would reasonably raise — this PR adds three indexes and `LoadIngestionTest` is
+  write-heavy over those tables — is disproved by that same data: the subject moved 3.7% more than the control
+  while the sibling ingestion test moved 6% *less*. 27 new behavioural tests against a real Postgres and real wiring: direction
   correctness with independent per-direction depth, depth clamping, the anchor exclusion, **cycle
   termination**, **deterministic node-cap truncation asserted across two runs**, the node budget spent
   **exactly at a hop boundary**, the **wall-clock circuit breaker returning TIMEOUT with an empty scope**
@@ -114,29 +218,39 @@ these.
   rather than discovered in CI. The check found three documented outcomes with no test behind them (TIMEOUT,
   the NODE_CAP hop boundary, unrecognised-token degradation) — all three are promises this PR's own OpenAPI
   descriptions make, so they are now pinned. One dead factory was **deleted rather than tested**.
-- **Frontend** — `tsc` clean; 42/42 URL-contract tests, asserted against real serialiser output rather than an
-  assumed shape.
+- **Frontend** — `tsc` clean; **175/176** vitest (the one failure is an unrelated `Management` timeout, proved
+  change-independent by running it alone on both this branch and the merge base: 2/2 green on each, red only
+  in-suite under load). URL-contract tests assert against real serialiser output rather than an assumed shape.
+  **ESLint is now 0 errors and 0 warnings across every file this PR touches** — it had never been run on this
+  surface, and it caught a dead `eslint-disable` directive for a rule this config does not enable.
 - **Integration** — two new protocols, both run, both green. `IT-152` (4/4) covers the URL contract's
   survival of a facet toggle (the #1858 mirror-merge class), the retired strip, the count, and the
   `auth.type=DISABLED` posture. `IT-153` (4/4) is the half that needs an identity: a real form login against a
   seeded owner association, proving each scope actually NARROWS (owned / upstream / downstream are not
   interchangeable), that per-direction depth is honoured, and that the home panels deep-link into the filter.
   Three existing suite-registered specs were re-pointed off the retired control rather than left red.
-- **Full regression** — all four suites on the working-tree SUT: `feature-complete` 328 passed,
-  `known-bugs` 3 RED (its pass condition), `multi-stack` 12 passed, `ingestion-e2e` 15 passed. The
-  `feature-complete` failures are change-independent and reconciled by arithmetic, not assertion: 11 are the
-  documented stale-spec class (specs still gating on `GET /api/search/{id}/results`, which ST-4 retired), 6
-  belong to an unmerged sibling slice, 1 is a known cold-start instance. Three of the documented stale specs
-  now **pass** because this PR re-points them off the retired control.
+  `IT-152` is now **5/5**, the fifth case pinning that "Clear All" clears the scope and its depths while
+  leaving the query and the sort — a deliberate change to a shipped control that previously had no assertion
+  at any level.
+- **Full regression** — all four suites on a SUT built from this branch: `feature-complete` 328 passed /
+  12 failed, `known-bugs` 3 RED (its pass condition, with no unexpected greens), **`multi-stack` 13 passed**,
+  `ingestion-e2e` 15 passed. Every `feature-complete` failure is reconciled by **exact `spec:line`** rather
+  than by arithmetic: 11 are the documented stale-spec class (specs still gating on
+  `GET /api/search/{id}/results`, which ST-4 retired) and 1 is a known cold-start instance — **zero
+  unattributed**. Three of the documented stale specs now **pass** because this PR re-points them off the
+  retired control. `multi-stack` matters here: an earlier run of it ended red on one of this PR's own new
+  specs, and that was fixed and then re-verified **as a whole suite in one process**, because the defect's own
+  root cause was that it only surfaces in suite context — a targeted re-run could not have proved it.
 - **Live** — the running image was driven directly to capture the real response shape and to prove the
   fail-closed behaviour end-to-end. That is also how an overclaim in this PR's own API description was caught:
   an out-of-range depth clamps, but a wrong-*typed* one is a 400, and the published description now says so.
 - **Performance** — the indexes in `V0_0_101` are measured, not assumed (lineage `child_oddrn` 880 ms → 22 ms;
   `ownership(owner_id)` 107 ms → 4.9 ms), and the scope predicate's shape was corrected *before* implementation
   by a measurement that showed the originally-planned `= ANY(array)` costing 54 443 ms against 249 ms for the
-  sub-select form. One "obvious" optimisation was rejected for measuring slower. **Scope of that evidence,
-  stated plainly:** those runs used probe SQL on a dense fixture, not the complete shipped query at catalog
-  scale — the code comment says exactly that, and the remaining confirmation is tracked rather than implied.
+  sub-select form. **That evidence is no longer probe-only:** the gate has since been taken on the running
+  platform at 120 000 assets with `auto_explain` reading the executed plans — the FTS bitmap still drives, the
+  latency target was found both missed *and* mis-specified and is restated against the unscoped baseline, and
+  a follow-up optimisation of mine was reverted for measuring slower. See the performance section above.
 
 ## Docs
 

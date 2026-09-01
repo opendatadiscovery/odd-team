@@ -4,7 +4,7 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: blocked   # integration gate UNRESOLVED — the A/B that decides attributability of 20 feature-complete failures was interrupted at 127/339. NOT review-ready.
+status: pr-draft   # all five DoD gates RUN at 6281a9df (rebased onto b5d9f150/ST-8). DRAFT PR #1873. -> /review (separate session) -> GATE 2.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1840 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-6 of #1825"
@@ -12,8 +12,8 @@ base_sha: "82e7e70e"      # odd-platform origin/main at intake (= #1862 ST-5c me
 reproduced: "the behavioural suite on origin/main @82e7e70e — 6/15 RED, incl. `customer -test` returning the EXCLUDED row (expected 13L but was 14L). See ## Test ledger."
 plan_approved_by: "RamanDamayeu"
 plan_approved_at: "2026-08-30"
-pr_url: null
-docs_routing: "pending — expected release/1.0.0 train (unreleased behaviour); see ## Plan"
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1873"
+docs_routing: "AUTHORED on documentation branch docs/CTRIB-060-search-query-operators @ 693a31e, cut from origin/release/1.0.0 @ 5b2bb04. Paired backlog item DOC-502 (milestone 1.0.0). Publishes at the 1.0.0 release gate, NOT at this merge. The sibling released-truth correction is DOC-500 (docs main, immediate flow)."
 ---
 
 # CTRIB-060 — #1840 ST-6 — query operators via `websearch_to_tsquery`
@@ -500,6 +500,40 @@ is completed on a quiet box.**
 
 To finish it: `ODD_PLATFORM_DIR=../odd-platform-ctrib060base integration-tests/run-regression.sh ctrib060base
 feature-complete`, with no other stream holding a stack, then diff its failing set against the 20 above.
+
+
+## DoD — all five gates RUN at 6281a9df (rebased onto ST-8)
+
+| # | Gate | Evidence |
+|---|---|---|
+| 1 | Unit build green on the working tree | **810 tests, 1 failure** — `OpenApiDocsContractTest.platformApiGroupDocumentLoads`, a 60 s blocking read, proven **non-attributable** by a same-conditions A/B: passes ALONE on this branch (3/3) *and* alone on pure `main` (3/3); fails only inside the loaded full build. Logged `TST-061` |
+| 2 | FULL integration regression on the working-tree SUT | `feature-complete` **328/12** · `known-bugs` 3 RED (expected) · `multi-stack` 14/0 · `ingestion-e2e` 15/15 (run alone). **A/B against a pure `main` SUT: 328/12 with a `diff`-empty, test-name-identical failing set** → zero e2e regression. `ingestion-e2e`'s in-suite failure (IT-145) likewise passes alone on both sides |
+| 3 | Docs read + decided + routed AND authored | `documentation@docs/CTRIB-060-search-query-operators` `693a31e`, cut from `origin/release/1.0.0` `5b2bb04`. Paired `DOC-502`; sibling released-truth fix `DOC-500` |
+| 4 | Ontology re-enriched + committed | `JooqFTSHelper` sidecar (schema-validated, 0 warnings); probes `P-392`/`P-393`; navigation pointers added |
+| 5 | Principal sufficiency review | 60 tests across both buckets; 6-case RED proof; **guard proved by mutation**; **UI reviewed as a user** — screenshots in `contributor/evidence/` show the `(i)` beside the input and the hover tooltip rendering as a padded, bordered card (the LSN-035 failure avoided). Patch-coverage gate is **inert** here (`jacocoExcludes` has `'**/repository/**'`; both changed production files live there) — stated in the PR rather than reported as "100%" |
+
+**Draft PR: [#1873](https://github.com/opendatadiscovery/odd-platform/pull/1873)** — `draft: true`, bot-authored,
+`Closes #1840`, `Milestone: 1.0.0`. The bot cannot merge (G-C4). → `/review` (separate session) → GATE 2.
+
+### What the long e2e investigation actually established
+
+The 20 `feature-complete` failures that blocked this slice overnight were **12 pre-existing failures + 8 caused
+by contention**. Three streams shared the box; the heavy-e2e flock serialises regressions but not stack
+bring-up, so a second platform came up inside this stream's e2e window. On a quiet box the count fell to 12, and
+the A/B showed pure `main` failing the identical 12. Logged as `TST-060` (coordination gap) and `TST-061` (the
+load-sensitive OpenAPI contract test).
+
+Two traps were hit and self-caught, both now case-law: a bare `run-suite.sh` rebuilt the SUT from the SHARED
+checkout and clobbered this stream's image tag (LSN-033), and `run-suite.sh` **warns but proceeds** when the
+running stack's image does not match the SUT — which silently drove a spec run against a build of an old branch.
+The tell was a rendered nine-tab class strip contradicting the two-tab source on `origin/main`.
+
+### Follow-ups on disk (none folded into this PR)
+
+`DOC-500` (released-truth caveat gap) · `DOC-502` (the 1.0.0 doc item) · `DOC-497` corrected to `pending` ·
+`TST-060` · `TST-061` · `PLT-262` (My Objects silently drops the entity-class filter — code-verified twice
+including post-ST-8, with an explicit note that the live repro needs an auth-enabled stack, since the DISABLED
+posture short-circuits my-objects to an empty page).
 
 ## GATE 1 — APPROVED 2026-08-30
 

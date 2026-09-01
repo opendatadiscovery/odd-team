@@ -89,7 +89,54 @@ than a copy.
 
 ## Evidence
 
-Both buckets run locally before this PR left draft; the numbers are in the PR checklist below.
+All measured locally on this branch at `6281a9df` (rebased onto `b5d9f150`, ST-8). Every e2e run carries
+`confirmed: the e2e stack is running the SUT image`, with the SUT built from this commit.
+
+**Unit — `:odd-platform-api:build`**
+
+| | |
+|---|---|
+| full build | **810 tests, 1 failure** |
+| the 1 failure | `OpenApiDocsContractTest.platformApiGroupDocumentLoads` — a 60s blocking read. Proven **not** attributable: it passes **alone** on this branch (3/3) *and* alone on pure `main` (3/3); it only fails inside the loaded full build. Logged upstream-side as a wait-strategy issue |
+| `JooqFTSHelperTest` | 45/45 — including all 13 pre-existing `tsQuery` parity cases, **unmodified** |
+| `AssetSearchServiceIntegrationTest` | 15/15 |
+
+**The RED proof** — the same behavioural suite against `main`, 6 failures:
+
+| query | on `main` | on this branch |
+|---|---|---|
+| `phrasealpha "customer orders"` | 2 rows — quotes dropped | 1, the adjacent one |
+| `negbeta customer -test` | returns the asset it was asked to **exclude** | the kept one |
+| `orgamma alphaside or orgamma betaside` | `[]` — branches ANDed | both |
+| `prefixdelta custom -testfixture` | `expected: 13L but was: 14L` — the inverse row | the kept one |
+| `-negonlyeta` | rows | empty page |
+| `guardzeta indexable or -absentword` | `[]` — indexable branch lost | that branch answers |
+
+**The guard is proved by mutation, not assertion.** Disabling the `querytree` guard turns both guard tests RED;
+restoring it turns them green. The OR case only bites because it also asserts an unrelated neighbour is
+*absent* — a presence-only assertion would pass with the guard removed.
+
+**Integration — four suites, then an A/B against a pure `main` SUT on the same quiet box:**
+
+| Suite | this branch | pure `main` `b5d9f150` |
+|---|---|---|
+| `feature-complete` | 328 passed / 12 failed | **328 passed / 12 failed — identical failing set, test-name for test-name** |
+| `known-bugs` | 3 RED (its expected pins) | — |
+| `multi-stack` | 14 passed | — |
+| `ingestion-e2e` (run alone) | 15/15 | 15/15 |
+
+`diff` of the two `feature-complete` failure lists is empty, so this change introduces **no** e2e regression.
+The 12 are pre-existing on `main` and unrelated to it. (`api:FAIL` on that suite is a known-dead probe rail —
+the extractor fails to build — not this change.)
+
+**Front-end:** `tsc --noEmit` and `eslint` clean. The rendered search bar and the hint tooltip were reviewed as
+a user, not just asserted: the `(i)` sits beside the input, and hovering renders the syntax help as a padded,
+bordered card rather than an unstyled row.
+
+**One thing worth stating plainly:** CI's `min-coverage-changed-files: 98` is **inert** for this PR.
+`jacocoExcludes` carries `'**/repository/**'` and both changed production files live under `repository/`, so
+the gate has zero instrumented changed lines to measure — it cannot fail here and offers no assurance about it.
+The assurance is behavioural: 60 tests across the two buckets, a 6-case RED proof, and a mutation probe.
 
 ## Docs
 

@@ -28,3 +28,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **/review CTRIB-062 third pass (review-ctrib062-3).** **3 tests, 3 failed -- EXPECTED.** Exactly the three registered pins and nothing else: IT-007 `attachment-local-durability.spec.ts:35`, IT-006 `error-boundary-containment.spec.ts:29`, IT-004 `quality-dashboard-unknown-status.spec.ts:33`. **Zero unexpected GREENs**, so no flip-on-fix is owed. A RED here is the suite working as designed (the quarantine lane).
 
+## 2026-09-01 — suite/protocol: known-bugs
+- runner: (fill: AI-assisted <model> | human <name>)
+- odd-platform working-tree HEAD: b5d9f150 (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib060  (image odd-platform:odd-team-sut-ctrib060, digest sha256:b1ba077f98eaec8ccac0a96eeb8a957f6025e5dea8ce8b6803c71ae62ba9411e)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>
+

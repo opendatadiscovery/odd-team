@@ -4,7 +4,7 @@ title: "#1842 ST-8 — My-data filter (All / My Objects / Upstream / Downstream;
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1842"
 parent_epic: 1825
 class: "feature — full stack (backend scope resolver + search predicate + FE filter + tab retirement + panel deep-links)"
-status: review-ready   # /review THIRD pass (review-ctrib062-3, 2026-09-01, fresh session) -> **ACCEPTED = GATE-2-ready**. Every AC (R1-R8) + every applicable gate PASS on the reviewer's OWN measurements at 5b20c3da: unit BUILD SUCCESSFUL 24m25s 181 classes/774 tests/0/0/0 (JUnit XML, this run); changed-lines coverage 115/115 = 100.00% recomputed from my own jacoco XML (CI gate 98); four-suite regression on my OWN SUT sha256:82983e32 -> feature-complete 328/11/1-skipped with the 11 SET-EQUAL to TST-059's eleven (ZERO unattributed, incl. search-class-tab-filter:149 validating Phase G's re-anchor), known-bugs 3-RED-expected/0-unexpected-GREEN, multi-stack 14/0 GREEN, ingestion-e2e 15/0; i18n 688x7 0-missing/0-extra. C0: my run is the SEVENTH whole-suite multi-stack sample and it is GREEN -> one red in SEVEN (better than the 'once in six' PR #1871 discloses); still unexplained, TST-064 owns it. Gate 5 N/A, Gate 8 PENDING-RELEASE (1.0.0; doc AUTHORED+PUSHED on release/1.0.0 @ e8fa107, origin/main contained in the train). OWED-not-blocking: PR #1871's decision sentence still says ~1-in-3 vs the measured 1-in-6; M9 silently dropped from the Phase-G fix-list; DOC-512. Editorial audit ran (active-platform-features/** — never claimed before): DOC-510 CRITICAL (ingestion-auth 0.29.0 fix contradicted on 6 live pages), DOC-511, DOC-509, DOC-512, DOC-513, TST-065; DOC-506 extended. STAYS review-ready: human GATE-2 merge of draft PR #1871 -> pending-release -> /review release:1.0.0 owns done. Verdict: '## Review (2026-09-01, session: review-ctrib062-3)'.
+status: pending-release   # GATE 2 (human) 2026-09-01: PR #1871 MERGED by RamanDamayeu at 11:51:25Z -> squash `b5d9f150` on odd-platform origin/main; head-at-merge was `5b20c3da`, EXACTLY the reviewed SHA, and `git diff 5b20c3da b5d9f150` is EMPTY -- the squash is FAITHFUL, so the review's measured evidence applies verbatim to what is on main. Issue #1842 auto-closed 11:51:27Z. Release-gated: milestone 1.0.0 is still OPEN (20 open / 9 closed issues) and unreleased (latest release 0.29.0), so `/review release:1.0.0` owns pending-release -> done; the implementer/reviewer do NOT self-mark done. **Doc obligation still OUTSTANDING: `documentation` PR #110 is an unmerged DRAFT against `release/1.0.0`, so the My-data doc is NOT on the train** -- a 1.0.0 cut as things stand publishes this feature with no documentation. | Prior: /review THIRD pass (review-ctrib062-3, 2026-09-01, fresh session) -> **ACCEPTED = GATE-2-ready**. Every AC (R1-R8) + every applicable gate PASS on the reviewer's OWN measurements at 5b20c3da: unit BUILD SUCCESSFUL 24m25s 181 classes/774 tests/0/0/0 (JUnit XML, this run); changed-lines coverage 115/115 = 100.00% recomputed from my own jacoco XML (CI gate 98); four-suite regression on my OWN SUT sha256:82983e32 -> feature-complete 328/11/1-skipped with the 11 SET-EQUAL to TST-059's eleven (ZERO unattributed, incl. search-class-tab-filter:149 validating Phase G's re-anchor), known-bugs 3-RED-expected/0-unexpected-GREEN, multi-stack 14/0 GREEN, ingestion-e2e 15/0; i18n 688x7 0-missing/0-extra. C0: my run is the SEVENTH whole-suite multi-stack sample and it is GREEN -> one red in SEVEN (better than the 'once in six' PR #1871 discloses); still unexplained, TST-064 owns it. Gate 5 N/A, Gate 8 PENDING-RELEASE (1.0.0; doc AUTHORED+PUSHED on release/1.0.0 @ e8fa107, origin/main contained in the train). OWED-not-blocking: PR #1871's decision sentence still says ~1-in-3 vs the measured 1-in-6; M9 silently dropped from the Phase-G fix-list; DOC-512. Editorial audit ran (active-platform-features/** — never claimed before): DOC-510 CRITICAL (ingestion-auth 0.29.0 fix contradicted on 6 live pages), DOC-511, DOC-509, DOC-512, DOC-513, TST-065; DOC-506 extended. STAYS review-ready: human GATE-2 merge of draft PR #1871 -> pending-release -> /review release:1.0.0 owns done. Verdict: '## Review (2026-09-01, session: review-ctrib062-3)'.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1842 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-8 of #1825"
@@ -13,7 +13,7 @@ reproduced: "n/a at intake — feature-shaped slice, so the entry gate is spec-g
 adr_required: false       # covered by the approved spine ADR adrs/drafts/unified-asset-search.md D4 + D8; no new architectural decision
 plan_approved_by: "RamanDamayeu"
 plan_approved_at: "2026-08-31"
-pr_url: null
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1871"   # MERGED 2026-09-01 (squash b5d9f150). Docs: https://github.com/opendatadiscovery/documentation/pull/110 -- still an unmerged DRAFT against release/1.0.0.
 docs_routing: "release/1.0.0 train (unreleased behaviour) — branch docs/CTRIB-062-my-data-filter off origin/release/1.0.0; paired backlog item DOC-504 (id re-verified at write time). Push to the shared train is maintainer-gated (DOC-495/497 precedent)."
 stream: ctrib062
 ---
@@ -2691,3 +2691,49 @@ the GATE-2 call turns on and is worth fixing before the merge; the other two are
 What ships with this slice is a known, measured, disclosed and owned intermittent — now **one red in seven**
 whole-suite runs on my own independent sample — with the merge-or-hold call left to the human, in plain
 language, in the PR. That is a legitimate state to hand to GATE 2.
+
+## GATE 2 — merged 2026-09-01 (human), `review-ready` → `pending-release`
+
+The maintainer merged `#1871`. Every fact below was re-read from the API and the remote refs rather than
+taken from the report (the CTRIB-049 discipline — never infer merge state from local state).
+
+| Fact | Value | Source |
+|---|---|---|
+| PR #1871 | `state: closed`, `merged: true` | live `GET /repos/opendatadiscovery/odd-platform/pulls/1871` |
+| Merged at / by | `2026-09-01T11:51:25Z` / `RamanDamayeu` | same |
+| Squash commit | **`b5d9f150`** — now `origin/main` head | same + `git rev-parse origin/main` |
+| Head at merge | **`5b20c3da`** — **exactly the reviewed SHA** | same |
+| Faithfulness | **`git diff 5b20c3da b5d9f150` is EMPTY** | run here |
+| Issue #1842 | auto-closed `2026-09-01T11:51:27Z`, milestone 1.0.0 | live `GET .../issues/1842` |
+| Milestone 1.0.0 | **OPEN** — 20 open / 9 closed, due 2026-07-31 | live `GET .../milestones?state=all` |
+
+**Why this matters and is not a formality.** The review measured everything at `5b20c3da`: the 774-test unit
+build, the 115/115 changed-line coverage, the four-suite regression on a SUT built from that tree. A squash
+that introduced drift would invalidate all of it. The diff is empty, so **the review's evidence applies
+verbatim to what is now on `main`** — no re-measurement is owed at the release gate beyond the standard
+run-against-the-published-artifact checks.
+
+**Status: `review-ready` → `pending-release`.** 1.0.0 is unreleased (latest release is 0.29.0), so this item
+cannot reach `done` here — `/review release:1.0.0` owns that flip after the release ships and the recorded
+live-URL verification runs (`playbooks/release-review.md` check 4 + the Gate 8 list in the verdict above).
+
+### The one thing GATE 2 did NOT close
+
+**`documentation` PR #110 is still an unmerged DRAFT against `release/1.0.0`.** The code is on `main`; the doc
+is not on the train. Verified: `origin/release/1.0.0` is at `5b2bb04` and its `search.md` contains no `My data`
+section and no posture table; `git merge-base --is-ancestor origin/docs/CTRIB-062-my-data-filter
+origin/release/1.0.0` is false.
+
+Concretely, **a 1.0.0 cut as things stand ships the My-data filter with no published documentation at all** —
+including the three-state posture table that explains why the filter is invisible on an `auth.type=DISABLED`
+deployment, which is the first question a reader actually asks (the maintainer hit exactly this on a local
+stack the same day).
+
+Note the ordering hazard: `documentation` **PR #108** (`release/1.0.0 → main`, the train-merge PR) is open and
+**not** a draft, so the train can be published at any time. **#110 must merge into `release/1.0.0` before #108
+merges the train into `main`.** `playbooks/release-train-merge.md` step 4 would flag the gap when the milestone
+issues are cross-checked against the train — but only if the gate is actually run, and #108 can be merged
+directly without it.
+
+`TST-064` (the ~1-in-7 IT-153 intermittent) also remains open, disclosed in the merged PR body and carried
+knowingly per the maintainer's decision.

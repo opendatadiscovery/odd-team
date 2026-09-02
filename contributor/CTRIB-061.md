@@ -15,6 +15,7 @@ pr: https://github.com/opendatadiscovery/odd-platform/pull/1875          # DRAFT
 docs_branch: docs/CTRIB-061-favorites-filter
 docs_pr: https://github.com/opendatadiscovery/documentation/pull/112     # DRAFT, base release/1.0.0 (the train)
 pr_opened_at: "2026-09-02"
+pr_comment: https://github.com/opendatadiscovery/odd-platform/issues/1841#issuecomment-5511701855
 plan_approved_by: "RamanDamayeu"
 plan_approved_at: "2026-08-31"
 reproduced: "n/a — feature slice, not a bug. The entry gate is spec-gate (G-C17), not reproduce-first."

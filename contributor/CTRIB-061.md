@@ -1258,8 +1258,8 @@ before ST-8 shipped its tests), so nothing is inherited here — including green
 |---|---|
 | Full unit build (`:odd-platform-api:build` = test + checkstyle + assemble) | **BUILD SUCCESSFUL, 26m17s** at `ad3a9189` — 0 checkstyle violations, `AssetSearchFavoritesIntegrationTest` 6/6 in 5.42s |
 | Patch coverage, 98% changed-lines aggregate | **PASS — 14/14 = 100.00%** |
-| `IT-148` GREEN on the working-tree SUT | **7/7 PASS**, 1.5m, SUT `ad3a9189+uncommitted` (identity read from the run log) |
-| `IT-148` RED on `ODD_SUT=ref:main` | queued — the proof the narrowing oracle bites |
+| `IT-148` GREEN on the working-tree SUT | **7/7 PASS**, 1.5m, SUT logged as `WORKING TREE @ 3d5a7096` — **no `+uncommitted` suffix**, i.e. the tested artefact IS the commit (§24c) |
+| `IT-148` RED on `ODD_SUT=ref:main` | first run 6/7 red and **found a neutered case** (§24d); re-running with the fixed oracle, expecting 7/7 red |
 | Full 4-suite regression | queued |
 | Rendered-UI screenshot (G-C12 step 5) | **captured AND read** — see §24b |
 | Docs authored + committed on `release/1.0.0` | **done** (`79612a0`, rebased onto `379baf3`) |

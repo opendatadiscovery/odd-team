@@ -4,7 +4,15 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: blocked    # ROUND-2 REVIEW (session review-ctrib060r2, 2026-09-02): REJECTED on Gate 6. Round 2's
+status: pr-draft   # ROUND 3 (session review-ctrib060r2, 2026-09-02) closed the round-2 fix-list: the one
+                   # blocker (A1 — the `-"test fixture"` table row that returned nothing as typed) and the one
+                   # fold-in (F-A — a test @DisplayName claiming a property the same round proved false).
+                   # EVERY row of the operator table was then re-measured on postgres:13.2-alpine: the other
+                   # four do what their cell claims and no other row promises results the guard withholds.
+                   # Doc pushed -> documentation PR #111 @ b96800f; code -> odd-platform PR #1873 @ 8008eb8b.
+                   # Integration carry-over is provable: the src/main + UI + spec delta since the reviewed
+                   # cda7d277 is EMPTY (one test file changed). -> a FRESH /review session -> GATE 2.
+                   # PRIOR: ROUND-2 REVIEW (session review-ctrib060r2, 2026-09-02): REJECTED on Gate 6. Round 2's
                    # three blockers + nine fold-ins are ALL closed and independently re-derived; the code is
                    # verified (unit 814/1 mine at cda7d277, checkstyle 0, both R7 cases RED on origin/main by
                    # my own run, integration carried from a PROVABLY comment-only src/main delta). One blocker
@@ -1458,3 +1466,78 @@ minutes of e2e against a provably identical binary would burn the machine for no
   reader will copy out of the new Query-syntax section does not return anything, and the page says so itself
   four bullets later. It is release-gated, so it is catchable today and unfixable-quietly tomorrow. Two
   words, on a doc PR that is already open.
+
+## Implement round 3 (2026-09-02, session: review-ctrib060r2) — the round-2 review's fix-list, closed
+
+`/review CTRIB-060` round 2 rejected on **Gate 6** — one row in the Query-syntax table that does not work as
+typed — with one fold-in. Same session as that review, which the separate-session rule permits for
+`/implement`; **the next `/review` must be fresh.** Two commits, and the smaller of the two is the one with
+the longer justification.
+
+### A1 (blocker) — the table row that returned nothing
+
+`documentation@docs/CTRIB-060-search-query-operators` **`b96800f`**.
+
+| | |
+|---|---|
+| was | `` | `-"test fixture"` \| entities that do **not** contain that phrase \| `` |
+| is | `` | `customer -"test fixture"` \| entities matching `customer` but **not** containing that phrase \| `` |
+
+The old row was the only one in the table with no positive term, so the per-branch index-searchability guard
+collapsed the whole query to the empty tsquery and it returned **No matches found** — while the page's own
+bullet four items below said exactly that would happen. The row exists to show that negation composes with a
+phrase, which is worth showing; a positive term keeps the lesson and makes the example runnable.
+
+**The re-read the fix-list asked for, done as measurement rather than reasoning.** Every row of the table run
+on `postgres:13.2-alpine` (the deployed version) through the same guarded `CASE` the sink emits, against four
+seeded documents — `Customers Orders daily`, `Orders shipped from customer`, `Customer test fixture table`,
+`Customer table`:
+
+| You type | compiled tsquery | rows returned | matches its cell? |
+|---|---|---|---|
+| `customer orders` | `'custom':* & 'order':*` | the two Orders rows | yes |
+| `"customer orders"` | `'custom' <-> 'order'` | only `Customers Orders daily` — the non-adjacent one correctly excluded | yes |
+| `customer -test` | `'custom':*` (after the guard) | 3 rows, the `test` row out | yes |
+| `customer or orders` | two guarded branches, OR-joined | all four | yes |
+| ~~`-"test fixture"`~~ | `querytree` = **`T`** | **NO MATCHES** | **no — the defect** |
+| `customer -"test fixture"` | `'custom':*` | 3 rows, the fixture row out | yes |
+
+So the four other rows do what their cell claims, the replacement does what its cell claims, and **no other row
+promises results the guard withholds.** That was the open question the fix-list raised; it is now answered with
+evidence rather than left as "looks fine".
+
+Not changed, deliberately: the section still opens "Three operators refine that…" above a five-row table whose
+first row uses no operator. That row is the baseline the other four are read against, which is what makes the
+table legible — narrowing it would be an over-correction.
+
+### F-A (fold-in) — a test named after the opposite of what is true
+
+`odd-platform` **`8008eb8b`**. `getHighlightedResult_negation_marksOnlyTheMatchedTerm` /
+*"an excluded term is not marked up"* → `getHighlightedResult_negation_returnsSaneMarkupForAComposedQuery` /
+*"a -exclusion query reaches `ts_headline` as a valid composed tsquery"*.
+
+The old name asserted a property **round 2 had itself measured to be false** — `ts_headline` marks every
+lexeme *mentioned* in the tsquery, so a negated term is highlighted when the document contains one, which is
+why the manual now says *"every word you typed, including an excluded one"*. The assertion is correct only
+because the seeded document carries no `test`: the single marked term is a property of the **document**, not
+of the negation. The body comment said so honestly; the `@DisplayName` did not, and the `@DisplayName` is what
+lands in the CI report — sitting in direct contradiction with the published page and inviting a future reader
+to "fix" the page to match the test. The comment now leads with why the obvious name is wrong, so nobody has
+to re-derive it. **No assertion, matcher, seed or expected value changed** — a name and a comment.
+
+### Gates re-run
+
+| Gate | Result |
+|---|---|
+| Unit — full CI replica at `8008eb8b` | **814 tests / 1 failure / 0 errors / 0 skipped** across **181 classes** (29m06s; parsed from the JUnit XML, mtimes `11:31` = this run). 814 is unchanged from the reviewed `cda7d277` — a rename does not move the count, which is the expected shape. The one failure is `OpenApiDocsContractTest.platformApiGroupDocumentLoads()`'s 60-second springdoc read, now its **fifth** reproduction (TST-061); **upstream CI is 6/6 SUCCESS at this exact SHA** (`Test Results`, `run_tests`, `run_playwright_tests/{test,lint,format-check}`, `update_release_draft`). Non-attributable |
+| Checkstyle | Run **standalone**, because the `build` lifecycle stops at the failing `:test` before reaching `check`'s remaining tasks — the same gap the round-2 review disclosed rather than inheriting. `:odd-platform-api:checkstyleMain` + `:checkstyleTest`: **BUILD SUCCESSFUL, 2m28s, both executed**; `build.gradle:151-156` sets `ignoreFailures = false` + `maxWarnings = 0` (and disables the reports), so a successful run **is** the zero-violation result |
+| Unit — targeted, before commit | `ReactiveDataEntityHighlightInjectionTest` **5 tests / 0 failures**, with **`checkstyleMain` + `checkstyleTest` green** (BUILD SUCCESSFUL, 4m04s). The renamed case runs under its new DisplayName; `grep` for the old identifier across `../odd-platform` returns nothing but this ledger's own record of the finding |
+| Integration | **Carried, and the carry-over is trivially provable this time**: `git diff --stat cda7d277..8008eb8b -- odd-platform-api/src/main odd-platform-ui odd-platform-specification` is **empty**. The delta is one test file. The SUT image is byte-identical to the one `/review CTRIB-060` built and ran to `feature-complete` 328/12 (zero unattributed) · `known-bugs` 3-RED-expected · `multi-stack` 14/0 · `ingestion-e2e` 15/0 |
+| G-C15 | Clean. The one test file changed is a rename + comment; nothing weakened, skipped, disabled or deleted |
+| Docs mechanical sweeps | On the staged diff: Gate 11 banned-term grep **zero hits**; `description:` **180 bytes** (≤200); PyYAML parses the frontmatter; no `: ` hazard |
+| Train topology | `git merge-base origin/release/1.0.0 origin/docs/CTRIB-060-search-query-operators` == `9594f96` == the train head. Still rebased, still zero-conflict |
+
+### Pushed
+
+- odd-platform **PR #1873** head `8008eb8b` (draft, base `main`, 19 files +701/−61).
+- documentation **PR #111** head `b96800f` (draft, base `release/1.0.0`).

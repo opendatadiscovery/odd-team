@@ -1247,3 +1247,25 @@ matches any favorites value and their `AssetSearchScope` captor still captures a
 three direct calls pass `null` — which *is* "no favorites narrowing", precisely the behaviour those tests
 already assert. No matcher was loosened, no assertion dropped, nothing skipped. That is the G-C15 line: I am
 adapting arity, not making a red test green.
+
+## 24. Gate ledger at the rebased SHA (`ad3a9189`) — every one re-run, none carried forward
+
+The pre-rebase greens described `82e7e70e+uncommitted`, a tree that no longer exists. Today's two failures
+were both *expired facts carried forward* (a build path that named the wrong module; a signature census taken
+before ST-8 shipped its tests), so nothing is inherited here — including greens I am confident about.
+
+| Gate | State |
+|---|---|
+| Full unit build (`:odd-platform-api:build` = test + checkstyle + assemble) | running at `ad3a9189` |
+| Patch coverage, 98% changed-lines aggregate | queued — `check.dependsOn jacocoTestReport`, so the build above produces the XML; script is ctrib062's, with my `cur`-leak fix |
+| `IT-148` GREEN on the working-tree SUT | queued |
+| `IT-148` RED on `ODD_SUT=ref:main` | queued — the proof the narrowing oracle bites |
+| Full 4-suite regression | queued |
+| Rendered-UI screenshot (G-C12 step 5) | **folded into the IT run** rather than costing a separate stack — captured in the DISABLED-label case |
+| Docs authored + committed on `release/1.0.0` | **done** (`79612a0`, rebased onto `379baf3`) |
+| Ontology `/enrich` + sidecar | **done** pre-rebase; the rebase moved the link construction to `buildSearchLink` but did not change what the sidecar describes |
+| G-C11 milestone re-verified at PR time | **done** — #1841 open, milestone 1.0.0 open, checked live |
+
+**Screenshot rationale.** A green e2e assertion says the control *exists*; it says nothing about whether it
+*looks* right next to its siblings. Capturing it inside the run that already has the stack up costs nothing,
+where a separate run would cost a full SUT build.

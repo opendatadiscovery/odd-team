@@ -270,6 +270,15 @@ test.describe('Favorites — star -> find it again via the search filter (#1815 
     // in a banner. On ref:main there is no favorites control at all, so both are absent.
     await expect(page.getByText('Favorites (shared) only')).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('[data-qa="filter-favorites-info"]')).toBeVisible();
+
+    // G-C12 step 5 — capture the rendered sidebar for a human read (contrast, wrapping, legibility, and
+    // that the control sits with its siblings rather than looking bolted on). A green assertion says the
+    // element exists; it says nothing about whether it looks right, which is a different question.
+    await page.locator('#filters, [class*="Filters"]').first().screenshot({
+      path: 'test-results/ctrib061-favorites-filter-sidebar.png',
+    }).catch(async () => {
+      await page.screenshot({ path: 'test-results/ctrib061-favorites-filter-sidebar.png' });
+    });
   });
 
   test('with the scope on and nothing starred, the empty state TEACHES the star', async ({

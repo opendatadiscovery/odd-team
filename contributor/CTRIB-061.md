@@ -1,15 +1,20 @@
 ---
 id: CTRIB-061
-title: "ST-7 — Favorites filter (All / Yes / No) + retire the `/favorites` tab + rewire the Favorites panel"
+title: "ST-7 — Favorites filter (shipped as a toggle; the tri-state kept on the wire) + retire the `/favorites` tab + rewire the Favorites panel"
 github_issue: 1841
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1841
 target_repo: odd-platform
 milestone: "1.0.0"
-status: plan-approved
+status: review-ready
 classification: feature
 stream_id: ctrib061
-base_sha: 82e7e70e
+base_sha: 969a5d5b   # rebased onto ST-6 (#1873) + ST-8 (#1871) after both merged; the original plan was cut at 82e7e70e
 branch: contrib/CTRIB-061-favorites-filter
+head_sha: 3d5a7096
+pr: https://github.com/opendatadiscovery/odd-platform/pull/1875          # DRAFT, base main
+docs_branch: docs/CTRIB-061-favorites-filter
+docs_pr: https://github.com/opendatadiscovery/documentation/pull/112     # DRAFT, base release/1.0.0 (the train)
+pr_opened_at: "2026-09-02"
 plan_approved_by: "RamanDamayeu"
 plan_approved_at: "2026-08-31"
 reproduced: "n/a — feature slice, not a bug. The entry gate is spec-gate (G-C17), not reproduce-first."
@@ -542,14 +547,14 @@ Every row is RUN here before handoff. None may be recorded "NOT RUN" or "deferre
 | `tsc --noEmit` (Node 24.13) | **clean** — zero output |
 | ESLint on the 9 changed FE paths | **CLEAN** — 0 errors; 7 prettier warnings auto-fixed with `--fix`, then re-verified to 0 problems |
 | FE OpenAPI codegen (spec changed) | regenerated; `favorites?: boolean` present in the model |
-| **Changed** existing tests — each needs a per-test SoT + a surviving RED on base (G-C15). Expected set, with the ordering split out: `FavoritesAssetTypeFilter.test.tsx` + `Favorites/__tests__/lib.test.ts` (deleted with their subjects), `searchUrlState.test.ts` (extended, never weakened) | pending Phase D — enumerate exactly before committing |
-| Integration — `IT-148` re-grounded on the **narrowing** oracle (§7 step 9), GREEN on fix / RED on `ref:main` | pending Phase D |
-| FULL regression (`run-regression.sh ctrib061`): `feature-complete` green · `multi-stack` green · `known-bugs` still-RED · `ingestion-e2e` green | pending Phase D — queues on the heavy-e2e flock (held by co-active ctrib060; `run-regression.sh` blocks automatically) |
-| `EXPLAIN (ANALYZE, BUFFERS)` on both predicate directions, seeded corpus | pending Phase D |
-| Local patch-coverage (98% changed-lines aggregate, via ctrib062's `patch-coverage.py`) | **OPEN — blocked on a full test run for `jacocoTestReport.xml`**; expectation pre-registered at ~100% (§20). Not run ≠ assumed passing |
-| Docs read + authored + committed on `release/1.0.0` (5 locations, §7 step 11) | pending Phase D |
-| Ontology `/enrich --touched` + re-embed + commit | pending Phase D — queues behind ctrib060's `lineage/**` claim; **the PR stays `draft` until it runs** |
-| UI screenshot of the rendered filter, reviewed as a user (G-C12 step 5) | pending Phase D |
+| **Changed** existing tests — each needs a per-test SoT + a surviving RED on base (G-C15) | **ENUMERATED + HELD.** Deleted *with their subjects* (the retired tab): `FavoritesAssetTypeFilter.test.tsx`, `Favorites/__tests__/lib.test.ts`. **Extended, never weakened:** `searchUrlState.test.ts` (+6 cases). **Mechanically adapted to a widened signature, assertions untouched** (ST-8 shipped these after my census was taken): `AssetSearchServiceMyDataTest` (4 Mockito sites, one extra `any()`) and `AssetSearchScopePredicateTest` (3 direct calls, `null`). No matcher loosened, no boundary mocked, nothing skipped or deleted to make a red test green |
+| Integration — `IT-148` re-grounded on the **narrowing** oracle (§7 step 9), GREEN on fix / RED on `ref:main` | **GREEN 7/7** on the working-tree SUT (`it148-v3.log`, `WORKING TREE @ 3d5a7096`, no `+uncommitted`) and **RED 7/7** on `ODD_SUT=ref:main @ 969a5d5b` (`it148-red2.log`). The RED proof caught a neutered case: test 5 asserted only presence, so it passed on base — re-grounded with a never-starred foil Term (`IT148PlainTerm`) chosen to dodge the substring trap |
+| FULL regression (`run-regression.sh ctrib061`), 2026-09-02 | **RUN, four suites, ZERO unattributed.** `feature-complete` **328 passed / 12 failed** — set-equal by exact `spec:line` to TST-059's eleven (incl. its own documented `:144→:148→:149` shift on `search-class-tab-filter`, same subject) **plus** TST-057's order-dependent `swagger-openapi-discovery:63`, which also appeared in the 2026-08-31 run. `known-bugs` **3 failed** = IT-004/006/007, the expected quarantine RED, **no unexpected GREEN**. `multi-stack` **14/14**. `ingestion-e2e` **15/15**. Cleaner than the ledger in one place, verified rather than assumed: `search-url-facets` **executed and passed 4/4** (now at :130/:163/:206/:246 — TST-059's `:112/:143` are stale line numbers for a since-repaired spec), and `favorites-star-see-loop` is correctly absent, lane-isolated to `pending-merge` by `f855eeba` |
+| `EXPLAIN (ANALYZE, BUFFERS)` on both predicate directions, seeded corpus | **RUN on the GENERATED SQL** (captured from the r2dbc query log, not hand-written). Positive `exists` **5.9ms**; negative `not exists` **4,829ms** vs a 180ms control — a **27x cliff** from a ~50x GIN row misestimate. A partial 4-tuple index was built and re-measured and did **not** help. Filed as **PLT-258**; the `favorites=false` direction is API/URL-expressible but not reachable from the shipped toggle. Also proved `DSL.not(DSL.exists(...))` emits canonical `not exists` |
+| Local patch-coverage (98% changed-lines aggregate, via ctrib062's `patch-coverage.py`) | **PASS — 14/14 changed executable lines covered = 100.00%** (gate 98%), run against the full build's `jacocoTestReport.xml`. Matches the pre-registered ~100% expectation (§20) |
+| Docs read + authored + committed on the `release/1.0.0` train (5 locations, §7 step 11) | **AUTHORED + COMMITTED** — `79612a0` on `docs/CTRIB-061-favorites-filter`, which sits **exactly 1 commit ahead of `origin/release/1.0.0`** (verified: `main` is an ancestor of the train, so the PR bases on the train, never on docs `main` — G-C11). Touches `favorites.md`, `catalog-overview.md`, `search.md`, `main-concepts.md`. The ordering claim was deliberately dropped (it belongs to ST-7b). Paired release-gate hook: **DOC-503** (`milestone: 1.0.0`) |
+| Ontology `/enrich --touched` + re-embed + commit | **DONE + COMMITTED** — `12966744` ("the ontology gate found a control that lied about an applied filter"); `lineage/` is clean at HEAD |
+| UI screenshot of the rendered filter, reviewed as a user (G-C12 step 5) | **DONE** — full-page screenshot captured on the running stack and read as a user: the toggle renders in the sidebar with its info affordance, and the empty state reads `Star an asset to pin it here.` |
 
 ## 10. Parallel-stream coordination (three streams co-active)
 

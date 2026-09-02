@@ -1896,7 +1896,7 @@ the release-review's suite run is its first exercise on a published artefact.
 |---|---|---|
 | `DOC-502` | `pending-release` | the paired doc item; on the train, publishes with this |
 | `DOC-518` | `pending`, milestone 1.0.0 | the stemming qualifier. **Its ride-along is gone** — #111 merged, so it needs its own branch off the train head. Still pre-publication, still cheap |
-| `PLT-263` | `draft`, high | tab/newline → `42601` → sticky 500. Pre-existing, deliberately unfolded (outside the GATE-1 plan). A one-line `split("\\s+")` inside the method this PR now owns — worth folding into whatever touches `JooqFTSHelper` next |
+| `PLT-263` | **`filed`** → [odd-platform#1874](https://github.com/opendatadiscovery/odd-platform/issues/1874) | tab/newline → `42601` → sticky 500. Pre-existing, deliberately unfolded (outside the GATE-1 plan). Filed 2026-09-02 on the maintainer's instruction, `kind: bug` + `scope: backend`, no milestone. **Re-verified on merged `main` `969a5d5b` before filing** — the strip set (`:49`) still carries no whitespace and `tsQuery` (`:337`) still splits on a literal space (`:341`); the `42601` re-measured for both `\t` and `\n`; the ST-6 asymmetry restated as present-tense `main` behaviour and the "fold into #1873" suggestion removed, since #1873 is merged |
 | `TST-061` | open | the `OpenApiDocsContractTest` springdoc timeout, six reproductions now |
 | `TST-060` | open | the coordination gap (the flock serialises regressions, not stack bring-up) |
 | `DOC-517` | `pending`, high | released-truth, docs `main`, unrelated to this train |

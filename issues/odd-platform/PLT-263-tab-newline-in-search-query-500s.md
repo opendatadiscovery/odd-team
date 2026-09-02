@@ -3,15 +3,17 @@ id: PLT-263
 title: "A tab or newline in the search query still reaches to_tsquery unsplit and 500s the search (42601), and the broken query is persisted in the search session"
 target_repo: odd-platform
 issue_type: bug
-status: draft
-github_issue_url: ""
-github_issue_number: null
+status: filed
+github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1874"
+github_issue_number: 1874
 filed_title: "A tab or newline in the search box returns HTTP 500 and poisons the saved search session"
 filed_labels: "kind: bug, scope: backend"
 severity: high   # persistent 500 on the catalog's primary navigation surface, reachable by an unauthenticated caller under auth.type=DISABLED
 discovered_during: "/review CTRIB-060 (#1840 ST-6, query operators) - reviewer's own postgres:13.2-alpine measurement of the shared FTS sink"
 found_date: "2026-09-01"
 user_facing_verified: true   # reproduced end to end against a running platform built from odd-platform@6281a9df; both query paths, plus the persisted-session re-read
+filed_date: "2026-09-02"     # filed by odd-contributor[bot] on the maintainer's instruction; labels kind: bug + scope: backend, no milestone (the maintainer attaches one)
+re_verified_at: "969a5d5b"   # RE-VERIFIED on MERGED main before filing, not taken from the branch measurement: TSQUERY_SPECIAL_CHARS at :49 still carries no whitespace, tsQuery at :337 still splits on a literal " " at :341; the 42601 re-measured on a fresh postgres:13.2-alpine for both \t and \n; searchUrlState.ts confirmed present at the cited path with no whitespace normalisation (its only trim() at :130 selects a sort order)
 suggested_milestone: ""      # SUGGESTED ONLY -- the maintainer attaches one
 ---
 
@@ -138,5 +140,27 @@ punctuation but no non-space whitespace.
   is safe while `foo<TAB>bar` still 500s. **Measured on the same running stack**:
   `{"query":"revcust\tcustomer \"customer orders\""}` -> **200** on both endpoints, while
   `{"query":"revcust\tcustomer"}` -> **500**. The inconsistency is worth closing in the same place.
-* The fix sits inside `JooqFTSHelper.tsQuery`, a method #1840 / PR #1873 already touches the neighbourhood of -
-  so it can be folded into that PR if the maintainer prefers one change over two.
+* The fix sits inside `JooqFTSHelper.tsQuery`. When this was drafted, PR #1873 was still open and folding it in
+  was an option; **#1873 merged on 2026-09-02 as `969a5d5b`**, so it is now a standalone fix against `main`.
+
+## Filed
+
+**[odd-platform#1874](https://github.com/opendatadiscovery/odd-platform/issues/1874)** - 2026-09-02, by
+`odd-contributor[bot]`, on the maintainer's instruction. Labels `kind: bug` + `scope: backend`; **no milestone**
+(the maintainer attaches one). Body is ASCII-only and was read back from the API after filing to confirm no
+mangling (0 non-ASCII characters in 6403 bytes).
+
+Duplicate check before filing: GitHub issue search over open issues for `tsquery`, `42601`, `search 500` and
+`whitespace search` returned nothing covering this - the two `tsquery` hits are the ST-11 / ST-12 epic slices
+(#1845, #1846) and the `search 500` hit is a demo-stand timing issue (#1870).
+
+What changed between the draft and the filed body, because the code moved under it:
+- line anchors restated against merged `main` (`TSQUERY_SPECIAL_CHARS:49`, `tsQuery:337`, the split at `:341`);
+- the ST-6 asymmetry stated as **present-tense `main` behaviour** rather than as a property of an open branch,
+  with the measured 200-vs-500 pair kept;
+- the "fold it into #1873" suggestion replaced with "standalone fix against `main`", since #1873 is merged;
+- the front-end claim tightened to what the source actually shows (`searchUrlState.ts` serialises
+  `state.query || undefined` and parses back with numeric/boolean coercion only; the single `trim()` at `:130`
+  chooses a sort order, it does not normalise the query);
+- a note that `split("\\s+")` can produce a leading empty element and that the existing `isEmpty()` filter
+  already absorbs it.

@@ -33,4 +33,26 @@ This page is the operator-facing docker-compose quick-start: clone `odd-platform
 
 What the page DOES bind into the substrate is the Collector-and-ingestion workflow. Step 2's "go to `/management/collectors` → Add collector → Save → copy token" maps to the Collector Lifecycle Management feature (F-020, whose `entry_point` is exactly `ui_route:/management/collectors`) and the `registerCollector` code node (`CollectorController.registerCollector`, which mints the Collector row + auto-issues the 40-char token confirmed via operation:register-collector). The token itself is the `Collector Token` concept. Step 1/Step 2 "Results" ("see 10 / 11 data sources in `/management/datasources`") map to the Data Source Lifecycle feature (F-031, `entry_point` `ui_route:/management/datasources`). The act both the enricher and the `odd-collector` perform — pushing the sample/real metadata into the catalog — is the `S2S Ingestion Pipeline` concept, whose canonical entry point is `IngestionController.postDataEntityList` (`POST /ingestion/entities`, `IngestionController.java:37`). The `Ingestion Filter` concept is bound because it is the token-auth gate the page implies but the demo leaves disabled (recorded as the single drift finding above).
 
+## Refresh note — 2026-09-02 (CTRIB-063 / odd-platform#1870)
+
+Recorded rather than silently skipped (G-C10). The page was edited on the `release/1.0.0` train, so
+`analysed_at_commit: 30795b4` is now behind the doc; a full re-analysis was NOT run because none of the
+bindings above move — the concepts, features and code nodes this page describes are unchanged, and the one
+drift finding (the decorative Collector token) is untouched and still valid.
+
+What did change, and why it matters to the next reader of this sidecar:
+
+- **The page's Step-1 mechanics now describe a readiness gate.** `docker/demo.yaml` gained a healthcheck on
+  the platform (and on `database`), and the enricher/collector now wait for `condition: service_healthy`, so
+  `up -d odd-platform-enricher` blocks until the sample is in. The page carries a matching hint block.
+- **"injects a 10-data-source sample" and "see 10 / 11 data sources" were, until this change, true only on
+  paper.** The shipped stand delivered **9**: `08_s3_ingestion.json` declared `//s3/cloud` while
+  `datasources.json` defines `//s3/cloud/aws`, so the sample was skipped and the run still exited 0. The
+  sidecar's claims are unchanged because they were always the *intent*; they are now also the behaviour.
+  Measured on a stock stand at `969a5d5b`: 9 data sources, `transaction_dataset` unsearchable; after the fix,
+  10 and searchable (`integration-tests/protocols/IT-154-demo-stand-first-run.md`).
+
+The doc change publishes with the 1.0.0 release; `live_verified_at: 2026-05-29` stays until the release gate
+re-fetches the live page.
+
 ## Maintainer notes

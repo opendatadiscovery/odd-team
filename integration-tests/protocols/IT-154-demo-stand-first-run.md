@@ -98,6 +98,15 @@ platform's healthcheck passes. Confirm before running the assertions:
 
 **Automated rail**: `integration-tests/run-suite.sh IT-154` (or the `multi-stack` suite).
 
+**How the rail maps onto the nine checks below — it reports THREE Playwright cases, not nine.** Checks 1-6b
+share one demo stand and one enricher run, so they are one case using **soft assertions**: every one of them
+still reports independently on failure, but the expensive stand is built once. Checks 7 and 8 are their own
+cases because they need no stand at all. Two alternatives were built and run against the unfixed base before
+settling on this: `serial` mode stops at the first failure, so a red result cannot say *which* defect
+regressed — which is the entire job of checks 4/5/6 — and six independent cases do each report, but Playwright
+discards the worker after a failed test and re-runs `beforeAll`, rebuilding the whole stand once per red
+assertion (~2 minutes each). A human executing the protocol by hand simply does the checks in order.
+
 ## 5. What it checks — assertions
 
 | # | PASS when | FAIL signature (the bug's shape) |
@@ -116,6 +125,22 @@ platform's healthcheck passes. Confirm before running the assertions:
 the race (intermittent by nature); 8 is red because the env knobs do not exist. The base is a
 **second, detached worktree pinned at the pre-fix commit**, created before any edit and never
 written to — not the worktree the fix lives in.
+
+### Notes for whoever runs or maintains this
+
+Three things about the *observation* here are load-bearing and were each learned by running it:
+
+- **`docker inspect ... .State.Health.Log` is a FIVE-ENTRY RING BUFFER.** Read it at teardown and the oldest
+  entry it still holds is a recent probe, not the health transition — an ordering check then fails against a
+  perfectly correct stand. Capture the first passing probe right after the `up` command returns.
+- **`{{json .State.Health.Log}}` makes `docker inspect` EXIT NON-ZERO** when the service declares no
+  healthcheck — which is exactly the unfixed stand. Guard it in the Go template
+  (`{{if .State.Health}}...{{else}}null{{end}}`), or the RED run reads as a harness crash instead of as the
+  finding it is.
+- **Do not assert the `up` command's DURATION.** It is 2s on the unfixed stand and 62-86s on the fixed one, so
+  a threshold looks tempting — but it would be asserting machine speed. The property under test is the
+  *ordering* (the enricher starts at or after the platform's first passing probe), which is machine-independent.
+  Record the duration as evidence in the run log instead.
 
 ## 6. Result log
 

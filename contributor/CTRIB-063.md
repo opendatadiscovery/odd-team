@@ -511,10 +511,101 @@ one was **wrong in its mechanism but right in its instinct**, and chasing it dow
 changes the shape of the fix, so a full second adversarial pass is owed only if GATE 1 changes the scope — in
 which case it runs again before any code, per the ≤3-loop rule.
 
+## Deviations from the approved plan (Phase D), and why
+
+Recorded so `/review` compares the diff against a plan that matches it. Both are *narrower* than
+what GATE 1 approved, not wider.
+
+1. **`integration-tests/e2e/helpers/stack.ts` is NOT extended.** The plan proposed one optional
+   `composeExtra` field on the shared helper. Building it showed that would be a forced fit: the
+   demo stand's whole lifecycle differs from every other stack here — it brings up **one** service
+   (`up -d odd-platform-enricher`, the documented command), and the property under test is that
+   *compose itself* blocks that command until the platform is healthy. `composeUp` does `up -d`
+   (all services) and then polls for health in the harness — which would have hidden exactly what
+   IT-154 measures. `demo-stand.ts` therefore owns its own `up`/`down` and reuses `composeCmd()`
+   from `docker.ts`, which is the part carrying real knowledge (prefer the v2 plugin; legacy v1
+   crashes on container recreate). Seven existing specs are left untouched.
+2. **The stand's assertions are ONE test with `expect.soft`, not six tests.** Both alternatives were
+   built and run against the base tree before this was settled: `serial` stops at the first failure,
+   so a red result cannot say *which* defect regressed — and telling the race apart from the oddrn
+   typo is the entire job of assertions 4/5/6. Six independent tests do each report, but Playwright
+   discards the worker after a failed test and starts a fresh one, which re-runs `beforeAll`:
+   measured on base, **every red assertion rebuilt the whole demo stand**, ~2 minutes each. Soft
+   assertions give what both were reaching for — every assertion reports, on one stand, in one pass.
+
 ## Test ledger
 
-_pending Phase D._
+**Both buckets, routed by the tests-pillar home rule; every gate RUN, not reasoned about.**
+
+| Bucket | What ran | Result |
+|---|---|---|
+| Unit (odd-platform CI guard) | **none, by the maintainer's GATE-1 decision D2.** The offered guard was a ~20s workflow job running the injector's own validation against both bundled sample sets; GATE 1 chose to leave CI alone so the PR stays a pure bug fix. The consequences are written into the test plan rather than left implicit: the in-repo guard is now the demo run's own loud failure (validation runs *before* the readiness poll, so a broken sample set fails in about a second), and the repeatable guard is IT-154, which is invisible upstream. | recorded, not skipped |
+| Unit (full CI replica) | `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build` = test + checkstyleMain + checkstyleTest + assemble) on the branch worktree at `c88bf405` | _filled below when the run lands_ |
+| Integration (odd-team) | **IT-154** — protocol + `suites.yaml` registration in `multi-stack` + the e2e spec + the helper + the port override. Rail resolution verified by RUNNING it: `run-suite.sh IT-154 --dry-run` -> `ui e2e: demo-stand-first-run.spec.ts · manual: none` | **GREEN 3/3 on the fix · RED 3/3 on base** |
+| Integration (full regression) | `run-regression.sh ctrib063` — `feature-complete` + `multi-stack` + `known-bugs` + `ingestion-e2e` | _filled below when the run lands_ |
+
+### The RED proof — a named mechanism, not an assertion
+
+The base is `../odd-platform-ctrib063base`, a **second detached worktree pinned at `969a5d5b`, created before
+the first edit and never written to**. `ODD_SUT=ref:main` is deliberately not used: it swaps the *platform
+image*, and the base-vs-fix difference here lives in the compose file, the injector and the sample data, not
+in the platform binary — which is held constant at digest `sha256:3b61b3f2…` on both sides.
+
+`up -d odd-platform-enricher` returns in **2s** on base and blocks **62-86s** on the fix. Ten soft assertions
+go red on base: no healthcheck on either service, no passing probe on record, `Skipping //s3/cloud`, 9 data
+sources, `//s3/cloud/aws` absent, `transaction_dataset` -> 0, `Data Lake S3` not rendered; plus the two
+stand-free cases — a broken fixture exits **0** with one `Skipping` line, and `REACH_TRIES_NUMBER=2` is
+ignored while the run burns all 20 tries and dies with the old message.
+
+**Stated honestly: the race did NOT fire on that base run.** `the enricher must exit 0` and `the catalog must
+actually hold ingested entities` both PASSED there — the enricher won the coin flip. That is defect 1's real
+shape, and it is precisely why assertion 5 exists: a populated **nine**-source catalog says *oddrn typo*, an
+empty one says *race*. The deterministic half of the proof stands alone; the intermittent half is recorded as
+intermittent rather than dressed up as reliable.
+
+### Three defects the tests themselves had, caught by RUNNING them (G-C9, "you run what you write")
+
+Each would have shipped a false result had the spec been authored and handed to `/review` unrun:
+
+1. **`.State.Health.Log` is a five-entry ring buffer.** Reading "the first passing probe" at teardown reports
+   a time ~20s stale, so the ordering assertion **failed against a perfectly correct stand**. Now captured in
+   `beforeAll`, while the log still holds the transition.
+2. **`{{json .State.Health.Log}}` makes `docker inspect` exit non-zero** when the service has no healthcheck —
+   which is exactly the base tree. It threw out of `beforeAll` and **skipped every remaining assertion**, so
+   the first RED run reported "3 failed / 4 did not run" instead of naming each regression. The nil guard now
+   lives in the Go template.
+3. **Playwright discards the worker after a failed test and re-runs `beforeAll`.** With six independent tests,
+   every red assertion rebuilt the whole demo stand (~2 min each) on base. Hence one test with `expect.soft`.
+
+### G-C15 — changed tests
+
+None. Every test file here is **new**; no existing assertion, matcher, fixture or skip-state was touched, so
+the "a changed test must assert more truth" analysis has nothing to bite on. The one edit to a shared harness
+file was considered and **rejected** (Deviations #1) — `stack.ts` is untouched and its seven callers are
+unaffected.
+
+### Definition of Done
+
+| # | Gate | State |
+|---|---|---|
+| 1 | full unit build green on the working tree | _pending the run above_ |
+| 2 | FULL integration regression against the working-tree SUT | _pending the run above_ |
+| 3 | docs read + decided + routed **AND authored** — committed on the train, not a draft | **DONE** — `documentation` `docs/CTRIB-063-demo-stand-first-run` @ `b270da6` off `origin/release/1.0.0` @ `379baf3`, draft PR [#113](https://github.com/opendatadiscovery/documentation/pull/113); paired item `backlog/docs/DOC-520` (`pending-release`, milestone 1.0.0) |
+| 4 | ontology re-enriched + committed | **DONE** — the `trylocally` doc-understanding sidecar carries a dated refresh note; no re-analysis run, and the reason is recorded (no binding moves). No code substrate node exists for `injector/` or `docker/`. |
+| 5 | Principal sufficiency review (G-C13) | **enough + meaningful**: 10 assertions across both defects *and* the class behind them, each with a stated RED-on-base behaviour, two of them stack-free so they cannot be dropped for being slow. **Local patch-coverage gate: N/A, and that is an empty gate rather than a skipped one** — the diff contains no Java, so `min-coverage-changed-files` has no changed production lines to measure. **No control lost**: nothing new is abstracted, and the change subtracts (the unreachable `Skipping` branch is deleted). **What did I make worse?** One thing, named rather than buried: `up -d odd-platform-enricher` now takes ~60-90s to return instead of ~2s. That IS the fix; it is documented in both READMEs and on the train, and the `database` healthcheck exists specifically so the pathological version of that wait cannot happen. |
+
 
 ## Follow-ups logged
 
-_pending — filed at Phase D per `playbooks/follow-up-on-disk.md`._
+Every one on disk, per `playbooks/follow-up-on-disk.md`; the backlog was grepped first (LSN-009) and one of
+these was **extended in place rather than filed as a duplicate**.
+
+| Item | What | Why not in this PR |
+|---|---|---|
+| `issues/odd-platform/PLT-014` — **EXTENDED, not duplicated** | The re-run `400 USR003` (`duplicate key … alert_unique_messenger_oddrn_is_present`) found by running the stock enricher twice. Same root cause the issue already names — `createAlerts` has no `ON CONFLICT` — but reached through **ordinary ingestion** rather than the AlertManager webhook, and against the *sibling* index, where `messenger_entity_oddrn` is the DQ **test** oddrn (DB-verified). The suggested fix now has to cover both indexes or the ingestion path stays broken while the webhook path is fixed. | A different subsystem and a different slice. This PR makes the failure *visible* (real status + body, named in a closing summary) instead of hiding it behind a wrong guess. |
+| `backlog/docs/DOC-519` (pending, medium) | `trylocally.md` Step 2 tells readers the demo collector's data source is called `Sample demo data source`; the shipped `collector_config.yaml` has always called it `postgresql-step2-test`, and `docker/README.md:65` says so. `git log -S "Sample demo data source"` over odd-platform returns **nothing** — the two copies diverged and only the repo one was corrected. | **Released truth** — it is wrong on the live site today, so it belongs on docs `main`, not on the 1.0.0 train this change rides. Mixing them would publish a released-truth fix at a future release. |
+| `backlog/docs/DOC-520` (pending-release, milestone 1.0.0) | The paired item for this change's own doc edit, carrying the affected page, the train commit, and the post-merge live-verification list the release gate owes. | Not a deferral — it is the tracking artefact for work already authored and pushed. |
+
+Nothing else was discovered and narrated. The two `inject.py` defects the plan had listed as exclusions
+(`DATA_SOURCES_ONLY`'s truthiness, the swallowed injection failure) were **folded into the change** instead,
+both named explicitly in the PR body rather than smuggled.

@@ -1180,3 +1180,70 @@ work. It is measured, tracked, disclosed in the source comment, and surfaced at 
 
 This is the gate I had filed as "SRE hygiene" in the plan. It corrected a false statement in shipped source and
 found a measured performance cliff — neither of which any test, lint or coverage check could see.
+
+## 23. Rebase onto the merged neighbours (2026-09-02)
+
+Both siblings landed while this slice was in flight: **ST-8 My-data (#1871, `b5d9f150`)** and **ST-6 query
+operators (#1873, `969a5d5b`)**. Rebased `contrib/CTRIB-061-favorites-filter` from `82e7e70e` onto
+`969a5d5b`; the slice is now the single commit `ad3a9189`, upstream still unset (LSN-038 safe).
+
+**14 conflicts, all with ST-8** — exactly the overlap §10 predicted when it flagged ST-8 as this slice's
+structural twin. They were textual, not architectural, but three needed a real decision rather than a
+pick-a-side:
+
+**1. `AssetSearchScope` vs `FavoritesScopeDto` — kept separate, deliberately.** ST-8 replaced the raw
+`OwnerPojo owner` parameter with an `AssetSearchScope` record (ownerId + myObjects + lineage). It is tempting
+to fold favorites into it — one "scope" object, fewer parameters. **That would conflate two identity models
+the platform keeps apart on purpose:** My-data keys on the internal **Owner**, favorites on the **login
+identity** `(oidc_username, provider)`. A user with no Owner association still has favorites; that is the
+whole reason `CurrentUserIdentityResolver` exists beside `AuthIdentityProvider`. So both travel as separate
+parameters and the `(5b)` comment now says why, next to ST-8's `(5)`.
+
+**2. The service composes rather than sits beside.** ST-8's My-data branch owns an early return
+(`switchIfEmpty` -> empty page when no owner resolves). My favorites resolution therefore wraps it: resolve
+the login identity first, then run ST-8's whole scope resolution inside that, threading `favorites` down to
+`resolvePage`. The private helper is now `scopedSearch(formData, …)`. The two axes compose freely — a search
+can be both My-data-scoped and favorites-scoped.
+
+**3. The mirror-merge is now five params, and both slices re-derived the same warning.** ST-8 independently
+wrote *"A URL-only param missing from this object is the #1858 bug class"* while adding `myData` and its
+depths; I wrote the same thing while adding `favorites`. Merged into one comment that says so, because the
+next slice adding a URL-only param will land in exactly this spot.
+
+**Reuse found by the rebase, not planned:** ST-8 shipped **`buildSearchLink(state)`** — the shared canonical
+URL construction I had hand-rolled in two places (App.tsx redirect, panel "View all") and inline in the
+filter's write path. All three now call it. That is three hand-rolled constructions replaced by one shipped
+helper, and it is exactly the reuse G-C12 asks for — I just could not have found it before it existed.
+
+**Two of my constructions broke and were fixed properly, not patched:** ST-8 removed `myObjects` from
+`SearchUrlState` in favour of the `myData` scope group, so my `{ …, myObjects: false }` literals no longer
+type-check. Rather than re-adding the field, the two link builders now use `buildSearchLink` (which needs
+neither) and the round-trip test fixture uses `myData: ['MY_OBJECTS']` — so that case now pins **both**
+independent axes surviving a round-trip together, which is strictly more than it asserted before.
+
+**Every gate is re-owed at the rebased SHA.** The prior green runs measured `82e7e70e+uncommitted`; none of
+them describe `ad3a9189`. Re-running from scratch.
+
+### 23a. Two rebase failures the gate caught, both mine
+
+**1. I cleared the wrong module's generated sources.** The BE OpenAPI codegen is
+`:odd-platform-api-contract:openApiGenerate`, not `odd-platform-api`. I deleted
+`odd-platform-api/build/generated` — the path in my own notes — and the build reported
+`openApiGenerate UP-TO-DATE`, compiling against DTOs generated **before ST-8's spec fields existed**:
+`getMyData()`, `getUpstreamDepth()`, `getDownstreamDepth()`, `scopeTruncated()` all "cannot find symbol".
+The note in memory says *"delete build/generated to force regen"* without naming the module; corrected here —
+it is `odd-platform-api-contract/build`.
+
+**2. Widening the repository signature broke ST-8's tests — the consumer census I got wrong.** The plan
+recorded the changed-signature consumers as *"3 repository methods … whose only production caller is
+`AssetSearchServiceImpl`, plus their tests"*. That was true at `82e7e70e`. ST-8 then shipped **two new test
+files** against those same methods — `AssetSearchServiceMyDataTest` (4 sites) and
+`AssetSearchScopePredicateTest` (3 sites) — and a census taken at plan time cannot see a consumer that does
+not exist yet. **A signature census has a shelf life; it must be re-taken at the rebased SHA, not carried
+forward.**
+
+Both adapted **mechanically, not semantically**: the Mockito stubs gain one more `any()` (so the stub still
+matches any favorites value and their `AssetSearchScope` captor still captures at its own position), and the
+three direct calls pass `null` — which *is* "no favorites narrowing", precisely the behaviour those tests
+already assert. No matcher was loosened, no assertion dropped, nothing skipped. That is the G-C15 line: I am
+adapting arity, not making a red test green.

@@ -1341,3 +1341,30 @@ This is the same class as the two earlier failures today — a fact that was tru
 green) quietly ceasing to describe the artefact being shipped. Third instance, so it is worth naming as a
 habit rather than three accidents: **before any push, diff the commit against the tree the gates actually
 ran on.**
+
+### 24d. The RED proof earned its cost: it found the one case that could never fail
+
+`ODD_SUT=ref:main` (SUT built from `main @ 969a5d5b` in a throwaway worktree — my working tree untouched):
+**6 failed, 1 passed.**
+
+The failures cite the intended mechanism, checked rather than counted — a test can fail for the wrong reason:
+
+```
+Error: THE NARROWING: an asset the caller has not starred must be absent (on ref:main it is present)
+```
+
+**The one that PASSED is the finding.** Test 5 (a starred Term is reachable — the cross-kind case) asserted
+only that the starred Term *appears*. On base the unknown `favorites` param is dropped, the unfiltered search
+lists that Term anyway, and the case goes green. **I built the narrowing oracle for six cases and left the
+seventh as pure presence** — the exact shape §7 step 9 was written to eliminate, in the same file that
+declares the rule.
+
+Nothing but the RED proof could have found it. On my own SUT it passes for the right reason and looks
+identical to the other six; only running it against a platform without the feature separates "passes because
+the feature works" from "passes because it asserts nothing".
+
+Fixed with a never-starred foil Term. The naming avoids the substring trap that made the Java fixture reject a
+correct result (§16): `getByText('IT148FavTerm')` would match `IT148FavTermFoil`, so the foil is
+`IT148PlainTerm`, and no fixture name in the spec is a substring of another — verified pairwise, not eyeballed.
+
+Both directions re-run at the amended SHA with the corrected case.

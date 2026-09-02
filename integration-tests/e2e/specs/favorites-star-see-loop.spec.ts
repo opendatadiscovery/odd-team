@@ -46,6 +46,10 @@ const FOIL = 'it148_unstarred_foil';
 /** Both names start with this, and the FTS is prefix-matched, so one query returns the pair. */
 const TOKEN = 'it148';
 const TERM = 'IT148FavTerm';
+/** Never starred. Matches the same `IT148` prefix query, so its ABSENCE is this case's RED signal. */
+const TERM_FOIL = 'IT148PlainTerm';
+/** Prefix that matches BOTH terms, so one query returns the pair. */
+const TERM_QUERY = 'IT148';
 const FAV_DE = /\/api\/favorites\/DATA_ENTITY\/\d+(\?|$)/;
 const FAV_TERM = /\/api\/favorites\/TERM\/\d+(\?|$)/;
 
@@ -236,6 +240,7 @@ test.describe('Favorites — star -> find it again via the search filter (#1815 
   }) => {
     await setup(request);
     await seedSearchableTerm(TERM);
+    await seedSearchableTerm(TERM_FOIL);
     const rows = await dbQuery<{ id: number }>('SELECT id FROM term WHERE name = $1 LIMIT 1', [TERM]);
     expect(rows[0], 'the seeded term must exist').toBeTruthy();
     const termId = rows[0].id;
@@ -252,10 +257,19 @@ test.describe('Favorites — star -> find it again via the search filter (#1815 
     await put;
 
     // The favorites scope is cross-kind: one filter, one list, all three asset kinds.
-    await page.goto(`/search?favorites=yes&q=${TERM}`);
+    //
+    // NARROWING, not presence. The first version of this case asserted only that the starred Term appears —
+    // which PASSES on ref:main, where the unknown `favorites` param is dropped and the unfiltered search
+    // lists it anyway. The RED-proof run caught it: 6 of 7 cases went red on base and this one went green,
+    // i.e. it was the single case proving nothing. It now needs an un-starred Term to be absent.
+    await page.goto(`/search?favorites=yes&q=${TERM_QUERY}`);
     await expect(page.getByText(TERM).first(), 'the starred Term is in the scope').toBeVisible({
       timeout: 15_000,
     });
+    await expect(
+      page.getByText(TERM_FOIL).filter({ visible: true }),
+      'THE NARROWING: an un-starred Term must be absent (on ref:main it is present)'
+    ).toHaveCount(0);
 
     await request.delete(`/api/favorites/TERM/${termId}`);
   });

@@ -4,7 +4,15 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: pr-draft   # ROUND 2 (session ctrib060r2) closed the /review fix-list: 3 blockers + 9 fold-ins.
+status: blocked    # ROUND-2 REVIEW (session review-ctrib060r2, 2026-09-02): REJECTED on Gate 6. Round 2's
+                   # three blockers + nine fold-ins are ALL closed and independently re-derived; the code is
+                   # verified (unit 814/1 mine at cda7d277, checkstyle 0, both R7 cases RED on origin/main by
+                   # my own run, integration carried from a PROVABLY comment-only src/main delta). One blocker
+                   # remains: search.md's Query-syntax table row `-"test fixture"` returns No matches found as
+                   # typed (measured on postgres 13.2) and contradicts the page's own bullet four items below.
+                   # Two-word fix on the already-open documentation PR #111. Plus fold-in F-A (a test
+                   # @DisplayName that claims a property the same round proved false).
+                   # PRIOR: ROUND 2 (session ctrib060r2) closed the round-1 /review fix-list: 3 blockers + 9 fold-ins.
                    # Doc rebased onto the train head 9594f96 and PUSHED -> documentation PR #111 (base
                    # release/1.0.0); capability swept to zero residue across Features/data-discovery/
                    # Architecture; ADR-0071 corrected. R7 now has a covering artifact that is RED on
@@ -1070,3 +1078,383 @@ id is `attachment-storage-configuration` (confirmed by fetching it — the short
 `DOC-514`, which already owns exactly this class for `custom-collectors.md`. A second candidate the same sweep
 raised — `Features.md` → `#additional-navigation-links-odd.links` — was checked against the live page and is
 **valid** (GitBook keeps the dot); recording it so the next sweep does not re-derive it as a finding.
+
+## Review (2026-09-02, session: review-ctrib060r2) — ROUND 2
+
+- **Result**: **REJECTED** — `pr-draft` → **`blocked`**. Round 2 closed all three blockers and all nine
+  fold-ins from the first review, and I re-derived that rather than reading it. What fails is **one table row
+  on the page this item authors**: `| -"test fixture" | entities that do not contain that phrase |` is the
+  only row in the Query-syntax table that does not work as typed — it returns **No matches found**, and the
+  page's own bullet four items below says so. One blocker, one fold-in, two-word fix, on a doc PR that is
+  already open.
+- **Session boundary**: fresh session. Round 2 (`ctrib060r2`) ran inside the `review-ctrib060` session and
+  says so; the separate-session rule binds `/review`, and this is the fresh one it asked for.
+- **Cheap precondition (the 2-minute bounce)**: NOT triggered — but I checked its premise rather than
+  accepting it. The round-2 gates table records unit **814/1 at the reworked tree** and argues the integration
+  bucket carries over because the production delta is comment-only. I verified that argument myself before
+  accepting it (below), and then re-ran the unit bucket anyway.
+
+### Reviewed subject (verified, not assumed)
+
+| fact | value | how verified |
+|---|---|---|
+| worktree | `../odd-platform-ctrib060` @ `cda7d277`, **clean**, 2 commits ahead of `origin/main` `b5d9f150` | `git status -sb` + `git log` |
+| PR #1873 | head SHA **== `cda7d277`**, `draft: true`, base `main` `b5d9f150`, 19 files +697/−61 | GitHub PR API (App token) |
+| upstream CI at `cda7d277` | **6/6 SUCCESS** — `run_tests`, `Test Results`, `run_playwright_tests/{test,lint,format-check}`, `update_release_draft` | GitHub check-runs API |
+| PR #1873 milestone | **none** — F4's "drop the free-text `Milestone: 1.0.0` line" is done; no sibling PR carries one either | PR API `milestone: None`, body grep |
+| doc branch | `origin/docs/CTRIB-060-search-query-operators` @ **`b67bfba`** — **pushed**, merge-base with `origin/release/1.0.0` **== `9594f96`** (the train head), `git merge-tree` → **0 conflicts** | `git ls-remote` + `git merge-base` + `git merge-tree` |
+| documentation PR #111 | **open**, base `release/1.0.0`, head `b67bfba`, `mergeable_state: clean`, draft | documentation PR API (App token) |
+| G-C15 dangerous zone | **does not fire.** Across the whole branch the four test files are `40/2`, `80/0`, `137/0`, `145/0` — and the only `-2` is two javadoc comment lines. **No assertion, matcher or expected value was changed**, nothing skipped, disabled or deleted | `git diff --numstat` + reading the one non-append diff |
+
+### The three blockers — each re-derived, not read
+
+- **B1 — the doc is on the train, from the train's head. CLOSED.** The branch is pushed (it was not, last
+  round: `git ls-remote --heads origin` returned four refs and none was `docs/CTRIB-060-*`; it now returns
+  five and the fifth is `b67bfba`). Its merge-base with `origin/release/1.0.0` **is** `9594f96`, so it is
+  rebased onto the current train head, not the `5b2bb04` it was cut from. `git merge-tree` returns **zero**
+  conflict markers, so the `description:` collision is genuinely resolved rather than deferred. And the
+  resolution went the way the fix-list asked: the new description keeps the train's `seven facets, kind and
+  class filters, and My data` framing (`e8fa107`'s sweep is preserved, the "plus seven faceted filters"
+  phrasing is gone) and adds the operators — **178 chars**, under the 200-char GitBook meta cap.
+  Train PR **#111** exists against `release/1.0.0`, the way DOC-495 went in as #109.
+- **B2 — the capability is swept to zero residue. CLOSED.** All three summary surfaces now carry it, each
+  linking `#query-syntax`: `Features.md` § Search and Filtering (*"Words match as prefixes, and three
+  operators refine a query that returns too much"*), `data-discovery.md`'s Search bullet (*"Prefix-matched
+  free-text search … with a [query syntax](…#query-syntax) for the cases a plain query is too blunt for"*),
+  and `Architecture.md:42` (*"Prefix-matched free-text across one ranked cross-kind list — with a small query
+  syntax (quoted phrase, `-exclusion`, `or`)"*). That is the six-page precedent `e8fa107` set, applied.
+- **B3 — ADR-0071 is corrected, and the correction is true. CLOSED, and I checked the new claims at the
+  reviewed SHA rather than the old ones.** `:30` now says the vector is *"matched with the `@@` operator
+  against a `tsquery` the platform composes from Postgres's own text-search constructors"* — and
+  `JooqFTSHelper.ftsCondition:120` is literally `DSL.condition("{0} @@ {1}", vectorField,
+  tsQueryExpression(plainQuery))`. `:47` re-anchors on **method names** instead of the stale `:103` line
+  number, and both resolve: `ftsCondition` at `:120`, `tsQueryExpression` at `:197`. Its
+  `V0_0_1__init.sql:196` citation lands exactly on `search_vector tsvector GENERATED ALWAYS … STORED`. The
+  three named constructors are all present and all reachable: `to_tsquery` (`:330`), `phraseto_tsquery`
+  (`:325`), `plainto_tsquery` (`:301`).
+
+### The nine fold-ins — mechanically checked
+
+- **F1 — R7's covering artifact. CLOSED, and the RED proof is mine.** Two cases in
+  `ReactiveDataEntitySearchResultsTest` assert that a phrase query and a `-exclusion` query partition **three
+  different queries in two repositories** identically — `findByState` (the list), `countByState` (the total),
+  `getEntityClassFacetForDataEntity` (the sidebar badge). I dropped the file onto the pure-`origin/main`
+  worktree `../odd-platform-ctrib060base` @ `b5d9f150` and ran it: **11 tests completed, 2 failed** — and the
+  failures are for exactly the right behavioural reason, not a wiring error:
+  - phrase → `["r7phrase customer orders daily", "r7phrase orders shipped from customer"]` where 1 row was
+    expected — the quotes are ignored on `main`, so a non-adjacent row matches;
+  - negation → `["r7neg customer test table"]` — on `main` the query returns **precisely and only the row it
+    was asked to exclude.** That is the inversion this slice exists to fix, demonstrated by the test.
+  Both pass here (they are inside my 814 below). A behavioural pin, not a tautology. Base worktree restored
+  to clean afterwards.
+- **F1b — the highlight half, and the honest correction.** Two `getHighlightedResult` cases were added, then
+  the implementer measured what they discriminate and found the answer was *nothing* — `ts_headline` marks
+  every lexeme **mentioned** in the tsquery regardless of structure. I re-measured that on a throwaway
+  `postgres:13.2-alpine`: `ts_headline('Customers test table', <the composed customer -test tsquery>)` →
+  `<b>Customers</b> <b>test</b> table`. **A negated term is highlighted.** The tests are kept with a comment
+  saying exactly that, and the manual sentence that implied otherwise was corrected on the train branch —
+  *"every word you typed, including an excluded one, so `customer -test` still marks `test`"*. Disclosing a
+  test that proves less than its author first thought is the right call and it is the harder one.
+  (One naming residue is on the fix-list — F-A.)
+- **F2 — comments. CLOSED.** `ReactiveAssetSearchRepositoryImpl:267-274` no longer says "stripped to word
+  tokens **before it reaches** `to_tsquery`"; the highlight test's javadoc no longer says
+  "operator-**stripped** upstream". Both now describe the composed expression.
+- **F3 — run-logs. CLOSED.** All four `2026-09-01-*` ctrib060 entries carry real numbers and are each
+  labelled *"filled retrospectively from the ledger, not re-executed here"* — which is the honest form. The
+  `revctrib0623` template residue in the same files belongs to another stream and was correctly left alone.
+- **F4 — ledger accuracy. CLOSED.** "the **ten** consumers" survives only inside the *first review's own
+  fix-list text* (the record of the fix), not as a live claim: the Ambiguity table and Design (d) both read
+  7 classes / 26 call sites. I re-counted from source: `grep` over `repository/reactive/*.java` gives
+  **exactly 7 classes**, **26** `ftsCondition`+`ftsRankField` sites, **plus 1** direct `tsQueryExpression` in
+  `getHighlightedResult` — 27 total, which is the figure the ledger states, split the way it states it.
+  `IT-003`'s `expected_result` now reads "(metacharacters, ships 0.28.0) and CTRIB-060 / odd-platform#1840
+  (operator shapes, ships **1.0.0**)". And there is no second FTS dialect anywhere: `grep` for
+  `to_tsquery|plainto_tsquery|phraseto_tsquery|websearch_` over `src/main` returns only `JooqFTSHelper` plus
+  three **comment** lines.
+- **F4b — the `must_haves` anchors. CLOSED, checked mechanically the way the contract asks.**
+  `grep -c "$anchor" "$path"` over all seven rows now returns **2 / 1 / 1 / 1 / 7 / 11 / 2** — non-zero for
+  every one. The dead `usesQueryOperators` is now `operatorDetectionMatchesPostgresGrammar`, which resolves.
+- **F4c — the sidecar label. CLOSED and still correct at the new head.** The `JooqFTSHelper` sidecar records
+  `extracted_at_commit`/`enriched_at_commit: 6281a9df`; `JooqFTSHelper.java` is byte-identical between
+  `6281a9df` and `cda7d277` (the round-2 delta does not touch it), so the label is accurate, not stale.
+- **F5 / F6 / F7 — CLOSED.** (a) "everywhere search does" is narrowed to *"every **full-text search**
+  surface"* with the Management sub-tabs and the Relationships list named as the plain-name-filter
+  exceptions; (b) the per-OR-branch drop is documented — *"`customer or -test` returns the `customer`
+  matches, not 'the customer matches plus everything that is not test'"*; (c) `catalog-overview.md` § Main
+  search names the `(i)`; (d) `ADR-0079`'s description is **180** chars, down from 240. My tree-wide sweep
+  over all 137 pages on `origin/release/1.0.0` still reports that 240 — because it ran on the train **base**,
+  which is exactly the point: this branch is what fixes it.
+
+### Unit bucket — my own full CI-replica run at the reviewed SHA
+
+`ODD_PLATFORM_DIR=../odd-platform-ctrib060 scripts/run-platform-tests.sh`, 27m08s:
+
+**814 tests completed, 1 failed** — 0 errors, 0 skipped, across **181 test classes** (parsed from the JUnit
+XML myself, every `<failure>`/`<error>` enumerated; XML mtimes `10:21`, i.e. this run, not a stale artefact).
+**Byte-identical to the round-2 ledger's 814/1**, and 814 = the previously-reviewed 810 + the 4 new cases,
+**all four of which pass**.
+
+The single failure is `OpenApiDocsContractTest.platformApiGroupDocumentLoads()` —
+`IllegalStateException: Timeout on blocking read for 60000000000 NANOSECONDS`. Non-attributable, now
+reproduced a **fourth** time (TST-061): the first review measured the class passing **alone** in 4m18s with a
+23.4-second springdoc init against a 60-second bound, and **upstream CI's `run_tests` is GREEN on this exact
+SHA** (`cda7d277`, 6/6).
+
+**Checkstyle — run separately, because my `build` never reached it.** `:test` failed, so gradle stopped
+before `check`'s remaining tasks and no checkstyle report exists from that invocation. I ran
+`:odd-platform-api:checkstyleMain :odd-platform-api:checkstyleTest` on their own: **BUILD SUCCESSFUL in
+3m01s, both tasks executed.** The build script sets `ignoreFailures = false` and `maxWarnings = 0` (and
+disables the XML/HTML reports), so a successful run *is* the zero-violation result. `assemble` also ran (jar
+written at 09:55, mid-build). Recording the gap and how I closed it rather than inheriting the ledger's
+"checkstyle green".
+
+### Integration bucket — carried over, and I verified the carry-over rather than accepting it
+
+The round-2 claim is that the SUT is behaviourally identical to the one `/review CTRIB-060` built and ran, so
+the four-suite verdict carries. **I tested that claim, and it holds:**
+
+```
+git diff --stat 6281a9df..cda7d277
+  ReactiveAssetSearchRepositoryImpl.java   |  8 ++      <- src/main
+  ReactiveDataEntityHighlightInjectionTest |  42 ++
+  ReactiveDataEntitySearchResultsTest      |  80 ++
+```
+
+The whole `src/main` delta is **one comment block** in `ReactiveAssetSearchRepositoryImpl:267-274`. Stripping
+the `+`/`-` markers and filtering out `//`, `*`, `/*` lines leaves **nothing**. No FE change, no resource
+change, no spec change. The image `/review CTRIB-060` built from `6281a9df`
+(`ODD_SUT=ref:6281a9df`, `sha256:a154cc2b`) is therefore the same system, and its result stands:
+`feature-complete` **328/12 with zero unattributed** (TST-059's eleven + TST-057's
+`swagger-openapi-discovery:63`) · `known-bugs` **3 RED, expected, zero unexpected GREENs** ·
+`multi-stack` **14/0** · `ingestion-e2e` **15/0**. I did **not** take the heavy-e2e flock; re-running 50+
+minutes of e2e against a provably identical binary would burn the machine for no information.
+
+### Acceptance criteria — the `must_haves` truths
+
+- [x] **R1 quoted phrase** — PASS. `"customer orders"` → `'custom' <-> 'order'`; RED-on-`main` proved by my
+      own run (2 rows returned where 1 was expected).
+- [x] **R2 negation EXCLUDES** — PASS, with the strongest RED available: on `main` the query returns
+      **exactly the row it was asked to exclude** (`["r7neg customer test table"]`), measured by me.
+- [x] **R3 `or`** — PASS. `'custom':* | 'order':*`; pinned by `AssetSearchServiceIntegrationTest`.
+- [x] **R4 plain-term parity** — PASS, and **structural**: `operatorGroups` returns `null` when
+      `QUERY_OPERATORS` does not match, and the caller then takes `prefixTsQuery` — the identical single
+      `to_tsquery(tsQuery(q))` call the pre-existing path made. Not test-dependent.
+- [x] **R4b prefix survives inside an operator query** — PASS. `appendBareTerms` routes the bare terms of an
+      operator query through the **same** `prefixTsQuery` call, so `cust -test` still prefix-matches. I
+      confirmed the underlying promise on real Postgres: `to_tsvector('Customers Orders') @@
+      to_tsquery('cust:*&ord:*')` → `t`.
+- [x] **R5 fail-closed** — PASS for this item's scope. Every leaf is a Postgres constructor that cannot
+      raise, every user value is a bind, and past 64 operator leaves the query fails **closed** rather than
+      falling back to the plain path (which would read `-x` as *required* — the right call, and commented as
+      such). The pre-existing tab/newline `42601` is **PLT-263**, filed, not a regression.
+- [x] **R6 no positive term → empty page, no sequential scan** — PASS. Per-**branch** guard
+      (`querytree({0}) = 'T' → CAST('' AS tsquery)`), which is the correct granularity; I re-measured the
+      algebra it rests on: `querytree((!! phraseto_tsquery('test fixture')))` → **`T`**, and the guarded
+      expression against a non-matching document → **`f`**.
+- [x] **R7 list / total / facet counts / ranking / highlights all agree** — **PASS, and now with the
+      artifact.** This was the one PARTIAL last round. Closed by F1, RED-verified on `main` by me.
+
+### Quality Bar
+
+- **Gate 1 — No duplicates: PASS** via `grep` over `src/main` for
+  `to_tsquery|plainto_tsquery|phraseto_tsquery|websearch_` → only `JooqFTSHelper` plus three comment lines.
+  No second dialect; the change reuses the single sink.
+- **Gate 2 — Aliases: N/A** via read of the changed doc pages — no new platform vocabulary; "quoted phrase" /
+  "exclusion" / "operator" are ordinary English in the operator's voice.
+- **Gate 3 — Caveats captured: PASS** via read of `search.md` — the metacharacter caveat is an amended
+  `{% hint style="info" %}` admonition (not a duplicate), and it now tells the reader what `"` and `-` did
+  **before** (silently ignored; `-word` read as *required*). The no-positive-term and per-OR-branch surprises
+  are both in the section's "details worth knowing" list.
+- **Gate 4 — Consumer-read: PASS** via `grep` census re-derived at `cda7d277` — 7 classes / 26 + 1 sites,
+  enumerated above. The doc's surface list (Catalog, Dictionary, query examples, lookup tables, suggestions)
+  maps 1:1 onto those classes.
+- **Gate 5 — Unset-parameter audit: N/A** — no SDK builder in scope.
+- **Gate 6 — Bidirectional code ↔ doc: FAIL.** Reverse direction is now fine (B2 closed it). The **forward**
+  direction fails on one claim: `search.md`'s Query-syntax table row
+  `| -"test fixture" | entities that do not contain that phrase |` has no code evidence — the code returns
+  the opposite. See the fix-list. Every other claim on the page I traced to code or measured on Postgres.
+- **Gate 7 — Layout: PASS** via read — no `SUMMARY.md` change is owed (no new page); `## Query syntax` sits
+  before `## Faceted search`, which is the right reading order (type first, then filter); `#query-syntax`
+  and `#per-result-transparency` both resolve against real headings (`:15` and `:117`), and `#query-syntax`
+  resolves from all three new inbound pages.
+- **Gate 8 — Publishing: PENDING-RELEASE (1.0.0)** — and this time the train precondition is genuinely met
+  (it was the round-1 failure). Branch pushed @ `b67bfba`, cut from the train head `9594f96`, zero merge
+  conflicts, PR #111 open against `release/1.0.0`. Branch-verifiable sub-checks against the train commit, all
+  **PASS**: PyYAML parses the frontmatter on all 7 changed pages; every `description` is ≤200 chars
+  (178 / 173 / 161 / 191 / 178 / 189 / 180); no `: ` YAML hazard; every relative link and anchor on the
+  changed pages resolves. Live today: `https://docs.opendatadiscovery.org/features/data-discovery/search`
+  → **200**, still carrying the 0.29.0 description and **no** Query-syntax section — exactly right for a
+  release-gated change. **Owed at the 1.0.0 gate**: fetch that URL plus `/features/`-prefixed
+  `data-discovery/catalog-overview`, `Features`, `data-discovery`, `Architecture`,
+  `developer-guides/architecture-decision-log/adr-0071-…` and `…/adr-0079-…`, and confirm the phrases
+  *"Query syntax"*, *"bare words as prefixes"*, *"a quoted phrase and an excluded word match exactly"*, and
+  the corrected ADR-0071 `@@`-against-a-composed-tsquery sentence render.
+- **Gate 9 — Factual claim provenance: PASS.** The contributor pillar uses no `Sources:` footer (the posture
+  accepted at `/review CTRIB-059`, `CTRIB-062` and round 1); provenance is inline in the commit bodies, and
+  I re-derived every load-bearing claim rather than trusting it — the census, the ADR-0071 citations, the
+  `querytree`/`ts_headline`/prefix algebra on a real `postgres:13.2-alpine`, the RED-on-`main` behaviour, the
+  CI status, the train topology, and the seven `description` lengths. Both commit bodies carry `Sources:` /
+  `EVIDENCE` blocks anyway.
+- **Gate 10 — Content-type homing: PASS** — operator-facing syntax on `data-discovery/search.md`; the wire
+  contract as a `description` on `SearchFormData.query` in `components.yaml` (Swagger is the API-reference
+  surface); the developer-audience restatement on the ADR-log page. Nothing API-reference-shaped embedded in
+  a feature page.
+- **Gate 11 — Audience isolation: PASS.** Mechanical grep over **every added line** of the doc diff for
+  `Cornerstone N` / `Gate N` / `LSN-` / `SHB-` / `DOC-` / `IT-` / `TST-` / `PLT-` / `CTRIB-` / `ST-N` /
+  `#18xx` / `feature-flow` / `Quality Bar` / `sidecar` / `playbook` / `retrospective` / `backlog` /
+  `scanner` / `lineage/` / `websearch_to_tsquery` / `JooqFTSHelper` → **one hit**, and it is not a leak:
+  `JooqFTSHelper` on **ADR-0071's Evidence line**, a developer-guide surface whose established format is
+  `file:line` code citations — the line it replaced already read `JooqFTSHelper.java:103`. Classified per
+  the Gate 11 Exceptions table. Zero hits on every operator-facing page.
+
+### The fix-list — one rework pass
+
+**BLOCKER**
+
+- **A1 — the one Query-syntax table row that does not work as typed.** On the train branch,
+  `docs/data-discovery/search.md`'s operator table ends with:
+
+  > `| -"test fixture" | entities that do **not** contain that phrase |`
+
+  Typed exactly as printed, that query returns **No matches found**. It is the only row in the table with no
+  positive term, so the per-branch index-searchability guard collapses it to the empty tsquery. Measured on
+  `postgres:13.2-alpine`, not reasoned: `querytree((!! phraseto_tsquery('test fixture')))` → **`T`**, the
+  guarded `CASE` → the empty tsquery, and `to_tsvector('a customer table') @@ <guarded>` → **`f`**. The
+  tokenizer path confirms it — `-` sets `negated`, the quoted span is consumed as one `phraseLeaf(…, true)`,
+  no bare terms are appended, so the single group holds a single negated leaf.
+
+  It also **contradicts the same page four items later**: *"A query with nothing to look for finds nothing.
+  `-test` on its own has no positive term, so it returns **No matches found** rather than 'everything except
+  test'."* The bullet is right; the table row is wrong. Every other row in the table is a complete, working
+  query, and a table exists precisely so the reader does not have to reconcile it against the prose.
+
+  **Fix**: give the row a positive term — `customer -"test fixture"` → *"entities matching `customer` but not
+  containing that phrase"* — which is what the row was demonstrating (negation composes with a phrase) and is
+  runnable as printed. Then re-read the whole table once against the bullets below it and confirm no other
+  row promises results the guard withholds.
+
+  This is release-gated, so it is **not live yet** — which is the entire reason to fix it now rather than
+  file it. It publishes at the 1.0.0 gate otherwise, and the operator who tries the last row first concludes
+  the operator syntax is broken.
+
+**FOLD INTO THE SAME PASS**
+
+- **F-A — a test whose `@DisplayName` claims more than the test proves, and more than is true.**
+  `ReactiveDataEntityHighlightInjectionTest`'s second new case is named
+  `getHighlightedResult_negation_marksOnlyTheMatchedTerm` with
+  `@DisplayName("an excluded term is not marked up - the row is highlighted on what it matched (#1840)")`.
+  The **body's own comment** says the opposite is the general truth, and I measured it: `ts_headline` marks a
+  negated lexeme when the document contains one (`<b>Customers</b> <b>test</b> table` for `customer -test`).
+  The assertion is correct only because the seeded document happens not to contain `test` — the comment says
+  so honestly, but the DisplayName is what lands in the CI report and in a future reader's scan, and it
+  states a property this round explicitly established as **false** (and corrected on the manual page in the
+  same commit). Rename to what it proves — e.g. *"an operator query reaches ts_headline as a valid composed
+  tsquery and returns sane markup"* — so the test and the manual cannot drift apart later.
+
+**NOT ON THE FIX-LIST — stated so the rework does not over-correct**
+
+- **The mechanism substitution remains the right call, and round 2 did not weaken it.** Composing from
+  tsquery primitives instead of `websearch_to_tsquery` preserves the printed prefix promise; I re-confirmed
+  the cost first-hand (`cust` stops matching `Customers` under websearch).
+- **The per-branch guard, and the honesty about what it costs.** Guarding each OR branch rather than the
+  whole expression is the correct granularity, and round 2 **documented** the consequence
+  (`customer or -test` drops the branch) rather than leaving it for an operator to discover.
+- **F1b is the standard this workspace asks for and rarely gets.** The implementer wrote two tests, measured
+  what they actually discriminate, found the answer was *nothing*, said so in the code and in the commit
+  body, and corrected the manual sentence that had implied otherwise. Only the DisplayName lagged.
+- **The patch-coverage gate is still reported as inert rather than as "100 %".** I re-checked:
+  `odd-platform-api/build.gradle:181-188` `jacocoExcludes` carries `'**/repository/**'`, and both changed
+  production files live under `repository/`. Inert is the truth, and saying so is the harder call.
+- **PLT-263 was correctly NOT folded.** A one-line fix inside the very method this PR owns, but outside the
+  GATE-1-approved plan and changing behaviour for an input class the plan never covered. Folding it is the
+  maintainer's call, not the implementer's, and round 2 was right to say so.
+
+### Summary lines
+
+- **Outbound URL sweep**: on the changed doc pages — every relative link and same-page anchor resolves
+  against the tree; `#query-syntax` resolves from all three new inbound pages. Tree-wide over all 137 pages
+  on `origin/release/1.0.0`: 0 YAML failures; 1 over-200 `description` (**ADR-0079's 240**, which this branch
+  fixes to 180); 4 unresolvable relative targets, of which 1 is a markdown-escaped underscore (false
+  positive) and 3 are DOC-514's already-filed `custom-collectors.md` links. Live fetches this run: the
+  search page, `main-concepts`, `owners`, `oauth2-oidc`, `microservices`, `active-platform-features` — all
+  **200**.
+- **Banned-phrase check**: none used. Every verdict line above ends in a citation, a measured value, or an
+  explicit statement of what I did not measure.
+- **Regressions**: **none attributable.** Unit 814/1 at `cda7d277` (mine), the one failure independently
+  reproduced and green on upstream CI at the same SHA. Integration carried from a **provably** identical
+  binary (comment-only `src/main` delta, verified by stripping and filtering the diff). Checkstyle 0
+  violations (mine, run separately). The two new tests are RED on `origin/main` (mine) — no test was changed,
+  weakened, skipped or deleted.
+- **Navigation**: **consistent.** `navigation/domains/search.md:11` carries the accurate `JooqFTSHelper`
+  entry (7 classes / 26 sites — I re-counted, it is exact) plus the `getHighlightedResult` /
+  `getQuerySuggestions` and `MainSearchInput` / `SearchSyntaxHint` pointers. No pointer went stale.
+- **Upstream issues logged**: none new this run. **PLT-263** (filed round 1) stands, unfolded by design.
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: the partition round 1 queued, read end-to-end —
+    `docs/active-platform-features/**` (6), `docs/data-lineage/**` (2), `docs/data-quality/**` (4),
+    `docs/use-cases/**` (5), `docs/configuration-and-deployment/**` (21) and the 15 root pages; plus a
+    targeted read of `docs/integrations/**` (14) and a **tree-wide mechanical sweep of all 137 pages** for
+    unresolvable links, unresolved anchors, YAML-parse failures and >200-char descriptions.
+    **Queued for the next `/review`**: `docs/integrations/**` read end-to-end rather than swept (the
+    per-adapter field tables need the `odd-collectors` source to verify, which this session did not have),
+    and `docs/data-discovery/**` re-read (round 1 covered it).
+  - **Findings**:
+    - **DOC-515** (high, parallel-surfaces-with-drift / incomplete-sweep residue) —
+      `data-lineage/microservices.md` still tells API callers *"Always pass an explicit `lineage_depth` —
+      omitting it returns HTTP 500"*. `#1758` shipped `default: 1` in **0.29.0**, the latest published
+      release; **DOC-481** corrected this claim on two pages and its `affected_files` named only those two.
+      The third is live on docs `main` and contradicts both siblings, which it links to. Source:
+      `docs/data-lineage/microservices.md:52`. Live-verified (200, phrase present).
+    - **DOC-516** (high, internal contradiction on a security control / incomplete-sweep residue) —
+      `oauth2-oidc.md`'s admin-detection matrix says `exact match` for **Cognito / Google / Azure AD** and
+      `exact (principals)` for **GitHub**, while four other rows in the same table say
+      `case-insensitive full match`. The code has **no** per-provider divergence: every provider and LDAP go
+      through `OperationUtils.containsIgnoreCase` = `element::equalsIgnoreCase`
+      (`AbstractOIDCUserHandler:38,50`, `GoogleUserHandler:60`, `GithubUserHandler:59,119`,
+      `LDAPSecurityConfiguration:48`). The page contradicts `admin-promotion.md:51` **and its own** GitHub
+      admonition three rows below. **DOC-336** fixed one row, **DOC-339** fixed three; four were left. Error
+      is in the under-estimating direction — a differently-cased `admin-principals` entry an operator
+      believes inert still grants ADMIN. Live-verified.
+    - **DOC-514 extended in place** (not a new item — same class, same page-set, same released-truth
+      routing, and it is `pending` so nobody is mid-fix): two more live broken anchors.
+      `permissions.md:97,100` deep-link `owners.md#3-…` / `#4-…`, but GitHub-book emits `id-3.-…` / `id-4.-…`
+      for numeric-leading headings (prefix **and** the dot preserved) — read directly off the live page's
+      `<h3 id=…>`. A tree-wide sweep bounds the class at exactly these two links and one page with numbered
+      headings, and that bound is now an acceptance criterion on DOC-514.
+    - **DOC-510 re-derived, not re-filed** (LSN-009). Reading `metrics-ingestion.md:76` and
+      `notifications.md:91` against `notifications.md:9,104` and ADR-0079 surfaced the ingestion-filter
+      contradiction from a third entry path; the backlog grep found DOC-510 already owns it across **six**
+      pages. Nothing to add — recording the independent re-derivation as convergent evidence that its
+      `critical` priority is right.
+    - **DOC-509 re-derived, not re-filed** (LSN-009). `active-platform-features.md:15` still describes the
+      pre-0.29.0 Alerts view — *"**All / My Objects / Dependents** tabs"* and *"lists **open** alerts only;
+      resolved history is read on each entity's own Alerts tab"*. I verified against the spec that
+      `AlertViewType` is `ALL / MY_OBJECTS / DOWNSTREAM / UPSTREAM` with **no** `DEPENDENTS`, and that the
+      four-tab split shipped in **0.29.0** (`git show 0.28.0:…` → 0 hits for `UPSTREAM`, `0.29.0` → 1), so
+      the landing bullet is wrong on docs `main` today while its own child page documents the change. The
+      backlog grep found DOC-509 already owns it, `pending`.
+  - **Verified non-findings** (recorded so the next audit does not re-derive them): `#terms-and-aliases`
+    resolves live from all five inbound links (GitBook slugs `Terms & Aliases` correctly — my slugifier's
+    false positive, not a defect); `enable-security/README.md` is **already correct** about ADR-0079's
+    whole-namespace coverage and is rightly absent from DOC-510's six-page list; `SUMMARY.md`'s
+    `quick\_launch\_…` and `Architecture.md`'s `architecture\_collector.png` are markdown-escaped
+    underscores, not broken paths.
+
+### Notes
+
+- **Resource discipline.** The heavy-e2e flock was **not** taken — the integration carry-over is proved, not
+  assumed, so re-running it would have cost ~50 minutes of machine for zero information.
+  `git status --short lineage/` is **empty**: no `/enrich`, no probe, no ontology drift. The base worktree
+  `../odd-platform-ctrib060base` was modified for the RED proof and restored (`git checkout --`, verified
+  clean). This review commits exactly the verdict, its `state/active-streams.yaml` entry,
+  `state/PROGRESS.md`, and the three follow-up artefacts (DOC-515, DOC-516, DOC-514's extension).
+- **A gap in my own first attempt, disclosed.** My `run-platform-tests.sh` invocation never reached
+  checkstyle, because `:test` failed and gradle stopped. I noticed the missing report directory rather than
+  writing "checkstyle green" from the ledger, and ran both tasks separately. Recording it because the next
+  reviewer of a red-test build will hit the same thing.
+- **On the verdict.** The engineering here is verified and, in several places, verified more strictly than
+  the item claims — the RED-on-`main` proof, the per-branch guard, the honest retraction in F1b, the refusal
+  to report an inert coverage gate as 100 %. What sends it back is one row in one table: the last example a
+  reader will copy out of the new Query-syntax section does not return anything, and the page says so itself
+  four bullets later. It is release-gated, so it is catchable today and unfixable-quietly tomorrow. Two
+  words, on a doc PR that is already open.

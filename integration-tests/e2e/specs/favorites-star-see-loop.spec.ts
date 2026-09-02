@@ -271,14 +271,15 @@ test.describe('Favorites — star -> find it again via the search filter (#1815 
     await expect(page.getByText('Favorites (shared) only')).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('[data-qa="filter-favorites-info"]')).toBeVisible();
 
-    // G-C12 step 5 — capture the rendered sidebar for a human read (contrast, wrapping, legibility, and
-    // that the control sits with its siblings rather than looking bolted on). A green assertion says the
-    // element exists; it says nothing about whether it looks right, which is a different question.
-    await page.locator('#filters, [class*="Filters"]').first().screenshot({
-      path: 'test-results/ctrib061-favorites-filter-sidebar.png',
-    }).catch(async () => {
-      await page.screenshot({ path: 'test-results/ctrib061-favorites-filter-sidebar.png' });
-    });
+    // G-C12 step 5 — capture the rendered page for a human read (contrast, wrapping, legibility, and that
+    // the control sits with its siblings rather than looking bolted on). A green assertion says the element
+    // exists; it says nothing about whether it looks right, which is a different question.
+    //
+    // FULL PAGE, no locator. The first attempt scoped this to a guessed sidebar selector with a `.catch`
+    // fallback — but `locator.screenshot()` WAITS for its element, so a non-matching selector burns the whole
+    // 60s test timeout before the fallback can run. It failed a case that had been passing. A defensive
+    // `.catch` around an awaited locator is not defensive.
+    await page.screenshot({ path: 'test-results/ctrib061-favorites-filter-sidebar.png', fullPage: true });
   });
 
   test('with the scope on and nothing starred, the empty state TEACHES the star', async ({

@@ -1256,12 +1256,12 @@ before ST-8 shipped its tests), so nothing is inherited here — including green
 
 | Gate | State |
 |---|---|
-| Full unit build (`:odd-platform-api:build` = test + checkstyle + assemble) | running at `ad3a9189` |
-| Patch coverage, 98% changed-lines aggregate | queued — `check.dependsOn jacocoTestReport`, so the build above produces the XML; script is ctrib062's, with my `cur`-leak fix |
-| `IT-148` GREEN on the working-tree SUT | queued |
+| Full unit build (`:odd-platform-api:build` = test + checkstyle + assemble) | **BUILD SUCCESSFUL, 26m17s** at `ad3a9189` — 0 checkstyle violations, `AssetSearchFavoritesIntegrationTest` 6/6 in 5.42s |
+| Patch coverage, 98% changed-lines aggregate | **PASS — 14/14 = 100.00%** |
+| `IT-148` GREEN on the working-tree SUT | **7/7 PASS**, 1.5m, SUT `ad3a9189+uncommitted` (identity read from the run log) |
 | `IT-148` RED on `ODD_SUT=ref:main` | queued — the proof the narrowing oracle bites |
 | Full 4-suite regression | queued |
-| Rendered-UI screenshot (G-C12 step 5) | **folded into the IT run** rather than costing a separate stack — captured in the DISABLED-label case |
+| Rendered-UI screenshot (G-C12 step 5) | **captured AND read** — see §24b |
 | Docs authored + committed on `release/1.0.0` | **done** (`79612a0`, rebased onto `379baf3`) |
 | Ontology `/enrich` + sidecar | **done** pre-rebase; the rebase moved the link construction to `buildSearchLink` but did not change what the sidecar describes |
 | G-C11 milestone re-verified at PR time | **done** — #1841 open, milestone 1.0.0 open, checked live |
@@ -1269,3 +1269,56 @@ before ST-8 shipped its tests), so nothing is inherited here — including green
 **Screenshot rationale.** A green e2e assertion says the control *exists*; it says nothing about whether it
 *looks* right next to its siblings. Capturing it inside the run that already has the stack up costs nothing,
 where a separate run would cost a full SUT build.
+
+### 24a. Patch coverage — the pre-registration held
+
+```
+FavoritesScopeDto.java                        2/2    100.00%
+ReactiveAssetSearchRepository.java            NOT IN REPORT
+ReactiveAssetSearchRepositoryImpl.java        NOT IN REPORT
+AssetSearchServiceImpl.java                  12/12   100.00%
+
+CHANGED-LINES AGGREGATE: 14/14 = 100.00%   gate=98%   PASS
+```
+
+§20 registered this **before** running it: *"most of the Java change is under `repository/reactive/`, which
+`build.gradle` excludes from jacoco, so those should report NOT IN REPORT — correct, not a bug, since CI's
+aggregate excludes them from both sides. The measurable lines are `AssetSearchServiceImpl` and
+`FavoritesScopeDto`, both driven by all six behaviour tests. Expectation: ~100%."* Both halves match.
+
+That the number is 100% is the *least* interesting part. ctrib062's finding was that the percentage is a
+symptom and the defect is shipping documented promises unverified — so the question this gate actually
+answers is whether any **documented** behaviour of mine is uncovered. It is not: the three-state contract,
+the per-identity scoping, the soft-delete semantics and the composition with `asset_kinds` each have a
+behavioural case on a real Postgres, and the one performance sentence in the source was measured separately
+(§22) and **corrected** when the measurement disagreed with it.
+
+Tool reused rather than rebuilt: ctrib062's `patch-coverage.py`, carrying the `cur`-leak fix I reported and
+they verified with a synthetic diff. Copied into this session's scratchpad since their session directory may
+be reaped.
+
+### 24b. The rendered surface, actually looked at
+
+Captured full-page inside the DISABLED-label case and **read as a user**, not merely asserted to exist:
+
+- **"Favorites (shared) only" renders with its inline-help icon.** R3 and R10 confirmed visually, which is a
+  different claim from "the DOM node is present" — that is all the assertions could ever say.
+- **The two personal scopes are adjacent, not interleaved among the facets.** My data is absent from this
+  shot *because* the stack is `auth.type=DISABLED` and ST-8's control hides itself there — exactly the
+  difference the docs now call out. Under authenticated auth the rail reads Asset type / Data entity type /
+  My data / Favorites / Datasource / …, so the taxonomy I wrote into `search.md` matches the pixels.
+- **The checkbox reads as a boolean, visually distinct from the value-selector facets** around it. That is
+  correct rather than inconsistent: it *is* a different kind of control, which is the whole reason the docs
+  describe four kinds rather than one list.
+- The un-starred foil is present in the unfiltered list, as the case intends.
+
+**And the gate cost me a passing test before it paid off.** My first attempt scoped the screenshot to a
+guessed sidebar selector with a `.catch` fallback. `locator.screenshot()` **waits** for its element, so the
+non-matching selector burned the full 60s test timeout before the fallback could run — failing a case that
+had been green. **A `.catch` wrapped around an awaited locator is not defensive; it only moves the failure.**
+Now a plain full-page screenshot with no locator and no wait.
+
+That is the **fourth** DOM-selector assumption to bite in this one spec (`data-qa` on a styled MUI icon;
+`.check()` on a navigating control; `#filter-datasources` behind a combobox; and now this). The pattern is
+real: I hold API payloads to "capture the actual shape first" and have repeatedly let DOM selectors through
+on reasoning alone.

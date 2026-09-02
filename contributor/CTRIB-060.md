@@ -4,21 +4,26 @@ title: "#1840 ST-6 — Query operators: websearch_to_tsquery (quoted phrase / -n
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1840"
 parent_epic: 1825
 class: "feature — search query language"
-status: review-ready   # ROUND-3 REVIEW (session review-ctrib060r3, 2026-09-02): **ACCEPTED**, pr-draft ->
-                       # review-ready. Round 3's two commits close the round-2 fix-list and I re-derived both:
-                       # EVERY row of the Query-syntax table re-measured on postgres:13.2-alpine (5/5 return
-                       # what their cell claims; the removed row reproduces as NO MATCHES), every prose claim
-                       # in the section measured or traced to source, the census re-derived (7 classes /
-                       # 26+1 sites, no second dialect), G-C15 clean across the WHOLE branch (the only test
-                       # removals are 2 javadoc lines). Unit 814/1 at 8008eb8b (mine, XML-parsed, 181 classes,
-                       # checkstyle + assemble executed and clean); the one failure is TST-061's springdoc
-                       # timeout, 6th reproduction, green on upstream CI at this exact SHA (6/6). Integration
-                       # carried and PROVED over the whole 6281a9df..8008eb8b chain: zero non-comment lines in
-                       # src/main + UI + spec. Gate 8 = PENDING-RELEASE (1.0.0): branch pushed @ b96800f,
-                       # merge-base == train head 9594f96, 0 conflicts, PR #111 open/clean, all 7 descriptions
-                       # PyYAML-clean and <=191 chars. -> human GATE 2 (merge) owns the rest.
-                       # Editorial audit filed DOC-517 (high) + DOC-518 (medium, on the still-open PR #111) and
-                       # extended DOC-433; DOC-510 + DOC-355 re-derived, not re-filed.
+status: pending-release   # GATE 2 MERGED 2026-09-02 by RamanDamayeu -> review-ready -> pending-release.
+                          # odd-platform PR #1873 squash-merged as `969a5d5b` on origin/main; its tree hash
+                          # is **identical** to the reviewed 8008eb8b (e0c79aed...), so what shipped is
+                          # byte-for-byte what round 3 reviewed. Issue #1840 auto-closed (state_reason
+                          # completed). documentation PR #111 merged into release/1.0.0 as `379baf3` — ON THE
+                          # TRAIN, and correctly NOT on docs main (still 8599b84 / 0.29.0). All verified
+                          # against the remote refs, not local state.
+                          # NOT `done`: milestone 1.0.0. Gate 8 live verification is OWED at the release gate
+                          # (`/review release:1.0.0`), which owns the pending-release -> done flip.
+                          # PRIOR: ROUND-3 REVIEW (session review-ctrib060r3, 2026-09-02): ACCEPTED. Every row
+                          # of the Query-syntax table re-measured on postgres:13.2-alpine (5/5 honour their
+                          # cell; the removed row reproduces as NO MATCHES); every prose claim measured or
+                          # traced to source; census re-derived (7 classes / 26+1 sites, no second dialect);
+                          # G-C15 clean across the WHOLE branch. Unit 814/1 at 8008eb8b (mine, XML-parsed,
+                          # 181 classes, checkstyle + assemble executed and clean); the one failure is
+                          # TST-061's springdoc timeout, 6th reproduction, green on upstream CI (6/6).
+                          # Integration carried and PROVED over the whole 6281a9df..8008eb8b chain: zero
+                          # non-comment lines in src/main + UI + spec.
+                          # Editorial audit filed DOC-517 (high) + DOC-518 (medium) and extended DOC-433;
+                          # DOC-510 + DOC-355 re-derived, not re-filed.
 milestone: "1.0.0"        # G-C11 PASS — live GET issues/1840 2026-08-30: milestone 1.0.0, state OPEN, semver, due 2026-07-31
 slice: "ST-6 of #1825"
 base_sha: "82e7e70e"      # odd-platform origin/main at intake (= #1862 ST-5c merged)
@@ -1851,3 +1856,47 @@ provably identical binary buys no information.
   *table itself* is now measured rather than argued: five rows, five compiled tsqueries, five row sets, on the
   version we deploy. The one claim I could not confirm is filed against the open doc PR rather than held over
   the item, and I have written down why so the call can be overruled in a sentence.
+
+## GATE 2 — merged 2026-09-02 (maintainer `RamanDamayeu`)
+
+Both PRs merged. Verified against the **remote refs**, not local state (CLAUDE.md Gate 8).
+
+| | |
+|---|---|
+| odd-platform **#1873** | `merged: true`, squash → **`969a5d5b`** on `origin/main`, merged 2026-09-02T11:29:49Z by `RamanDamayeu`. Parent is `b5d9f150` — the exact base the branch was rebased onto, so the squash is fast-forward-equivalent |
+| **squash fidelity** | `git rev-parse 8008eb8b^{tree}` == `git rev-parse 969a5d5b^{tree}` == `e0c79aed5163e6c17e634c9f892185caca04f805`, and `git diff 8008eb8b 969a5d5b` is **empty**. What shipped is byte-for-byte what round 3 reviewed — zero drift between the verdict and the merge |
+| issue **#1840** | **closed**, `state_reason: completed`, 11:29:50Z (one second after the merge — the `Closes #1840` trailer fired). Milestone `1.0.0` still **open**, which is correct: the release has not cut |
+| documentation **#111** | `merged: true` into **`release/1.0.0`** as merge commit **`379baf3`**, 11:27:39Z. The four doc commits (`17032ab`, `3a15257`, `b67bfba`, `b96800f`) are on the train |
+| docs `main` | still `8599b84` (the 0.29.0 merge) — the change is correctly **not** published. Exactly right for a release-gated item |
+| post-merge CI on `main` | `update_release_draft` **success**; `images` in progress at the time of writing. The full suite runs on PRs in this repo, and it was **6/6 green on the exact tree that merged** |
+
+**Status: `review-ready` → `pending-release`, not `done`.** This is a `milestone: 1.0.0` item and its
+documentation half publishes at the release gate. Gate 8's live verification is **owed**, and
+`/review release:1.0.0` (`playbooks/release-review.md`) owns the `pending-release` → `done` flip.
+
+### What is owed at the 1.0.0 gate
+
+Fetch and confirm the rendered phrases on each (live GitBook slugs carry the `/features/` prefix and lowercase
+`adr-NNNN`):
+
+| Page | Confirm |
+|---|---|
+| `/features/data-discovery/search` | the `## Query syntax` section renders; *"bare words as prefixes"*; the operator table's last row reads **`customer -"test fixture"`** (the round-2 defect); the amended metacharacter hint naming `"` and a leading `-` |
+| `/features/data-discovery/catalog-overview` | the **(i)** query-syntax hint named under § Main search |
+| `/features/Features` · `/features/data-discovery` · `/features/Architecture` | the prefix rule + the three operators, each linking `#query-syntax` |
+| `/features/developer-guides/architecture-decision-log/adr-0071-…` | the `@@`-against-a-composed-tsquery sentence (the `? @@ to_tsquery(?)` literal is gone) |
+| `/features/developer-guides/architecture-decision-log/adr-0079-…` | the 180-char description (was 240, over GitBook's 200-char meta cap) |
+
+Also at the gate: run the four IT suites against `ODD_SUT=published:1.0.0` — this change is in `969a5d5b`, so
+the release-review's suite run is its first exercise on a published artefact.
+
+### Open follow-ups this item leaves behind
+
+| Item | State | Note |
+|---|---|---|
+| `DOC-502` | `pending-release` | the paired doc item; on the train, publishes with this |
+| `DOC-518` | `pending`, milestone 1.0.0 | the stemming qualifier. **Its ride-along is gone** — #111 merged, so it needs its own branch off the train head. Still pre-publication, still cheap |
+| `PLT-263` | `draft`, high | tab/newline → `42601` → sticky 500. Pre-existing, deliberately unfolded (outside the GATE-1 plan). A one-line `split("\\s+")` inside the method this PR now owns — worth folding into whatever touches `JooqFTSHelper` next |
+| `TST-061` | open | the `OpenApiDocsContractTest` springdoc timeout, six reproductions now |
+| `TST-060` | open | the coordination gap (the flock serialises regressions, not stack bring-up) |
+| `DOC-517` | `pending`, high | released-truth, docs `main`, unrelated to this train |

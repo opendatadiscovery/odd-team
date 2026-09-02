@@ -1368,3 +1368,25 @@ correct result (§16): `getByText('IT148FavTerm')` would match `IT148FavTermFoil
 `IT148PlainTerm`, and no fixture name in the spec is a substring of another — verified pairwise, not eyeballed.
 
 Both directions re-run at the amended SHA with the corrected case.
+
+### 24e. Two regression-run signals checked rather than assumed
+
+**1. The SUT was REUSED, not rebuilt.** The run logs `source: explicit raw image (build-sut bypassed):
+odd-platform:odd-team-sut-ctrib061`. ctrib062's warning (§21) is precise about this: *reuse a prebuilt tag
+only after checking it against what your run actually built, never by tag name.* Traced it:
+
+- the image was built by the IT-148 v3 run, which logged `WORKING TREE @ 3d5a7096` — **no `+uncommitted`**
+- my branch HEAD is `3d5a7096`, worktree clean (0 files)
+
+So the reused image *is* the committed tree. Safe — but established by tracing the build, not by the tag
+happening to carry my stream name.
+
+**2. `lineage-extractor` fails to build — pre-existing and tracked.** The run emits
+`hatchling.build.build_editable failed`. That is **`TST-058`** verbatim: *"The api-probe rail of every
+regression suite is DEAD: lineage/_extractor fails to build (hatchling rejects `readme = "../README.md"`), so
+P-001 never runs and feature-complete reports `api:FAIL` unconditionally."* I have not touched
+`lineage/_extractor` (clean in `git status`, last commits long predate this slice).
+
+**Consequence for reading the result: an `api:FAIL` line in `feature-complete` is not attributable to this
+slice** and must not be counted as one. Recording that *before* the numbers land, so it cannot become a
+convenient reading afterwards.

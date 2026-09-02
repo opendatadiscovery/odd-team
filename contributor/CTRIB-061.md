@@ -5,7 +5,7 @@ github_issue: 1841
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1841
 target_repo: odd-platform
 milestone: "1.0.0"
-status: review-ready
+status: blocked
 classification: feature
 stream_id: ctrib061
 base_sha: 969a5d5b   # rebased onto ST-6 (#1873) + ST-8 (#1871) after both merged; the original plan was cut at 82e7e70e
@@ -1396,3 +1396,254 @@ P-001 never runs and feature-complete reports `api:FAIL` unconditionally."* I ha
 **Consequence for reading the result: an `api:FAIL` line in `feature-complete` is not attributable to this
 slice** and must not be counted as one. Recording that *before* the numbers land, so it cannot become a
 convenient reading afterwards.
+
+## Review (2026-09-03, session: review-ctrib061)
+
+- **Result**: **REJECTED** — `review-ready` -> `blocked`. Six of the ten spec requirements verified first-hand,
+  the shipped code is the strongest of the ST-slices reviewed so far, and **CI is green on the reviewed head
+  SHA**. It is bounced on three things, one of which is the only serious one: **at merge, this feature's only
+  end-to-end coverage leaves every regression gate and nothing on disk will notice** (B2).
+- **Reviewed artefact**: `contrib/CTRIB-061-favorites-filter @ 3d5a7096` (worktree clean; `git status` empty),
+  DRAFT PR #1875 (`mergeable_state: clean`, head SHA matches the item) + documentation
+  `docs/CTRIB-061-favorites-filter @ 79612a0` / DRAFT PR #112 (base `release/1.0.0`, exactly 1 commit ahead of
+  `origin/release/1.0.0 @ 379baf3`).
+- **Intake preconditions**: fresh session (no `/implement` here). **No 2-minute bounce**, checked rather than
+  assumed: §24's ledger prints the four-suite regression as *"running"*, but the run-logs exist at the reviewed
+  artefact — `integration-tests/run-log/2026-09-02-{feature-complete,multi-stack,known-bugs,ingestion-e2e}.md`,
+  SUT `odd-platform:odd-team-sut-ctrib061` digest `sha256:2465c623…`, source `../odd-platform-ctrib061 @
+  3d5a7096`. `Sources:` footer N/A — the contributor pillar uses none (posture accepted at `/review CTRIB-059`
+  and re-affirmed at CTRIB-060/062); provenance is inline in the commit body and I re-derived the load-bearing
+  claims rather than trusting them.
+
+### Acceptance criteria — spec §4
+
+| # | Verdict |
+|---|---|
+| **R1** cross-kind narrowing | **PASS** — `ReactiveAssetSearchRepositoryImpl.java:404-413` adds a correlated `EXISTS`/`DSL.not(exists)` on `FAVORITE` keyed on the polymorphic `(ASSET_KIND, ASSET_ID)` pair with `DELETED_AT IS NULL`, threaded through all three repo methods. Behaviour proved on a real Postgres by `AssetSearchFavoritesIntegrationTest` (6 cases), each asserting a starred asset present **and** an un-starred foil absent |
+| **R2** per-user, ownership-free | **PASS** — identity only from `CurrentUserIdentityResolver` (`AssetSearchServiceImpl:80-83`), never the request. Read the resolver first-hand: `resolve()` **cannot** complete empty (`switchIfEmpty(Mono.fromSupplier(() -> new UserDto(SHARED_USERNAME, SHARED_PROVIDER)))`), which is what makes the `flatMap`-wrapping composition safe rather than a silent empty response. `searchAssets_favorites_isScopedToTheCallerIdentity` writes a favorite under `("another.user","LOGIN_FORM")` and proves it invisible, `total == 1` |
+| **R3** DISABLED labelled | **PASS, with a recorded deviation** — the label ships as `Favorites only` / `Favorites (shared) only`, not the literal `Favorites` / `Favorites (shared)` R3 wrote. The `(shared)` convention (`FavoritesColumn.tsx:44`) is preserved; the `only` suffix follows from the GATE-1 toggle decision and is what the docs describe. Deviation is honest and better — recorded, not waived |
+| **R4** tab retired, no stranded bookmark | **PASS** — `App.tsx:76` `<Route path={favoritesPath()} element={<Navigate replace to={favoritesSearchLink} />}>`; toolbar entry deleted (`ToolbarTabs.tsx`); `favoritesPath` survives **only** as the redirect source (grep: 3 hits, all in `App.tsx` + its own `routes/favoritesRoutes.ts`) |
+| **R5** finding a favorite is not worse | **DEFERRED by GATE-1 to ST-7b** — enforcement verified on disk, not taken on trust: `backlog/docs/DOC-503.md` carries `milestone: "1.0.0"`, and the release-gate manifest command returns it. `issues/odd-platform/PLT-257-st7b-recently-favorited-ordering.md` present, ASCII-clean |
+| **R6** panel deep-links pre-filtered | **PASS** — `FavoritesColumn.tsx:21` `buildSearchLink({ favorites: 'yes' })`, not a literal; `data-qa='favorites-view-all'`; IT case 3 clicks it |
+| **R7** survives every other control | **PASS** — `Search.tsx:120` `favorites: live.favorites` inside the mirror-merge object; IT case 4 toggles the Datasource facet and re-asserts narrowing |
+| **R8** i18n ×7 | **PASS — measured by me, not read from the record.** Parity script over all 7 catalogs: 691 keys each, **0 missing / 0 orphan**, no duplicate JSON keys. The 2 new keys are genuinely translated in all 6 non-en catalogs. The tooltip string pre-existed and is translated ×7. Swept all 29 distinct `t()` literals in the 13 changed FE files against `en.json`: **0 missing.** The repo's own guard `i18n-key-parity.test.ts` re-run by me at `3d5a7096`: **17/17 green** |
+| **R9** empty state teaches the star | **PASS** — `Results.tsx:91-97,205-209`; IT case 7 |
+| **R10** DISABLED consequence, not just state | **PASS** — `AppTooltip` + `InformationIcon` behind a plain `span` carrying `data-qa` (with the MUI prop-forwarding reason written at the call site); vitest + IT case 6 |
+
+### Quality Bar
+
+- **Gate 1 — No duplicates: PASS.** Reuse is real, not claimed: `buildSearchLink` (ST-8's helper) replaces three
+  hand-rolled URL constructions; `CurrentUserIdentityResolver` reused verbatim; the `(shared)` convention reused
+  rather than re-phrased. Subtraction verified — `favoriteAssetNamespace/Description/UpdatedAt` +
+  `FAVORITES_TABLE_COLS` deleted with the tab, and I re-derived that **every** surviving export of
+  `Favorites/lib.ts` has a live consumer (`favoriteAssetId/Name/Link`, `assetKindSingularLabel`,
+  `ASSET_KIND_OPTIONS` — all traced). Zero dangling references to the deleted symbols outside a comment.
+- **Gate 2 — Aliases: PASS.** `main-concepts.md:121` "Asset" row rewritten in the same PR so the alias no longer
+  points at the retired tab's filter.
+- **Gate 3 — Caveats as admonitions: PASS.** The DISABLED shared-bucket consequence is a `hint style="warning"`
+  on both `favorites.md:45-47` and `search.md:143-150`, and in-product as inline help — not prose.
+- **Gate 4 — Consumer-read: PASS** (`CurrentUserIdentityResolver.java`, `UserDto.java`, `Filters.tsx`
+  `handleClearAll:37-42`, `ResultItem.tsx:108`, `useNavigateToSearch.ts:22-25`,
+  `searchUrlState.ts` both directions, `.github/workflows/{run-pr-tests.yaml,run-playwright-tests.yml}`).
+- **Gate 5 — Unset-parameter audit: N/A** — no SDK builder in scope.
+- **Gate 6 — Bidirectional code <-> doc: FAIL (minor, two gaps) — S1, S2 below.**
+- **Gate 7 — Layout: PASS.** `SUMMARY.md` needs no change (`favorites.md` survives as a page) and is correct;
+  the renamed `### The Favorites tab` heading has **zero** inbound anchors tree-wide; both changed frontmatters
+  parse under PyYAML, carry no `: ` hazard, and are **162** and **188** chars (≤200 GitBook cap); all four new
+  outbound links + the `#my-data` anchor resolve on the branch.
+- **Gate 8 — PENDING-RELEASE (1.0.0).** The doc is genuinely **authored**, not parked: commit `79612a0` on
+  `origin/docs/CTRIB-061-favorites-filter`, one commit ahead of `origin/release/1.0.0`, DRAFT PR #112 into the
+  train. Post-merge live verification owed at the release gate for
+  `docs.opendatadiscovery.org/data-discovery/favorites` + `…/search` + `…/catalog-overview` + `…/main-concepts`;
+  phrases: "Favorites only", "The Favorites filter on Catalog search", "Existing links and bookmarks to
+  `/favorites` still work", "Favorites (shared) only".
+- **Gate 9 — Factual claim provenance: FAIL — B1 below.**
+- **Gate 10 — Content-type homing: PASS.** Spec prose to the spec, operator prose to the manual, the alias row
+  to `main-concepts.md`, the perf measurement to a code comment + an issue draft. Nothing embedded off-home.
+- **Gate 11 — Audience isolation: PASS.** Mechanical grep over all four changed doc files for `Cornerstone N` /
+  `Gate N` / `LSN-` / `DOC-` / `CTRIB-` / `TST-` / `PLT-` / `sidecar` / `playbook` / `Quality Bar` / `backlog`:
+  **zero hits on any changed line**. The `lineage` / `pillar` hits are product vocabulary on untouched lines.
+- **G-C15 — changed tests: PASS.** Nothing was neutered. `AssetSearchScopePredicateTest` (3 sites) and
+  `AssetSearchServiceMyDataTest` (4 sites) are **arity-only** adaptations — one extra `any()` on the stubs, a
+  literal `null` on the direct calls (which *is* "no narrowing", the behaviour those tests already assert); the
+  `AssetSearchScope` captor still captures at its own position. `lib.test.ts` drops two cases because their
+  subjects were deleted — the only legitimate reason. No matcher weakened, nothing skipped or disabled.
+  **The RED proof is the real evidence**: 7/7 GREEN on the committed tree (`sha256:c633b225`, no `+uncommitted`)
+  and **7/7 RED on `main @ 969a5d5b`** — after the first RED proof caught the one case that asserted presence
+  instead of narrowing and could never fail. That is the gate working.
+
+### Regressions — what I measured myself
+
+| Gate | Evidence |
+|---|---|
+| **Unit (BE)** | **CI `run_tests` SUCCESS** at the reviewed head SHA (`actions/runs/33645871023/job/100300334241`), which is `./gradlew odd-platform-api:build` + the JaCoCo `min-coverage-changed-files: 98` gate. All 6 check-runs green |
+| **FE vitest — full suite** | **RAN BY ME at `3d5a7096`: 185 passed / 1 failed (186), 35 files.** The one failure is `DataSourceItem.test.tsx` "REJECTED delete → dialog stays open" timing out at 5000 ms — **A/B-proved change-independent**: re-run in isolation it is **2/2 green in 2290 ms**. Same test, same conclusion `/review CTRIB-062` reached on 2026-08-31, re-derived here rather than inherited. It is contention-sensitive (a live `ctrib063` playwright run + a gradle daemon were on the box), not a defect of this slice |
+| **FE vitest — this slice** | **61/61 green**: `FavoritesFilter` 9/9, `searchUrlState` 34/34, `Favorites/lib` 1/1, `i18n-key-parity` 17/17 |
+| **`tsc --noEmit`** | **clean** (exit 0, zero output) |
+| **ESLint on the 13 changed FE paths** | **0 errors, but 4 `prettier/prettier` warnings — S3 below** |
+| **Integration (4 suites)** | implement's run at the reviewed SUT digest: `feature-complete` 328 passed / 12 failed with **zero unattributed** (11 = TST-059's named set, verified by exact `spec:line` not by count; 1 = TST-057's springdoc case; `api:FAIL` = TST-058, pre-registered before the numbers landed), `multi-stack` / `known-bugs` / `ingestion-e2e` logged. **My confirmation run is deliberately deferred** — see "Deferred" |
+| **`ODD_SUT=ref:main` RED proof** | 7/7 RED at `969a5d5b`, digest `sha256:82f571c7` |
+
+**Read-only discipline held**: `../odd-platform-ctrib061` is byte-clean after all four of my runs
+(`git status --short` empty); `lineage/**` untouched by me.
+
+**Deferred, and why (stated, not hidden).** I did not run my own four-suite confirmation regression.
+Two reasons, both concrete: (a) **`ctrib063` is LIVE on the box** — `npx playwright test
+demo-stand-first-run.spec.ts` (pid 3107807) with an external stack, and G-C2 serialises heavy e2e; (b) the
+fix-list below **changes odd-platform source** (B1 edits a comment in `ReactiveAssetSearchRepositoryImpl`), so
+the SUT changes and any regression I ran now would be invalidated by the rework. The confirmation four-suite
+run belongs to the **re-review at the reworked SHA**, where it has to happen anyway. Deferring it moves the run;
+it does not avoid it.
+
+### The fix-list — one rework pass, nothing spawned as separate work
+
+**B1 — the shipped source comment cites a DUPLICATE tracker id (Gate 9, blocking).**
+`ReactiveAssetSearchRepositoryImpl.java:410` ships *"Tracked as PLT-258"* into a public repository. `PLT-258` is
+claimed **twice**:
+
+- `issues/odd-platform/PLT-258-facet-search-exact-match-only.md` — filed by **ctrib062**, commit `b16d17ba`,
+  2026-08-31 **02:23**, and cited five times in `contributor/CTRIB-062.md` as its own.
+- `issues/odd-platform/PLT-258-favorites-anti-join-broad-query-cliff.md` — filed by **this stream**, commit
+  `3ddb562a`, 2026-08-31 **16:37** — fourteen hours later, and after `PLT-259` (09:58) already existed, so the
+  next-free id at that moment was **PLT-260**.
+
+PLT-NNN in odd-platform source is an established convention (41 files on `origin/main` cite one, including
+`ReactiveAssetSearchRepositoryImpl.java:351`'s own `PLT-260`) — which is exactly why an ambiguous id is a defect
+and not a nit: a maintainer following the pointer lands on an unrelated facet-search issue half the time. This
+is the `id_enumeration_canonical_tracker_only` rule: next-free = max of the canonical tracker dir + 1.
+**Fix:** renumber this stream's draft to **`PLT-264`** (verified free — max in `issues/odd-platform/` is
+`PLT-263`, and no `PLT-264` exists anywhere), then update the source comment, §11/§22 of this record, and the
+`ctrib061` `terminal_note` in `state/active-streams.yaml`. Leave ctrib062's PLT-258 alone — it was there first.
+
+**B2 — at merge, IT-148 leaves every regression gate, and no mechanism brings it back (blocking).**
+This is the serious one. `f855eeba` moved IT-148 into a **new `pending-merge` lane** — correctly, and for a good
+reason. But the graduation back is recorded **only** as prose: two comments in `integration-tests/suites.yaml`
+and a paragraph in the protocol. I checked for an owner and there is none:
+
+- `integration-tests/run-regression.sh:31` — the default suite set is
+  `feature-complete known-bugs multi-stack ingestion-e2e`. **`pending-merge` is never run by anything.**
+- `grep -rn "pending-merge" playbooks/ pillars/ .claude/skills/` -> **zero hits.** Neither
+  `/review`, `/contribute`, `playbooks/release-train-merge.md` nor `playbooks/release-review.md` knows the lane
+  exists; the release review's own suite list (check 2) does not include it.
+
+So when #1841 merges, IT-148 — the **only** end-to-end proof of the whole slice, and the artefact this record
+spent the most care on — sits in a lane no gate executes, permanently and silently. That is precisely the
+"graduate-or-die" failure the lane's own rationale invokes; the probes it compares itself to have a stated rule
+in `pillars/tests/pillar.md:60`, and this lane has none. It also contradicts this item's own `must_haves`
+artifact row, which promises *"the lane wiring stays truthful after re-grounding"*.
+**Fix (both halves, same pass):** (i) a tracked item carrying `milestone: "1.0.0"` whose acceptance is "IT-148 is
+back in `feature-complete` + `ui-e2e`" — so the release gate's `grep -rl 'milestone: "1.0.0"'` manifest forces the
+reconciliation the way DOC-503 does for R5; (ii) one line in `pillars/tests/pillar.md` giving `pending-merge` the
+same graduate-or-die status the probes have, so the **next** stream to use the lane is caught by the framework
+rather than by a reviewer.
+
+**B3 — `suites.yaml` lane comments are stale, in both directions (blocking, same artifact row).**
+`feature-complete` still carries IT-148's full 7-line description at `:22-28`, and the `ui-e2e` lane comment at
+`:139` still names *"IT-148 Favorites star->find-it-again via the search filter"* — while
+`yaml.safe_load` shows IT-148 in **`pending-merge` only**. A reader of the file is told the opposite of what it
+does. Move both comments to the `pending-merge` block (or delete them).
+
+**S1 — `search.md:182`'s canonical "what travels with the link" list omits `favorites` (Gate 6).**
+The bullet enumerates *"the sidebar facet selections, the Asset-type and Data-entity-type filters, the active
+ordering, and the **My data** scope with its per-direction depths"*. `favorites` is the fifth URL-only dimension
+and this change added it — the new section at `:132` says so, but the page's own canonical list does not. A
+reader building a share-link mental model from the enumeration gets a wrong list.
+
+**S2 — the `favorites=no` state is user-reachable and documented nowhere (Gate 6).**
+The parser keeps it, the projection sends `false`, the backend anti-joins, and the control deliberately renders
+**indeterminate** for it (`FavoritesFilter.tsx:47`). A user who opens a shared or hand-edited `?favorites=no`
+link sees a half-ticked checkbox over a narrowed list with no explanation anywhere in the manual. One sentence
+in the Favorites section — or a Known-limitations bullet — closes it.
+
+**S3 — ESLint drift in this slice's own new lines, contradicting the record (fold-in).**
+Line 549 records *"ESLint … CLEAN — 0 errors; 7 prettier warnings auto-fixed with `--fix`, then re-verified to
+0 problems"*. At the reviewed SHA I measure **4 `prettier/prettier` warnings**, all on lines this change wrote:
+`App.tsx:76` (the new redirect Route), `FavoritesFilter.test.tsx:104,105` (the indeterminate case),
+`searchUrlState.ts:354` (the new return). The formatting regressed across the rebase and the record's claim no
+longer describes the artefact. CI cannot catch it: `run-playwright-tests.yml`'s `lint` and `format-check` jobs
+both `cd tests` — they lint the **Playwright** directory, never `odd-platform-ui`. Run `eslint --fix` and
+re-verify.
+
+**S4 — §24's ledger omits the FE gates at the rebased SHA (record, fold-in).**
+§23 states *"Every gate is re-owed at the rebased SHA … Re-running from scratch"*, and §24 claims *"every one
+re-run, none carried forward"* — but the FE row (vitest / `tsc` / ESLint / i18n parity, line 546-549) is dated
+2026-08-31 and appears nowhere in the §24 table, on the one surface the item itself proved CI does not cover.
+The rebase demonstrably changed that surface (`buildSearchLink` in two link builders, the `myObjects` ->
+`myData` fixture). **I ran them and they are green** (above), so this is a record defect and not a product
+risk — but S3 is what an unrecorded gate hides, and it is the fourth instance of the expired-fact-carried-forward
+pattern this record itself named. Put the FE row in the ledger with the SHA it was measured at.
+
+**S5 — `favorites.md` contradicts itself about what can be starred from a result row (editorial).**
+`:18` says *"Catalog Search result rows — star **a data entity** straight from the results list"*; `:52` — a line
+**this change wrote** — says *"where you can star **an asset** straight from a result row"*. `:52` is the correct
+one: `ResultItem.tsx:108` renders `<FavoriteStar assetKind={asset.assetKind} …>` for every kind, guarded only by
+`hasRef`. The change created the contradiction by fixing one half.
+
+**S6 — `favorites.md:35` gestures at an ordering this slice deliberately does not ship (editorial).**
+*"…or sort the result the way you sort any other search."* True of the generic sort control, but it sits in the
+section replacing a tab whose distinguishing capability was **newest-starred-first**, and GATE-1 decision 2
+deferred exactly that to ST-7b. §7 step 11 was right to drop the explicit claim; this sentence half-restores it
+by implication. `search.md`'s Favorites section makes no such offer — two descriptions of one feature that
+differ in what they promise.
+
+**S7 — `search.md:46` / `:76` order the filter kinds the opposite way round from the rail (editorial,
+pre-existing, now compounded).** The page says *"The first is a set of seven aggregated facets … the second kind
+… The third and fourth kinds are the two personal scopes **below**"*. `Filters.tsx:65-95` renders **Asset type ->
+Data entity type -> My data -> Favorites -> Datasource -> … -> Statuses**: the "first kind" is last on screen and
+the "third and fourth" are above it, not below. Introduced by ST-8's `e8fa107`, extended here. Either number the
+kinds in rail order or say plainly that the numbering is expository.
+
+**Nits, same pass** — (a) `searchUrlState.test.ts`: the new `describe` was inserted **between** the
+`/** ST-2b — … */` JSDoc and the `describe('sort defaults…')` it documents, so that comment now labels the
+favorites block; (b) `Filters.tsx:27-30`'s `handleClearAll` comment enumerates what the reset clears
+(`asset_kinds`, the My-data scope + depths) and does not mention `favorites`, which it does clear — and IT case 4
+asserts; (c) `navigation/domains/search.md:19` still reads *"Filters.tsx — 7 filter components: Datasource, Type,
+Namespace, Owner, Tag, Groups, Statuses"*, three slices out of date (ST-4, ST-8, now ST-7) — pre-existing drift
+this change extends, and CLAUDE.md makes keeping it current an implementer duty; (d) §11's follow-up table is
+split into two by a stray blank line after the PLT-256 row, and omits PLT-258 and TST-062 which §19/§22 filed.
+
+### Doc-product editorial audit (mandatory step, ran)
+
+- **Coverage this run**: `docs/data-discovery/**` read end-to-end **on the train** (`79612a0`) — the first review
+  at which **both** personal scopes exist together, which is the coherence question no single-slice review could
+  ask: `search.md` (218 lines, whole page), `favorites.md`, `recently-viewed.md`, `catalog-overview.md`,
+  `main-concepts.md`'s alias table — plus a tree-wide sweep for residual Favorites-tab claims (`git grep -i
+  "favorites tab|/favorites|top-level Favorites"` over all of `docs/**`: **3 hits, all the intentional migration
+  hints**), an inbound-anchor sweep for the renamed heading (**zero**), and a main-nav tab-list sweep (**zero**
+  stale lists). Chosen as the partition because `review-ctrib060r2` ran the tree-wide 137-page sweep on
+  2026-09-02 and `/review CTRIB-062` cleared `developer-guides/**`, `integrations/**` and
+  `active-platform-features/**` on 2026-09-01.
+- **Queued (carried forward, unchanged by this run)**: `master-data-management/**` beyond the ST-6 sweep,
+  `use-cases/**`, `data-modelling/**`.
+- **Findings**: **none filed as new DOC items, deliberately.** All four coherence defects (S1, S2, S5, S6) and
+  S7 are on the two pages this rework is already editing — logging is for work nobody is about to touch, so they
+  are in the fix-list above (the don't-over-log rule / LSN-009).
+- **Verified-and-correct, recorded so the next run need not re-derive it**: the two-personal-scope taxonomy is
+  coherent across `search.md` / `favorites.md` / `recently-viewed.md` / `catalog-overview.md`; the
+  Favorites-vs-Popular and Recently-Viewed-vs-Popular disambiguations both survive the retirement; the
+  `(shared)` DISABLED warning is phrased in the same shape on all three personal surfaces; `favorites.md:29`'s
+  "five most-recently-favorited" survives correctly because the **panel** really does order `created_at DESC`
+  (`ReactiveFavoriteRepositoryImpl.java:83`) — only the retired tab's full-list ordering was dropped.
+
+### Follow-ups
+
+- **Upstream issues logged**: none new. `PLT-256` / `PLT-257` / the anti-join draft verified present on disk and
+  **ASCII-clean** (0 non-ASCII bytes each, per `reference_issue_drafts_ascii_only`); the anti-join draft needs
+  renumbering per B1, not re-filing.
+- **Backlog items filed**: none. `TST-062` and `DOC-503` verified present and accurate.
+- **Independently re-derived, NOT re-filed** (LSN-009): the `DataSourceItem` vitest contention timeout — same
+  test, same A/B verdict as `/review CTRIB-062`. It is the vitest face of `TST-061`'s load-sensitivity class
+  (`OpenApiDocsContractTest`, BE) and `TST-060`'s (e2e); noted there rather than spawning a fourth item for one
+  more instance of a class already tracked twice.
+
+### Notes
+
+- The single best thing in this slice is that the **RED proof found the neutered case its own protocol was
+  written to prevent** (§24d), and the ontology gate found a control that lied about an applied filter (§19).
+  Both were caught by *running* things, not by reading them. That is the standard.
+- The three blockers share one shape: **a fact that was true when written, quietly ceasing to describe the
+  artefact being shipped** — an id that was free when chosen, a lane comment that was right before the move, a
+  formatting run that was clean before the rebase. §24c named that pattern as a habit after three instances;
+  B1/B3/S3 are instances four, five and six, and they are the reason the FE ledger row in S4 matters.
+- Nothing in the product behaviour is wrong. VERIFIED via the runs cited above; every gate verdict here ends in
+  a file:line, a run-log, a CI job URL, or a command I executed in this session.

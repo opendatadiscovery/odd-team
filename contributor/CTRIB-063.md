@@ -216,7 +216,7 @@ So `curl -fsS` really does discriminate booting from ready on this image (exit 7
    - `odd-platform-enricher.depends_on` → long form, `odd-platform: {condition: service_healthy}`.
    - `odd-collector.depends_on` → long form, `sample-postgresql: {condition: service_started}` (today's semantics, preserved) **plus** `odd-platform: {condition: service_healthy}` — an explicit new edge, justified: the collector cannot do anything without the platform, `PLATFORM_HOST_URL` is `http://odd-platform:8080` (`docker/.env:5`, always the in-compose platform), and on a bare `docker compose up` it currently restart-loops against a port nothing is listening on.
 2. **`tests/docker/docker-compose.yaml`** — the same block for `odd-platform`, and `odd-platform-enricher.depends_on` → `condition: service_healthy`. **Added to scope after the Phase-A consumer scan, not in the issue.** This file mounts the very same `injector/inject.py`, has the identical short-form `depends_on`, and is what `npm run odd-up` / `tests/docker/up-platform.sh` bring up for anyone running the Playwright suite locally. Fixing `demo.yaml` alone would leave the identical bug live one directory away, in the harness a contributor uses to check their own work. No CI risk either way: the workflow's stack-and-run steps are commented out (`run-playwright-tests.yml:62-77`).
-3. **`injector/inject.py`** — make the readiness poll robust, and stop the script reporting success while under-delivering. All four changes close the same class the issue's two defects are instances of.
+3. **`injector/inject.py`** — make the readiness poll robust, and stop the script reporting success while under-delivering. Every bullet below closes the same class the issue's two defects are instances of, except the last, which is a named one-line fold-in.
    - **budget**: `REACH_TRIES_NUMBER` 20 → 60 and a new `REACH_RETRY_DELAY_SECONDS` 2 → 5, both env-overridable via the file's existing `os.getenv(...)` idiom — so the standalone invocation documented at `build-and-run-odd-platform.md:107` is safe too, where no compose gate applies;
    - **robustness**: a per-request `timeout` (today a hung connect has no bound at all); catch `requests.exceptions.RequestException` (a superset of today's `ConnectionError`); guard `hc_response.json()`, which currently raises straight out of the retry loop on a non-JSON body; and a give-up message that names the cause and the remedy (how long it waited, that a cold first boot applies ~92 migrations, and the knob to raise);
    - **validate before working**: read `datasources.json` and every sample once, up front; if any sample's `data_source_oddrn` is not defined, print each offending `file → oddrn` and exit non-zero. The now-unreachable `Skipping …` branch in the injection loop is deleted (subtraction, not addition). **Forward direction only** — a defined-but-unused data source is NOT an error, because `tests/docker/injector/` legitimately carries one (5 defined, 4 samples) and a bidirectional check would break the Playwright harness. The forward direction is the one that drops data; the reverse creates nothing and loses nothing.
@@ -293,8 +293,10 @@ must_haves:
             Playwright harness stand stops starting"
     - from: "IT-154"
       to: "the stock demo stand"
-      via: "the IT drives `docker/demo.yaml` from the odd-platform worktree under its own compose project;
-            the demo's host ports are hard-coded 8080/5432, so the IT must own them for its duration"
+      via: "the IT drives `docker/demo.yaml` from the odd-platform worktree under its own compose project,
+            composed with a host-port-remap-ONLY override (the demo's 8080/5432 are hard-coded and a developer
+            stack may hold them); the container-network path odd-platform:8080 the enricher uses is untouched,
+            so the readiness gate and the injection are exercised exactly as a user gets them"
 ```
 
 ### Test plan (G-C9 — both buckets)
@@ -318,6 +320,7 @@ must_haves:
   5. searching `transaction_dataset` returns the S3 sample's entity → **deterministic RED on base** (0 results);
   6. a deliberately-broken sample set (one sample re-pointed at an undefined oddrn, in a copied fixture dir) makes the injector exit **non-zero** naming that file → **deterministic RED on base** (base exits 0 and prints one `Skipping` line).
   The RED half is proved by running the same protocol against the base worktree (`../odd-platform-ctrib063` at `969a5d5b`), not argued.
+  **Placement + port isolation** (decided from the suite file, not assumed): IT-154 brings up its OWN compose stack, so it joins the **`multi-stack`** suite (`suites.yaml:112-118`, alongside IT-008/009/010/011/012/123/124/153), never `feature-complete` — that suite's whole point is that its specs share one global stack. The demo file's host ports are hard-coded `8080` and `5432`, which no other suite spec uses but a developer's own stack might, so the spec composes `docker/demo.yaml` with a small **host-port-remap-only** override (`-f docker/demo.yaml -f <override>`) under its own compose project. Nothing else is overridden: the enricher reaches the platform over the compose network at `odd-platform:8080` either way, so the readiness gate, the injection and the healthcheck are exercised exactly as a user gets them.
 - **Full regression (G-C2):** `integration-tests/run-regression.sh ctrib063` — all four suites (`feature-complete` green · `multi-stack` green-target · `known-bugs` expected-RED · `ingestion-e2e` green-target) plus the full CI-replica unit build `scripts/run-platform-tests.sh`, both at the committed SHA. The change cannot plausibly affect them (it touches no `src/`), and measuring that is exactly the point.
 
 ### Docs decision (G-C10 + G-C11)

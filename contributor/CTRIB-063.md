@@ -4,14 +4,15 @@ title: "#1870 — the demo stand does not deliver what its README promises: the 
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1870"
 parent_epic: null
 class: "bug — two independent defects in the local demo stand (docker/demo.yaml orchestration + injector/inject.py robustness + one sample's data). No production code path is touched."
-status: planned
+status: plan-approved
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1870` 2026-09-02: milestone 1.0.0, state OPEN, semver, due 2026-07-31 (20 open / 10 closed)
 base_sha: "969a5d5b"      # odd-platform origin/main at intake (= #1873 CTRIB-060 ST-6 merged), fetched with the App token; local `main` identical
 reproduced: "YES — both defects, on stock origin/main @ 969a5d5b. See `## Reproduction`. Defect 1 witnessed live twice on the maintainer's own stack (2026-09-01 13:13 and 2026-09-02 15:41, both exit 1); Defect 2 reproduced deterministically in this stream's pristine worktree (9 data sources, `Skipping //s3/cloud`, enricher exit 0)."
 adr_required: false       # no migration, no auth/security-posture change, no public-contract change; the change introduces no new architectural pattern (it adopts docker compose's own documented readiness mechanism)
-plan_approved_by: ""
-plan_approved_at: ""
+plan_approved_by: "RamanDamayeu"   # GATE 1, 2026-09-02, via AskUserQuestion: full scope; injection failures LOUD BUT NOT FATAL (option C); NO CI workflow change
+plan_approved_at: "2026-09-02"
+scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1870#issuecomment-5513140972"   # posted by odd-contributor[bot] 2026-09-02T16:50:38Z immediately after GATE 1, before any code (G-C5); read back from the API: 3842 bytes, 0 non-ASCII
 pr_url: ""
 pr_draft: true
 docs_routing: "release/1.0.0 train (the behaviour it describes is unreleased) — see `## Docs decision`"
@@ -241,8 +242,7 @@ So `curl -fsS` really does discriminate booting from ready on this image (exit 7
    - **budget**: `REACH_TRIES_NUMBER` 20 → 60 and a new `REACH_RETRY_DELAY_SECONDS` 2 → 5, both env-overridable via the file's existing `os.getenv(...)` idiom — so the standalone invocation documented at `build-and-run-odd-platform.md:107` is safe too, where no compose gate applies;
    - **robustness**: a per-request `timeout` (today a hung connect has no bound at all); catch `requests.exceptions.RequestException` (a superset of today's `ConnectionError`); guard `hc_response.json()`, which currently raises straight out of the retry loop on a non-JSON body; and a give-up message that names the cause and the remedy (how long it actually waited, that a first start is slow because it applies the whole database migration set against an empty database, and the env knob to raise). No migration *count* is baked into the message — the measured value today is 92 (`Successfully applied 92 migrations`, this stream's run) and it grows with every release, so a number would rot;
    - **validate before working**: read `datasources.json` and every sample once, up front; if any sample's `data_source_oddrn` is not defined, print each offending `file → oddrn` and exit non-zero. The now-unreachable `Skipping …` branch in the injection loop is deleted (subtraction, not addition). **Forward direction only** — a defined-but-unused data source is NOT an error, because `tests/docker/injector/` legitimately carries one (5 defined, 4 samples) and a bidirectional check would break the Playwright harness. The forward direction is the one that drops data; the reverse creates nothing and loses nothing.
-   - **an injection failure is no longer swallowed, and no longer mis-diagnosed**: `inject.py:106-111` today catches everything with a bare `except:`, prints a guess — *"Possibly the 'ingestion.filter.enabled' property is set to 'true'"* — and **continues to exit 0**. This is not hypothetical: on the second run of the stock demo it fires, and the guess is **wrong** (see Root cause 3 — the real answer is `400 USR003`, an upstream alert-uniqueness defect now recorded on `PLT-014`). So `inject_data` raises with the **actual HTTP status and response body**, the failures are collected and printed as a final summary naming each file, and the process exits non-zero. (`except Exception`, not bare `except:`, so Ctrl-C still works.) **The re-run consequence is a GATE-1 question, not a decision taken here** — see `## GATE-1 decisions`.
-   - **a `VALIDATE_ONLY` switch** (~3 lines, same `os.getenv` idiom): run the validation, report, exit — no platform contact. This is what lets CI exercise the guard without a test framework, and it is the same code path the real run takes, so the guard cannot drift from the behaviour it guards.
+   - **an injection failure is no longer swallowed, and no longer mis-diagnosed** — *GATE-1 decision D1 = option C, loud but not fatal*: `inject.py:106-111` today catches everything with a bare `except:`, prints a guess — *"Possibly the 'ingestion.filter.enabled' property is set to 'true'"* — and continues. This is not hypothetical: on the second run of the stock demo it fires, and the guess is **wrong** (Root cause 3 — the real answer is `400 USR003`, an upstream alert-uniqueness defect now recorded on `PLT-014`). So `inject_data` raises with the **actual HTTP status and response body**; each failure is reported at the point it happens and again in a **final summary naming every failed file with its status**; the hint survives only as a hint. The process **still exits 0** — the maintainer's call at GATE 1, and a coherent one: a *configuration* error means the demo cannot possibly deliver and fails fast before any work (the validation bullet above, exit non-zero), whereas a *runtime* rejection may be upstream or transient and a red container on every repeat `up` is worse for a demo than a loud summary. (`except Exception`, not bare `except:`, so Ctrl-C still works.) **Residue, recorded:** the exit code alone still cannot distinguish a complete run from a partial one; the summary is what a reader must look at.
    - **trivial fold-in, named rather than hidden**: `DATA_SOURCES_ONLY = os.getenv("DATA_SOURCES_ONLY") or False` (`:10`) treats *any* non-empty string as true, so `DATA_SOURCES_ONLY=false` currently means true. One line, in a file this change already rewrites; folded in and called out in the PR body rather than left as a known bug behind a ticket.
 4. **`docker/config/injector/samples/08_s3_ingestion.json`** — `data_source_oddrn`: `//s3/cloud` → `//s3/cloud/aws`, matching both `datasources.json` and the sample's own entity oddrns.
 5. **`docker/README.md`** — Step 1 gains one sentence: the first start takes about a minute while the platform applies its migrations, and the enricher now waits for it; and Prerequisites names the real compose floor (docker-compose >= 1.27, or any `docker compose` v2+) instead of "preferably the latest". Two existing promises need no edit because the code change makes them true: `:36` "10 predefined data sources" and `:65` "Overall you should see 11 data sources" — the second one is repaired by change 4 as well, and is currently just as wrong as the first.
@@ -261,9 +261,10 @@ must_haves:
        which file and which oddrn — instead of one `Skipping` line among forty and a zero exit code."
     - "Run standalone (no compose), the injector waits minutes rather than 40 seconds for a platform that is
        still booting, and if it does give up it says what to do next."
-    - "If any sample fails to inject, the run names it, reports the platform's ACTUAL status and response
-       body, and exits non-zero — never a zero exit code with a guess about a property that is not even set.
-       (Measured: on a second run today this fires, and today's guess is wrong.)"
+    - "If any sample fails to inject, the run names that file and reports the platform's ACTUAL status and
+       response body, at the point of failure and again in a closing summary — never a guess about a property
+       that is not even set. (Measured: on a second run today this fires, and today's guess is wrong.)
+       Per GATE-1 decision D1 the exit code stays 0; the summary is the signal."
     - "`npm run odd-up` (the Playwright harness stand) is subject to the same readiness gate, so a contributor
        checking their own work does not hit the identical race one directory away."
   artifacts:
@@ -282,9 +283,6 @@ must_haves:
     - path: "odd-platform:docker/README.md"
       provides: "the reader knows the first start takes ~a minute and that the wait is expected"
       anchor: "first start"
-    - path: "odd-platform:.github/workflows/run-pr-tests.yaml"
-      provides: "the in-repo automated guard — the sample sets are validated on every PR (GATE-1 option; see the test plan)"
-      anchor: "validate_demo_samples"
     - path: "odd-team:integration-tests/protocols/IT-154-demo-stand-first-run.md"
       provides: "the human-carryable protocol — 8 assertions, each with its RED-on-base behaviour"
       anchor: "regresses: [PLT-255]"
@@ -318,9 +316,11 @@ must_haves:
       via: "samples are read ONCE into (path, oddrn, payload) and reused — the loop no longer re-reads files,
             and its `Skipping` branch is removed as unreachable"
     - from: "inject.py's per-sample injection failures"
-      to: "the process exit code"
-      via: "failures collected into a list, summarised at the end, `sys.exit(1)` if non-empty — the bare
-            `except: … continue` at :106-111 must not survive, or the class stays half-closed"
+      to: "the closing summary a reader actually sees"
+      via: "the bare `except:` at :106-111 becomes `except Exception as e`, the raised error carries the real
+            HTTP status + body, and every failure is collected and re-printed in a final block naming each
+            file. Exit code stays 0 (GATE-1 D1) — so the SUMMARY is the whole signal, and it must be the last
+            thing printed, after the forty injection lines, or it is as buried as the line it replaces"
     - from: "the forward-only validation"
       to: "tests/docker/injector (the OTHER sample set on the same script)"
       via: "5 datasources / 4 samples, one defined-but-unused — so the check must NOT be bidirectional or the
@@ -347,19 +347,13 @@ must_haves:
 
 **Sequencing note:** the integration rail is built **first**, not last. It is the piece a budget squeeze drops, and the plan-check found exactly that failure shape in the first draft (a protocol file with no rail is never executed by anything — `run-suite.sh:78-96` classifies `automation: '' | manual | none` into a `MANUAL[]` array that is *printed* and never run, and ids resolve only from `suites.yaml`; the repo's own case-law is `suites.yaml:16`, the CTRIB-031 IT-139 orphaning).
 
-**Unit bucket (odd-platform CI) — a validation job, not a new test framework.** There is no Python test harness in this repo (CI is `./gradlew odd-platform-api:build` plus a Playwright job; `git grep pytest` → 0), so a conventional unit test would mean importing a whole toolchain for one demo script. But the new check is a pure local read of two JSON directories — by the tests-pillar home rule (`pillars/tests/pillar.md`: *does it need external orchestration plus a written protocol?*) that is **unit-shaped**, and "there is no pytest here" is a tooling objection, not a routing one. So the guard ships as a ~20-second parallel job that runs the real code path against **both** bundled sample sets and never contacts a platform:
+**Unit bucket (odd-platform CI) — none, by the maintainer's decision at GATE 1, and the residue is recorded rather than glossed.** There is no Python test harness in this repo (CI is `./gradlew odd-platform-api:build` plus a Playwright job; `git grep pytest` → 0). The plan offered a ~20-second workflow job that would have run the injector's own new check against both bundled sample sets with no platform involved — routed there because the check is a pure local read of two JSON directories, which by the tests-pillar home rule (`pillars/tests/pillar.md`) is unit-shaped, so "there is no pytest here" would have been a tooling objection rather than a routing one. **GATE 1 chose to leave CI alone**, keeping the PR a pure bug fix an upstream reviewer can read in one pass.
 
-```yaml
-validate_demo_samples:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v3
-    - run: python -m pip install --quiet requests
-    - run: SAMPLE_PATH=docker/config/injector VALIDATE_ONLY=1 python injector/inject.py
-    - run: SAMPLE_PATH=tests/docker/injector  VALIDATE_ONLY=1 python injector/inject.py
-```
+Consequences, stated plainly so nobody has to rediscover them:
+- the in-repo guard against a future sample/datasource drift is now the **demo run failing loudly** — which is a real guard, because the validation runs *before* the readiness poll, so a broken sample set fails in about a second rather than after a five-minute wait;
+- the *repeatable* guard is **IT-154**, which lives in odd-team and is therefore invisible to an upstream contributor;
+- `VALIDATE_ONLY` is dropped with the CI job that motivated it. Validation-before-polling gives IT-154's assertion 7 the same stack-free, one-second failure for free, so the switch would have been an unused knob. Subtract.
 
-Because it is the same code path the real run takes, the guard cannot drift from the behaviour it guards. **This is a GATE-1 question** (`## GATE-1 decisions`): it is the only part of the change that adds a CI surface to a public repo.
 
 **Integration bucket (odd-team) — MANDATORY here, and fully wired.** `integration-tests/protocols/IT-154-demo-stand-first-run.md`, `gates: regresses: [PLT-255]`, plus **every artifact that makes it actually run**:
 
@@ -416,7 +410,9 @@ Assertions 7 and 8 need no stack at all, so they are cheap and cannot be dropped
 - **Nothing under `odd-platform-api/src/`, `odd-platform-ui/`, or the specification.** The diff contains no product code.
 - **`.github/workflows/run-playwright-tests.yml`'s commented-out stack-and-run steps** — see above; making that stand reliable is this change's business, turning it back on in CI is not.
 
-### Scope comment for the issue thread (G-C5)
+### Scope comment for the issue thread (G-C5) — POSTED
+
+**[issuecomment-5513140972](https://github.com/opendatadiscovery/odd-platform/issues/1870#issuecomment-5513140972)**, `odd-contributor[bot]`, 2026-09-02T16:50:38Z — posted immediately on GATE-1 approval, before any code. Read back from the API: 3842 bytes, 0 non-ASCII. Body as sent:
 
 The plan **widens** the issue's stated scope in two places (the no-silent-success behaviour in the injector, and the identical fix in `tests/docker/docker-compose.yaml`) and **pins** one open choice the issue left open (which of the two files the oddrn typo lives in), so per G-C5 a public scope comment is drafted and is posted immediately on GATE-1 approval, before any code:
 
@@ -440,27 +436,26 @@ The plan **widens** the issue's stated scope in two places (the no-silent-succes
 > are `//s3/cloud/aws/buckets/...`, so `//s3/cloud/aws` is the value both files should carry - the data
 > settles which side the typo is on.
 >
-> Three things beyond what the issue asks for, all deliberate:
+> Two things beyond what the issue asks for, both deliberate:
 >
-> 1. The injector stops reporting success while delivering less than it was given. A sample naming an
->    undefined data source fails the run immediately, naming file and oddrn; an injection that fails is
->    reported with the platform's ACTUAL status and response body and makes the process exit non-zero,
+> 1. The injector stops hiding what it failed to deliver. A sample naming an undefined data source now fails
+>    the run immediately, naming the file and the oddrn, before any waiting - that is a configuration error and
+>    the demo cannot possibly succeed. An injection that fails is reported with the platform's ACTUAL status
+>    and response body, at the point of failure and again in a closing summary listing every failed file,
 >    instead of being swallowed by a bare `except:` that prints a guess and carries on. That guess is not
 >    hypothetical and it is not correct: running the stock enricher a second time today, one sample fails and
 >    the script blames `ingestion.filter.enabled`, which is `false` and whose filter bean does not exist. The
 >    real answer is `400 USR003 Database constraint violation` from an alert-uniqueness defect on the platform
->    side, which is being reported separately - the demo's part is that it hid it behind a zero exit code.
+>    side, reported separately - the demo's part was hiding it.
 > 2. `tests/docker/docker-compose.yaml` gets the same healthcheck and the same `service_healthy` gate. It
 >    mounts the very same `injector/inject.py` and has the identical start-order-only `depends_on`, so it has
 >    the identical race; it is what `npm run odd-up` starts for the Playwright suite. Fixing only
 >    `docker/demo.yaml` would leave the same bug one directory away. (Nothing changes in CI - that workflow's
 >    stack-and-run steps are commented out today, and this PR does not turn them back on.)
-> 3. A ~20-second CI job validates both bundled sample sets on every PR, by running the injector's own new
->    check with no platform involved. It adds no test framework - the repo has no Python harness and this does
->    not introduce one.
 >
 > Not in this PR: the collector's empty token and its 500-instead-of-401 restart loop (that is #1869); the
-> platform-side alert-uniqueness defect described above; and turning the Playwright CI steps back on.
+> platform-side alert-uniqueness defect described above; any workflow change; and turning the Playwright CI
+> steps back on.
 >
 > Verified on a stock stand at the current main before planning any of it. Defect 1 is a race whose outcome is
 > currently decided by how long `pip install requests` takes: the enricher's whole lifetime is that install
@@ -469,7 +464,9 @@ The plan **widens** the issue's stated scope in two places (the no-silent-succes
 > pip cache took 22s. Defect 2 needs no luck at all - `GET /api/datasources` returns 9, `Data Lake S3` is
 > absent, and a search for `transaction_dataset` returns nothing while `kds_clickstream` returns 2 rows.
 
-## GATE-1 decisions (the two things that are the maintainer's call, not this run's)
+## GATE-1 decisions — ANSWERED 2026-09-02 by RamanDamayeu
+
+**Plan APPROVED, full scope.** Both defects, the fail-loudly class fix, the Playwright harness compose, the docs on the 1.0.0 train, and IT-154. **D1 = option C** (loud but not fatal). **D2 = leave CI alone.** Recorded verbatim below with the options as they were put.
 
 **D1 — what a *second* `docker compose up` should do, now that injection failures are fatal.**
 Measured today on the stock stand: run 1 injects everything and exits 0; run 2 injects 8 of 9, fails
@@ -478,14 +475,14 @@ diagnosis**. Making failures fatal is right, but it changes what a repeat `up` l
 
 | Option | What a second `up` does | Cost |
 |---|---|---|
-| **A (recommended)** — fatal + the real error | exits non-zero, naming the file and `400 USR003 …` | Truthful, and it surfaces a genuine platform bug instead of hiding it. But a repeat `up` on an existing stack now shows a red container until `PLT-014` is fixed. |
-| **B** — fatal, plus skip injection for a data source that already exists | exits 0, "already seeded, nothing to do" | Makes the enricher idempotent, which is what a repeat `up` wants, and removes the upstream bug from the demo path. Changes seeding semantics: re-running would no longer re-apply an edited sample (`down -v` becomes the reset). |
-| **C** — loud but not fatal | exits 0, prints a failure summary | Smallest change; keeps a zero exit code on a failed demo, i.e. leaves half the class open. |
+| A (recommended by this run, **not chosen**) — fatal + the real error | exits non-zero, naming the file and `400 USR003 …` | Truthful, and it surfaces a genuine platform bug instead of hiding it. But a repeat `up` on an existing stack now shows a red container until `PLT-014` is fixed. |
+| B (**not chosen**) — fatal, plus skip injection for a data source that already exists | exits 0, "already seeded, nothing to do" | Makes the enricher idempotent, which is what a repeat `up` wants, and removes the upstream bug from the demo path. Changes seeding semantics: re-running would no longer re-apply an edited sample (`down -v` becomes the reset). |
+| **C — CHOSEN** — loud but not fatal | exits 0, prints a failure summary naming every failed file with the platform's real status and body | Smallest change, and the demo never shows a red container for an upstream defect it did not cause. The accepted residue: the exit code alone still cannot distinguish a complete run from a partial one, so the closing summary is the whole signal and must be the last thing printed. |
 
 **D2 — the CI validation job.** It is the only part of the change that adds a workflow surface to a public
 repo. With it, a future sample/datasource drift is caught on the PR that introduces it; without it, the guards
 are the demo run's own loud failure plus IT-154, which lives in odd-team and is invisible upstream.
-Recommended: include.
+**CHOSEN: leave CI alone** — keeping the PR a bug fix an upstream reviewer can read in one pass. Consequences are written into the test plan's unit-bucket paragraph rather than left implicit, and `VALIDATE_ONLY` is dropped with it (validation-before-polling covers IT-154's stack-free case anyway).
 
 ## Plan-check (G-C19)
 

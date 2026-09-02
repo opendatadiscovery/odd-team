@@ -1322,3 +1322,22 @@ That is the **fourth** DOM-selector assumption to bite in this one spec (`data-q
 `.check()` on a navigating control; `#filter-datasources` behind a combobox; and now this). The pattern is
 real: I hold API payloads to "capture the actual shape first" and have repeatedly let DOM selectors through
 on reasoning alone.
+
+### 24c. The commit would not have compiled — caught before the push
+
+Checking the worktree was clean before the RED proof turned up **two modified, uncommitted files**: the ST-8
+tests I adapted to the widened repository signature (§23a). The unit build had gone green over them because
+gradle compiles the **working tree** — but they were not in `ad3a9189`, so **the commit as it stood would not
+have compiled**, and CI would have failed on a PR whose local build was green.
+
+The run-log said it all along and I read past it: the SUT was `ad3a9189+uncommitted`. That `+uncommitted`
+suffix is not decoration — it is the tool telling you the tested artefact and the committed artefact are
+different things.
+
+Amended to `3d5a7096`; `git diff HEAD` is now empty, so **the committed tree IS the tree every gate above
+measured**. No gate needs re-running: the content is byte-identical, only the commit boundary moved.
+
+This is the same class as the two earlier failures today — a fact that was true when observed (the build is
+green) quietly ceasing to describe the artefact being shipped. Third instance, so it is worth naming as a
+habit rather than three accidents: **before any push, diff the commit against the tree the gates actually
+ran on.**

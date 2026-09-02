@@ -1259,8 +1259,8 @@ before ST-8 shipped its tests), so nothing is inherited here — including green
 | Full unit build (`:odd-platform-api:build` = test + checkstyle + assemble) | **BUILD SUCCESSFUL, 26m17s** at `ad3a9189` — 0 checkstyle violations, `AssetSearchFavoritesIntegrationTest` 6/6 in 5.42s |
 | Patch coverage, 98% changed-lines aggregate | **PASS — 14/14 = 100.00%** |
 | `IT-148` GREEN on the working-tree SUT | **7/7 PASS**, 1.5m, SUT logged as `WORKING TREE @ 3d5a7096` — **no `+uncommitted` suffix**, i.e. the tested artefact IS the commit (§24c) |
-| `IT-148` RED on `ODD_SUT=ref:main` | first run 6/7 red and **found a neutered case** (§24d); re-running with the fixed oracle, expecting 7/7 red |
-| Full 4-suite regression | queued |
+| `IT-148` RED on `ODD_SUT=ref:main` | **7/7 FAIL** on `main @ 969a5d5b`, each for its documented mechanism (the Term case now cites *"an un-starred Term must be absent"*). First run was 6/7 and exposed a case that could never fail — §24d |
+| Full 4-suite regression | running (`run-regression.sh ctrib061`, flock taken internally — not wrapped) |
 | Rendered-UI screenshot (G-C12 step 5) | **captured AND read** — see §24b |
 | Docs authored + committed on `release/1.0.0` | **done** (`79612a0`, rebased onto `379baf3`) |
 | Ontology `/enrich` + sidecar | **done** pre-rebase; the rebase moved the link construction to `buildSearchLink` but did not change what the sidecar describes |

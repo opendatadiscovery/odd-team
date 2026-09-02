@@ -4,7 +4,7 @@ title: "#1870 — the demo stand does not deliver what its README promises: the 
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1870"
 parent_epic: null
 class: "bug — two independent defects in the local demo stand (docker/demo.yaml orchestration + injector/inject.py robustness + one sample's data). No production code path is touched."
-status: plan-approved
+status: review-ready   # handed to /review 2026-09-02 with ONE DoD gate declared INCOMPLETE, not inferred: `multi-stack` (which carries the new IT-154) and `ingestion-e2e` NEVER RAN — the session's background tasks were killed mid-`known-bugs`. `feature-complete` DID complete: 328/12, zero unattributed. See `## Test ledger`.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1870` 2026-09-02: milestone 1.0.0, state OPEN, semver, due 2026-07-31 (20 open / 10 closed)
 base_sha: "969a5d5b"      # odd-platform origin/main at intake (= #1873 CTRIB-060 ST-6 merged), fetched with the App token; local `main` identical
@@ -13,7 +13,7 @@ adr_required: false       # no migration, no auth/security-posture change, no pu
 plan_approved_by: "RamanDamayeu"   # GATE 1, 2026-09-02, via AskUserQuestion: full scope; injection failures LOUD BUT NOT FATAL (option C); NO CI workflow change
 plan_approved_at: "2026-09-02"
 scope_comment_url: "https://github.com/opendatadiscovery/odd-platform/issues/1870#issuecomment-5513140972"   # posted by odd-contributor[bot] 2026-09-02T16:50:38Z immediately after GATE 1, before any code (G-C5); read back from the API: 3842 bytes, 0 non-ASCII
-pr_url: ""
+pr_url: "https://github.com/opendatadiscovery/odd-platform/pull/1876"   # DRAFT. Docs: https://github.com/opendatadiscovery/documentation/pull/113 (DRAFT, base release/1.0.0)
 pr_draft: true
 docs_routing: "release/1.0.0 train (the behaviour it describes is unreleased) — see `## Docs decision`"
 stream: ctrib063
@@ -540,9 +540,9 @@ what GATE 1 approved, not wider.
 | Bucket | What ran | Result |
 |---|---|---|
 | Unit (odd-platform CI guard) | **none, by the maintainer's GATE-1 decision D2.** The offered guard was a ~20s workflow job running the injector's own validation against both bundled sample sets; GATE 1 chose to leave CI alone so the PR stays a pure bug fix. The consequences are written into the test plan rather than left implicit: the in-repo guard is now the demo run's own loud failure (validation runs *before* the readiness poll, so a broken sample set fails in about a second), and the repeatable guard is IT-154, which is invisible upstream. | recorded, not skipped |
-| Unit (full CI replica) | `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build` = test + checkstyleMain + checkstyleTest + assemble) on the branch worktree at `c88bf405` | _filled below when the run lands_ |
+| Unit (full CI replica) | `scripts/run-platform-tests.sh` (no-arg = `:odd-platform-api:build`) on the branch worktree at `c88bf405` | **814 / 1 / 0 / 0** across 181 classes; checkstyle clean; the 1 is TST-061 |
 | Integration (odd-team) | **IT-154** — protocol + `suites.yaml` registration in `multi-stack` + the e2e spec + the helper + the port override. Rail resolution verified by RUNNING it: `run-suite.sh IT-154 --dry-run` -> `ui e2e: demo-stand-first-run.spec.ts · manual: none` | **GREEN 3/3 on the fix · RED 3/3 on base** |
-| Integration (full regression) | `run-regression.sh ctrib063` — `feature-complete` + `multi-stack` + `known-bugs` + `ingestion-e2e` | _filled below when the run lands_ |
+| Integration (full regression) | `run-regression.sh ctrib063` | **`feature-complete` 328/12 zero-unattributed · `known-bugs` INTERRUPTED · `multi-stack` NOT RUN · `ingestion-e2e` NOT RUN** |
 
 ### The RED proof — a named mechanism, not an assertion
 
@@ -588,8 +588,8 @@ unaffected.
 
 | # | Gate | State |
 |---|---|---|
-| 1 | full unit build green on the working tree | _pending the run above_ |
-| 2 | FULL integration regression against the working-tree SUT | _pending the run above_ |
+| 1 | full unit build green on the working tree | **RUN — 814 tests / 1 failure / 0 errors / 0 skipped across 181 classes** (31m25s; JUnit XML mtimes 19:55 = this run). 24 actionable tasks, 24 executed — `test` + `checkstyleMain` + `checkstyleTest` + `assemble`; **checkstyle clean**. The one failure is `OpenApiDocsContractTest.platformApiGroupDocumentLoads()` — `Timeout on blocking read for 60000000000 NANOSECONDS`, the class at 71.3s against its own 60s bound — i.e. **TST-061**, seventh recorded reproduction. The diff contains no Java, so gradle compiled exactly `origin/main`'s sources. |
+| 2 | FULL integration regression against the working-tree SUT | **INCOMPLETE — declared, not inferred.** `feature-complete` **328 passed / 12 failed (34.2m), ZERO UNATTRIBUTED** — the twelve are set-equal by exact `spec:line` to TST-059's eleven plus `swagger-openapi-discovery:63` (TST-057), which is the identical 328/12 two other branches measured. `api:FAIL` is TST-065 verbatim, pre-registered before the numbers landed. Then **every background task in the session was killed**: `known-bugs` had produced 2 expected-RED results and was cut off; **`multi-stack` (which carries the new IT-154) and `ingestion-e2e` NEVER RAN**. This gate is therefore OWED. IT-154 itself was run directly and independently (GREEN 3/3 on the fix, RED 3/3 on base), so what `multi-stack` still owes is confirming it coexists with the other seven self-managed stacks. |
 | 3 | docs read + decided + routed **AND authored** — committed on the train, not a draft | **DONE** — `documentation` `docs/CTRIB-063-demo-stand-first-run` @ `b270da6` off `origin/release/1.0.0` @ `379baf3`, draft PR [#113](https://github.com/opendatadiscovery/documentation/pull/113); paired item `backlog/docs/DOC-520` (`pending-release`, milestone 1.0.0) |
 | 4 | ontology re-enriched + committed | **DONE** — the `trylocally` doc-understanding sidecar carries a dated refresh note; no re-analysis run, and the reason is recorded (no binding moves). No code substrate node exists for `injector/` or `docker/`. |
 | 5 | Principal sufficiency review (G-C13) | **enough + meaningful**: 10 assertions across both defects *and* the class behind them, each with a stated RED-on-base behaviour, two of them stack-free so they cannot be dropped for being slow. **Local patch-coverage gate: N/A, and that is an empty gate rather than a skipped one** — the diff contains no Java, so `min-coverage-changed-files` has no changed production lines to measure. **No control lost**: nothing new is abstracted, and the change subtracts (the unreachable `Skipping` branch is deleted). **What did I make worse?** One thing, named rather than buried: `up -d odd-platform-enricher` now takes ~60-90s to return instead of ~2s. That IS the fix; it is documented in both READMEs and on the train, and the `database` healthcheck exists specifically so the pathological version of that wait cannot happen. |

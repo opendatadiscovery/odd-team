@@ -94,14 +94,15 @@ platform's healthcheck passes. Confirm before running the assertions:
 3. Read the container states and the enricher log.
 4. Query the catalog: `GET /api/datasources`, then `POST /api/search` + `GET /api/search/{id}/results`.
 5. Open `http://localhost:18095/management/datasources` in a browser.
-6. Run the two stand-free injector cases (7 and 8 below) — neither needs a platform.
+6. Run the stand-free injector cases (7, 8 and 9 below) — none needs the demo stand; 9 needs only a
+   throwaway HTTP stand-in that rejects `POST /ingestion/entities`.
 
 **Automated rail**: `integration-tests/run-suite.sh IT-154` (or the `multi-stack` suite).
 
-**How the rail maps onto the nine checks below — it reports THREE Playwright cases, not nine.** Checks 1-6b
+**How the rail maps onto the ten checks below — it reports FOUR Playwright cases, not ten.** Checks 1-6b
 share one demo stand and one enricher run, so they are one case using **soft assertions**: every one of them
-still reports independently on failure, but the expensive stand is built once. Checks 7 and 8 are their own
-cases because they need no stand at all. Two alternatives were built and run against the unfixed base before
+still reports independently on failure, but the expensive stand is built once. Checks 7, 8 and 9 are their own
+cases because they need no demo stand at all (9 brings up a throwaway in-process stand-in instead). Two alternatives were built and run against the unfixed base before
 settling on this: `serial` mode stops at the first failure, so a red result cannot say *which* defect
 regressed — which is the entire job of checks 4/5/6 — and six independent cases do each report, but Playwright
 discards the worker after a failed test and re-runs `beforeAll`, rebuilding the whole stand once per red
@@ -120,11 +121,20 @@ assertion (~2 minutes each). A human executing the protocol by hand simply does 
 | 6b | `/management/datasources` renders `Data Lake S3` | the row the API now returns is not rendered |
 | 7 | with one sample re-pointed at an undefined oddrn, the injector exits non-zero, names that file and that oddrn, says `Nothing has been injected`, and never reaches `Waiting for the platform` | exit 0 with one `Skipping` line — the silent under-delivery |
 | 8 | run standalone against a closed port with `REACH_TRIES_NUMBER=2 REACH_RETRY_DELAY_SECONDS=1`, it exits non-zero within seconds, logs `attempt 2 of 2`, and its give-up message names `REACH_TRIES_NUMBER` and `migration set` | the knobs are ignored (they do not exist on the unfixed build) and the message names neither cause nor remedy |
+| 9 | run against a Platform that accepts everything but rejects `POST /ingestion/entities` with `400 USR003`: the run reports that **actual status and body**, names the failing sample file, repeats every failure in a closing summary printed **after** the per-sample lines, and still **exits 0** | exit 0 with `Possibly the 'ingestion.filter.enabled' property is set to 'true'` — a guess, and a wrong one — no status, no body, no summary |
 
-**RED proof.** Assertions 1, 2, 4, 6, 7 are deterministically red on the unfixed base; 3 is red on
+**RED proof.** Assertions 1, 2, 4, 6, 7, 9 are deterministically red on the unfixed base; 3 is red on
 the race (intermittent by nature); 8 is red because the env knobs do not exist. The base is a
 **second, detached worktree pinned at the pre-fix commit**, created before any edit and never
 written to — not the worktree the fix lives in.
+
+**Why assertion 9 needs a stand-in Platform rather than the real one.** The real stand *does* produce
+this failure — a second `docker compose up` hits `400 USR003`, `duplicate key … alert_unique_messenger_
+oddrn_is_present`, the upstream alert-uniqueness defect tracked on `issues/odd-platform/PLT-014`. Asserting
+against it would make this protocol's verdict hostage to someone else's fix: the day PLT-014 lands, the
+assertion silently stops exercising the path. So case 9 injects the failure itself from a throwaway HTTP
+stand-in that answers health / data-source calls normally and returns the same `400 USR003` shape on
+ingestion. What is under test is the **injector's reporting**, not the Platform's rejection.
 
 ### Notes for whoever runs or maintains this
 
@@ -137,6 +147,15 @@ Three things about the *observation* here are load-bearing and were each learned
   healthcheck — which is exactly the unfixed stand. Guard it in the Go template
   (`{{if .State.Health}}...{{else}}null{{end}}`), or the RED run reads as a harness crash instead of as the
   finding it is.
+- **An in-process HTTP stand-in cannot be driven with `execSync`.** Case 9 serves its stand-in Platform
+  from the Playwright process itself, and `execSync` blocks Node's event loop for the entire container run:
+  the kernel accepts the stub's socket and nothing ever answers it, so the injector reports `Read timed out`
+  on every attempt and burns its whole readiness budget. Worse, the run then reads as a *silent* hang —
+  a container killed by the exec timeout never flushes python's block-buffered stdout, so the failure
+  message contains nothing but `pip` output. `runInjector` is `async` (`promisify(exec)`) for exactly this
+  reason, and every case passes `PYTHONUNBUFFERED=1` the way `docker/demo.yaml` does. Note also that the
+  exit code is on `err.code` for `exec` and on `err.status` for `execSync` — reading the wrong one turns
+  every failure into `1` and makes the exit-code assertions meaningless.
 - **Do not assert the `up` command's DURATION.** It is 2s on the unfixed stand and 62-86s on the fixed one, so
   a threshold looks tempting — but it would be asserting machine speed. The property under test is the
   *ordering* (the enricher starts at or after the platform's first passing probe), which is machine-independent.

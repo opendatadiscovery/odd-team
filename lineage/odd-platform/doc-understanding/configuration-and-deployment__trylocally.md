@@ -44,7 +44,12 @@ What did change, and why it matters to the next reader of this sidecar:
 
 - **The page's Step-1 mechanics now describe a readiness gate.** `docker/demo.yaml` gained a healthcheck on
   the platform (and on `database`), and the enricher/collector now wait for `condition: service_healthy`, so
-  `up -d odd-platform-enricher` blocks until the sample is in. The page carries a matching hint block.
+  `up -d odd-platform-enricher` blocks until the platform is HEALTHY — measured at 62-86s against the ~2s it
+  returned in before. It does **not** block until the sample is in: `up -d` is detached and returns once the
+  enricher container has *started*, which is measurably before it has finished injecting (measured: an
+  isolated one-shot ran a further 20.6s after `up -d` returned, and the live IT-154 stand showed the enricher
+  still `Up 34 seconds` at the moment the command returned). The page carries a matching hint block that says
+  exactly this — the first draft of both the page and this note claimed the stronger, false version.
 - **"injects a 10-data-source sample" and "see 10 / 11 data sources" were, until this change, true only on
   paper.** The shipped stand delivered **9**: `08_s3_ingestion.json` declared `//s3/cloud` while
   `datasources.json` defines `//s3/cloud/aws`, so the sample was skipped and the run still exited 0. The

@@ -4,7 +4,7 @@ title: "#1870 — the demo stand does not deliver what its README promises: the 
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1870"
 parent_epic: null
 class: "bug — two independent defects in the local demo stand (docker/demo.yaml orchestration + injector/inject.py robustness + one sample's data). No production code path is touched."
-status: blocked   # /review REJECTED 2026-09-02 (session review-ctrib063). The OWED gate is CLOSED and GREEN — I ran multi-stack (17/0, IT-154 included), known-bugs (3 expected-RED, zero unexpected GREEN) and ingestion-e2e (15/0) myself against a SUT built from c88bf405. The rejection is for what the run uncovered: the PR's CI is RED (run_playwright_tests/format-check — this branch's two healthcheck lines break prettier in tests/), and the new first-run note tells readers something measurably false. 5 blockers + 5 fold-ins in ONE rework fix-list. See `## Review`.
+status: pr-draft   # ROUND 2, 2026-09-03: the /review fix-list is CLOSED — 5 blockers + 5 fold-ins, each with the evidence that closed it (`## Rework — round 2`). All five DoD gates RE-RUN at the committed `9c1360df`: CI 6/6 green on the head SHA (format-check, the round-1 blocker, now SUCCESS), full four-suite regression measured (multi-stack 18/0 · ingestion-e2e 15/0 · known-bugs 3 expected-RED · feature-complete 327/13 with the one new failure CONFIRMED a TST-042 load flake by a solo re-run on the same image). **The next `/review` MUST be a fresh session** — this rework was closed in the same session as the review that raised it, which is allowed for /implement and is exactly why.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1870` 2026-09-02: milestone 1.0.0, state OPEN, semver, due 2026-07-31 (20 open / 10 closed)
 base_sha: "969a5d5b"      # odd-platform origin/main at intake (= #1873 CTRIB-060 ST-6 merged), fetched with the App token; local `main` identical
@@ -525,7 +525,13 @@ what GATE 1 approved, not wider.
    IT-154 measures. `demo-stand.ts` therefore owns its own `up`/`down` and reuses `composeCmd()`
    from `docker.ts`, which is the part carrying real knowledge (prefer the v2 plugin; legacy v1
    crashes on container recreate). Seven existing specs are left untouched.
-2. **The stand's assertions are ONE test with `expect.soft`, not six tests.** Both alternatives were
+2. **`pg_isready` ships without the plan's `-d` flag.** The plan specified
+   `pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DATABASE}`; the code ships `-U` only. Behaviourally
+   identical on this stack — `docker/.env` sets `POSTGRES_DATABASE` and `POSTGRES_USER` to the same
+   value (`odd-platform`), and `pg_isready` reports whether the *server* is accepting connections,
+   not whether a given database exists — and `-U` alone is the idiom the postgres image documents.
+   Recorded here because the review caught it as an unlogged divergence, not because the code is wrong.
+3. **The stand's assertions are ONE test with `expect.soft`, not six tests.** Both alternatives were
    built and run against the base tree before this was settled: `serial` stops at the first failure,
    so a red result cannot say *which* defect regressed — and telling the race apart from the oddrn
    typo is the entire job of assertions 4/5/6. Six independent tests do each report, but Playwright
@@ -534,6 +540,10 @@ what GATE 1 approved, not wider.
    assertions give what both were reaching for — every assertion reports, on one stand, in one pass.
 
 ## Test ledger
+
+> **Round 1 only** — superseded by `## Rework — round 2`, which adds IT-154 assertion 9 (so the spec is
+> 4 cases, not 3) and re-runs every gate at `9c1360df`. Kept as the historical record of what round 1
+> measured, including the gate it honestly declared incomplete.
 
 **Both buckets, routed by the tests-pillar home rule; every gate RUN, not reasoned about.**
 
@@ -860,3 +870,55 @@ page and the same PR as B2/B4, and the standalone invocation is exactly why the 
 - **Resources**: `lineage/**` left clean (`git checkout -- lineage/` after the probe runtime's run; `git
   status` shows only this review's own files). The heavy-e2e flock was held for the regression and released
   by `run-regression.sh`'s exit trap; the stream's stack was torn down with `-v`.
+
+## Rework — round 2 (2026-09-03), closing the `/review` fix-list
+
+Ten items: five blockers, five fold-ins. Every one closed, each with the evidence that closed it.
+Same session as the review that raised them — allowed for `/implement`; **the next `/review` must be
+fresh** (precedent: `review-ctrib060r2` round 3). No new GATE 1: the fix-list corrects defects *inside*
+the scope GATE 1 approved, it does not widen it.
+
+**odd-platform** `contrib/CTRIB-063-demo-stand-readiness` @ `9c1360df` (PR [#1876](https://github.com/opendatadiscovery/odd-platform/pull/1876), still draft)
+**documentation** `docs/CTRIB-063-demo-stand-first-run` @ `7cfac8f` off `origin/release/1.0.0` (PR [#113](https://github.com/opendatadiscovery/documentation/pull/113), still draft)
+
+| # | Finding | How it was closed | Evidence |
+|---|---|---|---|
+| **B0** | `run_playwright_tests/format-check` RED on `c88bf405` — this branch's two `healthcheck.test` lines break `prettier --check` inside `tests/` | single-quoted both, per the shared config's `singleQuote: true`; mirrored the same quoting in `docker/demo.yaml` (outside the CI scope, but the two stands should stay byte-comparable, and the repo-root `.prettierrc.json` agrees) | `prettier --check .` over the **whole** `tests/` tree: *"All matched files use Prettier code style!"* · both files still validate on compose v2 **and** `docker-compose` 1.29.2 and resolve to the identical healthcheck with the `$$` escape intact · **CI on `9c1360df`: `format-check` = SUCCESS** |
+| **B1** | The first-run note claimed `up -d` returns only after the sample is injected — false, and its diagnostic rule ("an empty catalog after the command returns is not [expected]") is the operative sentence | rewritten on **all four surfaces** the wrong model reached: it now says the command blocks until the Platform is *ready*, that the sample lands a few seconds later, and which log to read | `docker/README.md:33-38` · `trylocally.md:33-35` · PR #1876 body · `lineage/.../configuration-and-deployment__trylocally.md` refresh note. Measured: an isolated one-shot gated on `service_healthy` ran **20.6s** after `up -d` returned (same shape on v1 1.29.2); the live IT-154 stand showed the enricher `Up 34 seconds` at the moment the command returned |
+| **B2** | `build-and-run-odd-platform.md` reproduced the `odd-platform` service block minus the healthcheck, under an instruction to paste it into `docker/demo.yaml` | replaced the block with the single `image:` line to change, plus a warning naming the exact failure | measured on both implementations: v2 `dependency failed to start: container … has no healthcheck configured`; v1 `ERROR: … Service "dep" is missing a healthcheck configuration` |
+| **B3** | `health-and-monitoring.md:28` — "the images and Compose files distributed with the platform define no health checks themselves" is falsified by this change; its Compose recipe also diverged from the shipped one with no cross-link | restated to what is true (the **image** declares none; the demo stack ships one), swapped the example for the shipped recipe, added why the probe must read the HTTP status rather than grep the body, and added the `condition: service_healthy` half | `docker image inspect … {{.Config.Healthcheck}}` → *image declares NO HEALTHCHECK* (so the image half is true and stays); `docker/demo.yaml:34-39` is the recipe now shown. The page's `wget` was **not** broken — `/usr/bin/wget` is present alongside `curl` — so the defect was the false claim plus the undeclared parallel surface, and only that was fixed |
+| **B4** | The behaviour change reached 1 of the 3 published pages carrying the demo command | `deployment.md` Option 1 and `build-and-run-odd-platform.md`'s frontend-engineer path both gained the wait note; `deployment.md`'s own Prerequisites gained the real compose floor (it still said "`docker-compose` (latest)") | `deployment.md:45-52`, `build-and-run-odd-platform.md:136` |
+| **B5** | `build-and-run-odd-platform.md:110` enumerated the injector's environment as `PLATFORM_HOST_URL` + `SAMPLE_PATH`, omitting the two knobs its own give-up message names | replaced the sentence with a five-row table (both new knobs + their defaults + `DATA_SOURCES_ONLY`), and a paragraph on why a first start is slow and what an undefined `data_source_oddrn` now does | each row read off `inject.py:32-36` rather than recalled |
+| **F1** | No test covered the injection-failure summary — GATE-1 decision **D1**'s headline behaviour | **IT-154 assertion 9** added: a throwaway in-process HTTP stand-in accepts health + data-source calls and returns `400 USR003` on ingestion; asserts the real status and body, the failing file named, the closing summary printed **after** the per-sample lines, and exit code **0** | **GREEN on the fix** (15.4s) · **RED on base** — `../odd-platform-ctrib063base` @ `969a5d5b` prints nine `Possibly the 'ingestion.filter.enabled' property is set to 'true'` guesses, no status, no body, no summary. Deliberately does **not** depend on the real `400 USR003` (PLT-014), which would make the verdict hostage to someone else's fix |
+| **F2** | `deployment.md:52` "~10" | hedge dropped — it existed because the stand delivered nine | now matches `trylocally.md:40` |
+| **F3** | "which older `docker-compose` releases **ignore**" | → "do not support" on both surfaces; the claim about what an old binary does is simply not made | 1.29.2 *honours* the condition (measured), so "ignore" was wrong in the one direction I could test |
+| **F4** | `pg_isready -d` dropped vs the approved plan, unrecorded | recorded in `## Deviations` (item 2); the code is left as-is | `POSTGRES_DATABASE` == `POSTGRES_USER` == `odd-platform` in `docker/.env`, and `pg_isready` reports server responsiveness, not database existence |
+| **F5** | `trylocally.md:27` "Empty output **mean**" | → "means" | one word, on a page this PR already edits |
+
+### Three harness defects the rework's own test found, by running it
+
+Assertion 9 was written, run, and **failed on the fix** — which is the point of running what you write.
+
+1. **`execSync` blocks Node's event loop, so an in-process stand-in can never answer.** The stub's socket
+   is accepted by the kernel and then never served; the injector reports `Read timed out` on every attempt
+   and burns its whole readiness budget. `runInjector` is now `async` (`promisify(exec)`), and cases 7/8/9
+   await it.
+2. **A container killed by the exec timeout never flushes python's block-buffered stdout**, so the first
+   failure reported *nothing but `pip` output* — a silent hang. Every case now passes `PYTHONUNBUFFERED=1`,
+   which is what `docker/demo.yaml` sets anyway.
+3. **The exit code lives on `err.code` for `exec` and `err.status` for `execSync`.** Carrying the `execSync`
+   reading over would have silently turned every failure into `1` and made the exit-code assertions — the
+   whole point of D1 — meaningless.
+
+All three are now written into the protocol's "Notes for whoever runs or maintains this", beside the three
+the first round found.
+
+### Definition of Done — round 2, re-run at the committed SHA `9c1360df`
+
+| # | Gate | State |
+|---|---|---|
+| 1 | full unit build green | **PASS, from CI on the exact head** — `run_tests` (`./gradlew odd-platform-api:build`, `run-pr-tests.yaml:22-55`) = **SUCCESS** on `9c1360df`, alongside `Test Results` = success (the JUnit publication of that same run). Cited rather than re-run locally: the diff still contains no Java, and CI's verdict on the pushed commit is the stronger evidence — round 1's local run reported 814/1, the 1 being TST-061's local springdoc timeout, which CI does not reproduce. **Plus the check round 1 never looked at: `run_playwright_tests/format-check` = SUCCESS**, red on `c88bf405` and green here. **All SIX checks on the head SHA are green** — `Test Results`, `run_tests`, `update_release_draft`, and all three `run_playwright_tests` jobs. |
+| 2 | FULL integration regression against the working-tree SUT | **PASS — ACTUALLY RUN, all four suites, at the committed SHA.** `run-regression.sh ctrib063r2` built the SUT from the worktree and reported `built from source: the odd-platform WORKING TREE @ 9c1360df` (digest `sha256:4f6feeee…`), under the machine-wide flock, one suite at a time, torn down after. **`multi-stack` 18/0 GREEN** — 17 for the nine protocols plus IT-154's new assertion 9, so the tightened case is validated in suite context. **`ingestion-e2e` 15/0 GREEN.** **`known-bugs` 3 expected-RED**, all attributed, zero unexpected GREEN. **`feature-complete` 327/13** — twelve set-equal by `spec:line` to the standing attributed set, and the thirteenth (`notification-settings-dialog:94`) **confirmed a load flake by a solo re-run on the same image**: 3/0, the timed-out case green in 9.9s (`2026-09-03-IT-092.md`). It is a 60s timeout inside `page.goto` + `waitForLoadState('networkidle')` — TST-042's tracked class — and `TST-042` is **extended in place** with it (LSN-009). Round 1's gate is no longer OWED. |
+| 3 | docs read + decided + routed **AND authored** | **DONE, and widened from one page to four.** `documentation` `docs/CTRIB-063-demo-stand-first-run` @ `7cfac8f` off `origin/release/1.0.0` @ `379baf3`, draft PR [#113](https://github.com/opendatadiscovery/documentation/pull/113); `trylocally.md` + `deployment.md` + `health-and-monitoring.md` + `build-and-run-odd-platform.md`. Branch-verifiable sub-checks re-run on the new commit: PyYAML parses all four, every `description` ≤ 200 (184 / 166 / 161 / 73), Gate-11 banned-term grep clean, **0 broken relative links** and every GitBook hint block balanced. `DOC-520` updated with the second commit. |
+| 4 | ontology re-enriched + committed | **DONE** — the `trylocally` doc-understanding sidecar's refresh note carried the same false claim the page did (`up -d` "blocks until the sample is in") and is corrected with the measurement. Still no re-analysis run, and the reason still holds: no binding moves. |
+| 5 | Principal sufficiency review (G-C13) | **Stronger than round 1.** IT-154 is now **4 cases / 11 assertions**, the new one covering the single behaviour GATE-1 decision D1 turns on and which nothing tested before — RED on base for the right reason (nine wrong guesses, no status, no body, no summary). Patch-coverage gate still an empty gate rather than a skipped one (no Java in the diff). **What did I make worse?** Nothing new; the `up -d` wait stays, and it is now described accurately on all four pages that hand a reader that command, instead of one page describing it wrongly. |

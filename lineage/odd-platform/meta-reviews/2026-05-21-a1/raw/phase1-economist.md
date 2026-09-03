@@ -20,7 +20,7 @@ The methodology has produced 953 tracked findings (931 unique across five reduce
 
 - metric: "Total lineage/odd-platform/ storage"
   value: "34 MB"
-  command: "du -sh /home/raman/work/odd/odd-team/lineage/odd-platform/"
+  command: "du -sh ./lineage/odd-platform/"
 
 - metric: "understanding/ (sidecars) — total storage"
   value: "8.3 MB, 47,045 lines, 147 files"
@@ -96,7 +96,7 @@ The methodology has produced 953 tracked findings (931 unique across five reduce
 
 - metric: "Sprint batch count (H through VAL-LSN-019)"
   value: "21 batches"
-  command: "git -C /home/raman/work/odd/odd-team log --format=%s -- 'lineage/odd-platform/' | grep -c 'batch'"
+  command: "git -C . log --format=%s -- 'lineage/odd-platform/' | grep -c 'batch'"
 
 - metric: "test-map.yaml comment-line fraction"
   value: "169 comment lines of 8,069 non-blank lines = 2.1%"

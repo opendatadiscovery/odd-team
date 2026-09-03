@@ -307,12 +307,12 @@ What firing each method causes the system to do, beyond returning a response. Ci
 - concepts.invariants.[6 — status-code drift] ← TermController.java:74, 82 + openapi.yaml:2759-2761, 2797-2799
 - dependencies_semantic.requires-feature ← system-mission.md:182-198 (P-06) + system-mission.md:249-268 (P-09) + system-mission.md:77-104 (P-01)
 - dependencies_semantic.requires-runtime ← TermController.java:34-38 (Spring imports) + TermServiceImpl.java:51-58 + V0_0_35__add_terms.sql:58-76 + V0_0_91__add_term_to_term.sql:1-12
-- upstream_callers ← terms.ts:1-180 + TermsForm.tsx:1-180 + cross-link UI components verified via Glob /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/Terms/**/*.tsx
+- upstream_callers ← terms.ts:1-180 + TermsForm.tsx:1-180 + cross-link UI components verified via Glob ../odd-platform/odd-platform-ui/src/components/Terms/**/*.tsx
 - downstream_side_effects.createTerm ← TermServiceImpl.java:101-117
 - downstream_side_effects.updateTerm ← TermServiceImpl.java:119-145
 - downstream_side_effects.deleteTerm ← TermServiceImpl.java:155-164 + V0_0_76__term_relations_hard_delete.sql
 - downstream_side_effects.addLinkedTermToTerm + deleteLinkedTermFromTerm ← TermServiceImpl.java:288-301 + TermRelationsRepositoryImpl.java:164, 222 + cross-link `term-to-term-deleted-at-schema-drift` invariant
-- tests_coverage_semantic.test_files ← verified absent via Glob `/home/raman/work/odd/odd-platform/odd-platform-api/src/test/**/Term*` (zero matches) + Grep `TermController` returns only the source file
+- tests_coverage_semantic.test_files ← verified absent via Glob `../odd-platform/odd-platform-api/src/test/**/Term*` (zero matches) + Grep `TermController` returns only the source file
 - docs_link_semantic.inferred_docs.[0] ← https://docs.opendatadiscovery.org/features/data-glossary WebFetched 2026-05-20 status 200
 - docs_link_semantic.inferred_docs.[1] ← https://docs.opendatadiscovery.org/features/data-glossary/business-glossary WebFetched 2026-05-20 status 200
 - docs_link_semantic.inferred_docs.[2] ← https://docs.opendatadiscovery.org/developer-guides/api-reference/glossary WebFetched 2026-05-20 status 200

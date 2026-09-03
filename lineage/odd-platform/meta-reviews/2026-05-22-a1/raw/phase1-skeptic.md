@@ -117,7 +117,7 @@ hedge where the code was traceable. Sampled sidecars meet this bar — claims ca
   falsification_attempt: |
     Searched all Liquibase migration files for any CREATE INDEX statement referencing view_count.
     The sidecar asserts this was verified by grep across 91 migration files.
-  source_evidence: "grep -rn 'view_count' /home/raman/work/odd/odd-platform/odd-platform-api/src/main/resources/db/migration — returns hits only in V0_0_10__add_counters.sql (column add with DEFAULT 0) and V0_0_37__update_view_count.sql (NOT NULL constraint). No CREATE INDEX on view_count in any migration file. Claim holds."
+  source_evidence: "grep -rn 'view_count' ../odd-platform/odd-platform-api/src/main/resources/db/migration — returns hits only in V0_0_10__add_counters.sql (column add with DEFAULT 0) and V0_0_37__update_view_count.sql (NOT NULL constraint). No CREATE INDEX on view_count in any migration file. Claim holds."
   verdict: holds
 
 - id: CAL-8

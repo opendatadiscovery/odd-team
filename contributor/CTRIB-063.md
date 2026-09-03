@@ -1186,7 +1186,7 @@ cases 7 / 8 / 9 green. The fix is real. That is why the verdict below is about t
 | `ODD_PLATFORM_DIR` | `specs/demo-stand-first-run.spec.ts` |
 |---|---|
 | `../odd-platform-ctrib063` — relative | **0 passed / 4 failed** |
-| `/home/raman/work/odd/odd-platform-ctrib063` — absolute | **4 passed (2.8 m)**, `up -d` blocked 62 s |
+| `$(realpath ../odd-platform-ctrib063)` — absolute | **4 passed (2.8 m)**, `up -d` blocked 62 s |
 
 The two errors, verbatim from `test-results/*/error-context.md`:
 

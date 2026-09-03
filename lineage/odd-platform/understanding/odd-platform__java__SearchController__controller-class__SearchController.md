@@ -811,7 +811,7 @@ stress_findings:
 - tests_coverage_semantic.uncovered_behaviours[1] ← DataEntityServiceImpl.java:192 (hasNext hard-coded true)
 - tests_coverage_semantic.uncovered_behaviours[5] ← ReactiveDataEntityRepositoryImpl.java:498-499, 509 (no tiebreaker on ORDER BY rank DESC)
 - tests_coverage_semantic.uncovered_behaviours[6] ← ReactiveDataEntityRepositoryImpl.java:798-806 (.formatted SQL-injection)
-- tests_coverage_semantic.test_files ← Glob /home/raman/work/odd/odd-platform/odd-platform-ui/tests/features/search returned 2 spec files + JVM-side find returned zero matches
+- tests_coverage_semantic.test_files ← Glob ../odd-platform/odd-platform-ui/tests/features/search returned 2 spec files + JVM-side find returned zero matches
 - docs_link_semantic.inferred_docs[0] ← WebFetch search page 2026-05-25 status 200
 - docs_link_semantic.inferred_docs[1] ← WebFetch search-suggestions page 2026-05-25 status 404
 - docs_link_semantic.inferred_docs[2] ← WebFetch legacy URL 2026-05-19 status 404 (inherited per cadence)

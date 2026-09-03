@@ -59,6 +59,15 @@ Within the integration bucket, *how the catalog gets its data* is a tier decisio
 
 A **probe** (`P-NNN`) is a one-shot measurement run against an ephemeral local stack to turn an *inferred* hypothesis into a *measured* fact cheaply — its job is to de-risk authoring the durable test. A `PROBED` test-matrix cell is **not coverage**. Every probe worth keeping **graduates** into a unit or integration test that lives in CI/the suite and carries a gate; the rest are discarded. Probes are scaffolding, never a deliverable.
 
+### `pending-merge` is not a bucket either — it is graduate-or-die, with a named owner
+
+A protocol that asserts behaviour of an **unmerged** feature is RED for every other stream by construction (the spec repo is shared; every stream builds its own SUT), so it waits in the `pending-merge` lane of `integration-tests/suites.yaml` — never in a green-target lane, and never behind a presence-guarded `test.skip`, which would also hide a *broken* feature (G-C15). The lane has **no runner on purpose**; what it has is an owner and a backstop:
+
+- **Owner — the merging stream's GATE-2 close-out.** The `/contribute` run whose PR merges the feature moves the protocol into `feature-complete` (+ `ui-e2e` when browser-driven), empties it from `pending-merge`, runs `feature-complete` on merged `main`, and cites the run-log line that executed it in the CTRIB record. The move IS the measurable closure.
+- **Backstop — the release gate.** `playbooks/release-review.md` check 2 FAILS on a non-empty `pending-merge` list for any feature shipped in the milestone under review. A protocol still parked there means either an un-graduated merge (fix: graduate now) or a slipped feature (fix: re-target the protocol's item to the next milestone) — never "leave it".
+
+Case-law: `backlog/tests/TST-067` — IT-148 (ST-7 Favorites) left every regression gate silently the moment odd-platform#1875 merged, because the lane had two prose comments and no owner; graduated 2026-09-03.
+
 ## Green is green — the suite verdict is not negotiable
 
 The recurring rot is **normalization of deviance**: a green-target lane left chronically part-red trains everyone (human and AI) to read red as noise, so a real regression then hides in the tolerated red. The rules that stop it:

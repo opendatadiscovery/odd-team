@@ -1,5 +1,5 @@
 ---
-id: PLT-258
+id: PLT-264   # was PLT-258 (claimed twice — the favorites anti-join draft keeps PLT-258 because odd-platform@main ships a `Tracked as PLT-258` pointer to it; TST-067 scope 2, 2026-09-03)
 title: "Search sidebar facet dropdowns match EXACTLY: typing a prefix into 'Search by name' returns no options"
 target_repo: odd-platform
 issue_type: bug

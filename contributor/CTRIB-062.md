@@ -493,11 +493,11 @@ Ids re-derived from the canonical trackers **and re-checked against the two co-a
 |---|---|
 | ~~`PLT-257` saved searches drop `asset_kinds`~~ | **ALREADY TRACKED — do not duplicate.** `issues/odd-platform/PLT-256-saved-search-drops-asset-type-filter.md` (committed `3bae4c10`) was logged by the ST-7 stream from the *same* code read, hours before I reached it. I cite PLT-256 in the scope comment instead of filing a second draft. This is exactly the backlog-internal duplication LSN-009 exists to prevent, and it was caught only by grepping the tracker before writing. |
 | `DOC-504` | `data-lineage.md` contradicts itself on "Upstream dependents" (its endpoint table states the opposite of its own prose two lines later) and records the wrong `getMyObjectsWithUpstream/Downstream` OpenAPI summaries. Sourced from the SME consult + verified against the live page. |
-| `PLT-258` | Per-option counts on the My-data filter (`My Objects (23)`) — deferred pending measured evidence that three extra aggregates per search are affordable on the slice that already carries the perf gate. An odd-platform enhancement ⇒ an issue draft, not a workspace backlog item. |
+| `PLT-258` (plan-time reservation; at write time the id was used for the facet exact-match finding instead, and THAT draft was renumbered `PLT-264` on 2026-09-03 — TST-067 scope 2, it collided with ctrib061's anti-join draft) | Per-option counts on the My-data filter (`My Objects (23)`) — deferred pending measured evidence that three extra aggregates per search are affordable on the slice that already carries the perf gate. An odd-platform enhancement ⇒ an issue draft, not a workspace backlog item. |
 
 **Id state at plan time** (re-verify again at write time — they move while three streams run): `DOC-503` and
 `PLT-257` were claimed by ctrib061 **as untracked files** while this plan was being written, so mine are `DOC-504`
-and `PLT-258`. `TST-060` is free but not needed — neither follow-up is a test gap.
+and `PLT-258` (later renumbered `PLT-264` — see the row above). `TST-060` is free but not needed — neither follow-up is a test gap.
 
 ### must_haves (the plan contract — G-C19)
 
@@ -958,7 +958,7 @@ autocomplete swallowed the opening click on a cold stack; and finally the facet'
 to be **exact-match**, so typing the prefix `STAB` filtered `STABLE` out of its own dropdown.
 
 That last one was measured against the endpoint the dropdown calls (`?query=STAB` → `[]`, `?query=STABLE` →
-`["STABLE"]`) and is a **real product finding**, filed as `issues/odd-platform/PLT-258`: every sidebar filter's
+`["STABLE"]`) and is a **real product finding**, filed as `issues/odd-platform/PLT-264`: every sidebar filter's
 input is labelled *"Search by name"* but only matches a complete value, so a user typing the first letters of
 an owner or tag is told "No options". Not caused by ST-8 — reproduced directly against the endpoint — so it is
 filed separately rather than folded into this PR.
@@ -1027,7 +1027,7 @@ exactly this trap; it was caught by auditing rather than by assuming.
 
 | Item | |
 |---|---|
-| `issues/odd-platform/PLT-258` | Sidebar facet dropdowns match **exactly** — the box says "Search by name" but a prefix returns nothing. Measured at the endpoint. |
+| `issues/odd-platform/PLT-264` | Sidebar facet dropdowns match **exactly** — the box says "Search by name" but a prefix returns nothing. Measured at the endpoint. |
 | `issues/odd-platform/PLT-259` | A **NULL `ownership.title_id` 500s the entire search results page**. The column is nullable, the mapper is not. Same shape as the PLT-147 lock. |
 | `backlog/docs/DOC-504` | The paired doc item for the 1.0.0 train (`pending-release`). |
 | `backlog/docs/DOC-505` | `data-lineage.md` contradicts itself on "Upstream dependents" — a **released-truth** correction, so docs `main`, never the train. |
@@ -1513,7 +1513,7 @@ is not presented as satisfied.
 
 | ID | What |
 |---|---|
-| `PLT-258` | facet-options search is exact-match, not prefix — measured live |
+| `PLT-264` | facet-options search is exact-match, not prefix — measured live |
 | `PLT-259` | a NULL `ownership.title_id` 500s the whole results page (high) |
 | `DOC-504` | paired doc item, `pending-release`, milestone 1.0.0 |
 | `DOC-505` | `data-lineage.md` self-contradiction (released truth) |
@@ -1620,7 +1620,7 @@ it claims, I re-derived and it holds. It is rejected on four things that are not
 - **Banned-phrase check**: none used; every verdict above ends in a citation or an explicit "not measured".
 - **Regressions**: FE suite 163/164 with the one failure A/B-proved change-independent. The unit + IT confirmation runs are deferred to the re-review by design (see above) — B2 requires a fresh `multi-stack` regardless.
 - **Navigation**: consistent. `navigation/domains/search.md` was refreshed for the unified-search subsystem at CTRIB-059 and the new nodes are reachable through it; the three new backend classes carry no sidecar, which matches the corpus's selective 216-node coverage rather than a gap this slice opened.
-- **Upstream issues logged**: none new (PLT-258 / PLT-259 already filed by this stream and verified present).
+- **Upstream issues logged**: none new (PLT-264 / PLT-259 already filed by this stream and verified present).
 - **Doc-product editorial findings** — **Coverage this run**: `docs/data-discovery/**` read end-to-end on `docs/CTRIB-062-my-data-filter` (the train), plus the inbound-anchor sweep across all of `docs/` + `SUMMARY.md`. **Queued (carried forward from the CTRIB-059 partition): `integrations/**`, `master-data-management/**`, `developer-guides/**` beyond the ADR log, `data-modelling/**`, `management/**`, `use-cases/**`.** **Findings**: the two internal contradictions are **not** logged as separate DOC items — they are on the two pages this rework is already editing, so they are S4 in the fix-list above (LSN-009 / the don't-over-log rule). One genuinely separable finding filed: **DOC-506** (medium, *parallel surfaces with drift*) — one lineage relationship, two names across surfaces.
 - **Notes**: the honesty of this ledger is the reason the review was cheap — §21 named its own unmeasured gate, §22b caught its own fossil-SUT read, and R3's overclaim was corrected against the running system instead of argued. **VERIFIED via** the re-derivations listed under "What I measured myself". What it cannot do is close the gate on the maintainer's behalf: B1 and B2 are measurements this stream can take, and "GATE 2 decides whether it blocks merge" hands the maintainer a QA job. Take them, fold B3/B4/S1-S6, and the re-review is a confirmation run.
 
@@ -2141,7 +2141,7 @@ never been claimed by any run — I am not carrying either forward as "done", be
 - **Banned-phrase check**: none used — every verdict line above ends in a citation, a measured number, or an explicit "not measured".
 - **Regressions**: **one, and it is C0** — `multi-stack` red on `my-data-scope-narrows.spec.ts:259` (this slice's own IT-153) in my whole-suite run, green in my re-run; n=3 across both sessions = green/red/green. Everything else reconciles: `feature-complete`'s 11 failures are set-equal to TST-059's named eleven with zero unattributed, `known-bugs` is 3-RED-expected with zero unexpected GREENs, `ingestion-e2e` is 15/15, and the unit bucket is 774/0 at the reviewed SHA.
 - **Navigation**: consistent. `navigation/domains/search.md` was refreshed for the unified-search subsystem at CTRIB-059 and the new classes are reachable through it; no pointer moved in this rework.
-- **Upstream issues logged**: none new. `PLT-258` / `PLT-259` / `PLT-260` were filed by the stream and verified present on disk.
+- **Upstream issues logged**: none new. `PLT-264` / `PLT-259` / `PLT-260` were filed by the stream and verified present on disk.
 - **Doc-product editorial findings**: `DOC-508` (medium), `DOC-507` (low); `DOC-452` re-confirmed, not re-filed. Full detail + coverage / queue above.
 
 **Why this is a reject.** **C0 stands on its own**, and it is worth being exact about what it does and does

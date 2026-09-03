@@ -85,6 +85,7 @@ This skill owns the **temporal structure**: the 12-phase loop and the **two huma
 17. **`/review` (separate session)** — reject-by-default, all 10 Quality-Bar gates + the contributor gates. Set the CTRIB status to `review-ready` (never self-`merged`/`done`).
 
 18. **GATE 2** — the human reviews and merges. Report: the CTRIB id, the issue + comments posted, the draft PR URL, the reproduction + test evidence, follow-ups logged, the docs-publication state (train + `pending-release` item — **the docs go live at the release gate, not at this merge**), and the instruction to run `/review` then merge.
+    **After the merge lands (the GATE-2 close-out, same run or a `/contribute <PR-URL>` resume):** re-read the merged head vs the reviewed SHA (a moved head is checked, not assumed); **graduate every `pending-merge` protocol this slice owns** — move it into `feature-complete` (+ `ui-e2e` if browser-driven) in `integration-tests/suites.yaml`, run `feature-complete` on merged `main`, cite the run-log line that executed it in the CTRIB record (`pillars/tests/pillar.md` "`pending-merge` is not a bucket either"; case-law `TST-067`); and hand the maintainer any paste-ready sub-issue the slice split off (the bot never files issues — a closed parent with an unfiled sibling draft is an untracked feature).
 
 ## When to pause and ask
 

@@ -48,3 +48,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **15 passed / 0 failed (7.6m) — GREEN**, matching the standing 15/0 baseline. Nothing in this branch reaches ingestion (the diff is search/favorites BE+FE+spec+locales), so 'unaffected' was the expected result and it is what was measured, on a SUT the reviewer built from `3d5a7096` (`odd-platform:odd-team-sut-revctrib061`, `sha256:410a5eef…`). Includes IT-128's relationships pipeline 6/6 and IT-145's dataset pipeline.
 
+## 2026-09-03 — suite/protocol: ingestion-e2e
+- runner: AI-assisted (Claude Fable 5.1, session odd-team-05 — `/contribute` on merged PR #1875 = the CTRIB-061 post-merge close-out; `run-regression.sh ctrib061` on main@96d77668 — the ../odd-platform-ctrib061 worktree DETACHED at the #1875 squash, clean, no +uncommitted)
+- odd-platform working-tree HEAD: 96d77668 (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib061  (image odd-platform:odd-team-sut-ctrib061, digest sha256:46d9ae0440498c7fe715013301c5d8d9a639943c4054ac078213d4b954fb807e)
+- protocols: IT-128 IT-145
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **15/15 GREEN** (8.7m) — IT-128 + IT-145 through the real collector against main@96d77668. Note for the maintainer's demo stand: `POST /ingestion/datasources` is exercised here WITH a collector token and is green; the demo's restart loop is the missing-token 500 (#1869 / PLT-254) after the injector's LOGIN_FORM refusal (#1877), not a platform regression.
+

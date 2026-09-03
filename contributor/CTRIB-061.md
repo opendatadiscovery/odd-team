@@ -1932,3 +1932,92 @@ Milestone **1.0.0 is OPEN** (19 open / 11 closed) and **unreleased** — the lat
 
 `update_release_draft` **success**; **`images` still `in_progress`** at the time of writing — recorded as
 pending rather than claimed as built. Worth a glance before the release gate.
+
+## Post-merge close-out — 2026-09-03, session `odd-team-05` (`/contribute` on the merged PR #1875)
+
+The GATE-2 record above named two live threads; both had fired by the time this run started, and the run
+closed what the bot can close and handed over what only the maintainer can do.
+
+### What had changed since GATE 2 (re-read from the API and the trees, not the record)
+
+- **Issue #1841 was CLOSED** by `RamanDamayeu` at 2026-09-03T18:42:32Z (`state_reason: completed`), 34 minutes
+  after the merge. The PR body carried no closing keyword, so this was a deliberate close — and it is exactly the
+  case the record warned about: **ST-7b (the recently-favorited ordering) now has no public tracker.**
+  `issues/odd-platform/PLT-257` is still `status: draft`, `github_issue_url: ""`. The bot cannot file it. The
+  draft is paste-ready (title, labels, body, suggested milestone 1.0.0 — ASCII-clean, verified) and its
+  frontmatter now says in one line that filing it is the single action that unblocks `/contribute` for ST-7b.
+- **Issue #1815 (the Favorites PRD) was still open with no disposition**, although §8 promised one. Posted —
+  `odd-contributor[bot]`, 2026-09-03T18:59:39Z, ASCII, no closing keyword:
+  https://github.com/opendatadiscovery/odd-platform/issues/1815#issuecomment-5530658873 (what shipped in #1875,
+  the Group-B branch closed out and deletable, docs on the 1.0.0 train, the ordering as the only remaining piece).
+- **The class this slice extended is now owned.** The maintainer found on his first manual test that *Save
+  current search* drops the Favorites filter — the gap §11 had logged as `PLT-256` "pre-existing, out of scope".
+  A parallel session wrote `retrospectives/LSN-042` (every role saw it, every role deferred it), widened
+  `PLT-256` to the class and, on the maintainer's instruction, filed it as **odd-platform#1878** (milestone
+  1.0.0). This run opened **`contributor/CTRIB-065`** for the fix (planned to GATE 1, with the reproduction
+  captured on this run's own stack), so the record of ST-7 ends with the class it broke assigned, not footnoted.
+
+### TST-067 scope 1 — IT-148 graduated, and the graduation was RUN
+
+`integration-tests/suites.yaml`: IT-148 moved into `feature-complete` (136 protocols) and `ui-e2e` (98);
+`pending-merge` is `[]` — verified with `yaml.safe_load`, not by reading comments. The lane now has a named
+owner and a backstop (`pillars/tests/pillar.md` "`pending-merge` is not a bucket either"; `/contribute` phase 18;
+`playbooks/release-review.md` check 2), which is the class fix TST-067 asked for. The IT-148 protocol's §0 is
+rewritten as GRADUATED. Scope 2 (the duplicate `PLT-258`) closed the same hour — the facet-search draft is
+`PLT-264`, `CTRIB-062`'s citations follow it, and #1875's shipped pointer stays correct untouched.
+
+### The first full regression on merged `main` — the GATE-2 prediction, checked
+
+`run-regression.sh ctrib061` on `main@96d77668` (the worktree `../odd-platform-ctrib061` detached at the squash,
+clean; SUT `odd-platform:odd-team-sut-ctrib061`, digest `sha256:46d9ae04…`, `SUT_DESC = WORKING TREE @ 96d77668`
+with no `+uncommitted`), under the heavy-e2e flock, 20:53-22:06 +02:00:
+
+| suite | result | reading |
+|---|---|---|
+| `feature-complete` | **328 / 19** of 347 | +7 tests vs round 2's 340 = IT-148's seven cases, executed from the new slot. Twelve reds = the tracked baseline by exact spec:line (TST-059 ×11 + TST-057's `swagger-openapi-discovery:63`). **Seven outside it** — adjudicated below |
+| `known-bugs` | 3 red | IT-004/006/007, the expected quarantine; no unexpected GREEN |
+| `multi-stack` | **18 / 1** of 19 | **IT-154 GREEN 5/5 — the prediction confirmed** (RED-by-construction on 3d5a7096, which predated #1876/#1877). Not 19/0: the 1 is `my-data-scope-narrows:434` (IT-153, CTRIB-062's documented C0 flaky case), GREEN 5/5 on the fresh-stack retry — n=5 across sessions, G/R/G/R/G |
+| `ingestion-e2e` | **15 / 15** | IT-128 + IT-145 through the real collector — including a token-bearing `POST /ingestion/datasources`, green |
+
+**The seven, adjudicated with three samples on the same image** (the pillar's flaky protocol, run twice rather
+than argued): `column-annotation-editor:108`, `data-collaboration-ui-tab:106`, `dq-severity-render-bleed:107`,
+`entity-description-display:21` → **all GREEN** on a fresh-stack retry (IT-079 2/2, IT-091 2/2, IT-131 2/2,
+IT-014 2/2). `entity-activity-tab:130` (IT-089) and `favorites-star-see-loop:93` + `:156` (IT-148) → on the
+retry the red **moved to different cases** (:170; :237 + :156), and on a third, alone run it **moved again**
+(:170 again with :130 green; :174 with :93/:156/:237 green). The union of green samples covers **every case of
+both specs**. The SUT logged **zero** server errors in any failing window. The preserved failure screenshots
+are **blank white pages** — the SPA had not painted when the bound expired. Ambient load was 8-13 on 8 cores
+the whole time, with the maintainer's demo `odd-collector` restart-looping at ~100% of a core. Classification:
+**TST-057's class (timeout bounds under contention), eighth instance, recorded there with the sample table;
+priority raised to high.** Not quarantined: they are green-target guards that pass with headroom, and IT-148 is
+ST-7's only e2e proof — blinding it would not fix the box. `api:FAIL` = TST-058 (pre-existing), not attributable.
+
+**Bottom line for ST-7 on `main`:** every Favorites behaviour the slice claims is green on merged `main` in at
+least one clean sample, IT-154 is green as predicted, and nothing red on this run is attributable to #1875.
+
+### Two harness findings, handled
+
+- **`TST-068` (new, high):** `build-sut.sh`'s per-stream tag was never isolated — odd-platform's
+  `jib { to { tags = ['latest', project.version] } }` (`build.gradle:140`) re-tags **`odd-platform:latest`** and
+  `:0.0.1-SNAPSHOT` on every build, and this run's build moved `latest` from the maintainer's own demo image
+  (`3b34e245…`, their container's image) to ours. Restored by hand (`docker tag 3b34e245… odd-platform:latest`,
+  verified) before it could matter; the fix (snapshot + restore the shared tags around the jib build) is logged.
+- **The maintainer's demo stack, observed read-only:** `AUTH_TYPE=LOGIN_FORM` on `docker/demo.yaml` → the
+  enricher refused the auth-gated platform exactly as #1877 designed (exit 1, no token injected) → the collector
+  posts without a token → `500 SYS001` (#1869 / PLT-254) → `restart: always` loops it at 100% CPU. All three
+  already tracked; the limitation is documented on the 1.0.0 train by CTRIB-064. Nothing to file; told the
+  maintainer (`docker stop docker-odd-collector-1`).
+
+### Resources released
+
+Stack `ctrib061` torn down (`down -v`, verified no `ctrib061-*` containers), the heavy-e2e flock released
+(no `.holder`), the worktree left detached and clean at `96d77668`, the image tag retained as the evidence
+digest. Registry entry `ctrib061` → `phase: complete`; `ctrib065` carries the class fix forward.
+
+### Owed to the maintainer (nothing here is the bot's to do)
+
+1. **File `issues/odd-platform/PLT-257`** (ST-7b ordering) under #1825 with milestone 1.0.0 — the only tracker
+   of the ordering since #1841 closed; then `/contribute <new-issue>`.
+2. **GATE 1 for CTRIB-065 / #1878** — the saved-search class fix (one decision, in that record).
+3. `/review TST-067` (review-ready) — confirms the three graduation artefacts.
+4. Optional: delete `contrib/CTRIB-039-favorites-group-b` on origin (closed out in the #1815 disposition).

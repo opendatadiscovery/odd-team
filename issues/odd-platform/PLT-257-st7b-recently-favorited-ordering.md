@@ -5,6 +5,9 @@ target_repo: odd-platform
 issue_type: feature
 status: draft            # PASTE-READY sub-issue for the maintainer to file under #1825. The bot is policy-barred
                          # from creating issues (playbooks/github-write.md; G-C18) -- this is a draft, not a filing.
+                         # 2026-09-03: odd-platform#1875 (ST-7) MERGED and #1841 was CLOSED as completed -- this draft
+                         # is now the ONLY tracker of the ordering. Filing it (title + body below, labels, milestone
+                         # 1.0.0) is the one human action that unblocks `/contribute <new-issue>` for ST-7b.
 github_issue_url: ""
 github_issue_number: null
 filed_title: "ST-7 followup -- \"Recently favorited\" ordering for the Favorites filter"
@@ -15,14 +18,14 @@ found_date: "2026-08-31"
 user_facing_verified: false   # design-verified against the source; not yet built
 suggested_milestone: "1.0.0"  # SUGGESTED ONLY -- filed with NO milestone; the maintainer attaches it (G-C11)
 parent_issue: 1825
-sibling_issue: 1841
+sibling_issue: 1841      # ST-7, CLOSED 2026-09-03 (completed) on odd-platform#1875 / squash 96d77668
 ---
 
 ## Summary
 
-Sub-issue of #1825, sibling of #1841 (ST-7). ST-7 replaces the `/favorites` tab with a Favorites
-filter on the Catalog search. The retired tab listed favorites **most-recently-favorited first**;
-the search page has no such ordering. This issue adds it.
+Sub-issue of #1825, sibling of #1841 (ST-7, shipped in #1875). ST-7 replaced the `/favorites` tab
+with a Favorites filter on the Catalog search. The retired tab listed favorites
+**most-recently-favorited first**; the search page has no such ordering. This issue adds it.
 
 Split out of ST-7 deliberately: the ordering is not a one-line `ORDER BY`, it is a change to the
 cursor-pagination engine built in ST-5a/5b/5c, and it is the same size as those slices.

@@ -43,6 +43,7 @@ The single hardest gate: **every test we have, run against the published artifac
   - `multi-stack` → GREEN-target
   - `ingestion-e2e` → GREEN-target (real source→collector→platform stand)
   - `known-bugs` → expected RED; an unexpected **GREEN** means a fix shipped in `{version}` un-flipped → tests-pillar flip-on-fix checklist + a release finding.
+  - `pending-merge` → must be **EMPTY** for every feature shipped in `{version}` (`python3 -c 'import yaml; print(yaml.safe_load(open("integration-tests/suites.yaml"))["suites"]["pending-merge"]["protocols"])'`). A protocol still parked there is an un-graduated merge (graduate it now and run `feature-complete`) or a slipped feature (re-target its item to the next milestone) — the lane has no runner by design, so nothing else will ever execute it (`pillars/tests/pillar.md`; case-law `TST-067`).
   Read actual pass/fail counts, not exit codes.
 
 A red unit or IT suite on `{version}` is a **CRITICAL** finding — do not flip any item to `done`; surface immediately (the release is broken, fix-forward).

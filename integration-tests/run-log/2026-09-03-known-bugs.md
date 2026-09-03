@@ -48,3 +48,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **3 failed / 0 passed — EXPECTED RED, set-equal to the documented pin set, ZERO unexpected GREEN.** IT-007 `attachment-local-durability:35` (LOCAL-storage loss on container recreate, LSN-001/PLT-086) · IT-006 `error-boundary-containment:29` (no ErrorBoundary anywhere in odd-platform-ui, TEST-GAP-1013/F-042) · IT-004 `quality-dashboard-unknown-status:33` (out-of-enum run status throws before the `??` fallback, PLT-052 Defect 1). No pin flipped to green, so there is no un-flipped fix to chase. Reviewer's own run on `odd-platform:odd-team-sut-revctrib061` (`sha256:410a5eef…`, from `3d5a7096`).
 
+## 2026-09-03 — suite/protocol: known-bugs
+- runner: AI-assisted (Claude Fable 5.1, session odd-team-05 — `/contribute` on merged PR #1875 = the CTRIB-061 post-merge close-out; `run-regression.sh ctrib061` on main@96d77668 — the ../odd-platform-ctrib061 worktree DETACHED at the #1875 squash, clean, no +uncommitted)
+- odd-platform working-tree HEAD: 96d77668 (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib061  (image odd-platform:odd-team-sut-ctrib061, digest sha256:46d9ae0440498c7fe715013301c5d8d9a639943c4054ac078213d4b954fb807e)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: 3 failed = IT-004 / IT-006 / IT-007 — the expected quarantine RED; **no unexpected GREEN** (no un-flipped fix on main@96d77668).
+

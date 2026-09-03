@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { exec, execSync } from 'node:child_process';
+import { exec } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
@@ -7,8 +7,6 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 import {
   DEMO_BASE_URL,
-  DEMO_PROJECT,
-  demoCompose,
   downDemoStand,
   enricherLog,
   healthStatus,
@@ -16,6 +14,7 @@ import {
   firstHealthyAt,
   pullPlatformImage,
   upEnricher,
+  waitForEnricherExit,
 } from '../helpers/demo-stand';
 
 /**
@@ -161,13 +160,7 @@ test.describe('IT-154 the demo stand delivers its documented first run', () => {
     // Read the ordering evidence NOW, while the health log still holds the transition.
     platformFirstHealthy = firstHealthyAt('odd-platform');
     enricherStartedAt = inspect('odd-platform-enricher', '{{.State.StartedAt}}');
-    enricherExit = Number(
-      execSync(
-        `until [ "$(docker inspect -f '{{.State.Status}}' ${DEMO_PROJECT}-odd-platform-enricher-1)" = exited ]; ` +
-          `do sleep 3; done; docker inspect -f '{{.State.ExitCode}}' ${DEMO_PROJECT}-odd-platform-enricher-1`,
-        { encoding: 'utf8', timeout: 600_000 },
-      ).trim(),
-    );
+    enricherExit = waitForEnricherExit();
   });
 
   test.afterAll(() => {

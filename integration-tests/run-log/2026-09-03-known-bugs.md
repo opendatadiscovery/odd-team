@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **3 failed — the expected-RED set, all three attributed, ZERO unexpected GREEN.** IT-007 `attachment-local-durability:35` (LOCAL-storage loss on container recreate, LSN-001/PLT-086) - IT-006 `error-boundary-containment:29` (no ErrorBoundary in odd-platform-ui, TEST-GAP-1013/F-042) - IT-004 `quality-dashboard-unknown-status:33` (out-of-enum run status, PLT-052 Defect 1). No pin flipped green, so there is no un-flipped fix to chase.
 
+## 2026-09-03 — suite/protocol: known-bugs
+- runner: AI-assisted (Claude Fable 5.1, session review-ctrib063r2 — the /implement rework closing the round-2 /review fix-list, run as stream ctrib063r3; the NEXT /review must be a fresh session)
+- odd-platform working-tree HEAD: the SUT source is `6557b4b9` in ../odd-platform-ctrib063 (branch contrib/CTRIB-063-demo-stand-readiness, clean tree — `docker/README.md` bridge sentence on top of `9c1360df`; no Java/TS/SQL in the branch). `run-regression.sh ctrib063r3` with ODD_PLATFORM_DIR pointed at that worktree built image `odd-platform:odd-team-sut-ctrib063r3` from it (build-sut: `built from source: the odd-platform WORKING TREE @ 6557b4b9`). Any bare SHA the harness prints is the SHARED ../odd-platform checkout, not this run's subject (LSN-033).
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib063r3  (image odd-platform:odd-team-sut-ctrib063r3, digest sha256:17f57b3ca92ab59d26df19b09048e536e7697f5a66cf54337ef01dc85c26c053)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **3 failed — the expected-RED set, all three attributed, ZERO unexpected GREEN**, at `6557b4b9`: IT-007 `attachment-local-durability:35` (LOCAL-storage loss on container recreate, LSN-001/PLT-086) - IT-006 `error-boundary-containment:29` (no ErrorBoundary in odd-platform-ui, TEST-GAP-1013/F-042) - IT-004 `quality-dashboard-unknown-status:33` (out-of-enum run status, PLT-052 Defect 1). No pin flipped green.
+

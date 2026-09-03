@@ -57,12 +57,20 @@ under test; copying it into a profile would test the copy.
   gate silently inherits whatever months-old image happens to be there (`LSN-032` / `LSN-033`).
   The 2026-09-02 authoring run inherited a `0.28.0` image from 2026-06-17 exactly that way before
   the pull was made explicit.
-- **Ports**: the demo file hard-codes host `8080`/`5432`. The stand composes a **host-port-remap-only**
-  override (`integration-tests/e2e/helpers/demo-stand.ports.yml`) onto it — `18095`/`15495`, clear of
-  every fixed e2e port (which stop at 18090/15441) and below `run-suite.sh`'s per-stream SUT search
-  (18100/15500). Nothing else is overridden: the enricher and the collector still reach the platform
-  over the compose network at `odd-platform:8080`, so the readiness gate, the healthcheck and the
-  injection are exercised exactly as a user gets them.
+- **Ports**: the demo file hard-codes host `8080`/`5432`. The stand composes a ports override
+  (`integration-tests/e2e/helpers/demo-stand.ports.yml`) onto it that **replaces** them with
+  `18095`/`15495` — clear of every fixed e2e port (which stop at 18090/15441) and below `run-suite.sh`'s
+  per-stream SUT search (18100/15500) — using the Compose-Spec **`ports: !override`** tag. The tag is
+  load-bearing: Compose *merges* `ports` across `-f` files (it "appends new entries that do not violate a
+  uniqueness constraint"), so a plain override ADDS the new pair next to `8080`/`5432` and the stand binds
+  all four — measured 2026-09-03, and the shape in which the stand false-REDs with a bind failure whenever
+  the maintainer's own demo stand or a local Postgres holds those ports. With `!override`, `docker compose
+  … config` resolves to `database ['15495:5432']` / `odd-platform ['18095:8080']` and nothing else is
+  published. This needs the v2 plugin (`composeCmd()` prefers it); legacy `docker-compose` 1.29.2 refuses
+  the file at parse time (`could not determine a constructor for the tag '!override'`) — loudly, never a
+  silent bind. Nothing else is overridden: the enricher and the collector still reach the platform over the
+  compose network at `odd-platform:8080`, so the readiness gate, the healthcheck and the injection are
+  exercised exactly as a user gets them.
 - **Auth**: the demo's shipped default, `auth.type=DISABLED`.
 - **Seed data**: none. `docker/config/injector/` is the sample set, injected by the run itself.
 
@@ -156,6 +164,13 @@ Three things about the *observation* here are load-bearing and were each learned
   reason, and every case passes `PYTHONUNBUFFERED=1` the way `docker/demo.yaml` does. Note also that the
   exit code is on `err.code` for `exec` and on `err.status` for `execSync` — reading the wrong one turns
   every failure into `1` and makes the exit-code assertions meaningless.
+- **A ports override MERGES unless you say otherwise.** Compose appends `ports` entries across `-f` files
+  (distinct host ports never collide with the uniqueness rule), so "remap" the demo's `8080`/`5432` with a
+  plain override and you have *added* `18095`/`15495` beside them — the stand then owns all four host ports
+  and fails to start whenever the developer-facing pair is busy. `demo-stand.ports.yml` uses `ports:
+  !override` for exactly this reason; verify any change to it with `docker compose … config` and read the
+  resolved `published` ports, not the file. Found by `/review` round 2 (2026-09-03), not by running — the
+  suite was green because nothing else happened to hold those ports.
 - **Do not assert the `up` command's DURATION.** It is 2s on the unfixed stand and 62-86s on the fixed one, so
   a threshold looks tempting — but it would be asserting machine speed. The property under test is the
   *ordering* (the enricher starts at or after the platform's first passing probe), which is machine-independent.

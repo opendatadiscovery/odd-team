@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **15 passed / 0 failed (5.7m) — GREEN**, matching the standing 15/0 baseline. IT-145 dataset-pipeline lifecycle and IT-128 relationships pipeline, both real source-system -> real collector -> platform -> UI. Nothing in this branch reaches ingestion, so `unaffected` was the expected result and it is what was measured on a SUT this session built from `9c1360df`.
 
+## 2026-09-03 — suite/protocol: ingestion-e2e
+- runner: AI-assisted (Claude Fable 5.1, session review-ctrib063r2 — the /implement rework closing the round-2 /review fix-list, run as stream ctrib063r3; the NEXT /review must be a fresh session)
+- odd-platform working-tree HEAD: the SUT source is `6557b4b9` in ../odd-platform-ctrib063 (clean tree; README-only on top of `9c1360df`). Image `odd-platform:odd-team-sut-ctrib063r3` built from it by `run-regression.sh ctrib063r3` (digest `sha256:17f57b3ca92ab59d26df19b09048e536e7697f5a66cf54337ef01dc85c26c053`). Any bare SHA the harness prints is the SHARED ../odd-platform checkout (LSN-033).
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-ctrib063r3  (image odd-platform:odd-team-sut-ctrib063r3, digest sha256:17f57b3ca92ab59d26df19b09048e536e7697f5a66cf54337ef01dc85c26c053)
+- protocols: IT-128 IT-145
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **15 passed / 0 failed (5.8m) — GREEN** at `6557b4b9`, matching the standing 15/0 baseline: IT-145 dataset-pipeline lifecycle and IT-128 relationships pipeline, real source-system -> real collector -> platform -> UI. Nothing in this branch reaches ingestion; `unaffected` was expected and is what was measured.
+

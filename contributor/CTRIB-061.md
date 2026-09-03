@@ -5,7 +5,7 @@ github_issue: 1841
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1841
 target_repo: odd-platform
 milestone: "1.0.0"
-status: review-ready   # = GATE-2-ready. ROUND-2 RE-ADJUDICATION 2026-09-03 (review-ctrib061r2, fresh session): **ACCEPTED**, `blocked` -> `review-ready`. Round 1 (00:21) rejected on three blockers; the maintainer's 15:13 standing rule (memory/feedback_review_blocks_only_on_the_diff, CTRIB-063 case-law) is that a /review blocks ONLY on a defect IN the diff -- and B2 (the `pending-merge` lane nothing runs) + B3 (stale suites.yaml comments) are defects in ODD-TEAM'S OWN HARNESS, touching none of the 33 odd-platform files or 4 doc pages. B1 (the duplicate PLT-258) is a defect in OUR tracker and is fixable with a `git mv` + `sed` inside odd-team, with ZERO change to the PR -- VERIFIED: neither draft is filed (`github_issue_url: ""` on both) and `git grep PLT-258 origin/main` is EMPTY, so ctrib062 never shipped it. Blocks bucket EMPTY -> GATE-2-ready. Every round-1 finding was factually correct and each was re-derived first-hand; none is a defect in the deliverable. Round 2 also ran the four-suite confirmation regression round 1 DEFERRED, on its OWN SUT (`odd-platform:odd-team-sut-revctrib061`, `sha256:410a5eef5650`, built from a clean `3d5a7096`): feature-complete 322/18 with ZERO unattributed (12 = TST-059's eleven + TST-057's swagger:63; the other 6 each re-run ALONE on the same image and all TST-057 contention -- 60s in-suite, single-digit seconds solo), known-bugs 3-RED-expected/0-unexpected-GREEN, multi-stack 14/5 GREEN-FOR-CHANGE (all 5 = IT-154, RED-BY-CONSTRUCTION: neither #1876 `ab457f0d` nor #1877 `f714d8fa` is an ancestor of 3d5a7096, and this PR touches zero demo-stand files), ingestion-e2e 15/0 GREEN. FE measured by the reviewer (CI does not lint or test odd-platform-ui): vitest 185/186 with the one failure A/B-proved change-independent (2/2 in 2370ms alone), slice tests 44/44, i18n parity 17/17, tsc clean, ESLint 0 errors / 4 prettier warnings (S3, folded not blocking). Gate 8 PENDING-RELEASE (1.0.0) -- **OWED at GATE 2: documentation#112 is an UNMERGED DRAFT, so a 1.0.0 cut as things stand ships this feature with no docs.** Follow-ups: TST-067 (new, milestone 1.0.0 -- the lane + the duplicate id), DOC-503 (extended -- 3 in-diff doc gaps to close before #112 merges), DOC-525 (new -- relationships.md self-contradiction, editorial audit), TST-057 (extended -- 6 measured flakes). Human GATE 2 merges BOTH draft PRs -> pending-release -> `/review release:1.0.0` owns `done`. Verdict: "## Review round 2 (2026-09-03, session: review-ctrib061r2)".
+status: pending-release   # GATE 2 (human) 2026-09-03: **BOTH PRs MERGED by RamanDamayeu.** odd-platform #1875 -> squash `96d77668` on origin/main (18:08:05Z); documentation #112 -> merge `716d3e7` on origin/release/1.0.0 (18:10:05Z). **The head MOVED between review and merge and it was checked, not assumed**: head-at-merge was `c4f9bf68`, not the reviewed `3d5a7096` -- it is a `Merge branch 'main'` bringing in ONLY #1876 (`ab457f0d`) + #1877 (`f714d8fa`), both already merged and separately reviewed. `git diff 3d5a7096 96d77668 -- odd-platform-api odd-platform-ui odd-platform-specification` is **EMPTY** and `git diff c4f9bf68 96d77668` is **EMPTY**, so every ST-7 file on main is byte-identical to what round 2 measured and the squash is faithful -- the review evidence carries verbatim. File sets are disjoint (docker/injector/tests vs api/ui/specification), so no interaction surface. Doc train: `git diff 79612a0 origin/release/1.0.0 -- <the 4 pages>` EMPTY. Side effect: the merge-from-main RETIRES round 2's multi-stack finding -- IT-154 was RED-by-construction only because 3d5a7096 predated #1876/#1877, so the next full regression on main should show IT-154 GREEN / multi-stack 19-0 (predicted, NOT yet run). Milestone 1.0.0 OPEN (19 open / 11 closed) and unreleased (latest 0.29.0) -> `/review release:1.0.0` owns `done`; Gate 8 live verification + the URL/phrase list are OWED there. **Issue #1841 stays OPEN deliberately** -- the PR body says "Part of #1841" with NO closing keyword, because ST-7b (the recently-favorited ordering) did not ship; but `PLT-257` is STILL `status: draft` and unfiled, so if #1841 closes first, ST-7b has no tracker. **TST-067 scope 1 is now DUE, not pending**: IT-148 is at this moment sitting in the `pending-merge` lane that nothing executes. Post-merge `update_release_draft` success; `images` was still in_progress when recorded. Verdict: "## GATE 2 (human merge) -- 2026-09-03".
 classification: feature
 stream_id: ctrib061
 base_sha: 969a5d5b   # rebased onto ST-6 (#1873) + ST-8 (#1871) after both merged; the original plan was cut at 82e7e70e
@@ -1861,3 +1861,74 @@ checkout onto a ref while reading the train and **restored it to `contrib/CTRIB-
   caught a case that could never fail, and that its EXPLAIN gate corrected its own author's comment. Both were
   found by *running* things.
 - Every verdict above ends in a file:line, a CI job URL, a run-log entry, or a command I executed this session.
+
+---
+
+## GATE 2 (human merge) — 2026-09-03, verified against the remote refs
+
+**Both PRs MERGED by `RamanDamayeu`.** `review-ready` -> `pending-release`.
+
+| | odd-platform #1875 | documentation #112 |
+|---|---|---|
+| merged_at | `2026-09-03T18:08:05Z` | `2026-09-03T18:10:05Z` |
+| head at merge | **`c4f9bf68`** — *not* the reviewed SHA | `79612a0` — **is** the reviewed SHA |
+| result on target | squash **`96d77668`** on `origin/main` | merge **`716d3e7`** on `origin/release/1.0.0` |
+
+### The head moved between review and merge — checked, not assumed
+
+The reviewed artefact was `3d5a7096`; the PR merged at `c4f9bf68`. That gap is exactly what this check exists
+to catch, so it was resolved before anything was recorded:
+
+- `c4f9bf68` is a **`Merge branch 'main' into contrib/CTRIB-061-favorites-filter`** (19:59:23 +0200,
+  `Raman Damayeu`). The only commits it brings in are **`ab457f0d` (#1876, CTRIB-063 demo stand)** and
+  **`f714d8fa` (#1877, CTRIB-064 injector)** — both already merged and both separately reviewed.
+- `git diff 3d5a7096 96d77668` touches **five files, none of them this slice's**:
+  `docker/README.md`, `docker/demo.yaml`, `config/injector/samples/08_s3_ingestion.json`,
+  `injector/inject.py`, `tests/docker/docker-compose.yaml`.
+- **`git diff 3d5a7096 96d77668 -- odd-platform-api odd-platform-ui odd-platform-specification` is EMPTY.**
+  Every file of the ST-7 slice on `main` is byte-identical to what round 2 read and measured.
+- **`git diff c4f9bf68 96d77668` is EMPTY** — the squash is faithful, so `main` carries exactly the merged head.
+
+**Therefore round 2's evidence carries verbatim** — the four-suite regression, the FE measurements, the
+gate verdicts. The merge-from-main introduced no interaction surface either: #1876/#1877 touch
+`docker/` + `injector/` + `tests/`, this slice touches `odd-platform-{api,ui,specification}`; the file sets
+are disjoint.
+
+**Side effect worth naming:** the merge-from-main *retires* round 2's `multi-stack` finding. IT-154's five
+failures were RED-by-construction because `3d5a7096` predated #1876/#1877; the merged head contains both, so
+the next full regression on `main` should show **IT-154 GREEN and `multi-stack` back at 19/0**. That is a
+checkable prediction, not a claim — it has not been run.
+
+### Doc train
+
+`716d3e7` merged #112 into `release/1.0.0`, and
+`git diff 79612a0 origin/release/1.0.0 -- {favorites,search,catalog-overview}.md main-concepts.md` is
+**EMPTY** — the train carries exactly the reviewed doc content. Gate 8's live verification and the recorded
+URL/phrase list stay **OWED at the release gate**; `favorites.md` has never been published to
+`documentation@main`, so there is nothing live to check until 1.0.0 ships.
+
+### Why this is `pending-release` and not `done`
+
+Milestone **1.0.0 is OPEN** (19 open / 11 closed) and **unreleased** — the latest release is `0.29.0`
+(2026-06-26). `/review release:1.0.0` owns the flip to `done`, against the published artifact
+(`playbooks/release-review.md`).
+
+### Two open threads the maintainer should see
+
+1. **Issue #1841 is still OPEN, and that is correct — not a missed auto-close.** The PR body says
+   *"Part of #1841"*, with **no closing keyword** (scanned: zero `close/fix/resolve #N` matches), which is the
+   deliberate consequence of GATE-1 decision 2: ST-7 shipped the filter, **ST-7b (the recently-favorited
+   ordering) did not ship**. The open issue is the marker for that remaining half.
+   **But `issues/odd-platform/PLT-257-st7b-recently-favorited-ordering.md` is still `status: draft`,
+   `github_issue_url: ""`** — the paste-ready sub-issue has never been filed, and the bot is policy-barred
+   from filing it. If #1841 is closed before PLT-257 is filed, ST-7b has no tracker anywhere.
+   `DOC-503` (`milestone: "1.0.0"`) already forces the 1.0.0 gate to decide the *documentation* half of this,
+   so the two are linked.
+2. **`TST-067` scope 1 is now DUE, not pending.** Its condition was "once odd-platform#1875 is merged" — that
+   is now true, so **IT-148 is currently sitting in the `pending-merge` lane that nothing executes.** The
+   coverage hole the item describes is live as of this merge, not hypothetical.
+
+### Post-merge pipeline
+
+`update_release_draft` **success**; **`images` still `in_progress`** at the time of writing — recorded as
+pending rather than claimed as built. Worth a glance before the release gate.

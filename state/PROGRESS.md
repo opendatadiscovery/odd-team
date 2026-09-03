@@ -5078,3 +5078,32 @@ pending-release) passing on the reviewer's own evidence.
 review* or falsifies a claim the diff makes. A defect in the measuring rail is logged and the item ships —
 three rounds on a demo-stand bug fix is more than the change was worth, and the reviewer's job is to protect
 the deliverable, not to become the obstacle to it.
+
+### 2026-09-03 — CTRIB-063 GATE 2: both PRs MERGED → `pending-release`
+
+Verified on the real remotes, not inferred from local state (`git fetch` + `git log origin/…` + the PR API):
+
+| Repo | PR | Merge | Fidelity |
+|---|---|---|---|
+| odd-platform | #1876 | squash **`ab457f0d`** on `origin/main` | head-at-merge `6557b4b9` == the reviewed SHA; `git diff 6557b4b9 ab457f0d` **EMPTY** ⇒ the review's evidence carries |
+| documentation | #113 | merge **`a9ffa4e`** on `origin/release/1.0.0` | `git diff d17bb60 origin/release/1.0.0 -- docs/` **EMPTY** ⇒ the train carries the reviewed content |
+
+Issue #1870 auto-closed (`completed`). Milestone `1.0.0` still **OPEN**, and the live site still serves the
+pre-release text, so the doc is on the train but unpublished. `review-ready` → **`pending-release`**;
+`/review release:1.0.0` owns `done`. Owed at that gate: Gate 8 live verification across the four pages
+(URL/phrase list on `DOC-520`, which stays `pending-release` on the same gate). The train→main PR is
+documentation#108 (`main` ← `release/1.0.0`, open, not a draft) and now contains this item.
+
+`TST-066` (the harness path bug the round-3 verdict wrongly blocked on) is independent of the release.
+
+**#1870 closed end-to-end**: the demo stand's enricher no longer races the platform (compose healthcheck +
+`service_healthy` on the enricher and the collector, mirrored into the Playwright harness stand), the
+injector refuses to under-deliver instead of printing one `Skipping` line and exiting 0, the S3 sample's
+oddrn matches its own entities so the catalog delivers the promised ten, and four published pages describe
+the ~60 s first-run wait that operators now see. Regression gate: IT-154 (10 protocol checks / 4 Playwright
+cases), RED on the pre-fix base, GREEN on the fix.
+
+**Stream `ctrib063` terminal, namespace released** — worktrees `../odd-platform-ctrib063`,
+`../odd-platform-ctrib063base`, `../documentation-ctrib063` reclaimable (all branches merged); demo-stand
+ports 8080/5432 and compose project `ctrib063demo` free; per-stream SUT images prunable. Left in place rather
+than deleted; reclaiming is the maintainer's call.

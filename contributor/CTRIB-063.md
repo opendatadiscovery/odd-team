@@ -4,7 +4,7 @@ title: "#1870 — the demo stand does not deliver what its README promises: the 
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1870"
 parent_epic: null
 class: "bug — two independent defects in the local demo stand (docker/demo.yaml orchestration + injector/inject.py robustness + one sample's data). No production code path is touched."
-status: review-ready   # ROUND-3 /review 2026-09-03 (review-ctrib063r3): verdict OVERTURNED to GATE-2-ready on the maintainer's call, and correctly so — see "## Disposition". The fix is verified real at `6557b4b9` (stand 4/4 green, `up -d` blocks 62s, 10 data sources, CI 6/6, all six must_haves.truths PASS, gates 1-11 PASS bar 8 PENDING-RELEASE(1.0.0)). The round-3 blocker was in **odd-team's own test harness**, not in either PR — no file under review is affected — so it is re-homed as `backlog/tests/TST-066.md` (relative ODD_PLATFORM_DIR breaks 3 specs) and the two remaining fold-ins are DROPPED as nits. Round 2's fix-list was independently re-derived and is fully closed. Human GATE 2 owns the merge; `/review release:1.0.0` owns `done`.
+status: pending-release   # GATE 2 (human) 2026-09-03: **BOTH PRs MERGED.** odd-platform #1876 -> squash `ab457f0d` on origin/main; head-at-merge `6557b4b9` == the reviewed SHA and `git diff 6557b4b9 ab457f0d` is EMPTY, so the review's evidence carries. documentation #113 -> merge `a9ffa4e` on origin/release/1.0.0; `git diff d17bb60 origin/release/1.0.0 -- docs/` EMPTY, so the train carries the reviewed doc content. Issue #1870 auto-closed (completed). Milestone 1.0.0 still OPEN/unreleased -> `/review release:1.0.0` owns `done`; Gate 8 live verification + the DOC-520 URL/phrase list are OWED at that gate. Prior: round-3 /review REJECTED then OVERTURNED to GATE-2-ready the same day (the blocker was odd-team harness, re-homed as TST-066).
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1870` 2026-09-02: milestone 1.0.0, state OPEN, semver, due 2026-07-31 (20 open / 10 closed)
 base_sha: "969a5d5b"      # odd-platform origin/main at intake (= #1873 CTRIB-060 ST-6 merged), fetched with the App token; local `main` identical
@@ -1438,3 +1438,32 @@ bullet's line length) are **dropped, not deferred** — they are nits and they d
 The gate-9 note stands as a record, not as a bounce: the round-3 DoD's recorded command does not reproduce
 its recorded `multi-stack 18/0` (I measured 14/4 with it). TST-066's fix makes the recorded command true,
 which is the cleaner correction than editing the ledger.
+
+### GATE 2 — merged 2026-09-03 (human)
+
+| Repo | PR | Result | Fidelity |
+|---|---|---|---|
+| odd-platform | [#1876](https://github.com/opendatadiscovery/odd-platform/pull/1876) | squash **`ab457f0d`** on `origin/main` | head-at-merge `6557b4b9` == the reviewed SHA; `git diff 6557b4b9 ab457f0d` **EMPTY** |
+| documentation | [#113](https://github.com/opendatadiscovery/documentation/pull/113) | merge **`a9ffa4e`** on `origin/release/1.0.0` | `git diff d17bb60 origin/release/1.0.0 -- docs/` **EMPTY** |
+
+Issue [#1870](https://github.com/opendatadiscovery/odd-platform/issues/1870) auto-closed (`completed`).
+Milestone `1.0.0` is still **OPEN**, so the doc is on the train but **not published** — verified live:
+`docs.opendatadiscovery.org/configuration-and-deployment/trylocally` still serves *"Preferably the latest
+docker-compose"*. `status: review-ready` → **`pending-release`**; `/review release:1.0.0` owns `done`.
+
+**Owed at the 1.0.0 release gate** (nothing else outstanding on this item):
+
+- **Gate 8 live verification** — `playbooks/live-site-verification.md` across the four pages' URLs and
+  phrases, the list already recorded on `DOC-520`. The train→main PR is
+  [documentation#108](https://github.com/opendatadiscovery/documentation/pull/108) (`main` ← `release/1.0.0`,
+  not a draft, open); this item's content is now inside it.
+- **`DOC-520`** stays `pending-release` on the same gate; its acceptance criteria are the post-merge reads.
+- **`TST-066`** is independent of the release — the harness fix can land any time, and the re-proof condition
+  is `run-regression.sh` with a *relative* `ODD_PLATFORM_DIR` reaching `multi-stack 18/0` and
+  `feature-complete` reporting **0 skipped**.
+
+**Namespace released.** The `ctrib063` stream is terminal: worktrees `../odd-platform-ctrib063`,
+`../odd-platform-ctrib063base` and `../documentation-ctrib063` are reclaimable (all three branches merged),
+the demo-stand port pair 8080/5432 and compose project `ctrib063demo` are free, and the per-stream SUT images
+`odd-team-sut-ctrib063{,r2,r3}` / `odd-team-sut-revctrib063{,r2,r3}` can be pruned. Left in place rather than
+deleted — reclaiming them is the maintainer's call.

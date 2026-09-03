@@ -136,6 +136,39 @@ function startStubPlatform(): Promise<{ port: number; close: () => Promise<void>
   });
 }
 
+/**
+ * A stand-in for an AUTH-GATED platform: health is permit-all (as it really is in every auth
+ * mode), but /api/** answers 302 -> /login and /login serves an HTML page with 200.
+ *
+ * This is the shape that produced the 2026-09-03 report from a maintainer running the merged
+ * demo stand with AUTH_TYPE=LOGIN_FORM: `requests` follows the redirect, the login page is a
+ * perfectly good 200 text/html, so a status-code check passes and the unguarded .json() below
+ * it raised `JSONDecodeError: Expecting value: line 1 column 1 (char 0)` out of the module.
+ * An operator got a Python traceback where a sentence belonged.
+ */
+function startAuthGatedStubPlatform(): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    const url = req.url ?? '';
+    req.resume();
+    if (url.startsWith('/actuator/health')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'UP' }));
+    }
+    if (url.startsWith('/login')) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      return res.end('<!DOCTYPE html><html lang="en"><head><title>Login</title></head><body/></html>');
+    }
+    res.writeHead(302, { Location: '/login' });
+    return res.end();
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as import('node:net').AddressInfo;
+      resolve({ port, close: () => new Promise<void>((done) => server.close(() => done())) });
+    });
+  });
+}
+
 test.describe('IT-154 the demo stand delivers its documented first run', () => {
   // ONE test, SOFT assertions — not six tests, and not `serial`. Both of those were tried against
   // the unfixed base and both are wrong here:
@@ -322,7 +355,36 @@ test.describe('IT-154 the injector refuses to under-deliver, with no platform in
       await stub.close();
     }
   });
+  // 10 — an AUTH-GATED platform must be diagnosed, not crashed into. Added after a maintainer
+  // ran the merged demo stand with AUTH_TYPE=LOGIN_FORM and got a JSONDecodeError traceback.
+  // RED ON BASE (and on the just-merged 6557b4b9): `requests` follows the 302, the login page
+  // answers 200 text/html, the status check passes, and `response.json()['items']` raises
+  // JSONDecodeError out of the module. Every assertion below fails there.
+  test('10 an auth-gated platform is diagnosed in a sentence, not a JSONDecodeError traceback', async () => {
+    const stub = await startAuthGatedStubPlatform();
+    try {
+      const { code, out } = await runInjector(
+        SAMPLE_DIR,
+        { PLATFORM_HOST_URL: `http://127.0.0.1:${stub.port}`, REACH_TRIES_NUMBER: '5', REACH_RETRY_DELAY_SECONDS: '1' },
+        '--network host',
+      );
+
+      expect(code, `an auth-gated platform must fail the run:\n${out}`).not.toBe(0);
+
+      // the redirect is named, and so is the remedy
+      expect(out, 'the redirect must be reported').toContain('redirected to');
+      expect(out, 'and where it went').toContain('/login');
+      expect(out, 'and what to do about it').toContain('auth.type=DISABLED');
+
+      // and the failure mode this case exists to prevent must be GONE
+      expect(out, 'no JSON decoder error may reach the operator').not.toContain('JSONDecodeError');
+      expect(out, 'a fatal path must print a sentence, not a traceback').not.toContain('Traceback (most recent call last)');
+    } finally {
+      await stub.close();
+    }
+  });
 });
+
 
 async function search(
   request: import('@playwright/test').APIRequestContext,

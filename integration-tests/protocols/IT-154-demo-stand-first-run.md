@@ -102,15 +102,16 @@ platform's healthcheck passes. Confirm before running the assertions:
 3. Read the container states and the enricher log.
 4. Query the catalog: `GET /api/datasources`, then `POST /api/search` + `GET /api/search/{id}/results`.
 5. Open `http://localhost:18095/management/datasources` in a browser.
-6. Run the stand-free injector cases (7, 8 and 9 below) — none needs the demo stand; 9 needs only a
-   throwaway HTTP stand-in that rejects `POST /ingestion/entities`.
+6. Run the stand-free injector cases (7, 8, 9 and 10 below) — none needs the demo stand; 9 needs only a
+   throwaway HTTP stand-in that rejects `POST /ingestion/entities`, and 10 one that redirects `/api/**` to
+   a login page.
 
 **Automated rail**: `integration-tests/run-suite.sh IT-154` (or the `multi-stack` suite).
 
-**How the rail maps onto the ten checks below — it reports FOUR Playwright cases, not ten.** Checks 1-6b
+**How the rail maps onto the eleven checks below — it reports FIVE Playwright cases, not eleven.** Checks 1-6b
 share one demo stand and one enricher run, so they are one case using **soft assertions**: every one of them
-still reports independently on failure, but the expensive stand is built once. Checks 7, 8 and 9 are their own
-cases because they need no demo stand at all (9 brings up a throwaway in-process stand-in instead). Two alternatives were built and run against the unfixed base before
+still reports independently on failure, but the expensive stand is built once. Checks 7, 8, 9 and 10 are their own
+cases because they need no demo stand at all (9 and 10 bring up a throwaway in-process stand-in instead). Two alternatives were built and run against the unfixed base before
 settling on this: `serial` mode stops at the first failure, so a red result cannot say *which* defect
 regressed — which is the entire job of checks 4/5/6 — and six independent cases do each report, but Playwright
 discards the worker after a failed test and re-runs `beforeAll`, rebuilding the whole stand once per red
@@ -130,8 +131,10 @@ assertion (~2 minutes each). A human executing the protocol by hand simply does 
 | 7 | with one sample re-pointed at an undefined oddrn, the injector exits non-zero, names that file and that oddrn, says `Nothing has been injected`, and never reaches `Waiting for the platform` | exit 0 with one `Skipping` line — the silent under-delivery |
 | 8 | run standalone against a closed port with `REACH_TRIES_NUMBER=2 REACH_RETRY_DELAY_SECONDS=1`, it exits non-zero within seconds, logs `attempt 2 of 2`, and its give-up message names `REACH_TRIES_NUMBER` and `migration set` | the knobs are ignored (they do not exist on the unfixed build) and the message names neither cause nor remedy |
 | 9 | run against a Platform that accepts everything but rejects `POST /ingestion/entities` with `400 USR003`: the run reports that **actual status and body**, names the failing sample file, repeats every failure in a closing summary printed **after** the per-sample lines, and still **exits 0** | exit 0 with `Possibly the 'ingestion.filter.enabled' property is set to 'true'` — a guess, and a wrong one — no status, no body, no summary |
+| 10 | run against an **auth-gated** Platform (health permit-all, `/api/**` → `302 /login`, `/login` → `200 text/html`): the run fails, names the redirect, its target and the `auth.type=DISABLED` remedy, and contains **neither** `JSONDecodeError` **nor** `Traceback (most recent call last)` | a raw `requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)` traceback — `requests` follows the 302, the login page answers 200 `text/html`, the status-code guard passes, and the unguarded `.json()` raises out of the module (CTRIB-064; reported by a maintainer running the merged stand with `AUTH_TYPE=LOGIN_FORM`) |
 
-**RED proof.** Assertions 1, 2, 4, 6, 7, 9 are deterministically red on the unfixed base; 3 is red on
+**RED proof.** Assertions 1, 2, 4, 6, 7, 9 are deterministically red on the unfixed base; 10 is red on
+the *merged* `ab457f0d` too (measured — it is CTRIB-064's residue, not #1870's); 3 is red on
 the race (intermittent by nature); 8 is red because the env knobs do not exist. The base is a
 **second, detached worktree pinned at the pre-fix commit**, created before any edit and never
 written to — not the worktree the fix lives in.
@@ -171,6 +174,13 @@ Three things about the *observation* here are load-bearing and were each learned
   !override` for exactly this reason; verify any change to it with `docker compose … config` and read the
   resolved `published` ports, not the file. Found by `/review` round 2 (2026-09-03), not by running — the
   suite was green because nothing else happened to hold those ports.
+- **`ODD_PLATFORM_DIR` must be ABSOLUTE.** Playwright runs with cwd `integration-tests/e2e` while
+  `run-regression.sh` runs from the workspace root, so the same relative string means two different
+  directories. Pass a relative override and every case here dies on a path that does not exist — case 1 with
+  `spawnSync /bin/sh ENOENT` (the compose `cwd`), 7-10 with `ENOENT … lstat`. `run-regression.sh:32`
+  absolutizes only its *computed default*, so a reviewer — who must always override, since the stream id
+  never matches the worktree suffix — hits it every time. Tracked as `TST-066`; until that lands, pass the
+  absolute path.
 - **Do not assert the `up` command's DURATION.** It is 2s on the unfixed stand and 62-86s on the fixed one, so
   a threshold looks tempting — but it would be asserting machine speed. The property under test is the
   *ordering* (the enricher starts at or after the platform's first passing probe), which is machine-independent.

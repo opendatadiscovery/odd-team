@@ -5107,3 +5107,48 @@ cases), RED on the pre-fix base, GREEN on the fix.
 `../odd-platform-ctrib063base`, `../documentation-ctrib063` reclaimable (all branches merged); demo-stand
 ports 8080/5432 and compose project `ctrib063demo` free; per-stream SUT images prunable. Left in place rather
 than deleted; reclaiming is the maintainer's call.
+
+## 2026-09-03 — CTRIB-064: the injector's status-code guard is defeated by a redirect
+
+The maintainer ran the merged demo stand locally with `AUTH_TYPE=LOGIN_FORM` and the enricher died on
+`requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)`.
+
+**Diagnosed on that live stack, not reasoned about.** `/actuator/health` is permit-all in every auth mode, so
+the CTRIB-063 healthcheck gate worked and released the enricher on its first poll (`attempt 1 of 60`). The
+next call is where it breaks: `GET /api/datasources` answers **`302 → /login`**, `requests` **follows
+redirects by default**, the login page comes back as a perfectly good `200 text/html` (960 bytes), so
+`if response.status_code != 200` *passes* — and the unguarded `response.json()['items']` raises out of the
+module.
+
+**Pre-existing, not a CTRIB-063 regression** — the `969a5d5b` injector, run against the same live stack,
+fails identically. **But it is that change's own stated class**: #1870 promised to guard the unguarded
+`.json()` and to make failures report the platform's real answer, and it guarded exactly one — the health
+poll — leaving the two reads that run immediately after, in functions the same commit edited. A third, worse
+instance: `inject_data()` checked only the status code, so a redirect would have made it report a
+**successful injection for a sample that was never delivered**.
+
+**Shipped** (draft PRs, GATE 2 is the maintainer's):
+
+- odd-platform [#1877](https://github.com/opendatadiscovery/odd-platform/pull/1877) @ `271bb13b` — `die()` so
+  every fatal path prints a sentence instead of a traceback (the readiness give-up had the same defect);
+  `api_json()` as one checked accessor for both JSON reads, failing on a followed redirect, then non-200,
+  then a non-JSON body with its `Content-Type`; an explicit redirect guard in `inject_data()`. Net: two
+  duplicated guard blocks out, one shared accessor in.
+- documentation [#114](https://github.com/opendatadiscovery/documentation/pull/114) @ `8518479`, base
+  `release/1.0.0` — the constraint was undocumented: the injector sends no credentials, so it needs
+  `auth.type=DISABLED`; health is permit-all in every mode, which is why the readiness wait succeeds first
+  and the failure lands on the first real API call.
+
+**Verified both halves.** IT-154 gains **check 10** (an in-process stand-in: health permit-all, `/api/**` →
+`302 /login`, `/login` → `200 text/html`; asserts the redirect, its target and the remedy are named, and that
+neither `JSONDecodeError` nor `Traceback` reaches the operator). **RED** on the merged `ab457f0d`, **GREEN**
+on the fix; whole spec **5/5 (3.5m)** with the happy path intact — `up -d odd-platform-enricher` blocked
+**76s**, ten data sources. Stronger still, the defect *and* the fix were both measured on the reporter's own
+live stack: merged and pre-fix injectors both die there; the patched one prints one sentence and exits 1.
+
+**Declared, not hidden**: the full four-suite regression was **not** run. The diff is one Python file that no
+suite but IT-154 touches and that is not in the SUT image at all — the enricher bind-mounts `injector/`. The
+reviewer accepts or rejects that carry-over.
+
+Also recorded in IT-154's "Notes for whoever runs this": **`ODD_PLATFORM_DIR` must be absolute** until
+`TST-066` lands.

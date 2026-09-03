@@ -38,3 +38,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **15 passed / 0 failed (5.7m) — GREEN**, matching the standing baseline, on the reviewer's own SUT `sha256:ba585161` built from `6557b4b9`. IT-128 relationships ingestion + IT-145 dataset pipeline both whole: source truth -> real collector -> platform -> UI, including the delta re-collection and the ERD constraint row.
 
+## 2026-09-03 — suite/protocol: ingestion-e2e
+- runner: AI-assisted Claude Opus 5 (session review-ctrib061r2, /review re-adjudication)
+- odd-platform working-tree HEAD: ab457f0d (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib061  (image odd-platform:odd-team-sut-revctrib061, digest sha256:410a5eef5650a7f1a16882bc4e800b8018d3c1f2f3addbd5c3eb714c626b8c70)
+- protocols: IT-128 IT-145
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **15 passed / 0 failed (7.6m) — GREEN**, matching the standing 15/0 baseline. Nothing in this branch reaches ingestion (the diff is search/favorites BE+FE+spec+locales), so 'unaffected' was the expected result and it is what was measured, on a SUT the reviewer built from `3d5a7096` (`odd-platform:odd-team-sut-revctrib061`, `sha256:410a5eef…`). Includes IT-128's relationships pipeline 6/6 and IT-145's dataset pipeline.
+

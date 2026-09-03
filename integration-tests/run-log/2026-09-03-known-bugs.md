@@ -38,3 +38,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **3 failed — expected-RED, all three attributed, ZERO unexpected GREEN.** IT-007 `attachment-local-durability:35` (LOCAL storage loses the file on container recreate, LSN-001/PLT-086), IT-006 `error-boundary-containment:29` (a render throw white-screens the shell, TEST-GAP-1013), IT-004 `quality-dashboard-unknown-status:33` (`palette.runStatus["WARNING"]` undefined -> throws before the `??` fallback, PLT-052 Defect 1, `DataQualityContent.tsx:47-48`). No un-flipped fix to chase; the tests-pillar flip-on-fix checklist is not triggered.
 
+## 2026-09-03 — suite/protocol: known-bugs
+- runner: AI-assisted Claude Opus 5 (session review-ctrib061r2, /review re-adjudication)
+- odd-platform working-tree HEAD: ab457f0d (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib061  (image odd-platform:odd-team-sut-revctrib061, digest sha256:410a5eef5650a7f1a16882bc4e800b8018d3c1f2f3addbd5c3eb714c626b8c70)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **3 failed / 0 passed — EXPECTED RED, set-equal to the documented pin set, ZERO unexpected GREEN.** IT-007 `attachment-local-durability:35` (LOCAL-storage loss on container recreate, LSN-001/PLT-086) · IT-006 `error-boundary-containment:29` (no ErrorBoundary anywhere in odd-platform-ui, TEST-GAP-1013/F-042) · IT-004 `quality-dashboard-unknown-status:33` (out-of-enum run status throws before the `??` fallback, PLT-052 Defect 1). No pin flipped to green, so there is no un-flipped fix to chase. Reviewer's own run on `odd-platform:odd-team-sut-revctrib061` (`sha256:410a5eef…`, from `3d5a7096`).
+

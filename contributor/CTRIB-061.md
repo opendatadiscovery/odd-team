@@ -5,7 +5,7 @@ github_issue: 1841
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1841
 target_repo: odd-platform
 milestone: "1.0.0"
-status: blocked
+status: review-ready   # = GATE-2-ready. ROUND-2 RE-ADJUDICATION 2026-09-03 (review-ctrib061r2, fresh session): **ACCEPTED**, `blocked` -> `review-ready`. Round 1 (00:21) rejected on three blockers; the maintainer's 15:13 standing rule (memory/feedback_review_blocks_only_on_the_diff, CTRIB-063 case-law) is that a /review blocks ONLY on a defect IN the diff -- and B2 (the `pending-merge` lane nothing runs) + B3 (stale suites.yaml comments) are defects in ODD-TEAM'S OWN HARNESS, touching none of the 33 odd-platform files or 4 doc pages. B1 (the duplicate PLT-258) is a defect in OUR tracker and is fixable with a `git mv` + `sed` inside odd-team, with ZERO change to the PR -- VERIFIED: neither draft is filed (`github_issue_url: ""` on both) and `git grep PLT-258 origin/main` is EMPTY, so ctrib062 never shipped it. Blocks bucket EMPTY -> GATE-2-ready. Every round-1 finding was factually correct and each was re-derived first-hand; none is a defect in the deliverable. Round 2 also ran the four-suite confirmation regression round 1 DEFERRED, on its OWN SUT (`odd-platform:odd-team-sut-revctrib061`, `sha256:410a5eef5650`, built from a clean `3d5a7096`): feature-complete 322/18 with ZERO unattributed (12 = TST-059's eleven + TST-057's swagger:63; the other 6 each re-run ALONE on the same image and all TST-057 contention -- 60s in-suite, single-digit seconds solo), known-bugs 3-RED-expected/0-unexpected-GREEN, multi-stack 14/5 GREEN-FOR-CHANGE (all 5 = IT-154, RED-BY-CONSTRUCTION: neither #1876 `ab457f0d` nor #1877 `f714d8fa` is an ancestor of 3d5a7096, and this PR touches zero demo-stand files), ingestion-e2e 15/0 GREEN. FE measured by the reviewer (CI does not lint or test odd-platform-ui): vitest 185/186 with the one failure A/B-proved change-independent (2/2 in 2370ms alone), slice tests 44/44, i18n parity 17/17, tsc clean, ESLint 0 errors / 4 prettier warnings (S3, folded not blocking). Gate 8 PENDING-RELEASE (1.0.0) -- **OWED at GATE 2: documentation#112 is an UNMERGED DRAFT, so a 1.0.0 cut as things stand ships this feature with no docs.** Follow-ups: TST-067 (new, milestone 1.0.0 -- the lane + the duplicate id), DOC-503 (extended -- 3 in-diff doc gaps to close before #112 merges), DOC-525 (new -- relationships.md self-contradiction, editorial audit), TST-057 (extended -- 6 measured flakes). Human GATE 2 merges BOTH draft PRs -> pending-release -> `/review release:1.0.0` owns `done`. Verdict: "## Review round 2 (2026-09-03, session: review-ctrib061r2)".
 classification: feature
 stream_id: ctrib061
 base_sha: 969a5d5b   # rebased onto ST-6 (#1873) + ST-8 (#1871) after both merged; the original plan was cut at 82e7e70e
@@ -1647,3 +1647,217 @@ split into two by a stray blank line after the PLT-256 row, and omits PLT-258 an
   B1/B3/S3 are instances four, five and six, and they are the reason the FE ledger row in S4 matters.
 - Nothing in the product behaviour is wrong. VERIFIED via the runs cited above; every gate verdict here ends in
   a file:line, a run-log, a CI job URL, or a command I executed in this session.
+
+---
+
+## Review round 2 (2026-09-03, session: review-ctrib061r2) — RE-ADJUDICATION
+
+- **Result**: **ACCEPTED** — `blocked` -> `review-ready` (= **GATE-2-ready**). The human merge of DRAFT
+  odd-platform#1875 **and** documentation#112 owns the next transition; the bot never merges (G-C4), and
+  neither implementer nor reviewer self-marks `done` — `/review release:1.0.0` owns that flip.
+- **Reviewed artefact**: `contrib/CTRIB-061-favorites-filter @ 3d5a7096` (worktree `../odd-platform-ctrib061`
+  clean, `git status --short` empty) + documentation `docs/CTRIB-061-favorites-filter @ 79612a0`.
+  **Both PRs are byte-identical to what round 1 read** — #1875 head `3d5a7096`, `updated_at`
+  2026-09-02T15:09:40Z, 33 files, +856/-521; #112 head `79612a0`, 4 files — VERIFIED via the GitHub API this
+  session, not inferred from local state. **CI: all 6 check-runs SUCCESS** at the reviewed head SHA.
+- **Intake**: fresh session, no `/implement` here. The item's status was `blocked`, not the usual
+  `pr-draft`/`review-ready`, so the 2-minute precondition bounce does **not** fire: this is a
+  maintainer-driven re-adjudication, not an implement->review handoff
+  (`memory/feedback_maintainer_driven_close_no_bounce`).
+
+### Why this round exists
+
+Round 1 (`27444d15`, 2026-09-03 **00:21**) rejected on three blockers. Fifteen hours later, at **15:13**, the
+maintainer set a standing rule from the CTRIB-063 case (`memory/feedback_review_blocks_only_on_the_diff`):
+
+> A `/review` verdict may block **only** if the finding is *in the diff under review* or *falsifies a claim the
+> diff makes*. A defect found in the **measuring rail** — the e2e harness, run scripts, run-log wording,
+> protocol prose — is **logged as its own item and the deliverable ships.** … Rework rounds ARE the churn.
+
+Round 1's **B2** (the `pending-merge` lane nothing executes) and **B3** (stale `suites.yaml` lane comments) are
+defects in **odd-team's own integration-test harness**. They touch none of the 33 odd-platform files and none
+of the 4 doc pages under review. Round 1 predates the rule; this round applies it. **Round 1's findings were
+all factually correct — I re-derived each one first-hand — and none of them is a defect in the deliverable.**
+
+### The finding sort (the rule's own four buckets)
+
+| Bucket | Findings |
+|---|---|
+| **(a) blocks** — in the diff | **EMPTY.** |
+| **(b) folds** — in the diff, trivial | S3 (4 `prettier/prettier` warnings, **0 errors**, on lines this change wrote) |
+| **(c) logs** — outside the diff, item still ships | B1 -> `TST-067` scope 2 · B2+B3 -> `TST-067` scope 1 · S1/S2/S5 -> `DOC-503` (extended) · S7 + the editorial finding -> `DOC-525` · the six regression flakes -> `TST-057` (extended) |
+| **(d) drops** — nits | S4 (record-only), S6 (`favorites.md:35` makes no ordering promise — round 1 over-read it), nits (a)-(d) |
+
+**(a) is empty, so the item is GATE-2-ready.**
+
+#### B1 is a defect in our tracker, not in the PR — and it is fixable without touching the PR
+
+Round 1 was right that `ReactiveAssetSearchRepositoryImpl.java:410` ships `// … Tracked as PLT-258.` while two
+files in `issues/odd-platform/` claim `PLT-258`. What round 1 did not check is what that costs to fix, and the
+answer changes the verdict:
+
+- **Neither draft has ever been filed.** Both carry `github_issue_url: ""` / `github_issue_number: null` — so
+  no *public* id is at stake in either direction. VERIFIED by reading both frontmatters.
+- **`PLT-258` appears nowhere in `odd-platform@origin/main`** — `git grep PLT-258 origin/main` is **empty**.
+  ctrib062, the first claimant, never shipped a reference to it; the id lives only in its own draft filename
+  and 7 mentions inside `contributor/CTRIB-062.md` (an item already at `pending-release`).
+- `PLT-258` appears **exactly once** in the diff under review (that one comment line).
+
+So the collision is resolved by renumbering the claimant that is **not** compiled into an open PR — a `git mv`
+plus a `sed`, entirely inside odd-team, with **zero** change to #1875 and no CI cycle. Round 1's prescription
+("renumber this stream's draft, then update the source comment") was the more expensive of two equally correct
+options. Logged as `TST-067` scope 2 with the exact commands.
+
+#### B2 is real and important — and it is ours, not the PR's
+
+When #1841 merges, IT-148 — this slice's only end-to-end proof — lands in a lane `run-regression.sh:31` never
+runs and that `grep -rn "pending-merge" playbooks/ pillars/ .claude/skills/` shows **zero** hits for. I
+re-derived both first-hand. That is a genuine coverage hole, and it is exactly why `TST-067` carries
+`milestone: "1.0.0"`: the release gate derives its manifest by grepping for that field, so the reconciliation
+is now *forced* rather than remembered. What it is not, is a reason to send a CI-green 33-file feature slice
+back for rework.
+
+### Acceptance criteria — spec §4
+
+Round 1 verified R1-R10 with file:line evidence; I re-derived the load-bearing ones first-hand rather than
+inheriting them, and confirm the rest against its citations.
+
+| # | Verdict |
+|---|---|
+| **R1** cross-kind narrowing | **PASS (re-derived)** — `ReactiveAssetSearchRepositoryImpl.java:418-424`: a correlated `DSL.exists` / `DSL.not(exists)` on `FAVORITE` keyed on the polymorphic `(ASSET_KIND, ASSET_ID)` pair with `DELETED_AT IS NULL`. No join added to `searchFrom()`, so no other query's plan moves |
+| **R2** per-user, ownership-free | **PASS (re-derived)** — read `CurrentUserIdentityResolver.java` first-hand: `resolve()` **cannot** complete empty (`switchIfEmpty` -> `(__shared__, DISABLED)`), which is what makes `AssetSearchServiceImpl`'s `flatMap` composition safe rather than a silent empty page. Identity never comes from the request; `FavoritesScopeDto.of(identity, …)` is the only constructor path |
+| **R3** DISABLED labelled | **PASS with the recorded deviation** — ships as `Favorites only` / `Favorites (shared) only`; the `(shared)` convention is preserved and the docs describe exactly this |
+| **R4** tab retired, no stranded bookmark | **PASS** — `App.tsx:76` redirects `favoritesPath()`; the toolbar entry is deleted |
+| **R5** finding a favorite is not worse | **DEFERRED by GATE-1 to ST-7b** — enforcement on disk re-verified: `backlog/docs/DOC-503.md` carries `milestone: "1.0.0"`, `issues/odd-platform/PLT-257-*.md` present |
+| **R6** panel deep-links pre-filtered | **PASS** — `FavoritesColumn.tsx:21` `buildSearchLink({ favorites: 'yes' })` |
+| **R7** survives every other control | **PASS** — `Search.tsx:120` merges `favorites` back into the facet->URL mirror; `searchUrlState.ts`'s own doc comment names the #1858 dropped-selection class this prevents |
+| **R8** i18n x7 | **PASS — measured by me.** All 7 catalogs parse; **691 keys each, 0 missing / 0 orphan**; the repo's own guard `i18n-key-parity.test.ts` **17/17 green** at `3d5a7096`, run by me |
+| **R9** empty state teaches the star | **PASS** — `Results.tsx:91-97,205-209` |
+| **R10** DISABLED consequence, not just state | **PASS** — `AppTooltip` + `InformationIcon`; covered by vitest + IT-148 |
+
+### Quality Bar
+
+- **Gate 1 — No duplicates / subtraction: PASS (re-derived).** I re-checked the retirement leaves nothing
+  dead: every surviving export of `Favorites/lib.ts` (`favoriteAssetId` 4 consumers, `favoriteAssetName` 4,
+  `favoriteAssetLink` 3, `assetKindSingularLabel` 1, `ASSET_KIND_OPTIONS` 2) has a live consumer, and the only
+  surviving references to the four deleted symbols are inside the comment that explains their deletion.
+  `buildSearchLink` (ST-8's helper) is reused rather than re-rolled.
+- **Gate 2 — Aliases: PASS** — `main-concepts.md:121` rewritten in the same PR.
+- **Gate 3 — Caveats as admonitions: PASS** — the DISABLED shared-bucket consequence is a `hint style="warning"`
+  on both `favorites.md:45-47` and `search.md:143-150`, plus in-product inline help. Not prose.
+- **Gate 4 — Consumer-read: PASS** — `CurrentUserIdentityResolver`, `UserDto`, `searchUrlState` both
+  directions, `Search.tsx`'s mirror-merge, `Filters.tsx handleClearAll`, and the two CI workflows all read
+  first-hand this session.
+- **Gate 5 — Unset-parameter audit: N/A** — no SDK builder in scope.
+- **Gate 6 — Bidirectional code <-> doc: PASS (findings FILED, not narrated).** Every functional claim traces
+  to code — including the one round 1 did not test: the docs promise favorites span *"data entities, glossary
+  terms and query examples together"*, and `FavoriteAssetResolver.java:34-38` maps exactly
+  `dataEntity` / `term` / `queryExample`, so the claim is true rather than aspirational. Two completeness gaps
+  in the other direction (S1, S2) plus S5 are **filed on `DOC-503`**, which is the gate's own requirement
+  (narration alone fails it; a filed follow-up does not).
+- **Gate 7 — Layout: PASS (re-derived).** All four changed doc frontmatters parse under PyYAML, carry no
+  `: ` hazard, and their `description:` values are **162 / 188 / 191 / 140** chars — all inside GitBook's
+  silent 200-char meta truncation. `SUMMARY.md` needs no change (`favorites.md` survives as a page).
+  All 9 new outbound links resolve on the branch, and both new anchors resolve
+  (`catalog-overview.md#favorites` -> `### Favorites` at :41; `search.md#my-data` -> `## My data` at :78).
+- **Gate 8 — PENDING-RELEASE (1.0.0).** The doc is genuinely authored on a train branch with a DRAFT PR into
+  `release/1.0.0`, not parked in the backlog — so this is PENDING-RELEASE, not the Gate-8 FAIL that a
+  train-less draft would be. **OWED at GATE 2, stated plainly because CTRIB-062 hit exactly this trap:
+  documentation#112 is an UNMERGED DRAFT, so a 1.0.0 cut as things stand would publish this feature with no
+  documentation.** Post-release live verification owed for `…/data-discovery/favorites`, `…/search`,
+  `…/catalog-overview`, `…/main-concepts`; phrases "Favorites only", "Favorites (shared) only",
+  "The Favorites filter on Catalog search", "Existing links and bookmarks to `/favorites` still work".
+- **Gate 9 — Factual claim provenance: PASS.** Every product and doc claim I checked is supported by the
+  source I read. The one blemish is a *tracker pointer*, not a claim about the product: the shipped
+  `Tracked as PLT-258` is ambiguous inside our own `issues/` directory — logged `TST-067` scope 2, fixable
+  without touching the PR (above). Outbound URL sweep: 9 links + 2 anchors, **0 broken, 0 mismatched**.
+- **Gate 10 — Content-type homing: PASS** — spec prose to the spec, operator prose to the manual, the alias row
+  to `main-concepts.md`, the perf measurement to a code comment plus an issue draft.
+- **Gate 11 — Audience isolation: PASS (mechanical).** Grep for `Cornerstone N` / `Gate N` / `LSN-` / `DOC-` /
+  `CTRIB-` / `TST-` / `PLT-` / `IT-NNN` / `sidecar` / `playbook` / `Quality Bar` / `backlog` /
+  `feature-flow` / `retrospective` over **every added line** of the doc diff: **zero hits**.
+- **G-C15 — changed tests: PASS (re-derived line by line).** `AssetSearchScopePredicateTest` (3 sites) and
+  `AssetSearchServiceMyDataTest` (4 sites) are **arity-only**: a literal `null` on direct calls — which *is*
+  "no narrowing", the behaviour those tests already asserted — and one extra `any()` on the Mockito stubs. The
+  captor still captures at its own position (`count(any(), any(), captor.capture(), any())`). `lib.test.ts`
+  drops two cases because their subjects were **deleted with the tab** — the only legitimate reason, and the
+  file's header comment says so. No matcher weakened, nothing skipped, disabled or silently deleted.
+
+### Regressions — everything below is MY measurement, on a SUT I built
+
+`SUT_DESC=built from source: the odd-platform WORKING TREE @ 3d5a7096`, image
+`odd-platform:odd-team-sut-revctrib061`, id **`sha256:410a5eef5650…`** — distinct from the implementer's
+`sha256:2465c623…`, built at 17:58:29 from a clean worktree (no `+uncommitted`). Namespace `revctrib061`,
+ports 18320/15570, under the machine-wide heavy-e2e flock.
+
+| Gate | Result |
+|---|---|
+| **Unit (BE)** | **CI `run_tests` SUCCESS** at `3d5a7096` (`./gradlew odd-platform-api:build` + the JaCoCo `min-coverage-changed-files: 98` gate); all 6 check-runs green |
+| **FE vitest — full suite** | **RAN BY ME: 185 passed / 1 failed (186), 35 files.** The one failure is `DataSourceItem.test.tsx` "REJECTED delete -> dialog stays open" at 5000 ms — **A/B-proved change-independent by me: 2/2 green in 2370 ms alone.** Third independent confirmation of the same verdict (also `/review CTRIB-062` 08-31 and round 1). The file is untouched by this diff |
+| **FE vitest — this slice** | **44/44 green**: `searchUrlState` 34, `FavoritesFilter` 9, `Favorites/lib` 1 — plus `i18n-key-parity` **17/17** |
+| **`tsc --noEmit`** | **clean**, exit 0, zero output |
+| **ESLint, 13 changed FE files** | **0 errors, 4 `prettier/prettier` warnings** — S3, confirmed by my own run |
+| **IT `feature-complete`** | **322 passed / 18 failed — ZERO unattributed.** 12 = TST-059's eleven + TST-057's `swagger-openapi-discovery:63`, set-equal by exact `spec:line`. The other **6 were each re-run in isolation on this very image** and are all TST-057's contention class (60s timeout in-suite, single-digit seconds alone, no assertion ever reached) |
+| **IT `known-bugs`** | **3 failed / 0 passed — the expected-RED set exactly, ZERO unexpected GREEN.** No pin flipped, so no un-flipped fix to chase |
+| **IT `multi-stack`** | **14 passed / 5 failed — GREEN-FOR-CHANGE.** All 5 are IT-154 `demo-stand-first-run`; **every non-IT-154 case passed.** RED-BY-CONSTRUCTION, proved two ways: `git merge-base --is-ancestor` shows neither #1876 (`ab457f0d`) nor #1877 (`f714d8fa`) is an ancestor of `3d5a7096`, and `git diff 3d5a7096 origin/main -- docker/` is exactly those two fixes. Case `:363` is literally CTRIB-064's fix. This PR touches **zero** demo-stand files |
+| **IT `ingestion-e2e`** | **15 passed / 0 failed — GREEN**, matching the standing baseline |
+| **`ODD_SUT=ref:main` RED proof** | IT-148 7/7 RED at `969a5d5b` (`sha256:82f571c7`), 7/7 GREEN on the committed tree — the implementer's, and the strongest artefact in the record: the first RED proof caught a case that asserted presence instead of narrowing and could never fail |
+
+**The six extra failures, attributed rather than absorbed** — each re-run alone on the same image:
+`deg-anchored-lineage:127` PASS 9.5s · `entity-alerts-display:36` PASS 8.6s ·
+`i18n-main-search-placeholder:47` es PASS 8.2s (ua 6.8s) · `rbac-frontend-affordance:68` PASS 11.0s ·
+`search-tsquery-poisoning:104` PASS 17.5s · `recently-viewed-record-see-loop:67` FAIL, then PASS on the next
+isolated run (3 PASS / 2 FAIL over 5 samples across **two different SUTs**, so branch-independent).
+Two of these mattered enough to rule out explicitly rather than wave through: the **es locale** case, because
+this PR edits all seven catalogs (ruled out — a damaged catalog fails deterministically and on every locale,
+and the static parity is 691x7 with 0 missing), and **`search-tsquery-poisoning`**, because this PR changes the
+search path (ruled out — whole protocol 4/4 green alone). **Independent variable, recorded:** the maintainer's
+own `docker`-project demo stack (4 containers + an `odd-collector` restart loop) held host 8080/5432 for the
+whole 40.5-minute run; the flock serialises regressions, not the maintainer's stack (`TST-060`). All six are
+written up on `TST-057`.
+
+**Read-only discipline held**: `../odd-platform-ctrib061` byte-clean after every run (`git status --short`
+empty); `lineage/**` untouched (`git status --short lineage/` empty). I moved the shared `../documentation`
+checkout onto a ref while reading the train and **restored it to `contrib/CTRIB-026-docs-entity-detail-truncation`
+@ `0032ef3`, tree clean** — recorded because it happened, not because it left damage.
+
+### Doc-product editorial audit (mandatory step, ran)
+
+- **Coverage this run**: the partition round 1 queued — `docs/data-modelling/**` (`relationships.md`,
+  `query-examples.md`), `docs/use-cases/**` (all five), `docs/master-data-management/lookup-tables.md` — read
+  end-to-end on `origin/release/1.0.0`. Round 1 covered `docs/data-discovery/**`; `review-ctrib060r2` ran the
+  tree-wide sweep 2026-09-02; `/review CTRIB-062` cleared `developer-guides/**`, `integrations/**`,
+  `active-platform-features/**`.
+- **Still queued for the next run**: `docs/data-lineage/**`, `docs/data-quality/**`, `docs/data-glossary/**`.
+- **Findings**: **`DOC-525`** (medium, *internal contradiction*) — `relationships.md:40` tells the reader a row
+  click opens a type-specific relationship URL; `:86`, on the same page, says it routes to `/dataentities/{id}`
+  "on every click, regardless of relationship type". `:86` is correct. The cause is worth the item's existence:
+  `DOC-229` is **`done`** and its title names *"row-click routing drift"* — it added the caveat and never
+  corrected the prose the caveat falsifies. Same shape at `:90`, where the caveat critiques the page's own
+  `:37` bullet instead of fixing it.
+- **Verified-and-correct, recorded so the next run need not re-derive it**: the five `use-cases/**` pages are
+  coherent and their recently-added caveat blocks (GDPR/PII non-classification, the DELETED 30-day purge, the
+  statistics-endpoint posture, ODD-discovers-but-does-not-enforce) all agree with the surfaces they cite;
+  `lookup-tables.md`'s config block correctly documents the `spring.custom-datasource.*` fallback chain.
+
+### Follow-ups logged on disk
+
+| Item | Kind | What |
+|---|---|---|
+| **`TST-067`** (new, `milestone: "1.0.0"`) | odd-team harness | Scope 1: the `pending-merge` lane nothing runs; IT-148's graduation back to `feature-complete` + `ui-e2e`; a graduate-or-die rule in `pillars/tests/pillar.md`; the two stale `suites.yaml` comments. Scope 2: the duplicate `PLT-258`, with the cheap resolution direction |
+| **`DOC-503`** (extended) | documentation | The three in-diff doc gaps — `search.md:182`'s share-link list omitting `favorites`; the undocumented `?favorites=no` state; `favorites.md:18` vs `:52` — to close **before** documentation#112 merges to the train |
+| **`DOC-525`** (new) | documentation | The `relationships.md` self-contradiction from the editorial audit |
+| **`TST-057`** (extended) | odd-team tests | Six measured contention instances with their A/B numbers, and `recently-viewed-record-see-loop:67` singled out at ~40% |
+| Upstream issue drafts | none new | `PLT-256` / `PLT-257` / the anti-join draft verified present and ASCII-clean; the anti-join draft needs renumbering per `TST-067`, not re-filing |
+
+### Notes
+
+- **What round 2 adds that round 1 could not**: round 1 explicitly deferred its own four-suite confirmation
+  regression, for two stated reasons — a live `ctrib063` playwright run held the box, and it expected a rework
+  to invalidate the SUT. Both are gone. **This round ran all four suites on its own SUT and attributed every
+  single failure**, including six that were not in any documented baseline. That was the one piece of evidence
+  the item was still missing, and it is now on disk.
+- **Nothing in the product behaviour is wrong.** The strongest things in this slice are that its RED proof
+  caught a case that could never fail, and that its EXPLAIN gate corrected its own author's comment. Both were
+  found by *running* things.
+- Every verdict above ends in a file:line, a CI job URL, a run-log entry, or a command I executed this session.

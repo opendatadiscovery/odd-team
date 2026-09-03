@@ -5057,3 +5057,24 @@ round-2 reviewer's session and said so. **`pr-draft` → `blocked`.**
   `oddemo154` demo stand torn down by hand; no containers of mine left. Committed (explicit paths):
   `contributor/CTRIB-063.md` · `state/active-streams.yaml` · `backlog/docs/DOC-52{1,2,3,4}.md` ·
   `backlog/tests/TST-042.md` · `integration-tests/run-log/2026-09-03-*.md` · this record.
+
+### Same day — the CTRIB-063 round-3 verdict OVERTURNED to GATE-2-ready (maintainer's call)
+
+`blocked` → `review-ready`. The call is right and the reviewer's error is worth recording, because it is a
+methodology bug and not a one-off: I applied the fold-vs-log rule to *"is the rework going back anyway"*
+instead of to **"does this defect belong to the deliverable?"** B1 did not — `git diff 969a5d5b..6557b4b9`
+touches five odd-platform files and four doc pages, and **none of them is affected by it**. The defect lives
+in odd-team's own harness (`run-regression.sh`'s path handling and the three specs reading
+`ODD_PLATFORM_DIR`). Both PRs were verified correct and mergeable at the reviewed SHA — stand 4/4 green,
+`up -d` blocking 62 s, ten data sources, CI 6/6, all six `must_haves.truths` and gates 1-11 (bar 8,
+pending-release) passing on the reviewer's own evidence.
+
+- B1 re-homed as **`backlog/tests/TST-066.md`** — the A/B, the mechanism, the blast radius (incl. the
+  silently self-skipping F-098 HMAC characterization) and the re-proof condition carried over intact.
+- Fold-ins F2 (`demo.yaml` comment wording) and F3 (README bullet length) **dropped, not deferred** — nits.
+- The four DOC follow-ups and the TST-042 fifth instance stand as filed; they were never merge blockers.
+
+**Rule for the next `/review`, so this does not recur:** a finding blocks only if it is *in the diff under
+review* or falsifies a claim the diff makes. A defect in the measuring rail is logged and the item ships —
+three rounds on a demo-stand bug fix is more than the change was worth, and the reviewer's job is to protect
+the deliverable, not to become the obstacle to it.

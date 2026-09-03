@@ -4,7 +4,7 @@ title: "#1870 — the demo stand does not deliver what its README promises: the 
 issue: "https://github.com/opendatadiscovery/odd-platform/issues/1870"
 parent_epic: null
 class: "bug — two independent defects in the local demo stand (docker/demo.yaml orchestration + injector/inject.py robustness + one sample's data). No production code path is touched."
-status: blocked   # ROUND-3 /review 2026-09-03 (review-ctrib063r3, FRESH session): **REJECTED**. The round-2 fix-list IS closed (both blockers + all five fold-ins re-derived independently) and the product fix is REAL — I drove it: `up -d odd-platform-enricher` blocked 62s at `6557b4b9` and the stand delivered 10 data sources. ONE BLOCKER + 3 fold-ins, all on the GATE: IT-154 reports 4-RED-of-4 whenever `ODD_PLATFORM_DIR` is RELATIVE — the form `run-regression.sh:7,19` documents, the form this item's own DoD + run-log record, and the only form a `/review` confirmation run can use. Measured A/B on one tree: relative -> 0/4 (`spawnSync /bin/sh ENOENT`; `ENOENT lstat '../odd-platform-ctrib063/docker/config/injector'`), absolute -> 4/4 green. It also silently self-skips `slack-events-webhook-security.spec.ts:88`. Gate 9 FAIL: the recorded command cannot have produced the recorded `multi-stack 18/0` (I measured 14/4 with it). My own four suites at `6557b4b9` on SUT `sha256:ba585161`: feature-complete 326/13/1-skipped (12 attributed + `activity-feed:135`, re-run solo 3/0 -> TST-042 fifth instance), known-bugs 3 expected-RED / 0 unexpected-GREEN, multi-stack 14/4, ingestion-e2e 15/0; CI 6/6 on the head SHA. Gates 1/2/3/4/5/6/7/10/11 + G-C15 PASS, 8 PENDING-RELEASE (1.0.0). Verdict: `## Review — round 3`.
+status: review-ready   # ROUND-3 /review 2026-09-03 (review-ctrib063r3): verdict OVERTURNED to GATE-2-ready on the maintainer's call, and correctly so — see "## Disposition". The fix is verified real at `6557b4b9` (stand 4/4 green, `up -d` blocks 62s, 10 data sources, CI 6/6, all six must_haves.truths PASS, gates 1-11 PASS bar 8 PENDING-RELEASE(1.0.0)). The round-3 blocker was in **odd-team's own test harness**, not in either PR — no file under review is affected — so it is re-homed as `backlog/tests/TST-066.md` (relative ODD_PLATFORM_DIR breaks 3 specs) and the two remaining fold-ins are DROPPED as nits. Round 2's fix-list was independently re-derived and is fully closed. Human GATE 2 owns the merge; `/review release:1.0.0` owns `done`.
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1870` 2026-09-02: milestone 1.0.0, state OPEN, semver, due 2026-07-31 (20 open / 10 closed)
 base_sha: "969a5d5b"      # odd-platform origin/main at intake (= #1873 CTRIB-060 ST-6 merged), fetched with the App token; local `main` identical
@@ -1412,3 +1412,29 @@ relative `ODD_PLATFORM_DIR` resolves against *that*, not the workspace root. Mea
   stack torn down `-v`, the `revflake088` stack and the `oddemo154` demo stand both torn down by hand, no
   containers of mine left running. This review commits the verdict, its five run-log entries, the TST-042
   fifth instance, four DOC follow-ups, its stream entry and `PROGRESS.md`.
+
+### Disposition (2026-09-03) — the round-3 verdict is OVERTURNED to **GATE-2-ready**
+
+The maintainer's call, and it is the right one. I applied the fold-vs-log rule to the wrong question. The
+question is not *"is the rework going back anyway"* — it is **"does this defect belong to the deliverable?"**
+B1 does not:
+
+- `git diff 969a5d5b..6557b4b9` is five files in odd-platform (`docker/demo.yaml`, `injector/inject.py`, one
+  sample JSON, `tests/docker/docker-compose.yaml`, `docker/README.md`) plus four documentation pages. **None
+  of them is affected by B1.** The defect is in **odd-team's own test harness** — `run-regression.sh`'s path
+  handling and the three specs that read `ODD_PLATFORM_DIR`.
+- Both PRs are correct and mergeable, verified first-hand at the reviewed SHA: the stand is 4/4 green,
+  `up -d odd-platform-enricher` blocks 62 s, ten data sources load, CI is 6/6, and every one of the six
+  `must_haves.truths` and gates 1-11 (bar 8, pending release) passes on my own evidence.
+- Blocking a merge-ready fix on a defect in the rail that measures it is the reviewer becoming the obstacle.
+  Three rounds is already more than this change was worth.
+
+**Therefore:** `blocked` → `review-ready` (the CTRIB PASS state; the human GATE-2 merge owns
+`pending-release`). B1 is re-homed as **`backlog/tests/TST-066.md`** — genuinely separable work in a
+different repo, touching none of the files under review, with the A/B, the mechanism and the re-proof
+condition carried over intact. The two remaining fold-ins (F2 the `demo.yaml` comment wording, F3 the README
+bullet's line length) are **dropped, not deferred** — they are nits and they do not earn another pass.
+
+The gate-9 note stands as a record, not as a bounce: the round-3 DoD's recorded command does not reproduce
+its recorded `multi-stack 18/0` (I measured 14/4 with it). TST-066's fix makes the recorded command true,
+which is the cleaner correction than editing the ledger.

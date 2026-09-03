@@ -28,3 +28,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **15 passed / 0 failed (5.8m) — GREEN** at `6557b4b9`, matching the standing 15/0 baseline: IT-145 dataset-pipeline lifecycle and IT-128 relationships pipeline, real source-system -> real collector -> platform -> UI. Nothing in this branch reaches ingestion; `unaffected` was expected and is what was measured.
 
+## 2026-09-03 — suite/protocol: ingestion-e2e
+- runner: AI-assisted (Claude Opus 5 (1M context), session review-ctrib063r3 — the THIRD, FRESH `/review` of the round-3 rework; SUT built by THIS session, not carried from implement)
+- odd-platform working-tree HEAD: the SUT source is `6557b4b9` in ../odd-platform-ctrib063 (branch contrib/CTRIB-063-demo-stand-readiness, clean tree; `git status --porcelain` empty). `run-regression.sh revctrib063r3` with ODD_PLATFORM_DIR pointed at that worktree built image `odd-platform:odd-team-sut-revctrib063r3` (digest `sha256:ba585161422b7ee95b6a0f9e6621cebb39cca7bcf4908e9791356444b38be5d5`) from it — build-sut reported `built from source: the odd-platform WORKING TREE @ 6557b4b9`. Any bare SHA the harness printed is the SHARED ../odd-platform checkout, not this run's subject (LSN-033).
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib063r3  (image odd-platform:odd-team-sut-revctrib063r3, digest sha256:ba585161422b7ee95b6a0f9e6621cebb39cca7bcf4908e9791356444b38be5d5)
+- protocols: IT-128 IT-145
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **15 passed / 0 failed (5.7m) — GREEN**, matching the standing baseline, on the reviewer's own SUT `sha256:ba585161` built from `6557b4b9`. IT-128 relationships ingestion + IT-145 dataset pipeline both whole: source truth -> real collector -> platform -> UI, including the delta re-collection and the ERD constraint row.
+

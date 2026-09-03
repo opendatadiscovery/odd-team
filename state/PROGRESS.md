@@ -5000,3 +5000,60 @@ GATE 2 not yet occurred; **status stays `review-ready`** (human GATE-2 merges #1
 - **Review hygiene**: `lineage/**` probe drift `git checkout`-reverted (after both the regression and the RED
   proof); both stacks torn down `-v`; flock released. Committed (explicit paths): `contributor/CTRIB-039.md`
   (verdict + status comment) · `state/active-streams.yaml` (reviewer stream) · this record.
+
+## 2026-09-03 — `/review` CTRIB-063 round 3 (#1870 demo stand) — **REJECTED**, on the gate not the fix
+
+Third pass on the demo-stand first-run item (odd-platform `contrib/CTRIB-063-demo-stand-readiness` @
+**`6557b4b9`** / draft PR #1876 + documentation `docs/CTRIB-063-demo-stand-first-run` @ **`d17bb60`** / draft
+PR #113, base `release/1.0.0`). Fresh session (`review-ctrib063r3`); the round-3 rework closed in the
+round-2 reviewer's session and said so. **`pr-draft` → `blocked`.**
+
+- **Round 2's fix-list is genuinely closed** — both blockers and all five fold-ins re-derived independently:
+  the `!override` ports isolation measured on both compose implementations (v2 replaces, v1 refuses loudly),
+  the health-page contradiction gone, IT-092 filled, the assertion count reconciled, the dead imports gone
+  (my own audit: 17 imports, 0 unused), DOC-520 rescoped, the compose-floor bridge on all three surfaces.
+- **The product fix is real and I drove it.** With an absolute `ODD_PLATFORM_DIR`,
+  `specs/demo-stand-first-run.spec.ts` is **4 passed (2.8 m)** at `6557b4b9`: `up -d odd-platform-enricher`
+  **blocked 62 s**, both services `healthy`, 10 data sources incl. `//s3/cloud/aws`, `transaction_dataset`
+  searchable, `Data Lake S3` rendered. All six `must_haves.truths` PASS on my own evidence.
+- **The blocker is the gate.** IT-154 reports **4 RED of 4** whenever `ODD_PLATFORM_DIR` is passed
+  **relative** — the form `run-regression.sh:7,19` documents, the form this item's own round-3 DoD and
+  `run-log/2026-09-03-multi-stack.md` record, and the only form a `/review` confirmation run can use (a
+  reviewer's stream id never matches the worktree suffix, so the default branch that would absolutize it is
+  unreachable). Playwright's cwd is `integration-tests/e2e` (`run-suite.sh:237`), so the path resolves under
+  `integration-tests/`: `spawnSync /bin/sh ENOENT` in `beforeAll`, `ENOENT lstat
+  '../odd-platform-ctrib063/docker/config/injector'` on cases 7-9. Same root cause **silently self-skips**
+  `slack-events-webhook-security.spec.ts:88` (F-098's HMAC-absence characterization) — the unexplained
+  `1 skipped` in my run. Fix: one line at `run-regression.sh:32` plus a defensive `path.resolve()` in the two
+  consumers this item authored.
+- **Gate 9 FAIL**: the recorded command produces **14/4** here, not the recorded `multi-stack 18/0`. The
+  run-log's job is reproducibility; that entry is not reproducible.
+- **My own four suites** on my own SUT `odd-platform:odd-team-sut-revctrib063r3`
+  (`sha256:ba585161`, `built from source: the odd-platform WORKING TREE @ 6557b4b9`): `feature-complete`
+  **326/13/1-skipped** (12 set-equal by `spec:line` to TST-059's eleven + TST-057's swagger; the 13th
+  `activity-feed:135` re-run **solo 3/0, green in 6.3 s** ⇒ TST-042 **fifth instance, extended in place**),
+  `known-bugs` **3 expected-RED / 0 unexpected-GREEN**, `multi-stack` **14/4** (the 4 = IT-154),
+  `ingestion-e2e` **15/0**. Unit: CI **6/6 SUCCESS** on the head SHA, `format-check` included.
+- **Gates**: 1/2/3/4/5/6/7/10/11 + G-C15 **PASS**; **8 PENDING-RELEASE (1.0.0)** — train at `379baf3`,
+  branch `d17bb60`, `origin/main` contained in the train, PyYAML/≤200-char/hint-balance/0-broken-links/Gate-11
+  all re-run by me, live pre-release state confirmed on raw HTML; **9 FAIL** (above). Two claims that were
+  merely asserted in earlier rounds are now measured: the distributed image declares **no** healthcheck
+  (`.Config.Healthcheck` → `null` on `sha256:3b61b3f2`) and Compose's refusal is verbatim what the pages
+  promise (`dependency failed to start: container … has no healthcheck configured`, provoked on a throwaway
+  stack).
+- **Editorial audit** — queued partition `data-discovery/**` read end-to-end + `integrations/**` sampled +
+  a **tree-wide mechanical pass** over all 137 pages (Gate 11 strict + stop-words; 1739 internal links
+  resolved; every `#fragment` re-checked against the **live rendered `id=`**). Four follow-ups filed:
+  **DOC-521** (high — the 1.0.0 train will publish `known defect` caveats for defects 1.0.0 *fixes*; proven on
+  `statuses.md`'s `applyStatus` admonition, fixed in `a3d849cc` which is in neither `0.28.0` nor `0.29.0`;
+  ~50 such caveats across ~30 pages and no release-gate sweep), **DOC-523** (high — three links on
+  `custom-collectors.md` render **live** as dead `github.com/.../blob/` URLs, the LSN-004 shape),
+  **DOC-524** (high — ~16 live-broken in-page anchors across 9 pages, three mechanisms), **DOC-522** (low —
+  `deployment.md:37` attributes port 5432 to the sample database when `docker/demo.yaml` publishes it from
+  `database`). Non-findings recorded too, so the next run does not re-derive them.
+- **Queued for the next `/review`**: `integrations/collectors/**` and `active-platform-features/**`.
+- **Review hygiene**: `lineage/**` untouched (`git status --short lineage/` empty); heavy-e2e flock acquired
+  13:44 and released by the runner's exit trap; `revctrib063r3` torn down `-v`, `revflake088` + the
+  `oddemo154` demo stand torn down by hand; no containers of mine left. Committed (explicit paths):
+  `contributor/CTRIB-063.md` · `state/active-streams.yaml` · `backlog/docs/DOC-52{1,2,3,4}.md` ·
+  `backlog/tests/TST-042.md` · `integration-tests/run-log/2026-09-03-*.md` · this record.

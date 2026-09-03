@@ -3,9 +3,9 @@ id: PLT-256
 title: "Saved searches silently drop the Asset-type AND Favorites filters: the saved spec is SearchFormData, both filters live only on AssetSearchFormData"
 target_repo: odd-platform
 issue_type: bug
-status: draft
-github_issue_url: ""
-github_issue_number: null
+status: filed   # 2026-09-03 by odd-contributor[bot] on the maintainer's instruction (labels kind: bug / scope: frontend / scope: backend; milestone 1.0.0)
+github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1878"
+github_issue_number: 1878
 filed_title: "Saved searches silently drop the Asset-type and Favorites filters (the saved spec cannot hold URL-only search dimensions)"
 filed_labels: "kind: bug, scope: frontend, scope: backend"
 severity: high   # a user-invoked save reports success and stores a DIFFERENT search; two shipped filters affected; the class grows with every URL-only dimension the #1825 overhaul adds; the maintainer hit it on the first test of merged #1875
@@ -16,8 +16,9 @@ user_facing_verified: true   # favorites: maintainer-observed in the UI on merge
 suggested_milestone: "1.0.0"   # SUGGESTED ONLY -- filed with NO milestone; the maintainer attaches it (G-C11)
 # NOTE (workspace-internal, not part of the paste): the PR body of odd-platform#1875 and two odd-contributor[bot]
 # comments on #1841 (2026-08-30 scope comment, 2026-09-02 PR announcement) say this defect was "reported separately".
-# THIS DRAFT is that report. It was never filed (the bot is policy-barred from creating issues), so from the
-# GitHub side nothing was ever reported. Filing this closes that loop. Retrospective: retrospectives/LSN-042.
+# THIS DRAFT is that report. It sat unfiled until 2026-09-03 (the bot is policy-barred from creating issues on its
+# own), so from the GitHub side nothing was reported until #1878 -- filed on the maintainer's explicit instruction;
+# its body references #1841 + #1875, which gives both threads the missing backlink. Retrospective: retrospectives/LSN-042.
 ---
 
 ## What

@@ -41,8 +41,10 @@ The agent NEVER merges. The guarantee is structural, not a prompt: `main` branch
 ## G-C5 — The change is bounded by the approved plan
 
 The diff touches only what the approved plan scoped. A refactor / second bug / adjacent improvement discovered mid-fix does NOT enter the current PR — it routes to the backlog via `playbooks/follow-up-on-disk.md` (a new `CTRIB`/`PLT`/`REFACTOR` item). Scope failure — not bugs — is the #1 reason agent PRs are rejected. **And the bounding is public:** when the approved plan narrows or reframes the issue's stated scope, the plan carries a drafted scope comment for the issue thread (what the PR covers, what is deferred, where the deferred part is tracked); GATE 1 approval includes posting it, before any code. The issue thread — not only the workspace CTRIB record — must reflect the actual PR scope.
-- **Enforced at:** the plan's scope-exclusions list + the drafted scope comment (SKILL phase 7/8); `/review` rejects an over-broad diff and a silent scope narrowing (comment URL missing from the CTRIB record).
-- **Case-law:** `EXTERNAL-PRACTICE.md` (scope is the top rejection cause); `PROBES.md` AC-3; maintainer directive 2026-06-11 (CTRIB-004 GATE 1 — scope change must be commented on the issue; memory `feedback_scope_change_comment_on_issue`).
+
+**The class-extension clause (LSN-042).** Out-of-scope routing applies to a defect the slice *finds*, never to one the slice *extends*. A slice that adds a new instance of a known-broken class — a dimension a sibling surface will drop, a field the persisted representation cannot hold, a path an existing guard does not cover — owns that class: fix it in-slice (widen the contract), or put the knowingly-inconsistent ship to the maintainer as a **plain-language GATE-1 decision** with its user-facing consequence. `pre-existing` / `not caused by this change` / `consistent with shipped behaviour` describe the cause; they are not scope verdicts. And a deferral disclosed publicly as *"reported / tracked separately"* must link the GitHub issue: when the bot cannot file it, the GATE-1 packet hands the maintainer the paste-ready draft to file **as part of approving**, and the scope comment posts only once the URL exists.
+- **Enforced at:** the plan's scope-exclusions list + the drafted scope comment (SKILL phase 7/8); the plan-checker's D4 (class-extension deferral phrases = BLOCKER); `/review` rejects an over-broad diff, a silent scope narrowing (comment URL missing from the CTRIB record), and a new instance of a tracked class shipped as a footnote (that instance is IN the diff).
+- **Case-law:** `EXTERNAL-PRACTICE.md` (scope is the top rejection cause); `PROBES.md` AC-3; maintainer directive 2026-06-11 (CTRIB-004 GATE 1 — scope change must be commented on the issue; memory `feedback_scope_change_comment_on_issue`); `retrospectives/LSN-042` (ST-7 added a fourth search filter the product's own saved search could not hold, deferred it as pre-existing under this gate, disclosed it as "reported separately" to an unfiled draft, and the maintainer found it on the first test; memory `feedback_class_extension_is_in_scope`).
 
 ## G-C6 — One-question clarify bar
 
@@ -106,13 +108,18 @@ pass" but: are there **enough** tests; are they **meaningful** (do they prove st
 is the **patch-coverage gate** (the repo's `min-coverage-changed-files`, 98% on odd-platform) met **locally**
 — run it, do not discover it in CI; is any **control** of the codebase being lost (a god-method, a leaked
 abstraction, a parallel pattern); is any **existing functionality harmed** (the FULL regression is the
-measurement, G-C2). A red local coverage gate, an untested new public method, or an unanswered "what did I
+measurement, G-C2); is any **sibling surface left inconsistent** — a new dimension of a state must be driven
+through every representation of that state (the URL, a saved/stored spec, a share or deep link, a panel
+deep-link) before "nothing in the product behaviour is wrong" may be written (LSN-042). A red local coverage
+gate, an untested new public method, or an unanswered "what did I
 make worse" is a `draft`-blocker, exactly like a failing test.
 - **Enforced at:** `.claude/skills/contribute/SKILL.md` the Definition-of-Done block (a fifth check beside
   the four DoD gates) + `/review` (separate session) re-asks them; the CTRIB ledger records the local
   coverage-gate result and the sufficiency answers.
 - **Case-law:** `retrospectives/LSN-035` (the patch-coverage gate went red on the new endpoint/mapper —
-  found by CI/the maintainer, not by the implementer); `feedback_linus_torvalds_engineering_bar`.
+  found by CI/the maintainer, not by the implementer); `retrospectives/LSN-042` (two reviews wrote "nothing in
+  the product behaviour is wrong" over a saved search that dropped the new filter — never driven);
+  `feedback_linus_torvalds_engineering_bar`.
 
 ## G-C14 — Private security advisory: disclosure path + public-workspace PoC hygiene
 

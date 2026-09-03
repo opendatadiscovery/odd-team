@@ -53,6 +53,10 @@ item. Skip only for genuinely mechanical edits (a typo, a null-guard, a doc-stri
      client; both consumers compile.
    - **every consumer** — each caller of a changed signature / response shape / query param (grep them;
      do not assume).
+   - **every representation of the state** — each surface that persists, transports or replays the state
+     the change extends (the URL, a saved/stored spec, a share or deep link, a panel deep-link, an export,
+     the API request object). A dimension added to one representation and not the others is a defect
+     shipped, not a dimension deferred — it is in-scope or a GATE-1 decision (LSN-042).
    - **migration** — schema or default change has a migration + a rollback story.
    - **docs + ontology** — the page(s) and sidecars/feature-flows the change makes stale (G-C10).
    - **tests** — the buckets the change demands (set the sufficiency bar here; verified at G-C13).

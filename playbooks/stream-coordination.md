@@ -112,6 +112,11 @@ branch all streams share. CTRIB-028's stream actually did this (`retrospectives/
 - `lineage/**` is dirty and you need `/enrich` → defer with a justification (G-C10 "no refresh now + why");
   never sweep the owner's work.
 - A push's upstream resolves to `origin/main` → STOP; fix the tracking (step push-safety) before any push.
+- Two co-active streams touch ONE contract and take OPPOSITE decisions on ONE invariant (2026-09-01: ST-8 made
+  "a saved search reapplies with the new scope intact" a `must_have`; ST-7 deferred the same invariant for its
+  dimension as "pre-existing") → the divergence is a **GATE-1 decision for the maintainer**, surfaced by whichever
+  stream notices it — never recorded as "deliberately not harmonised here / not a blocker for either slice".
+  Two streams that each correctly decide "not mine" ship a system in which it is no one's (LSN-042).
 - You are the only/last session and the tree carries unowned dirt → do **NOT** leave it (it will be lost);
   capture it (commit with honest attribution, or park to `state/abandoned/`). Route-around only applies while an
   owner can return. (Case-law 2026-06-22: the #1740 only-session almost lost a probe-run merge + a run-status IT
@@ -120,6 +125,7 @@ branch all streams share. CTRIB-028's stream actually did this (`retrospectives/
 ## case-law
 
 - `retrospectives/LSN-038` — a contrib branch tracking `origin/main` pushed unreviewed code to public `main`.
+- `retrospectives/LSN-042` — ST-7 ∥ ST-8 diverged on the saved-search invariant; both declared it not theirs.
 - `adrs/drafts/parallel-contribution-operating-model.md` (the decision) + `…-infra.md` (R1-R9 / O1-O10, the
   reviewer-session findings §8, the runtime validation §7).
 - `state/active-streams.yaml` — the live registry this protocol reads/writes; its header is the same protocol.

@@ -5152,3 +5152,24 @@ reviewer accepts or rejects that carry-over.
 
 Also recorded in IT-154's "Notes for whoever runs this": **`ODD_PLATFORM_DIR` must be absolute** until
 `TST-066` lands.
+
+### 2026-09-03 — CTRIB-064 GATE 2: both PRs merged → `pending-release`
+
+| Repo | PR | Merge | Fidelity |
+|---|---|---|---|
+| odd-platform | #1877 | squash **`f714d8fa`** on `origin/main` | `git diff 271bb13b origin/main -- injector/` **EMPTY** |
+| documentation | #114 | merge **`caa2af0`** on `origin/release/1.0.0` | `git diff 8518479 origin/release/1.0.0 -- docs/` **EMPTY** |
+
+CI **6/6 SUCCESS** on the reviewed head `271bb13b`; post-merge `update_tag` / `images` /
+`update_release_draft` all green. Milestone `1.0.0` still open ⇒ `pending-release`;
+`/review release:1.0.0` owns `done`, and Gate 8 live verification of the new warning hint is owed there.
+
+Two merges in one afternoon on the same surface: `ab457f0d` (#1870, the readiness race + the oddrn typo) and
+`f714d8fa` (its residue — the redirect-defeated status guard). The second was found by the maintainer running
+the first, which is the correct order of events but not the cheap one; `IT-154` now carries eleven checks
+across five cases so neither can come back silently.
+
+**Still open from this thread, neither release-gated**: `TST-066` (relative `ODD_PLATFORM_DIR` breaks three
+e2e specs) and `DOC-521` / `DOC-522` / `DOC-523` / `DOC-524` (the editorial audit).
+
+Stream `ctrib064` terminal; worktree `../odd-platform-ctrib064` and the doc branch reclaimable, left in place.

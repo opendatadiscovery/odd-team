@@ -4,7 +4,7 @@ title: "The demo injector crashes with a JSONDecodeError traceback against any a
 issue: "(none — reported directly by the maintainer, 2026-09-03, running the merged demo stand locally with AUTH_TYPE=LOGIN_FORM)"
 parent_epic: null
 class: "bug — pre-existing (reproduced identically on the pre-fix base 969a5d5b), but squarely inside the class CTRIB-063 claimed to close, in the same file and the same two functions that change touched. No production code path; injector/ + the IT-154 rail only."
-status: pr-draft
+status: pending-release   # GATE 2 (human) 2026-09-03: BOTH PRs MERGED. odd-platform #1877 -> squash f714d8fa on origin/main (`git diff 271bb13b origin/main -- injector/` EMPTY); documentation #114 -> merge caa2af0 on origin/release/1.0.0 (`git diff 8518479 origin/release/1.0.0 -- docs/` EMPTY). CI 6/6 SUCCESS on the reviewed head 271bb13b; the post-merge main pipeline (update_tag/images/update_release_draft) all green, so the image built. Milestone 1.0.0 still OPEN -> /review release:1.0.0 owns done; Gate 8 live verification of the new hint is owed at that gate.
 target_repo: odd-platform
 milestone: "1.0.0"
 base_sha: "ab457f0d"      # odd-platform origin/main = the CTRIB-063 squash merge
@@ -110,3 +110,29 @@ unreleased.
 | 3 | docs authored on the train | done — `docs/CTRIB-064-injector-needs-unauthenticated-platform` off `origin/release/1.0.0` @ `a9ffa4e` |
 | 4 | ontology | N/A — `injector/` carries no substrate node; no doc-understanding sidecar quotes the injector's auth behaviour |
 | 5 | Principal sufficiency (G-C13) | **What did I make worse?** Nothing: two duplicated guard blocks removed, one shared accessor added, three real guards where there were none. The one judgement call is `die()` over `raise` — it makes the fatal paths unpluggable as a library, which this script has never been (it is a `__main__` with top-level statements). `inject_data()` deliberately still raises, because its failure is caught per-sample and must stay loud-but-not-fatal per #1870's GATE-1 decision D1. |
+
+## GATE 2 — merged 2026-09-03 (human)
+
+| Repo | PR | Result | Fidelity |
+|---|---|---|---|
+| odd-platform | [#1877](https://github.com/opendatadiscovery/odd-platform/pull/1877) | squash **`f714d8fa`** on `origin/main` | `git diff 271bb13b origin/main -- injector/` **EMPTY** |
+| documentation | [#114](https://github.com/opendatadiscovery/documentation/pull/114) | merge **`caa2af0`** on `origin/release/1.0.0` | `git diff 8518479 origin/release/1.0.0 -- docs/` **EMPTY** |
+
+CI on the reviewed head `271bb13b`: **6 of 6 SUCCESS** (`run_tests`, `Test Results`, all three
+`run_playwright_tests` jobs incl. `format-check`, `update_release_draft`). Post-merge on `main`:
+`update_tag` / `images` / `update_release_draft` all green — the image built.
+
+`status: pr-draft` → **`pending-release`**. Milestone `1.0.0` is still open, so the doc hint is on the train
+but unpublished; `/review release:1.0.0` owns `done`, and Gate 8 live verification of the new warning hint on
+*Build and run ODD Platform* is owed at that gate alongside `DOC-520`'s list.
+
+**Note for anyone re-running the stand:** a demo stack started *before* this merge is still bind-mounting the
+old `injector/`. Re-create the enricher (or `docker compose … up -d --force-recreate odd-platform-enricher`)
+to pick up the fix — the platform image is unrelated to it.
+
+**Namespace released.** `ctrib064` is terminal: the worktree `../odd-platform-ctrib064` and the documentation
+branch are reclaimable (both merged). Left in place rather than deleted.
+
+**Still open from this thread**, neither release-gated: `TST-066` (a relative `ODD_PLATFORM_DIR` breaks three
+e2e specs; until it lands, IT-154 needs an absolute path — recorded in the protocol's notes) and the four
+editorial follow-ups `DOC-521`/`522`/`523`/`524`.

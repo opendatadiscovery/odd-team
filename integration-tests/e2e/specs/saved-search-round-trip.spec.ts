@@ -60,15 +60,22 @@ const favFilter = (page: Page) =>
 
 /**
  * Navigate to a search URL and wait for the search page to have BOOTED — the saved-search toolbar's
- * "Save current search" button renders once the page is up. The SPA's first paint under load can exceed a
- * single assertion's 15 s bound (TST-057, the contention class), so the boot gets the run's own headroom
- * here; every narrowing assertion afterwards keeps its normal bound.
+ * "Save current search" button renders once the page is up.
+ *
+ * MEASURED, not guessed (5 runs of this spec on this box, per-case durations from the Playwright report):
+ * case 2 costs 15.6-16.3 s and case 4 costs 8.9-9.5 s in every run, while case 3 costs **8.3 s quiet and
+ * 19.9 s / 50.2 s under load** — the same code, a 6x spread, and the case that loses is whichever one meets a
+ * load spike. Every one of those losses is the SPA not painting, never an assertion. So the BOOT WAIT is sized
+ * against the observed worst (60 s) inside a per-test budget that can hold it (`test.setTimeout` below — the
+ * idiom 12 specs in this suite already use), and every ASSERTION below keeps its normal bound. This changes
+ * what the test waits for, never what it proves: on `ref:main` cases 1-3 fail on VALUES (the stored spec has no
+ * `favorites` / `asset_kinds`; the share link carries neither), which no timeout can turn green. TST-057.
  */
 async function gotoSearch(page: Page, url: string): Promise<void> {
   await page.goto(url);
   await page
     .getByRole('button', { name: 'Save current search' })
-    .waitFor({ state: 'visible', timeout: 45_000 });
+    .waitFor({ state: 'visible', timeout: 60_000 });
 }
 
 /** Save the CURRENT search under `name` through the real dialog; returns the 201 body's stored spec. */
@@ -122,6 +129,8 @@ test.describe('Saved search — save -> reapply / share keeps every dimension (#
   });
 
   test('the Favorites scope survives save -> reapply (the foil stays out)', async ({ page, request }) => {
+    // Budget = the measured cost + the boot wait's headroom (see gotoSearch); the assertions keep their bounds.
+    test.setTimeout(150_000);
     const id = await setup(request);
     // arrange: the subject is starred; the foil never is
     expect((await request.put(`/api/favorites/DATA_ENTITY/${id}`)).ok(), 'star via API').toBeTruthy();
@@ -155,6 +164,8 @@ test.describe('Saved search — save -> reapply / share keeps every dimension (#
     page,
     request,
   }) => {
+    // Budget = the measured cost + the boot wait's headroom (see gotoSearch); the assertions keep their bounds.
+    test.setTimeout(150_000);
     await setup(request);
 
     // 4. the live Terms-only search lists the Term and not the data entity
@@ -181,6 +192,8 @@ test.describe('Saved search — save -> reapply / share keeps every dimension (#
     page,
     request,
   }) => {
+    // Budget = the measured cost + the boot wait's headroom (see gotoSearch); the assertions keep their bounds.
+    test.setTimeout(150_000);
     const id = await setup(request);
     expect((await request.put(`/api/favorites/DATA_ENTITY/${id}`)).ok()).toBeTruthy();
     // The Copy-link button calls navigator.clipboard.writeText — capture it (no anchor exists to read).
@@ -229,6 +242,8 @@ test.describe('Saved search — save -> reapply / share keeps every dimension (#
     page,
     request,
   }) => {
+    // Budget = the measured cost + the boot wait's headroom (see gotoSearch); the assertions keep their bounds.
+    test.setTimeout(150_000);
     await setup(request);
     // 7. a pre-#1878 spec: query + filters only
     const created = await request.post('/api/saved_searches', {

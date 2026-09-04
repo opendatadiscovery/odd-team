@@ -63,6 +63,14 @@ contract and the search URL — no collector mapping is involved.
     search whose name starts with `it155-` deleted (`GET /api/saved_searches` → `DELETE /api/saved_searches/{id}`).
 - **Clipboard (case 3):** the automation installs an init script that replaces `navigator.clipboard.writeText`
   with a capture — the *Copy link* button calls exactly that (`CopyButton.tsx`), and there is no anchor to read.
+- **Time budget, sized against measurement (TST-057).** Five runs of this spec on the maintainer's box gave, per
+  case: case 2 **15.6-16.3 s** and case 4 **8.9-9.5 s** in every run, but case 3 **8.3 s on a quiet box and
+  19.9 s / 50.2 s under load** — the same code, a 6x spread, and every loss was *the SPA not painting*, never an
+  assertion. So the automation warms the app once (`beforeAll`), waits up to **60 s** for the search page to
+  BOOT (the *Save current search* button is the readiness signal), and gives each case
+  `test.setTimeout(150_000)` — the idiom 12 specs in this suite already use. **Every assertion keeps its own
+  bound**; the budget changes what the test waits for, never what it proves (on `ref:main` the first three
+  cases fail on VALUES, which no timeout can turn green).
 
 ## 3. Readiness check
 

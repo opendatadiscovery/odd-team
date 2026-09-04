@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **3 failed = IT-004 / IT-006 / IT-007** — the expected quarantine RED, **no unexpected GREEN**.
 
+## 2026-09-04 — suite/protocol: known-bugs
+- runner: AI-assisted (Claude Opus 5, session review-ctrib065 — the /review confirmation run for CTRIB-065 / #1878; `run-regression.sh revctrib065` under the heavy-e2e flock, SUT built with ODD_SUT=ref:contrib/CTRIB-065-saved-search-holds-every-dimension, i.e. from ORIGIN's copy of the branch @ 5751a8cb, not from any stream's worktree. Box: the maintainer's demo `odd-collector` restart-looping at ~103% CPU throughout, measured with `docker stats`)
+- odd-platform working-tree HEAD: 96d77668 (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib065  (image odd-platform:odd-team-sut-revctrib065, digest sha256:5dab59edf76ef09853eb78b8cd50febaafb220a3c19829bb970e3791d1d5bebb)
+- protocols: IT-004 IT-006 IT-007
+- api probes: none; ui e2e: specs/quality-dashboard-unknown-status.spec.ts specs/error-boundary-containment.spec.ts specs/attachment-local-durability.spec.ts; manual: none
+- outcome: e2e:FAIL
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **3 failed = IT-004 (quality-dashboard-unknown-status:33) / IT-006 (error-boundary-containment:29) / IT-007 (attachment-local-durability:35)** — the expected quarantine RED, and **no unexpected GREEN** (which would signal a fix landed without its flip-on-fix). Matches the implementer's run exactly.
+

@@ -18,3 +18,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **15 passed / 0 failed — also a CLEAN SWEEP** (run #1 was 14/1): `relationships-ingestion-pipeline:195`, run #1's red, passes here. Both green-target lanes that carried a single red in run #1 are fully green at the final head, completing the contention signature: nothing outside the tracked baseline reproduces across the two runs.
 
+## 2026-09-04 — suite/protocol: ingestion-e2e
+- runner: AI-assisted (Claude Opus 5, session review-ctrib065 — the /review confirmation run for CTRIB-065 / #1878; `run-regression.sh revctrib065` under the heavy-e2e flock, SUT built with ODD_SUT=ref:contrib/CTRIB-065-saved-search-holds-every-dimension, i.e. from ORIGIN's copy of the branch @ 5751a8cb, not from any stream's worktree. Box: the maintainer's demo `odd-collector` restart-looping at ~103% CPU throughout, measured with `docker stats`)
+- odd-platform working-tree HEAD: 96d77668 (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib065  (image odd-platform:odd-team-sut-revctrib065, digest sha256:5dab59edf76ef09853eb78b8cd50febaafb220a3c19829bb970e3791d1d5bebb)
+- protocols: IT-128 IT-145
+- api probes: none; ui e2e: relationships-ingestion-pipeline.spec.ts dataset-pipeline-lifecycle.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **15 passed / 0 failed (6.8m) — CLEAN SWEEP** through the real collector, matching the implementer's regression #2. Nothing in the dataset / relationships ingestion pipeline is disturbed by the saved-search contract widening.
+

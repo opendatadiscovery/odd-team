@@ -5,7 +5,7 @@ github_issue: 1878
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1878
 target_repo: odd-platform
 milestone: "1.0.0"
-status: review-ready       # 2026-09-04 ~14:10 +02:00 — ALL FIVE DoD gates RUN and recorded in §11, none deferred: full unit build (824/825, the one red being TST-057's own OpenApiDocs timeout, CI green at the same SHA 794/794) + changed-lines coverage 100 % (local AND CI) + the FULL four-suite regression TWICE + docs read/decided/routed + ontology refreshed. The PR stays DRAFT: the bot never merges (G-C4). Next: `/review` in a separate session, then GATE 2. GATE 1 APPROVED 2026-09-03 ~23:10 +02:00 by RamanDamayeu (D1-A).
+status: review-ready       # 2026-09-04 ~21:40 +02:00 — **/review ACCEPTED (session review-ctrib065)**: all six spec requirements PASS, all five must_haves proven, gates 1/3/4/6/9/10 PASS and 2/5/7/8/11 N/A with reasons. Reviewer ran its OWN four-suite regression on its OWN SUT built from ORIGIN's branch (feature-complete 331/16 — twelve tracked-baseline reds set-equal by spec:line, four off-baseline 60s timeouts DISJOINT from both prior runs; known-bugs 3-RED-expected/0-unexpected-GREEN; ingestion-e2e 15/15; multi-stack 16/3 adjudicated to a host network event + the documented C0 flake + a demo-stand readiness failure), plus IT-155 4/4 (the item's own gate, which no regression lane runs), plus a live API A/B on the running fix, plus tsc + vitest lib/search 48/48. Item STAYS review-ready: the human GATE-2 merge owns pending-release, /review release:1.0.0 owns done.
 classification: bug        # a contract gap (the persisted representation cannot hold two shipped dimensions); the correct behaviour has ONE right answer, the fix has two defensible shapes (§7 D1)
 parent: "CTRIB-061 (ST-7 / #1841 / PR #1875) — the slice that ADDED the second instance of this class and deferred it; retrospectives/LSN-042 — this record is the class-extension clause applied (G-C5)"
 stream_id: ctrib065
@@ -368,3 +368,286 @@ No second round needed: no BLOCKER was raised, and every warning was closed by a
 ## 12. Comments (issue-thread URLs)
 
 - none yet (see §7 "Docs, ontology, comments").
+
+## Review (2026-09-04, session: review-ctrib065)
+
+- **Result**: **ACCEPTED — GATE-2-ready.**
+- **Reviewed**: odd-platform `contrib/CTRIB-065-saved-search-holds-every-dimension` @ `5751a8cb` (verified live
+  as origin's branch head; base `origin/main` still `96d77668`, no drift) / draft PR #1879. No documentation
+  branch by design (`docs_routing: none` — Gate 8 below).
+- **Separate-session gate**: HOLDS. All three commits carry
+  `Claude-Session: …/session_01Mq9hpLKSPNXp7c5GH3NDhu`; this review is a different session.
+- **No 2-minute bounce — checked, not assumed.** §11 declares all five DoD gates RUN at the head *and* the
+  artefacts exist: four 2026-09-04 run-log entries citing SUT digest `sha256:5fcba4ea…`, an image created
+  09:58:23Z — 49 minutes **after** the head commit (09:09:48Z).
+- **`Sources:` footer**: absent from all three commits, and correctly so — checked against precedent rather
+  than applied mechanically. Of the last 60 commits on odd-platform `origin/main` exactly one (`9d3de146`,
+  CTRIB-028) carries one, while every ST-3…ST-8 slice a prior `/review` accepted (`96d77668`, `b5d9f150`,
+  `969a5d5b`, `ab457f0d`, `f714d8fa`) does not; the convention is the documentation pillar's (11 of the last 30
+  `documentation` commits). The provenance it exists to force is met in substance: §3 cites every root-cause
+  site by `file:line`, each re-read at `96d77668`.
+
+### Acceptance criteria — the §4 requirements, each re-derived
+
+- **R1 — the saved spec holds every dimension the request object holds** — PASS. `components.yaml:2590` and
+  `:2629` both `$ref: AssetSearchFormData`; `SavedSearchServiceImpl.java:107` serialises it, `:128-144`
+  deserialises it. `AssetSearchFormData` = `allOf[SearchFormData, {asset_kinds, favorites}]`
+  (`components.yaml:466-491`), and `SearchFormData`'s only `required` is `filters` (`:2571`), unchanged — a
+  strict superset, so no existing payload or stored row is invalidated. Proven on a running system: see
+  **live API verification** below.
+- **R2 — reapply and the share link rebuild the complete URL** — PASS. `SavedSearches.tsx:48` (reapply) and
+  `:62` (Copy link) both route through the new `assetSearchFormDataToUrlState` (`searchUrlState.ts:479-496`);
+  IT-155 cases 1-3 green on my own SUT.
+- **R3 — capture stores the complete current search** — PASS. `SavedSearchForm.tsx:77`; the FE case
+  "captures the FULL current search from a literal location.search" passed in **my** run.
+- **R4 — the invariant is enforced so the NEXT dimension cannot repeat this** — PASS, and the lock is real,
+  not decorative. `Required<SearchUrlState>` over the 8-key interface (`searchUrlState.ts:171-191`) makes a
+  ninth URL key a **compile** error in the fixture; the `Object.keys(AssetSearchFormDataToJSON(…))`
+  set-equality against the nine wire keys makes a tenth regenerated wire key a **runtime** failure. The two
+  sides are genuinely independent, so neither can be satisfied by editing the other.
+- **R5 — rows saved before the change reapply unchanged** — PASS. BE `list_rowSavedBeforeTheWidening…`; the FE
+  case asserts the legacy shape maps to BOTH today's URL state and `searchFormDataToUrlState(legacy)` — the
+  strongest form of "nothing changed"; IT-155 case 4 is GREEN on `main` by design, which is what makes it a
+  compatibility guard rather than a fix-proof. Re-proved live on real stored jsonb (below).
+- **R6-FE — the FE inverse fails closed per field and never throws** — PASS (stale kind dropped, string
+  `favorites` ignored, `{}` and `undefined` non-throwing; ran here).
+- **R6-BE — the server reads the stored spec leniently PER TOKEN** — PASS, and the design is *necessary*, not
+  ornamental: I read the shared mapper (`JSONSerDeUtils.java:15-21`) — it disables
+  `FAIL_ON_UNKNOWN_PROPERTIES` but sets **no** `READ_UNKNOWN_ENUM_VALUES_AS_NULL`, so binding an unknown
+  `AssetKind` really would throw and, via the whole-document fallback, cost the user the entire saved search.
+  `sanitiseSpecTree` (`:147-170`) removes exactly that failure mode at field grain — verified on real stored
+  jsonb below, which is the only place this case is reachable.
+
+### must_haves (T1-T5) — every user-observable truth proven by me
+
+T1 (Favorites survives save → reapply, foil excluded), T2 (Asset-type narrowing survives), T3 (the share link
+carries the same params), T4 (a pre-change row reapplies unchanged): **IT-155 4/4 PASS** on my own SUT.
+T5 (an API client gets both keys back on create and on list): **verified live** — see below.
+
+### Quality Bar
+
+- **Gate 1 — no duplicates** — PASS. Capture REUSES `searchUrlStateToAssetSearchFormData`
+  (`searchUrlState.ts:406`, shipped by ST-4); the new inverse is the missing sibling of an existing pair and
+  delegates to `searchFormDataToUrlState` (`:433`) rather than re-implementing it. No new BE class. VERIFIED
+  via `grep -rn` over `odd-platform-ui/src` — no parallel projection introduced.
+- **Gate 2 — aliases** — N/A (none introduced or used).
+- **Gate 3 — caveats captured** — PASS in the only homes that exist: the "`favorites:false` is a REAL filter,
+  never default it" rule and the unset-reads-back-`null` contract are on both spec schemas and asserted by
+  tests rather than merely stated.
+- **Gate 4 — consumer-read** — PASS, re-derived rather than taken from the record. BE:
+  `SavedSearchServiceImpl.java:52`, `:84`, `:102` — and `git grep` finds **no** other `getSpec()` consumer in
+  `src/main`. FE: `SavedSearches.tsx:48`/`:62`, `SavedSearchForm.tsx:66` (rename passes the stored spec
+  through) and `:77`. `Search.tsx:79` still uses the narrower `searchUrlStateToFormData` — correct: that is
+  the legacy `/api/search` session (ADR D9), deliberately untouched. `odd-platform/tests/**` has zero
+  saved-search references.
+- **Gate 5 — unset-parameter audit** — N/A (no SDK builder). The analogous audit here — every field of the
+  widened payload classified — is R4's wire-key set-equality, which is stronger than a one-off enumeration.
+- **Gate 6 — bidirectional code ↔ doc** — PASS, with the gap tracked rather than narrated. Code → doc: the
+  touched user-visible path has **no** doc coverage anywhere (`git grep -in "savedsearch\|/api/saved\|save
+  current search\|SearchFormData" origin/release/1.0.0 -- docs/` → zero saved-search hits), so the change
+  falsifies nothing published; the obligation sits on `DOC-499` (pending, `milestone: "1.0.0"`, acceptance
+  extended by this slice with the explicit complete-search line) — a real forcing function, since the release
+  gate derives its manifest by grepping that milestone. Doc → code: every claim added to the spec descriptions
+  traces to code I read. The **developer-audience** half of the same gap was untracked → filed as **DOC-526**.
+- **Gate 7 — layout** — N/A (no doc pages / SUMMARY). The workspace-side layout that *is* owed is complete:
+  IT-155 protocol + spec + a `suites.yaml` lane entry with a named graduation OWNER, run-log entries per suite,
+  `F-017-UC-15`, `PLT-265`, `TST-057` extended.
+- **Gate 8 — publishing standards** — N/A-with-obligation, deliberately **not** PENDING-RELEASE: this slice
+  authors no doc. Checked against the `review-ctrib040` case-law (a release-gated doc parked in a backlog item
+  with no train commit is a FAIL) — it does **not** apply. There, content was owed by the slice and drafted
+  instead of authored. Here the entire saved-search surface is undocumented (ST-3's pre-existing debt), no
+  published sentence is falsified, and writing one truth-line into a section that does not exist would mean
+  doing DOC-499's whole scope. **Owed at the 1.0.0 release gate**: live-verify DOC-499's complete-search line.
+- **Gate 9 — factual claim provenance** — PASS. Re-derived at the head: the two `$ref`s; the flattened
+  generated model; the mapper's missing `READ_UNKNOWN_ENUM_VALUES_AS_NULL` (the premise R6-BE rests on); the
+  "no other consumer" grep; the "no page describes saved searches" grep; the "no sidecar exists for any touched
+  file" claim (`lineage/odd-platform/understanding/` has none; `nodes.jsonl` carries only `JSONSerDeUtils`);
+  the issue live (open, milestone 1.0.0 open, semver → G-C11); and CI at `5751a8cb` — **6/6 check-runs green,
+  795 tests / 0 failed / 183 suites**, coverage bot **Files changed 100%** with links pinned to that SHA. No
+  banned phrase used.
+- **Gate 10 — content-type homing** — PASS. The descriptive text added to `components.yaml` is schema
+  documentation living on the schema — its canonical home; no API-reference content was embedded in a feature
+  page. The missing canonical home for that content type is what DOC-526 files.
+- **Gate 11 — audience isolation** — N/A (no `documentation/docs/**` file touched). Noted, not charged: three
+  odd-platform TEST comments name `CTRIB-065` / `LSN-042` / `contributor/CTRIB-065.md §3`. Gate 11 governs
+  published doc pages, and the surrounding code already cites odd-team protocol ids (`IT-006` in
+  `searchUrlState.ts` on `main`) — the repo's established convention, not a leak.
+
+### G-C15 — the changed-test danger zone
+
+CLEAN, checked line by line. The diff CHANGES exactly three test lines, all type-only and forced by the
+widening: `SavedSearchControllerTest.java:99`, `SavedSearchServiceImplTest.java:313`
+(`new SearchFormData()` → `new AssetSearchFormData()`) plus the two import swaps. Everything else is an
+APPEND. No matcher weakened, no real boundary swapped for a mock, nothing `.skip`/`@Disabled`/deleted. The one
+rewritten prose block is the `searchFormDataToUrlState.test.ts` header JSDoc, whose old text ("a saved search
+stores exactly a `SearchFormData`") the change makes FALSE — rewriting it is required, not cosmetic.
+
+The sibling trap for a NEW test — "did a widened timeout turn it green?" — is answered on **values**: on
+`ref:main` IT-155 cases 1-3 fail because `spec.favorites` and `spec.asset_kinds` are `undefined` and the share
+link carries neither. No timeout satisfies a failed equality. I anchored that independently: the contract at
+`96d77668` cannot express either field, and the §3 capture on a running `main` is a real `201` with neither key.
+
+### Regressions — my own runs, on my own SUT built from ORIGIN's branch
+
+SUT `odd-platform:odd-team-sut-revctrib065`, built with `ODD_SUT=ref:contrib/CTRIB-065-…` — i.e. from origin's
+copy of the branch, never from a stream's worktree, so the tested bits are the pushed ones.
+
+- **`feature-complete` 331 passed / 16 failed of 347 (40.7m)** — and this settles the adjudication the
+  implementer opened.
+  - **Twelve = the tracked baseline, SET-EQUAL by exact `spec:line`**: `catalog-search` 48/62 ·
+    `entity-class-type-badge-list` 59/77 · `recently-viewed-record-see-loop` 117/213 ·
+    `popular-entities-ranking` 62 · `search-url-state` 38 · `search-result-stale-signal` 62 ·
+    `search-result-row-click` 45 · `search-class-tab-filter` 149 (TST-059's eleven) +
+    `swagger-openapi-discovery` 63 (TST-057).
+  - **Four off-baseline, every one `page.waitForResponse: Test timeout of 60000ms exceeded` — not one an
+    assertion failure**: `activity-user-filter:211` · `directory-hierarchy-browse:100` ·
+    `entity-owners-display:20` · `microservices-lineage:88`.
+  - **My off-baseline set is DISJOINT from BOTH of the implementer's** (#1: `entity-activity-tab:170`,
+    `owner-association-history:129`, `favorites-star-see-loop:93`, `entity-metadata-display:30`; #2:
+    `activity-feed:117`, `entity-business-name-display:37`, `entity-terms-display:33`,
+    `recently-viewed-record-see-loop:67`, `schema-revision-compare:152`, `entity-metadata-display:30`).
+    Three runs of the same code produce three arbitrary, mutually-disjoint sets of 60-second first-paint
+    timeouts while the twelve tracked reds are identical every time. **`entity-metadata-display:30` — the one
+    red that reproduced twice for the implementer and that they chased with an order-controlled A/B/B — is
+    GREEN in my run**, independently confirming their "not this change" verdict.
+  - `search-url-facets` executed and passed **4/4** (`:130 :163 :206 :246`), independently re-confirming
+    TST-059's "really is repaired" note rather than taking it on trust.
+- **`known-bugs` 3 red = IT-004 / IT-006 / IT-007** — the expected quarantine, **no unexpected GREEN** (which
+  would mean a fix landed without its flip-on-fix).
+- **`ingestion-e2e` 15 / 15 — clean sweep.**
+- **`multi-stack` 16 passed / 3 failed (19.4m)** — worse than the implementer's 19/19, so adjudicated rather
+  than waved through, and the cause is external and **measured**:
+  - `my-data-scope-narrows:413` died on **`page.goto: net::ERR_NETWORK_CHANGED`** — a host network-interface
+    event inside Chromium, not an application assertion at all. `journalctl` shows Cisco AnyConnect
+    (`acvpnagent`) actively probing and reconfiguring the network on this box during the window
+    (`NETENVIRONMENT_ERROR_PROBE_INCOMPLETE`, `SOCKETTRANSPORT_ERROR_CONNECT_TIMEOUT`). No code change can
+    produce that error.
+  - `my-data-scope-narrows:388` — `getByTestId('search-results-count')` not found in 30s: the documented C0
+    flake of this exact spec (CTRIB-062: one red in seven whole-suite samples, and the red MOVES between its
+    cases — `:259`, `:413`, `:434`, now `:388`).
+  - `demo-stand-first-run:203` (IT-154) — **not a flake, and now root-caused rather than attributed.** It
+    REPRODUCED on my confirmation re-run, so I chased it: `demo-stand.ts:28` resolves
+    `PLATFORM_DIR = process.env.ODD_PLATFORM_DIR ?? '../odd-platform'` and composes
+    `<that>/docker/demo.yaml`. `run-regression.sh` always sets that variable (to a clean per-stream worktree);
+    `run-suite.sh` does not, so my lane re-run composed the **shared** checkout — in which the maintainer has
+    an **uncommitted** `docker/demo.yaml` adding `AUTH_TYPE=LOGIN_FORM` + `AUTH_LOGIN_FORM_CREDENTIALS`. Under
+    LOGIN_FORM the injector loud-refuses (odd-platform#1877 / CTRIB-064), so the enricher exits 1 and the
+    catalog read is auth-gated — exactly the observed failure. The harness read someone's WIP; the code under
+    review is not involved. Logged by **extending `TST-066`** in place (it already owns `demo-stand.ts:28`),
+    with the fix widened: absolutizing the override does not close this — the helper must refuse a dirty
+    resolved checkout, or require `ODD_PLATFORM_DIR` with no shared-tree default.
+  **Confirmation re-run of the whole lane on the same image: 17 passed / 2 failed (17.4m)** — and it closes
+  the question. **BOTH IT-153 cases that failed in run 1 (`:388`, `:413`) are GREEN**, retiring them as the
+  flake and the network event they were diagnosed as. `demo-stand-first-run:203` reproduced (the harness
+  cause above). The one new red is `notifications-wal-lifecycle:63` (IT-011), which failed on
+  **`Command failed: docker compose -p oddnotif … up -d`** — its own stack never came up; not an assertion,
+  and IT-011's stack is the documented-flaky WAL stand (PLT-139). So this lane shows the same signature as
+  `feature-complete`: the off-baseline reds MOVE between runs of identical code, while the only constant
+  traces to the harness reading an uncommitted file. None of the four specs involved across the two runs
+  exercises a line this diff changes, and the implementer's own run on identical code was 19/19.
+  VERIFIED via `git -C ../odd-platform diff docker/demo.yaml` + `demo-stand.ts:28` + the two lane runs.
+- **Unit bucket** — CI ran the identical full build at the identical head SHA and passed it: **795 tests, 0
+  failed, 183 suites, 826 runs** at `5751a8cb`, with checkstyle in the same `build` task; the coverage bot
+  reports **Files changed 100%** (`SavedSearchServiceImpl.java` 99.52%, `JSONSerDeUtils.java` 70.91%
+  file-level — its two new lines covered), so the 98% changed-lines gate is MET at the head. Per the protocol
+  a CI full-suite run on the same head SHA is citable evidence of the same measurement; I verified it myself
+  through the API rather than trusting the ledger, and did not run a duplicate local build.
+- **Front end** (CI does not run it, so the reviewer must): **`tsc --noEmit` clean** and
+  **`vitest src/lib/search` 48/48** — my own runs, on the reviewed tree. The two reds in the implementer's
+  full-FE run are change-independent **by import graph**, checked: neither `DataSourceItem.test.tsx` nor
+  `DataEntitiesUsageInfoView.test.tsx` imports anything under `lib/search` or `SavedSearches/`.
+- **i18n** — N/A, verified mechanically: the FE diff adds **zero** `t(` calls, so no catalog key is owed.
+
+### IT-155 — the item's own gate, which no regression lane runs
+
+IT-155 is parked in `pending-merge`, so it executed in **neither** the implementer's regressions nor mine — if
+the reviewer does not run it, it goes unconfirmed. I ran it: **4 / 4 PASS in 1.1m** on my own SUT
+(`ODD_STREAM=revctrib065it ODD_PLATFORM_IMAGE=odd-platform:odd-team-sut-revctrib065 run-suite.sh IT-155`) —
+the Favorites scope survives save → reapply with the un-starred foil excluded, the Asset-type narrowing
+survives, the copied share link carries both, and the pre-#1878 row reapplies unchanged. The whole spec took
+1.1 minutes on a quiet box, against 8-50s **per case** under load in the implementer's five runs — which
+independently supports their account that the moving reds were contention, not code.
+
+### Live API verification — the §3 capture re-run against the fix, plus the cases only raw jsonb can reach
+
+On a bare stack of the same image (`docker compose … up`, `/actuator/health` UP), all measured by me:
+
+| stored spec | read back through the API |
+|---|---|
+| the §3 payload via `POST` (favorites + asset_kinds) | `201` whose spec carries **`"asset_kinds":["TERM"]` and `"favorites":true`**, and the LIST read-back carries both — the same payload on `main@96d77668` returned a `201` with **neither** key |
+| no `favorites` sent | `favorites=null`, `asset_kinds=null` — **never `false`** |
+| `favorites:false` | `false` **preserved** (a real filter, not normalised away) |
+| raw jsonb `{"query":"survives","asset_kinds":["BOGUS",7,"TERM"],"favorites":"yes"}` | `query='survives'` **survives**, `asset_kinds=['TERM']` (unknown token *and* non-string element dropped), `favorites=null` — **R6-BE proven on real stored data** |
+| raw jsonb `{"query":"orders","filters":{}}` (pre-#1878) | `query='orders'`, both `null` — **R5** |
+| raw jsonb `["not-an-object"]` | empty spec, no 500 — and the LIST still answered `200` with all six rows |
+
+The last three rows are the ones that matter to an operator: a stale kind token costs one filter, not the
+saved search, and not the whole list request.
+
+### Navigation
+
+Consistent. `navigation/domains/search.md:42-45` and `:49` already carry every pointer this slice touches —
+`searchUrlState.ts`, the SavedSearch controller/service/repository trio, the `SavedSearches/` component
+directory, and `V0_0_97__create_saved_search.sql` — and no file moved or was renamed, so nothing went stale.
+No new bean factory or SDK builder was introduced. VERIFIED via read.
+
+### Doc-product editorial audit (`playbooks/doc-product-editorial-read.md`)
+
+- **Coverage this run**: `data-lineage/**`, `data-quality/**`, `data-glossary/**` (the partition PROGRESS.md
+  queued) **plus** `developer-guides/api-reference/**` (not previously claimed). Queued next:
+  `configuration-and-deployment/**` and `integrations/**`.
+- **Findings**:
+  - **DOC-526** (medium, cross-audience absence, `milestone: "1.0.0"`) — the API Reference has a per-feature
+    page for all ten smaller feature areas and **none for Search**, while 1.0.0 ships
+    `POST /api/search/assets` plus the saved-search CRUD (whose contract *this slice widens*) with no
+    developer-audience page at all. Source: `docs/developer-guides/api-reference.md:11-20`.
+  - Not re-filed (LSN-009): `data-lineage/microservices.md:52` still tells API callers an omitted
+    `lineage_depth` returns HTTP 500 — contradicting `data-objects.md:45` and the api-reference on the same
+    site, and false since 0.29.0 (`openapi.yaml` carries `default: 1` on both per-entity operations, which I
+    read). Independently re-derived here; **DOC-515** already owns it. Convergent validation.
+  - **TST-066 extended in place** (not a new item — it already owns `demo-stand.ts:28`): a SECOND, measured
+    failure mode of the same line — with `ODD_PLATFORM_DIR` **unset** (the `run-suite.sh` path) the demo stand
+    composes the shared, possibly-dirty `../odd-platform` checkout. It cost this review a reproducing false
+    RED; the next reviewer would have paid the same A/B budget to disprove it.
+
+### Notes
+
+- The ledger's "CI `run_tests` 794 tests" at the head is off by one — CI reports **795** at `5751a8cb` (794 was
+  the count at `51f324a6`, before `e7bc3b0e` added a test). Cosmetic; the direction (green) is right.
+  NOT VERIFIED as a defect → recorded, not filed.
+- IT-155 case 2 asserts the reapply URL, the Term's presence and the data entity's absence, but not the
+  Asset-type **control's** state, where case 1 does assert the Favorites checkbox. URL→control is ST-4's
+  contract and pinned by `search-url-facets` / `search-url-state`, so this is an observation, not a gap.
+- `PLT-265` (the Saved-searches menu staying open after reapply, hiding the reapplied page from assistive
+  tech) is correctly out of this slice's class and correctly logged rather than narrated. Flagged for GATE 2
+  only because it is the first thing a human will hit when clicking through this fix, the fix is one line in
+  `handleReapply`, and the PR is still a draft — folding it in is cheap if you want the reapply flow to feel
+  finished. It does not hold the item.
+- Review side effects: none committed beyond this verdict + `state/PROGRESS.md` + `backlog/docs/DOC-526.md`.
+  `lineage/**` untouched (`git status --short lineage/` empty); the `api:FAIL` on `feature-complete` is
+  TST-065's pre-existing probe-rail build failure, not a run of mine.
+
+### For GATE 2 — what you are merging, in plain language
+
+A saved search used to be a promise the product did not keep: save a search with **Favorites** on, or with
+**Asset type** set, and the dialog said "saved" while the row stored a *different* search. Reopening it gave
+you the whole catalog with the toggle off, and the copied link handed a colleague the wrong search too. This
+makes the saved row hold the same object the search request already sends — so what you save is what comes
+back, including through a shared link, and a search saved before the fix reopens exactly as it did.
+
+Three things worth knowing before you merge:
+
+1. **It is additive.** The stored `spec` widens to a superset: old rows stay valid, no migration, no client
+   breaks. The one thing that could have bitten — a stored asset-kind token a future release renames — is
+   handled at field grain: you lose that one filter, not the whole saved search. I proved that on a real
+   stored row, not from the code.
+2. **The next dimension cannot repeat this.** `asset_kinds` (ST-4) and `favorites` (ST-7) both shipped
+   unsaveable because nothing asserted the round-trip. There is now a test that fails at **compile** time if
+   someone adds a URL dimension without saved-search support, and at runtime if the wire grows a key.
+3. **Docs are owed, not written here** — deliberately, and tracked. No page on the site describes saved
+   searches at all (I re-grepped the 1.0.0 train to be sure), so this fix falsifies nothing published; the
+   1.0.0 doc gate now cannot publish the saved-searches section without stating that a saved search stores the
+   complete search (`DOC-499`).
+
+**Status**: stays `review-ready` — the human GATE-2 merge owns the move to `pending-release`, and
+`/review release:1.0.0` owns `done` (precedent: review-ctrib062-3 / review-ctrib048).

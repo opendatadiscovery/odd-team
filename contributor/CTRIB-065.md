@@ -5,18 +5,18 @@ github_issue: 1878
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1878
 target_repo: odd-platform
 milestone: "1.0.0"
-status: planned            # GATE 1 pending — no code, no branch, no push until a human approves §7
+status: pr-draft           # 2026-09-04 ~10:10 +02:00 — DRAFT PR #1879 open at 51f324a6; the DoD gates are running (see §11) — the PR stays draft until every gate is recorded as actually run. GATE 1 APPROVED 2026-09-03 ~23:10 +02:00 by RamanDamayeu (D1-A).
 classification: bug        # a contract gap (the persisted representation cannot hold two shipped dimensions); the correct behaviour has ONE right answer, the fix has two defensible shapes (§7 D1)
 parent: "CTRIB-061 (ST-7 / #1841 / PR #1875) — the slice that ADDED the second instance of this class and deferred it; retrospectives/LSN-042 — this record is the class-extension clause applied (G-C5)"
 stream_id: ctrib065
 base_sha: 96d77668         # origin/main = the #1875 squash; every line cited below was read at this SHA
-branch: ""                 # contrib/CTRIB-065-saved-search-holds-every-dimension — created AFTER GATE 1 (same-name-tracked, never origin/main-tracked; O6/LSN-038)
-head_sha: ""
-pr: ""
+branch: contrib/CTRIB-065-saved-search-holds-every-dimension   # created at GATE 1 from 96d77668 in the reused ../odd-platform-ctrib061 worktree (a SHA start-point: no upstream; push.default=current; O6/LSN-038)
+head_sha: 51f324a6          # the fix commit on the branch (spec + BE + FE + tests); pushed same-name via the App token, upstream NONE (never origin/main)
+pr: https://github.com/opendatadiscovery/odd-platform/pull/1879     # DRAFT, base main, "Part of #1825. Closes #1878." (the only slice for #1878 -> the closing keyword is correct); no reviewer requested (GH_REVIEWERS unconfigured)
 reproduced: "2026-09-03 22:08 +02:00 — POST /api/saved_searches on main@96d77668 (isolated stack ctrib061 @ :18100, image odd-platform:odd-team-sut-ctrib061, digest sha256:46d9ae04…): spec sent with favorites=true + asset_kinds=[TERM] + sort=name + my_data=[MY_OBJECTS] -> 201 whose stored spec carries sort + my_data and NEITHER favorites NOR asset_kinds (the keys are absent, not null); GET list identical; probe row deleted (204). Full capture §3."
 adr_required: false        # conforms to adrs/drafts/unified-asset-search.md D10/D11 — REALISES D11's invariant ("one canonical spec, two surfaces") which ST-4 + ST-7 had broken; no new decision (§6b)
-plan_approved_by: ""
-plan_approved_at: ""
+plan_approved_by: "RamanDamayeu"
+plan_approved_at: "2026-09-03"
 docs_routing: "none in this PR — no page on documentation@release/1.0.0 (716d3e7) describes saved-search capture (verified: `git grep -i 'saved search' origin/release/1.0.0 -- docs/` matches only the housekeeping TTL key); the saved-searches section is owed by backlog/docs/DOC-499 (milestone 1.0.0, the release-gate hook), whose acceptance is extended here with the explicit 'stores the complete search' line (§8)"
 ---
 
@@ -256,7 +256,7 @@ scope_reduction_language: none   # no v1 / placeholder / "later"; the whole clas
   **No scope comment** — the plan covers the issue's full scope; nothing is narrowed or deferred (G-C5). The
   draft-PR announcement on #1878 follows at Phase E.
 
-### GATE-1 decision (plain language)
+### GATE-1 decision (plain language) — **APPROVED 2026-09-03: D1-A** (`RamanDamayeu`, via the pause-and-ask question; the plan-check verdict + the nine folded warnings were on disk and committed as `257c2dc8` before the ask)
 
 | | **D1-A — widen the saved type to the request type (recommended)** | D1-B — store the canonical URL string |
 |---|---|---|
@@ -290,16 +290,25 @@ publish the section without that truth. Therefore **`docs_routing: none` in this
 of a class the change extends: the PR removes a behaviour gap; the doc gap is ST-3's, pre-existing, tracked with
 the hook that forces it before publication.
 
-## 9. Ontology nodes to refresh (Phase D)
+## 9. Ontology (Phase D) — what was refreshed, and what could not be
 
-`SavedSearchServiceImpl`, `searchUrlState` (lib), `SavedSearchForm`, `SavedSearches`, and `AssetSearchFormData`'s
-sidecar (it is now also the persisted spec). **There is no saved-search feature-flow node** (ST-3 never added one;
-`lineage/odd-platform/feature-flows/detail/` resolves only `F-017-UC-08`, the pre-ST-3 `/search/{uuid}` drift
-promise, and `test-gates.yaml` resolves neither a saved-search id nor IT-148's `validates: [F-Favorites]`) — so
-Phase D **creates** the saved-search feature node + its `use_cases` (the promise "a saved search reproduces the
-saved search" verified by T1-T5), re-points IT-155's and IT-148's `validates:` at ids the ledger resolves, and
-re-embeds. Run
-`/enrich --touched` only when `lineage/**` is clean and unclaimed; re-embed; commit.
+**Done:** `lineage/odd-platform/feature-flows/detail/F-017.yaml` gains **`F-017-UC-15`** — the promise *"a saved
+search reproduces the COMPLETE search that was saved … a search saved before #1878 reapplies exactly as it
+did"*, `coverage: verified` by IT-155 + `SavedSearchControllerWebTest` + `SavedSearchServiceImplTest` + the
+`searchFormDataToUrlState.test.ts` lock; `use_case_coverage` 3/14 → 4/15; `related_retrospectives` gains
+`LSN-042`. IT-155's `validates: [F-017]` therefore resolves to a real node with a real promise.
+
+**Checked, not assumed — no sidecar existed for any touched source file.** `ls lineage/odd-platform/understanding/`
+has no entry for `SavedSearchServiceImpl`, `searchUrlState`, `SavedSearches` or `SavedSearchForm`, and
+`nodes.jsonl` (3,725 nodes) carries only `JSONSerDeUtils.java` as an unenriched file-level node: the substrate
+scan predates ST-3 (saved searches were never scanned in), so `/enrich --touched` has nothing of this slice's
+to refresh, and the plan's "create the saved-search feature node" resolves into the UC-15 promise on the search
+feature (F-017 is where the existing saved-search promise `F-017-UC-08` already lives) rather than a hand-built
+F-node the reducers would not own. The substrate rescan that would give ST-3's files nodes is a corpus-wide
+task (the manifest's `last_scan_commit`), not this slice's; it is noted for the tests pillar's next `/scan`,
+not silently skipped. IT-148's unresolved `validates: [F-Favorites]` (pre-existing, plan-check W7) is left as
+found — re-pointing another slice's gate is not this PR's scope; recorded here so the next favorites touch
+fixes it.
 
 ## 10. Plan-check record (G-C19)
 
@@ -323,9 +332,35 @@ closes the other side; (5) six comments the widening falsifies added to the impa
 `truths` (a guard, not a user truth); (9) the registry's stale "UNFILED" wording corrected (#1878 is filed).
 No second round needed: no BLOCKER was raised, and every warning was closed by a plan edit, not deferred.
 
-## 11. Test ledger
+## 11. Test ledger — every row RUN here, none "deferred to review"
 
-_(Phase D — every row RUN, none "deferred to review")_
+| Gate | Status |
+|---|---|
+| FE `tsc --noEmit` / eslint (changed paths) / vitest `lib/search` | **GREEN** — 0 type errors; 0 lint problems after `--fix` (prettier reflow only); **48/48** (`searchFormDataToUrlState.test.ts` 14 incl. the 6 new: the lock, wire-key set-equality, `favorites=no`, the pre-#1878 shape, per-field fail-closed incl. an undefined spec, capture from a literal `location.search`; `searchUrlState.test.ts` 34) |
+| FE full unit suite (`vitest run`) | **190/192** — the two reds (`DataSourceItem.test.tsx` REJECTED-delete dialog, `DataEntitiesUsageInfoView.test.tsx` render) re-run **green in isolation** (4.3 s and 2.0 s against a 5 s vitest bound — they timed out while the ref:main jib build ran concurrently) and are **change-independent by import graph** (neither file imports anything this change touched) |
+| i18n key-parity guard (the repo's existing test, CI does not run it) | **17/17** — no new visible string; all 7 catalogs at parity |
+| FE client regeneration | `generate.sh` (docker openapi-generator 7.2.0) — `SavedSearch.spec` + `SavedSearchFormData.spec` now `AssetSearchFormData` in the generated TS (verified by grep); gitignored, so nothing generated is committed |
+| BE codegen staleness (the known gotcha) | the first SUT build **failed at `compileJava`**: `openApiGenerate` tracks only `openapi.yaml`, so the Java `SavedSearchFormData.spec` was still `SearchFormData` → `odd-platform-api-contract/build/generated` deleted, codegen re-ran, `private AssetSearchFormData spec;` verified in the regenerated model |
+| BE targeted build — `run-platform-tests.sh --tests "*SavedSearch*"` (checkstyleMain + checkstyleTest + the filtered tests) | **BUILD SUCCESSFUL 5m18s** after one checkstyle fix (a `CustomImportOrder` violation on the new `JsonNode` import — caught by the gate, not by review). `SavedSearchServiceImplTest` **13/13** (the 10 existing + round-trip, pre-widening row, per-token lenient read), `SavedSearchControllerTest` **4/4**, `SavedSearchControllerWebTest` **2/2** on a real Postgres — the 201 body + list keep both keys; an unset `favorites` is `null`, never `false` |
+| RED-on-main for the unit bucket | the service + controller tests **cannot compile against `main`'s generated model** (`AssetSearchFormData` has no place in `SavedSearchFormData.spec` there) — the honest RED for a contract widening, same as ST-7's ledger; the **behaviour RED** is §3's captured `201` without the keys, which the web test asserts against |
+| IT-155 on the fix (working-tree SUT, `ctrib065` namespace) | **every case has passed on the fix** across three fresh-stack runs — run 1: 2/4 (the two reds were spec defects, fixed: the reapply popover is a MUI Modal that stays open and hides the page from role queries; the toolbar only renders on a search page); run 2: 3/4 (case 3's first paint — a blank page at 15 s, the TST-057 class; it passed in run 1); run 3: 3/4 (case 1 = the first test on a cold platform timed out inside the boot wait; blank page). Mitigations in the spec: `Escape` after reapply, a boot-aware `gotoSearch`, a one-time warm-up `beforeAll`. **Run 5 (clean, all four in one run) is queued behind the gates** on a quiet box; run 4 was aborted by the harness (stack not healthy in 120 s during the full build). Details per run: `integration-tests/run-log/2026-09-04-IT-155.md` |
+| IT-155 on `ref:main @ 96d77668` (`ctrib065red`) | **RED by construction, twice**: run 1 4/4 red — `spec.favorites` undefined, `spec.asset_kinds` undefined, the share link `/search?q=it155` only; run 2 3/4 red with the same three reasons (case 2 at the boot wait) and **case 4 GREEN on main** — the compatibility guard, as designed |
+| The product finding IT-155 surfaced | the Saved-searches menu stays open after picking an entry and hides the reapplied page from assistive tech — **`PLT-265`** (low), not this PR's (§13) |
+| Upstream CI at `51f324a6` (draft PR #1879) | **all six check-runs green** — `run_tests` (794 tests, 0 failed), Playwright lint / format-check / test, Test Results, `update_release_draft`. **Backend Coverage bot: Files changed 94.85% ✗** (< 98) — `SavedSearchServiceImpl.java` 97.91%, `JSONSerDeUtils.java` 70.91% (file-level, the file's old untested methods) → the local changed-lines gate below closes it |
+| Local changed-lines coverage (98 % gate, `patch-coverage.py` vs the FULL build's jacoco) | **RUNNING** — the on-disk jacoco was stale (2026-09-02); the fresh report comes from the full build in the gates run. A non-object-jsonb service case was added on top (the one branch no test could have reached); the exact missed lines are read from the fresh report, then closed |
+| FULL unit build (`run-platform-tests.sh`, no-arg = `:odd-platform-api:build`) | **RUNNING** (gates step 1, started 10:06) |
+| FULL four-suite regression (`run-regression.sh ctrib065`, flock, isolated) | **QUEUED** (gates step 3) |
+| Docs | none in this PR — §8 (read, decided, `DOC-499` extended) |
+| Ontology | §9 — `F-017-UC-15` added, `LSN-042` linked, graph re-embedded (`graph-build`: 9,909 nodes / 10,855 vectors); no sidecar existed for any touched file |
+| Rendered surface reviewed as a user (G-C12 step 5) | IT-155 case 1 writes `test-results/it155-reapplied-favorites.png` after reapply (the toggle on, the URL carrying the scope, the list narrowed) — captured on the clean run 5 |
+
+## 13. Follow-ups logged on disk (`playbooks/follow-up-on-disk.md`)
+
+| Item | What | Why it is not fixed here |
+|---|---|---|
+| `issues/odd-platform/PLT-265` (new, low) | The **Saved searches** menu stays open after picking an entry (its modal backdrop marks the reapplied page `aria-hidden` until dismissed) — found while driving IT-155: a role-based check on the reapplied page could not see the sidebar | Pre-existing ST-3 (#1855) menu behaviour; not a representation of search state, so not a class this change extends (G-C5 class-extension clause checked, not just cited). One-line fix in `handleReapply` (close the popover), paste-ready for the maintainer |
+| `backlog/docs/DOC-499` (extended) | The saved-searches section owed for 1.0.0 must state that a saved search stores the complete search and that `favorites=no` is saved as-is | The doc gate's obligation (§8) — the fix removes the behaviour gap; the section's absence is ST-3's tracked doc debt with the release-gate hook |
+| substrate rescan (noted for the tests pillar's next `/scan`, no new item) | ST-3's files have no substrate nodes / sidecars, so `/enrich --touched` could refresh nothing of this slice (§9) | A corpus-wide `lineage-extractor scan` against current `main`, not a per-slice action |
 
 ## 12. Comments (issue-thread URLs)
 

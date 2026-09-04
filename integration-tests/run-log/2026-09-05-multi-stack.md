@@ -1,0 +1,10 @@
+## 2026-09-05 — suite/protocol: multi-stack
+- runner: AI-assisted (Claude Opus 5, session review-ctrib065 — the FULL four-suite regression for the PLT-265 fold-in, `ODD_PLATFORM_DIR=../odd-platform-ctrib061 ODD_SUT=working run-regression.sh revctrib065b` under the heavy-e2e flock; SUT built from the CLEAN committed worktree @ 510a29b9. Required because AppPopover is shared by four call sites, so the blast radius is wider than the one screen)
+- odd-platform working-tree HEAD: 96d77668 (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib065b  (image odd-platform:odd-team-sut-revctrib065b, digest sha256:addf8ab0abb533e6683638af5256847a6fdc79b0f36784a9b57ccd638aba76d0)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153 IT-154
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts demo-stand-first-run.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **19 passed / 0 failed (14.7m) — CLEAN SWEEP, and it is the CONTROLLED EXPERIMENT that confirms TST-066's second failure mode.** `demo-stand-first-run:203` (IT-154) failed TWICE earlier today when I ran this lane through `run-suite.sh` **without** `ODD_PLATFORM_DIR`, which made `demo-stand.ts:28` compose the SHARED `../odd-platform` checkout and its uncommitted `AUTH_TYPE=LOGIN_FORM` demo.yaml. Here the same lane, same box, same image CONTENT, run through `run-regression.sh` — which sets `ODD_PLATFORM_DIR` to a clean per-stream worktree — is **green**. Same code, opposite result, and the only variable is which checkout the demo stand read: the harness defect is proven, not argued. IT-153's two cases are green too, retiring them as the flake and the `net::ERR_NETWORK_CHANGED` host event they were diagnosed as.
+

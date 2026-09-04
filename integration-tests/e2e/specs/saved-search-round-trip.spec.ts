@@ -94,14 +94,22 @@ async function saveCurrentSearch(page: Page, name: string): Promise<Record<strin
 }
 
 /**
- * Open the Saved-searches popover and reapply the entry named `name`. The popover is a MUI Modal and stays
- * open after the navigation, which marks the rest of the page aria-hidden — so it is dismissed (Escape, as a
- * user would click away) before any role-based assertion on the reapplied page.
+ * Open the Saved-searches popover and reapply the entry named `name`.
+ *
+ * NO dismissal step, deliberately — and that absence is a GUARD, not a simplification. Until PLT-265 the
+ * popover stayed open after the navigation and, being a MUI Modal, marked the reapplied page `aria-hidden`,
+ * so this helper had to press Escape before any role-based assertion could see the results. Reapply now
+ * closes the menu itself, so the Escape is gone and the assertion below pins that: if the close regresses,
+ * every role query on the reapplied page goes blind again and these cases fail, exactly as they did before.
  */
 async function reapply(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: 'Saved searches' }).click();
   await page.getByText(name, { exact: true }).click();
-  await page.keyboard.press('Escape');
+  // The menu dismisses itself: the entry that was just clicked is gone from the screen (PLT-265).
+  await expect(
+    page.getByText(name, { exact: true }),
+    'the Saved-searches menu closes itself on reapply (PLT-265)'
+  ).toHaveCount(0, { timeout: 15_000 });
 }
 
 async function expectListed(page: Page, name: string, present: boolean) {

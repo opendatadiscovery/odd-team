@@ -86,16 +86,17 @@ contract and the search URL — no collector mapping is involved.
 2. Click **Save current search**, name it `it155-favorites`, click **Save**. Confirm
    `POST /api/saved_searches` answers **201** and — read the response body — its `spec.favorites` is `true`.
    (On `main` the 201 body has NO `favorites` key: the contract dropped it before storing.)
-3. Navigate to `/search?q=it155` (unfiltered; confirm the foil IS listed). Open **Saved searches**, click
-   `it155-favorites`, then dismiss the popover (Escape / click away — it stays open after the navigation and,
-   being a modal, hides the page from assistive tech until closed). Confirm the URL carries `favorites=yes`,
-   the sidebar checkbox **Favorites (shared) only** is checked, `it155_tbl` is listed and the foil is **absent**.
+3. Navigate to `/search?q=it155` (unfiltered; confirm the foil IS listed). Open **Saved searches** and click
+   `it155-favorites`. **The menu closes itself** (PLT-265, fixed in this PR — before it, the popover stayed
+   open and, being a modal, hid the reapplied page from assistive tech until dismissed; the automation had to
+   press Escape). Confirm the URL carries `favorites=yes`, the sidebar checkbox **Favorites (shared) only** is
+   checked, `it155_tbl` is listed and the foil is **absent**.
 
 **Case 2 — the Asset-type narrowing survives a saved search.**
 4. Navigate to `/search?asset_kinds[]=TERM&q=it155`. Confirm `IT155SavedTerm` is listed and `it155_tbl` is NOT.
 5. Save it as `it155-terms` (201; the body's `spec.asset_kinds` is `["TERM"]`). Navigate to `/search?q=it155`,
-   open **Saved searches**, click `it155-terms`, dismiss the popover. Confirm the URL carries `asset_kinds` +
-   `TERM`, the Term is listed and `it155_tbl` is **absent**.
+   open **Saved searches** and click `it155-terms` (the menu closes itself). Confirm the URL carries
+   `asset_kinds` + `TERM`, the Term is listed and `it155_tbl` is **absent**.
 
 **Case 3 — the share link carries the same dimensions.**
 6. Open **Saved searches**; on the `it155-favorites` row click **Copy link** (the middle icon button between
@@ -105,8 +106,8 @@ contract and the search URL — no collector mapping is involved.
 7. Create a saved search through the API with a pre-#1878 spec —
    `POST /api/saved_searches {"name":"it155-legacy","spec":{"query":"it155","filters":{}}}` (201). Start from a
    NARROWED search, `/search?favorites=yes&q=it155` (the foil is out — and the saved-search toolbar only renders
-   on a search page, so the starting URL needs a query). Open **Saved searches**, click `it155-legacy`, dismiss
-   the popover. Confirm the URL became `/search?q=it155` — the narrowing gone, NO `favorites` and NO
+   on a search page, so the starting URL needs a query). Open **Saved searches** and click `it155-legacy` (the
+   menu closes itself). Confirm the URL became `/search?q=it155` — the narrowing gone, NO `favorites` and NO
    `asset_kinds` param invented — and that the foil is listed again (nothing was narrowed).
 
 **Automated rail:** `ODD_STREAM=<id> ODD_PLATFORM_DIR=<worktree> integration-tests/run-suite.sh IT-155`.
@@ -116,7 +117,7 @@ data entity is present). Case 4 passes on `main` too — it is the compatibility
 
 ## 5. What it checks — assertions
 
-- **PASS** when: the 201 body of a save carries `spec.favorites` / `spec.asset_kinds` as sent; reapplying the
+- **PASS** when: the Saved-searches menu **closes itself** on reapply (PLT-265); the 201 body of a save carries `spec.favorites` / `spec.asset_kinds` as sent; reapplying the
   favorites search lands on `favorites=yes` with the checkbox checked and the foil absent; reapplying the
   Terms search lands on `asset_kinds` + `TERM` with the data entity absent; the copied share link carries the
   same params; a legacy row reapplies to the same URL it always did, with no new params.

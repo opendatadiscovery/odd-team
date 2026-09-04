@@ -3,7 +3,7 @@ id: PLT-265
 title: "The Saved searches menu stays open after picking an entry, and its modal backdrop hides the reapplied results from assistive technology"
 target_repo: odd-platform
 issue_type: bug
-status: draft            # paste-ready; the bot never files issues
+status: fixed-in-pr      # 2026-09-04 — folded into odd-platform PR #1879 on the maintainer's call during the /review of #1878, rather than filed and queued. NOT filed as a GitHub issue: it ships with the PR that surfaced it.
 github_issue_url: ""
 github_issue_number: null
 filed_title: "Saved searches: picking an entry does not close the menu (and hides the results from screen readers while it stays open)"
@@ -40,11 +40,37 @@ close on selection.
    **Actual:** the results reload behind the still-open menu; a click-away or Escape is needed. With a
    screen reader, the results are not reachable until the menu is dismissed.
 
-## Suggested fix
+## Suggested fix (superseded — see "How it was actually fixed")
 
 Close the popover from `handleReapply` (the `AppPopover` exposes its close handler to the trigger; pass it
 into the row actions or lift the open state), and do the same after delete. Rename opens its own dialog
 and can stay as it is.
+
+## How it was actually fixed (2026-09-04, odd-platform `510a29b9` on PR #1879)
+
+**The draft's own suggestion was wrong on two counts, and reading the component caught both.**
+
+1. *"The `AppPopover` exposes its close handler to the trigger"* — it does not. `AppPopover` holds
+   `anchorEl` in local state and passes only `onClick` out, through `renderOpenBtn`. There was **no** way for
+   any child to close it, so the "one-line fix in `handleReapply`" was not reachable without changing the
+   shared component. The fix therefore adds the missing contract: `children` may be a **render prop**
+   receiving the popover's own `onClose`, mirroring the `renderOpenBtn` idiom rather than inventing a second
+   one. Opt-in and backward compatible — a plain node still works, and the three other call sites
+   (Term details, Dataset-field header, Query-example details kebabs) are untouched, proved by `tsc` and by a
+   test that pins the plain-node path.
+2. *"and do the same after delete"* — **rejected as a product call.** Delete mutates the list in place; the
+   user watches the row disappear, and may remove several. Closing the menu there would take the surface away
+   mid-task. Only **reapply** closes, because it is the one row action that changes the page *underneath* the
+   menu. Rename opens a dialog over the popover; Copy link may be used repeatedly.
+
+**Why it was a class, not an instance.** Every `AppPopover` consumer whose item acts in place had the same
+defect; the other three merely hide it behind a dialog. Fixing the shared component closes all four.
+
+Tests (both buckets): `AppPopover.test.tsx` (new, 3 cases) — RED-proved against the unfixed component, where
+React warns *"Functions are not valid as a React child"* and both render-prop cases fail while the
+plain-node case passes on both versions; and odd-team **IT-155**, whose `reapply()` helper had an
+`Escape` press as a workaround for exactly this bug — removed and replaced by an assertion that the entry
+disappears, so the absence of the workaround is itself the guard.
 
 ## How discovered
 

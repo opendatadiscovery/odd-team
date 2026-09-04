@@ -11,7 +11,7 @@ parent: "CTRIB-061 (ST-7 / #1841 / PR #1875) — the slice that ADDED the second
 stream_id: ctrib065
 base_sha: 96d77668         # origin/main = the #1875 squash; every line cited below was read at this SHA
 branch: contrib/CTRIB-065-saved-search-holds-every-dimension   # created at GATE 1 from 96d77668 in the reused ../odd-platform-ctrib061 worktree (a SHA start-point: no upstream; push.default=current; O6/LSN-038)
-head_sha: 5751a8cb          # 51f324a6 = the fix (spec + BE + FE + tests); e7bc3b0e = a test-only coverage closure; 5751a8cb = two unreachable null-guards removed in deserializeSpec (3 lines) + tests for explicit nulls / a non-string kind. All pushed same-name via the App token, upstream NONE (never origin/main).
+head_sha: 510a29b9          # 51f324a6 = the #1878 fix (spec + BE + FE + tests); e7bc3b0e = a test-only coverage closure; 5751a8cb = two unreachable null-guards removed in deserializeSpec + tests for explicit nulls / a non-string kind; 510a29b9 = PLT-265 folded in on the maintainer's instruction during /review (AppPopover gains an opt-in render-prop child carrying onClose; the Saved-searches menu closes itself on reapply). All pushed same-name via the App token, upstream NONE (never origin/main).
 pr: https://github.com/opendatadiscovery/odd-platform/pull/1879     # DRAFT, base main, "Part of #1825. Closes #1878." (the only slice for #1878 -> the closing keyword is correct); no reviewer requested (GH_REVIEWERS unconfigured)
 reproduced: "2026-09-03 22:08 +02:00 — POST /api/saved_searches on main@96d77668 (isolated stack ctrib061 @ :18100, image odd-platform:odd-team-sut-ctrib061, digest sha256:46d9ae04…): spec sent with favorites=true + asset_kinds=[TERM] + sort=name + my_data=[MY_OBJECTS] -> 201 whose stored spec carries sort + my_data and NEITHER favorites NOR asset_kinds (the keys are absent, not null); GET list identical; probe row deleted (204). Full capture §3."
 adr_required: false        # conforms to adrs/drafts/unified-asset-search.md D10/D11 — REALISES D11's invariant ("one canonical spec, two surfaces") which ST-4 + ST-7 had broken; no new decision (§6b)
@@ -619,10 +619,8 @@ No new bean factory or SDK builder was introduced. VERIFIED via read.
   Asset-type **control's** state, where case 1 does assert the Favorites checkbox. URL→control is ST-4's
   contract and pinned by `search-url-facets` / `search-url-state`, so this is an observation, not a gap.
 - `PLT-265` (the Saved-searches menu staying open after reapply, hiding the reapplied page from assistive
-  tech) is correctly out of this slice's class and correctly logged rather than narrated. Flagged for GATE 2
-  only because it is the first thing a human will hit when clicking through this fix, the fix is one line in
-  `handleReapply`, and the PR is still a draft — folding it in is cheap if you want the reapply flow to feel
-  finished. It does not hold the item.
+  tech) was correctly out of this slice's class and correctly logged rather than narrated. **FOLDED INTO THE
+  PR on the maintainer's instruction, 2026-09-04 — see §14.**
 - Review side effects: none committed beyond this verdict + `state/PROGRESS.md` + `backlog/docs/DOC-526.md`.
   `lineage/**` untouched (`git status --short lineage/` empty); the `api:FAIL` on `feature-complete` is
   TST-065's pre-existing probe-rail build failure, not a run of mine.
@@ -651,3 +649,81 @@ Three things worth knowing before you merge:
 
 **Status**: stays `review-ready` — the human GATE-2 merge owns the move to `pending-release`, and
 `/review release:1.0.0` owns `done` (precedent: review-ctrib062-3 / review-ctrib048).
+
+## 14. PLT-265 folded in on the maintainer's instruction (2026-09-04, `510a29b9`)
+
+The maintainer asked for `PLT-265` to ship with this PR rather than be queued. Done, and the draft's own
+"Suggested fix" turned out to be wrong on two counts — reading the component before typing caught both.
+
+**What the draft said vs what is true.** It claimed *"the `AppPopover` exposes its close handler to the
+trigger"*, so the fix would be one line in `handleReapply`. It does not: `AppPopover` holds `anchorEl` in
+local state and passes only `onClick` out through `renderOpenBtn`, so **no child could close it at all** and
+the one-line fix was unreachable. It also proposed closing after delete — **rejected on product grounds**:
+delete mutates the list in place, the user watches the row go and may remove several, so taking the surface
+away mid-task is wrong. Only **reapply** closes, because it alone changes the page *underneath* the menu.
+
+**The change is a class fix, not an instance patch.** Every `AppPopover` consumer whose item acts in place
+has this defect; the other three (Term details, Dataset-field header, Query-example details kebabs) merely
+hide it behind the dialog their items open. So `children` may now be a **render prop** receiving the
+popover's own `onClose` — mirroring the `renderOpenBtn` idiom directly above it rather than inventing a
+second one. Opt-in and backward compatible: a plain node still works, and `tsc --noEmit` over the whole FE is
+clean with the three other call sites untouched.
+
+**Tests, both buckets, RED-proved.**
+- `AppPopover.test.tsx` (new, 3 cases): the render prop can close; a plain node still renders; and the
+  popover does **not** close unless the child asks, so closing stays opt-in. **RED on the unfixed component**
+  — verified by reverting `AppPopover.tsx` to base and re-running: React warns *"Functions are not valid as a
+  React child"*, both render-prop cases fail, and the plain-node case passes on **both** versions, exactly as
+  a backward-compatibility pin should.
+- `IT-155`: the `reapply()` helper's `Escape` press existed **only** as a workaround for this bug. It is
+  removed and replaced by an assertion that the clicked entry disappears — so the absence of the workaround
+  is itself the guard: if the close regresses, every role query on the reapplied page goes blind again and
+  the cases fail as they did before. The protocol's Run-protocol steps and PASS list are updated in step.
+
+**G-C15 on the changed test**: the IT-155 edit makes the spec strictly STRONGER (a workaround removed, an
+assertion added), which is the opposite of the weakening the gate guards against. It cannot mask the #1878
+behaviour either: on `ref:main` cases 1-3 fail on VALUES before the popover is ever reached.
+
+**Gates re-run for the fold-in**: `tsc --noEmit` clean · eslint clean on both changed paths · the FULL FE
+unit suite **194 / 195** (up from 192 tests to 195 — the three new cases), the single red being
+`DataSourceItem.test.tsx`'s 5-second bound under load, which I proved change-independent twice over: it does
+**not** import `AppPopover` at all (`grep`), and it passes **2/2 in isolation** in 2.06s. No new visible
+string, so no i18n change.
+
+**IT-155 on both systems, the same (post-fold-in) spec — the G-C15 discharge for the changed helper:**
+
+| SUT | result |
+|---|---|
+| `510a29b9` (with PLT-265), image `sha256:6b64f1c9` | **4 / 4 PASS (58.3s)** — the menu closes itself, so the four cases pass with no dismissal step at all |
+| `5751a8cb` (the #1878 fix WITHOUT PLT-265), image `sha256:5dab59ed` | **3 failed / 1 passed (2.0m)** — and RED **on a value, not a timeout**: `the Saved-searches menu closes itself on reapply (PLT-265) — expect(locator).toHaveCount failed, Expected: 0, Received: 2` |
+
+**Case 3 passing on the unfixed SUT is the discriminator, not an anomaly**: it clicks *Copy link* inside the
+menu and never calls `reapply()`, so the menu correctly stays open for it. Exactly the three cases that
+reapply fail; the one that does not, passes. A changed test that goes red on the old system for the right
+reason, and green on the new one, is the whole of G-C15.
+
+**Full four-suite regression on a SUT rebuilt from the clean committed `510a29b9`** — required because
+`AppPopover` is shared by four call sites (the SavedSearches menu plus the Term-details,
+Dataset-field-header and Query-example-details kebabs), so the blast radius is wider than the one screen.
+
+- **`feature-complete` 335 / 12 of 347 (35.1m)** — the twelve are **EXACTLY the tracked baseline, SET-EQUAL by
+  exact `spec:line`, with ZERO off-baseline reds**. The cleanest run of this suite across all four samples of
+  this branch (implementer #1 331/16, #2 329/18, reviewer's first 331/16), the difference being a quiet box —
+  which is itself the TST-057 thesis, now demonstrated rather than argued. None of the three other
+  `AppPopover` call sites regressed.
+- **`multi-stack` 19 / 19 — a CLEAN SWEEP, and the controlled experiment that PROVES the TST-066 finding.**
+  `demo-stand-first-run:203` failed twice earlier today when I ran this lane through `run-suite.sh` *without*
+  `ODD_PLATFORM_DIR`, which made `demo-stand.ts:28` compose the shared `../odd-platform` checkout and its
+  uncommitted `AUTH_TYPE=LOGIN_FORM` demo.yaml. Here the same lane, same box, same image content, run through
+  `run-regression.sh` — which sets `ODD_PLATFORM_DIR` to a clean per-stream worktree — is **green**. Same code,
+  opposite result, one variable. IT-153's two cases are green too, retiring them as the flake and the host
+  network event they were diagnosed as.
+- **`known-bugs` 3 red** = the expected quarantine, no unexpected GREEN. **`ingestion-e2e` 15 / 15** clean.
+
+**Upstream CI at `510a29b9`: all six check-runs GREEN** (verified through the API, not the PR page). Pushed to
+`contrib/CTRIB-065-saved-search-holds-every-dimension` (`5751a8cb..510a29b9`), so PR #1879 carries the
+fold-in. The PR stays a DRAFT — the bot never merges (G-C4).
+
+**Note for the next `/review`**: this fold-in was authored in the review session, on the maintainer's
+instruction and under their GATE-2 ownership. The separate-session rule therefore binds the NEXT review of
+these commits, which must be fresh.

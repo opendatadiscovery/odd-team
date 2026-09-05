@@ -106,17 +106,17 @@ claims re-verified here — §5.3); and a **plan-time measurement on main's exac
 |---|---|---|---|---|
 | **R1** | A popularity **range** narrows the unified search | `POST /api/search/assets` has no popularity predicate (`ReactiveAssetSearchRepositoryImpl.conditions` :269-471 — zero `POPULARITY_SCORE` reads outside `refreshPopularityScores`) | `AssetSearchFormData.popularity {min?, max?}` — the stored **score** 0..20 (`popularity_score = least(20, floor(log2(view_count+1)))`); an absent bound is open; applied to the page **and** the count, and inside the keyset seek as a plain filter | On a seeded corpus: `{min:5,max:5}` returns exactly the data entities with 31–62 views; `{min:4}` = ≥15 views; `{max:0}` = never viewed; absent = no narrowing; `total == rows` under every range; a keyset page 2 under a range has no dup/skip |
 | **R2** | **DE-scoped**: Terms / Query Examples are excluded outright while a range is active, and the control says so | non-DE rows hold `popularity_score = 0` (`V0_0_100:16`, the job's kind-guard `:126`); the rail's shipped shape for a predicate a kind cannot satisfy is outright exclusion (condition (7) `:461-468`; the My-data condition `:320-324`) | any set bound ⇒ `asset_kind = DATA_ENTITY`; the control carries the qualifier **"Data entities only"** + the inline-help sentence *"Terms and query examples have no view count, so they are excluded while a Popularity range is active."* (the `en.json:682` sentence shape) | a Term matching the query is listed with no range and ABSENT under `{max:0}` (which would otherwise be its bucket) and under `{min:1}`; the qualifier + tooltip render |
-| **R3** | **Fail closed** — the rail's shipped posture, never a 500, never a silent widening | `sort` → default; `asset_kinds`/`my_data` unknown tokens dropped; depths clamped server-side, dropped-to-default by the FE parser (`searchUrlState.ts:262-267`, `components.yaml` `upstream_depth`) | **Server:** each bound clamped into [0,20]; `min > max` after clamping ⇒ **empty result** (`falseCondition`, the "a scope resolving to nothing narrows to nothing" rule `:365-368`) — a contradictory filter matches nothing, never everything. **FE parser:** a non-integer bound ⇒ the WHOLE range dropped (no filter; the mirror rewrites the URL clean); out-of-range integers clamped; an inverted range dropped. The FE never sends a contradictory range, so the two rules never both apply to one request | `popularity_min=abc` → no chip, unfiltered list, URL rewritten; `popularity_min=99` → chip `1,048,575+ views`, request `{min:20}`; API `{min:10,max:2}` → 200, `total 0`, `items []`; the URL parser never throws on garbage (`vitest`) |
+| **R3** | **Fail closed** — the rail's shipped posture, never a 500, never a silent widening | `sort` → default; `asset_kinds`/`my_data` unknown tokens dropped; depths clamped server-side, dropped-to-default by the FE parser (`searchUrlState.ts:262-267`, `components.yaml` `upstream_depth`) | **Server:** each bound clamped into [0,20]; `min > max` after clamping ⇒ **empty result** (`falseCondition`, the "a scope resolving to nothing narrows to nothing" rule `:365-368`) — a contradictory filter matches nothing, never everything. **FE parser:** a non-integer bound ⇒ the WHOLE range dropped (no filter, no chip — the junk is ignored on load exactly as `asset_kinds` junk is today, and the URL normalises on the NEXT mirror write, i.e. the next facet toggle; `Search.tsx` has no on-load rewrite and none is added); out-of-range integers clamped; an inverted range dropped. The FE never sends a contradictory range, so the two rules never both apply to one request | `popularity_min=abc` → no chip, unfiltered list (the param sits in the address bar until the next facet toggle drops it — asserted, not assumed); `popularity_min=99` → chip `1,048,575+ views`, request `{min:20}`; API `{min:10,max:2}` → 200, `total 0`, `items []`; the URL parser never throws on garbage (`vitest`) |
 | **R4** | The **histogram** — a bounded aggregate over the currently-filtered set, excluding its own facet | no facet endpoint exists on the stateless path (the legacy `GET /api/search/{id}/facet/{type}` is session-bound + categorical) | `POST /api/search/assets/facets/popularity` (body `AssetSearchFormData`) → `PopularityFacet{buckets[21]}`, one bucket per score 0..20 with `min_views`, `max_views` (null on 20 = open) and `count` = the data entities matching **every other** condition (FTS, `asset_kinds`, entity classes, the six shared facets, My-data, favorites); the body's own `popularity` is **ignored** (exclude-own-facet); **DE-only** (a Term is never counted) | Σ counts == the DE count of the same request without a range; a Statuses facet changes the counts; `asset_kinds=[TERM]` → 21 zeros; a body carrying `{min:5,max:5}` returns the SAME counts as the body without it; a Term matching the query contributes 0 |
 | **R5** | **Exact band boundaries** — every label the user reads is the boundary the predicate uses | `asset_popularity_bucket(v) = least(20, floor(ln(v+1)/ln 2))` (`V0_0_100:37`, a floating-point ratio) | the served bands are `min_views = 2^s − 1`, `max_views = 2^(s+1) − 2` (s < 20), open above 1,048,575; **pinned** against the SQL function at every boundary | a unit oracle: for s = 0..20, `bucket(2^s − 1) == s` and `bucket(2^(s+1) − 2) == s`; and the served `min_views/max_views` equal those values. **Measured 2026-09-05 on postgres:13.2-alpine: all 21 boundaries exact** (§4a) |
 | **R6** | **Performance** — the histogram never dominates the search round-trip (the issue's own gate) | count(*) is the shipped hot cost (PLT-260): 356–386 ms browse / 208–211 ms FTS at 126k rows (§4a) | the histogram is a **separate request** (results never wait for it), **memoised client-side** on the spec-minus-popularity key (a slider drag re-fetches nothing), and costs **≤ 1.2× the shipped count(*)** on the same predicates; if it fails or is slow the control degrades to a slider over the full 0..20 rail **without bars** and the range still filters | **measured on main's exact code at 126k assets: 381–453 ms browse (1.07–1.17× count) / 240–243 ms FTS (1.15×)**; re-measured on the built SUT through the real endpoint in Phase D; a failed histogram request leaves the control usable (vitest + IT) |
 | **R7** | The **control** — the first numeric-range facet, reusing the rail's visual language | every facet is categorical (`FixedOptionsMultiFilter`, `Single/MultipleFilterItem`, the Favorites checkbox); no `Slider` anywhere in `odd-platform-ui/src` | a `RangeFacetFilter` shell (heading · qualifier · inline help · bars · a MUI `Slider` range with `step=null` snapping to the observed non-empty bands · a chip · one preset) instanced as `PopularityFilter` in the rail **among the global facets, after Statuses** (not in the personal-scope pair — popularity is catalog-wide, no `(shared)` suffix); labels = the band's **exact** lower bound in views, locale-formatted (`1,023+`, never `1K+`); `aria-valuetext` speaks the band in views; commit on mouse-up / keyboard (arrows, Home/End) writes the canonical URL through `searchStateToParams`; the rail spans **observed min..max ∪ selected**; one preset link **Never viewed** (= `[0,0]`, the steward's dead-asset view — two handles at zero is the hardest gesture); chip `Popularity: 15 – 62 views` / `1,023+ views` / `never viewed` / `up to 6 views`, × removes (→ absent) | vitest: reflects the URL; a keyboard commit writes `popularity_min/max` through the canonical serialiser (a location probe, not a spy); the preset writes `[0,0]`; the chip text per band; IT: the rendered control narrows the list (the un-matching data entity ABSENT) |
 | **R8** | The control is **disabled with its reason** when it can do nothing | n/a | when the observed distribution has a single non-empty band and no range is selected: *"No views recorded yet"* (all at 0) / *"All {{n}} data entities have {{band}} views"* — never a slider whose every position yields the same list (the My-data hide-vs-disable rule: hide only when no user of the deployment can ever use it) | vitest with a mocked single-band histogram |
 | **R9** | The **URL** carries the range and **survives every other control** (the #1858 class) | the mirror merges `sort / assetKinds / myData / depths / favorites / entityClasses` (`Search.tsx:96-110`) | `popularity_min` / `popularity_max` (scores) parse/serialise round-trip; merged in the mirror; cleared by the single Clear All (it is a filter — `Filters.tsx:36-42` rebuilds from `{query, facets:{}, sort}`, so no code is needed there — verified by test, not assumed) | vitest identity round-trip; IT: with `popularity_min=4` active, ticking a Statuses facet leaves both params in the URL and the narrowing in force; Clear All removes them |
-| **R10** | The **saved search** holds and reapplies the range (LSN-042 — the class this slice would otherwise extend) | `SavedSearch.spec` = the full `AssetSearchFormData` (#1878) so the field PERSISTS automatically, but `assetSearchFormDataToUrlState` (`searchUrlState.ts:456-496`) projects only `assetKinds` + `favorites` back, and `sanitiseSpecTree` (`SavedSearchServiceImpl:147-170`) knows only those two | reapply + the share link rebuild the range; the sanitiser drops a malformed `popularity` (non-object / non-integer bounds) **field-level**; a row saved before this change reads back with no range; the D11 lock (`searchFormDataToUrlState.test.ts:122-160`: `Required<SearchUrlState>` fixture + the 9 `WIRE_KEYS`) is **extended** to the 10th key — it goes RED the moment `popularity` joins the wire, by design | vitest identity round-trip incl. `popularity`; web test: POST/GET keep it; IT: save with a range → reload → reapply → the same narrowing (the foil absent) |
-| **R11** | **"Most popular" sort** (GATE-1 decision D1, option A — #1861 item 1, the sort option only) | `SearchSortDto` = RELEVANCE/STATUS_PRIORITY/UPDATED_AT/NAME; `SEARCH_SORT_OPTIONS` says "Most popular is intentionally NOT here (deferred to ST-5)"; the index `asset_search_entrypoint_popularity_idx` exists and was built for exactly this ORDER BY (`V0_0_100:60-66`) | `sort=popularity` ⇒ `popularity_score DESC, asset_kind ASC, asset_id DESC`, keyset-paged (the STATUS_PRIORITY NOT-NULL-smallint branch mirrored, direction DESC), index-served; the dropdown gains **Most popular** ×7; the browse **default is unchanged** (the fork stays in #1861) | unit: keyset paging under `popularity` equals the single page, no dup/skip; the most-viewed DE is row 1 and every non-DE (score 0) sorts last; EXPLAIN: no Sort node (the `AssetPopularitySnapshotTest` oracle already pins the index shape); vitest: the option renders and writes `?sort=popularity` |
+| **R10** | The **saved search** holds and reapplies the range (LSN-042 — the class this slice would otherwise extend) | `SavedSearch.spec` = the full `AssetSearchFormData` (#1878) so the field PERSISTS automatically, but `assetSearchFormDataToUrlState` (`searchUrlState.ts:456-496`) projects only `assetKinds` + `favorites` back, and `sanitiseSpecTree` (`SavedSearchServiceImpl:147-170`) knows only those two | reapply + the share link rebuild the range; the sanitiser drops a malformed `popularity` (non-object / non-integer bounds) **and an inverted one** (`min > max` — otherwise the server would answer empty for a stored spec the FE reapplies as no-filter: two surfaces, two answers) **field-level**; a row saved before this change reads back with no range; the D11 lock (`searchFormDataToUrlState.test.ts:122-160`: `Required<SearchUrlState>` fixture + the 9 `WIRE_KEYS`) is **extended** to the 10th key — it goes RED the moment `popularity` joins the wire, by design | vitest identity round-trip incl. `popularity`; web test: POST/GET keep it; IT: save with a range → reload → reapply → the same narrowing (the foil absent) |
+| **R11** | **"Most popular" sort** (GATE-1 decision D1, option A — #1861 item 1, the sort option only) | `SearchSortDto` = RELEVANCE/STATUS_PRIORITY/UPDATED_AT/NAME; `SEARCH_SORT_OPTIONS` says "Most popular is intentionally NOT here (deferred to ST-5)"; the index `asset_search_entrypoint_popularity_idx` exists and was built for exactly this ORDER BY (`V0_0_100:60-66`) | `sort=popularity` ⇒ `popularity_score DESC, asset_kind ASC, asset_id DESC`, keyset-paged (the STATUS_PRIORITY NOT-NULL-smallint branch mirrored, direction DESC), index-served; the dropdown gains **Most popular** ×7; the browse **default is unchanged** (the fork stays in #1861). **Scope of the token:** honoured by the cross-kind `POST /api/search/assets` only; the legacy `/api/search` session's `getSearchResultOrderFields` (`ReactiveDataEntityRepositoryImpl:1010-1032`) resolves the token by name and then falls into its status-priority `else` (its ORDER BY reads `data_entity`, which has no popularity column) — the shared `SearchFormData.sort` prose says so explicitly, the `my_data` precedent (`components.yaml:2509`) | unit: keyset paging under `popularity` equals the single page, no dup/skip; the most-viewed DE is row 1 and every non-DE (score 0) sorts last; EXPLAIN: no Sort node (the `AssetPopularitySnapshotTest` oracle already pins the index shape); vitest: the option renders and writes `?sort=popularity` |
 | **R12** | The Popular **panel deep-links** (ADR D8) to a search that reproduces it (GATE-1 D1) | `OwnerEntitiesList.tsx:92-98` passes no `viewAllTo`; the manual: "Popular has none, because there is no catalog-search filter that reproduces a view-count ranking" (`catalog-overview.md:76`) | `viewAllTo = buildSearchLink({ sort: 'popularity', popularity: { min: 1 } })` — "every viewed data entity, most viewed first"; the `min:1` also DE-scopes it via R2 (without it `sort=popularity` alone would interleave every Term/QE at score 0 into the tail) | clicking **View all** lands on `/search?popularity_min=1&sort=popularity` with the chip on, the Most-popular sort shown, the most-viewed seeded DE as row 1, a never-viewed DE absent |
-| **R13** | The two **live-vs-snapshot divergences** are disclosed, not discovered (GATE-1 D2) | the panel = live exact `view_count DESC` (`ReactiveDataEntityRepositoryImpl.listPopular:669`) and ignores `exclude_from_search` (`concepts.yaml:3255`); the search = the 15-min **band** and honours the flag (`:294`) | the docs' facet section states both: within a band the "View all" order is by tiebreaker, not by exact views; the snapshot lags ≤ 15 min ("the General panel's view count is live and can run ahead"); an `exclude_from_search` entity can show in the panel and be absent from the search. The converging fix (point the panel at the snapshot) is a **separate slice** — paste-ready draft `issues/odd-platform/PLT-266` handed to the maintainer at GATE 1 | the doc section carries the three sentences; the draft exists on disk |
+| **R13** | The two **live-vs-snapshot divergences** are disclosed, not discovered (GATE-1 D2) | the panel = live exact `view_count DESC` (`ReactiveDataEntityRepositoryImpl.listPopular:669`) and ignores `exclude_from_search` (`concepts.yaml:3255`); the search = the 15-min **band** and honours the flag (`:294`) | the docs' facet section states both: within a band the "View all" order is by tiebreaker, not by exact views; the snapshot lags ≤ 15 min ("the General panel's view count is live and can run ahead"); an `exclude_from_search` entity can show in the panel and be absent from the search. The converging fix (point the panel at the snapshot) is a **separate slice** — paste-ready draft `issues/odd-platform/PLT-267` handed to the maintainer at GATE 1 | the doc section carries the three sentences; the draft exists on disk |
 | **R14** | **i18n ×7** | 691 keys in `en.json`; `Popular` exists ×7; `Most popular` does not | every new string exists **and is translated** in `br ch en es fr hy ua`; the repo's `i18n-key-parity.test.ts` is run and cited (CI does not run the FE suite — CTRIB-061 R8) | the parity test GREEN; `git diff --stat` shows all 7 catalogs |
 | **R15** | **Docs on the 1.0.0 train** (G-C11 — unreleased behaviour) | `search.md` (7 facets + kinds + My data + Favorites; frontmatter description 188 chars), `catalog-overview.md:60,71,76`, `Features.md:60`, `data-discovery.md:13,23` | `search.md` gains **## Popularity** (the facet, the bands, DE-only, the 15-min snapshot + the linked inflatability caveat, the sort, the deep-link, R13's divergences) and the description mentions it (≤ 200 chars — GitBook truncates the meta tag); `catalog-overview.md` :60 (the column now links) / :76 (the "has none" sentence replaced) ; the two facet enumerations gain Popularity; paired `backlog/docs/DOC-527` (`milestone: 1.0.0`) | the pages read as one document (no contradiction with the shipped 7-facet sentences — they say "seven aggregated facets", still true; Popularity is the eighth control of a different kind, worded as such); the description ≤ 200 chars measured; PyYAML parse OK |
 
@@ -127,7 +127,7 @@ instance; the panel link; i18n ×7; both test buckets (a new `IT-156`); docs on 
 **Out of scope (explicit exclusions — G-C5):** My/Global-Popular (ST-14 / P4); the **browse-default fork** (#1861 item 1,
 second bullet — a maintainer product decision, untouched: browse stays status-priority); #1861 items 2–3 (chip parity on
 Term/Activity filters; the legacy session-URL facet freeze); **converging the Popular panel onto the snapshot** (R13 →
-PLT-266 draft; it changes a released endpoint's semantics and its own doc caveats); a **server-side histogram cache**
+PLT-267 draft; it changes a released endpoint's semantics and its own doc caveats); a **server-side histogram cache**
 (measured unnecessary at 126k — §4a; revisit together with PLT-260's count cost, not alone); the datetime-range facets
 (#1844 / #1845 — they reuse the shell later; open-ended/NULL bounds are their design, not this one's); the legacy
 `/api/search` session path and the per-kind searches (no popularity — the `asset_kinds`/`favorites` posture, ADR D9);
@@ -248,7 +248,7 @@ for up to 15 minutes; (2) an entity hidden from search can appear on the tile an
 
 | Option | Consequence |
 |---|---|
-| **A (recommended) — disclose both in the docs' Popularity section (R13) and hand the maintainer a paste-ready issue draft (PLT-266: point the tile at the snapshot — one definition of "popular"; it also retires the tile's un-indexed `view_count` seq-scan, `concepts.yaml:3262`)** | this PR stays bounded to the search surface; the divergence is a *documented* behaviour, not a discovered one; the converging fix is a small separate slice with its own D9 compat + doc changes (the tile's inflatability caveats move with it) |
+| **A (recommended) — disclose both in the docs' Popularity section (R13) and hand the maintainer a paste-ready issue draft (PLT-267: point the tile at the snapshot — one definition of "popular"; it also retires the tile's un-indexed `view_count` seq-scan, `concepts.yaml:3262`)** | this PR stays bounded to the search surface; the divergence is a *documented* behaviour, not a discovered one; the converging fix is a small separate slice with its own D9 compat + doc changes (the tile's inflatability caveats move with it) |
 | B — converge the tile onto the snapshot in this slice | one definition of popular now; but it changes a **released** endpoint's semantics (`GET /api/dataentities/popular` live → 15-min band, and it starts honouring `exclude_from_search`) — a D9 compatibility call and a rewrite of two shipped doc caveats, in a slice that is already the rail's largest |
 
 ### 5.6 What is decided here without a round-trip (within the maintainer's own conventions)
@@ -332,7 +332,7 @@ inherited through the keyset engine. **No new ADR** — nothing here christens a
 |---|---|
 | **i18n (all 7 locales)** | new keys — `Popularity`, `Data entities only`, `Terms and query examples have no view count, so they are excluded while a Popularity range is active.`, `Based on each data entity's view count, grouped into ranges and refreshed every 15 minutes.`, `Never viewed`, `{{min}} – {{max}} views`, `{{min}}+ views`, `up to {{max}} views`, `No views recorded yet`, `All {{count}} data entities have {{band}} views`, `Most popular`, `Popularity: {{range}}` — translated in `br ch en es fr hy ua`; the repo's `i18n-key-parity.test.ts` run and cited |
 | **generated clients** | BE: `odd-platform-api-contract` `openApiGenerate` (`rm -rf odd-platform-api-contract/build/generated` first — gradle does not track the `$ref`'d `components.yaml`); FE: `npm run generate` (docker `openapi-generator-cli:v7.2.0`; `generated-sources` is gitignored — regenerated by every build, nothing committed) |
-| **every consumer of a changed signature** | `ReactiveAssetSearchRepository.{keysetPage,relevancePage,count}` → the only caller is `AssetSearchServiceImpl` (+ `AssetSearchServiceMyDataTest` mocks the repo with the current arity — updated); `SearchSortDto` → `AssetSearchCursor` (sort-scoped decode — a `POPULARITY` cursor decodes like `STATUS_PRIORITY`), `SearchSortDto.resolveEffective` (unchanged: the new token resolves by name); `SearchUrlState` → `searchStateToParams`, `paramsToSearchState`, `searchUrlStateToAssetSearchFormData`, `assetSearchFormDataToUrlState`, the `Search.tsx` mirror, `buildSearchLink`, the D11 lock fixture (`Required<SearchUrlState>` fails to compile until extended — by design), `Filters.tsx` Clear All (rebuilds from `{query, facets:{}, sort}` → the range is dropped without a code change; asserted by test) |
+| **every consumer of a changed signature** | `ReactiveAssetSearchRepository.{keysetPage,relevancePage,count}` → the only production caller is `AssetSearchServiceImpl`; two tests call the current arity and are updated (`AssetSearchServiceMyDataTest:167-171` mocks, `AssetSearchScopePredicateTest:235,244` calls the repository directly); `SearchSortDto` **[D1-A]** → `AssetSearchCursor` (`parsesForSort` + the `:128` guard — the round-1 blocker, now Step 2), `SearchSortDto.resolveEffective` (unchanged: the new token resolves by name), and the LEGACY `ReactiveDataEntityRepositoryImpl.getSearchResultOrderFields:1010-1032`, which resolves `popularity` by name and falls into its status-priority `else` — stated in the shared `sort` prose, not left implicit; `SearchSortDto` → `AssetSearchCursor` (sort-scoped decode — a `POPULARITY` cursor decodes like `STATUS_PRIORITY`), `SearchSortDto.resolveEffective` (unchanged: the new token resolves by name); `SearchUrlState` → `searchStateToParams`, `paramsToSearchState`, `searchUrlStateToAssetSearchFormData`, `assetSearchFormDataToUrlState`, the `Search.tsx` mirror, `buildSearchLink`, the D11 lock fixture (`Required<SearchUrlState>` fails to compile until extended — by design), `Filters.tsx` Clear All (rebuilds from `{query, facets:{}, sort}` → the range is dropped without a code change; asserted by test) |
 | **every representation of the state** | URL ✓ (R9) · saved spec ✓ (R10) · share link = the URL ✓ · panel deep-link ✓ (R12) · API request ✓ (R1). No client-side storage of search state; no export |
 | **migration** | none — the column, function, index and job shipped in V0_0_100 |
 | **docs** | `search.md` (+ frontmatter description ≤ 200 chars), `catalog-overview.md` (:60, :76, the R13 caveat), `Features.md:60`, `data-discovery.md:13,23` — on `release/1.0.0`; paired `DOC-527` |
@@ -354,6 +354,12 @@ Ordered; every step names Files · Action · Verify · Done. The sort (steps mar
 decision D1 = A; steps marked **[D2-A]** are the disclosure path of decision D2. No step below reduces scope; a step
 that could not be delivered whole would split the slice, not shadow it.
 
+**Size, stated plainly (plan-check W3):** ~50 files across contract / backend / front end (incl. 7 locale catalogs) /
+tests / docs / odd-team — over the letter of the one-context budget, at the size ST-7 (33 files) and ST-8 (40+) shipped
+on this rail; the only user-observable SPIDR split available is *facet + histogram + URL + saved search* vs *sort + tile
+link*, which is exactly GATE-1 D1 (A = one PR; the maintainer may instead take A as two PRs). Commits land per step so
+the diff stays reviewable.
+
 ### Step 1 — the contract (`odd-platform-specification/components.yaml`, `openapi.yaml`) [D1-A touches the `sort` prose]
 - **Action:** add `PopularityRange`, `PopularityBucket`, `PopularityFacet`; `AssetSearchFormData.properties.popularity:
   $ref PopularityRange` with the R1/R2/R3 prose (score semantics, band table, DE-scoping, clamp + contradictory ⇒ empty);
@@ -365,9 +371,9 @@ that could not be delivered whole would split the slice, not shadow it.
 - **Done:** both generated clients carry the three schemas + the operation; `AssetSearchApi` (Java) declares the new method.
 
 ### Step 2 — the backend predicate, aggregate and sort (`odd-platform-api`)
-- **Files:** `dto/PopularityRangeDto.java` (new) · `dto/SearchSortDto.java` **[D1-A]** · `repository/reactive/
-  ReactiveAssetSearchRepository.java` + `…Impl.java` · `service/AssetSearchService.java` + `…Impl.java` ·
-  `service/PopularityBands.java` (new, the 21-band table) · `controller/AssetSearchController.java` ·
+- **Files:** `dto/PopularityRangeDto.java` (new) · `dto/SearchSortDto.java` **[D1-A]** · `dto/AssetSearchCursor.java`
+  **[D1-A]** · `repository/reactive/ReactiveAssetSearchRepository.java` + `…Impl.java` · `service/AssetSearchService.java`
+  + `…Impl.java` · `service/PopularityBands.java` (new, the 21-band table) · `controller/AssetSearchController.java` ·
   `service/SavedSearchServiceImpl.java` (the sanitiser clause).
 - **Action:** `PopularityRangeDto.of(PopularityRange)` clamps each bound into [0,20] (absent bound = open) and exposes
   `contradictory()`; `conditions()` gains **(8)**: when a range is present → `POPULARITY_SCORE.between(lo, hi)` (or
@@ -380,8 +386,12 @@ that could not be delivered whole would split the slice, not shadow it.
   byte-identically (the My-data no-owner short-circuit yields an all-zero facet); `popularityFacet` fills the 21
   buckets from the ≤21 rows via `PopularityBands`; **[D1-A]** `SearchSortDto.POPULARITY` + `orderFields`
   (`POPULARITY_SCORE.desc()`), `keysetSortValueField`, `seekBranchPredicates` (`lt` = "after" for DESC on a NOT NULL
-  column — no nulls-tail branch, stated), `outerOrderFields` (`desc()`), `toPageRow` (`Short`); the controller method
-  with zero parameter constraints; `sanitiseSpecTree` drops a non-object `popularity` and any non-integer bound.
+  column — no nulls-tail branch, stated), `outerOrderFields` (`desc()`), `toPageRow` (`Short`); **the cursor's fail-closed contract extended to the new sort**
+  (`AssetSearchCursor.parsesForSort` :148-160 gains `case POPULARITY -> Short.parseShort(value)` — today its `default`
+  accepts ANY string, so a tampered `{s:POPULARITY, v:"abc"}` token would reach `Short.parseShort` in the seek and 500;
+  and the NOT-NULL guard at `:128` widens to `STATUS_PRIORITY || POPULARITY`, so a tampered `vn:true` token cannot make
+  `sortValueIsNull` seek another column's NULL tail); the controller method with zero parameter constraints;
+  `sanitiseSpecTree` drops a non-object `popularity`, any non-integer bound, and an inverted range (W8).
 - **Verify:** `scripts/run-platform-tests.sh --tests "*AssetSearch*"` (targeted + checkstyle) then the no-arg FULL
   build; `EXPLAIN` of the GENERATED histogram SQL on the 126k probe corpus (auto_explain or the rendered jOOQ SQL)
   ≤ 1.2× the count(*) (R6).
@@ -407,8 +417,8 @@ that could not be delivered whole would split the slice, not shadow it.
 ### Step 5 — the histogram hook (`odd-platform-ui/src/lib/hooks/api/assetSearch.ts`, new; export from `index.ts`)
 - **Action:** `usePopularityFacet(formData: AssetSearchFormData)` — `useQuery({ queryKey: ['popularityFacet', key],
   queryFn: () => assetSearchApi.getAssetSearchPopularityFacet({ assetSearchFormData: stripped }), staleTime: 5 min,
-  retry: 0 })` where `stripped` omits `popularity` and `key` = `JSON.stringify` of the stripped, key-sorted request
-  (a drag re-fetches nothing; a facet change does).
+  retry: 0 })` where `stripped` omits `popularity` **and `sort`** (neither changes the counted set) and `key` = `JSON.stringify` of the
+  stripped, key-sorted request (a drag or a re-sort re-fetches nothing; a facet change does).
 - **Verify:** vitest for `PopularityFilter` (mocked hook) + IT-156 case 6 (`waitForResponse` on the snake_case wire).
 - **Done:** one request per distinct non-popularity state; no request on a slider commit.
 
@@ -459,7 +469,19 @@ that could not be delivered whole would split the slice, not shadow it.
   method).
 - `SavedSearchControllerWebTest` + `SavedSearchServiceImplTest`: POST/GET keep `popularity`; a legacy row reads back
   without it; a malformed stored `popularity` is dropped field-level (the spec survives).
-- `AssetSearchServiceMyDataTest` — the repo-mock arity updated (no behaviour change).
+- **[D1-A]** `AssetSearchKeysetPaginationTest.keyset_malformedCursor_failsClosedToFirstPage` (:152) gains the two
+  POPULARITY tamper tokens — `{s:POPULARITY, v:"abc"}` and `{s:POPULARITY, vn:true}` — both must fail closed to page 1
+  (the blocker the round-1 plan-check found: without the cursor change the first 500s, the second seeks
+  `UPDATED_AT IS NULL`); and `keysetSeek_unionOfRangesRangeStarts_orFormFilters` (:224) gains the POPULARITY seek shape
+  (`popularity_score < ? / = ? AND …`, `ORDER BY popularity_score DESC, asset_kind, asset_id DESC`) asserting `Index`
+  + no `Rows Removed by Filter` — so R11's index claim is measured on the GENERATED seek shape, not only on the
+  hand-written ORDER BY that `AssetPopularitySnapshotTest` already pins.
+- **CHANGED tests (G-C15 — each keeps a RED-on-base proof and asserts MORE truth; SoT named):**
+  | Test | Change | SoT for the new expectation | Surviving RED |
+  |---|---|---|---|
+  | `AssetSearchServiceMyDataTest:167-171` + `AssetSearchScopePredicateTest:235,244` | the repository mock/call arity gains the `PopularityRangeDto` argument (`null`) | the new interface signature — a compile-time fact, no oracle weakened | unchanged assertions; still RED if the scoping predicates regress |
+  | `SearchSortMenu.test.tsx:84` "offers the four canonical orderings" → five, `Most popular` last | `SEARCH_SORT_OPTIONS` + §1G of the design doc + the `en.json` key | RED on base (the option is absent there) |
+  | `searchFormDataToUrlState.test.ts:124-154` | `Required<SearchUrlState>` gains `popularity: {min:1,max:5}`; `WIRE_KEYS` gains `popularity` (10) | the wire — `AssetSearchFormDataToJSON` emits every key; the D11 invariant | RED on base (a 10-key set vs the 9 emitted) |
 - RED proof: every new predicate/histogram test fails on `af5a573b` by construction (the field does not exist → the
   request is unfiltered / the endpoint 404s); recorded by running the class against a detached `af5a573b` worktree.
 **Unit (FE, vitest — CI does not run it, so it is run and cited):**
@@ -469,7 +491,9 @@ that could not be delivered whole would split the slice, not shadow it.
   `SearchSortMenu.test.tsx` **[D1-A]** · `i18n-key-parity.test.ts` (unchanged, run).
 **Integration (odd-team `IT-156` — `integration-tests/protocols/IT-156-popularity-range-facet.md` +
 `e2e/specs/popularity-range-facet.spec.ts`, stack `odd-minimal`, `validates: [F-017]`, lane `pending-merge` until the
-PR merges — graduated at the GATE-2 close-out per TST-067):** seed three DEs sharing a token at 0 / 40 / 1,000 views
+PR merges — graduated at the GATE-2 close-out per TST-067; **`suites.yaml` is currently dirty and owned by the co-active
+`ctrib065close` session, so the one-line lane edit is sequenced AFTER that session's commit lands — never staged over
+its working copy, O10**):** seed three DEs sharing a token at 0 / 40 / 1,000 views
 (set `asset_search_entrypoint.popularity_score = asset_popularity_bucket(views)` directly — the fast tier; the job is
 5c's tested concern) + a Term with the token. Every case asserts **narrowing with a FOIL** (presence alone is GREEN on
 base, where the params are dropped):
@@ -478,7 +502,7 @@ base, where the params are dropped):
 | 1 | keyboard-drive the slider to the 31–62 band → URL gains `popularity_min=5&popularity_max=5`; the 40-view DE listed; the 0-view and 1,000-view DEs **absent**; the Term absent; the qualifier visible | no control exists |
 | 2 | deep link `?q=tok&popularity_min=4` → chip `Popularity: 15+ views`; the 0-view DE absent | the param is dropped → the unfiltered list shows it |
 | 3 | with the range active, tick a Statuses facet → both params still in the URL and the 0-view DE still absent | no mirror merge |
-| 4 | Clear All → params gone, the 0-view DE back | — (GREEN-on-base by construction; kept as the completeness half) |
+| 4 | with the range active (the 0-view DE **absent** — asserted first), Clear All → both params gone and the 0-view DE **back** | the first half is RED on base (the range never applied); the second half is the completeness oracle |
 | 5 | save the search with the range → reload → reapply → the 0-view DE absent; the copied link carries the params | the spec has no `popularity` |
 | 6 | the facet response (captured on the wire, `waitForResponse(/facets\/popularity/)`) has 21 buckets and its counts change when a Statuses facet is applied | 404 |
 | 7 | **[D1-A]** the home tile's **View all** → `/search?popularity_min=1&sort=popularity`, the 1,000-view DE is row 1, the 0-view DE absent | the tile has no link |
@@ -498,10 +522,14 @@ check (≥ 98 %) from the jacoco XML — before the PR leaves draft.
 - `docs/data-discovery/search.md`: a **## Popularity** section after **## Favorites** (what it filters, the bands as a
   short table, DE-only + the exclusion sentence, the 15-minute snapshot, the Never-viewed preset, **[D1-A]** the Most
   popular sort, the tile's View all, the R13 divergences in one `hint` that LINKS the inflatability warning rather than
-  repeating it); the frontmatter `description` mentions Popularity and is measured ≤ 200 chars (PyYAML + `: ` check);
+  repeating it); the frontmatter `description` is **re-authored** (today 188 chars — appending ", Popularity" lands exactly on the
+  200-char GitBook cut, so the sentence is rewritten shorter, e.g. dropping the redundant "the catalog's query-oriented
+  entry point" clause the H1 already carries) and measured ≤ 200 chars (PyYAML + `: ` check);
   the "filters travel with the link" bullet lists the range.
-- `docs/data-discovery/catalog-overview.md`: :60 (the column now links) · :76 (replace "Popular has none…" with the
-  link's behaviour) · the R13 sentences beside the inflatability warning.
+- `docs/data-discovery/catalog-overview.md`: :60 (the column now links) · :62 ("Each of the first three columns
+  carries a View all" → all four; the Popular link's destination named) · :76 (both clauses: "The three personalised
+  columns each end in a View all" and "Popular has none…" replaced with the link's behaviour) · the R13 sentences beside
+  the inflatability warning.
 - `docs/Features.md:60` + `docs/data-discovery.md:13,23`: the facet enumerations gain the Popularity range.
 - Paired `backlog/docs/DOC-527.md` (`milestone: "1.0.0"`, the affected pages + expected URLs for the release gate).
 - **Verify:** every changed page re-read end-to-end; `git grep -n "Popular has none"` on the branch returns nothing.
@@ -511,7 +539,7 @@ check (≥ 98 %) from the jacoco XML — before the PR leaves draft.
   a view-count band, sees the distribution, Terms/QEs excluded with a reason; **[D1-A]** the tile's View all is the same
   list, longer), `coverage: verified`, `test_ref` → IT-156 + the unit classes; `use_case_coverage` 4/15 → 5/16;
   re-embed the graph (`graph-build`); no sidecar exists for any touched file (NAV-004 — noted for the corpus rescan).
-- `issues/odd-platform/PLT-266-popular-tile-live-vs-snapshot.md` **[D2-A]** (paste-ready: converge the tile onto the
+- `issues/odd-platform/PLT-267-popular-tile-live-vs-snapshot.md` **[D2-A]** (paste-ready: converge the tile onto the
   snapshot; the two divergences; the `view_count` seq-scan) — handed to the maintainer at GATE 1.
 - `backlog/docs/DOC-527.md` (step 11).
 
@@ -542,6 +570,7 @@ check (≥ 98 %) from the jacoco XML — before the PR leaves draft.
 | T12 | **[D1-A]** The home tile's View all opens the search already sorted by popularity and narrowed to viewed data entities | R12 | IT-156 #7 |
 | T13 | The docs say what the tile and the search disagree on (band order, 15-min lag, exclude_from_search) | R13 | doc read (Gate 8 at the release gate) |
 | T14 | Every new label renders in each of the 7 locales | R14 | the repo's parity test, run |
+| T15 | A reader of the 1.0.0 manual finds the Popularity facet, its bands, its DE-only rule, the snapshot lag and the tile link described on the search page, and the catalog-overview page no longer says the tile has no View all | R15 | the doc read + `git grep` for the retired sentence; Gate 8 live-verify at the 1.0.0 release gate (DOC-527) |
 
 **Artifacts** (path → provides → grep anchor):
 
@@ -550,6 +579,7 @@ check (≥ 98 %) from the jacoco XML — before the PR leaves draft.
 | `odd-platform-specification/{components,openapi}.yaml` | the wire fields + the facet endpoint | `PopularityRange`, `/api/search/assets/facets/popularity` |
 | `…/dto/PopularityRangeDto.java` | the clamped bounds + `contradictory()` | `record PopularityRangeDto` |
 | `…/dto/SearchSortDto.java` **[D1-A]** | the sort token | `POPULARITY` |
+| `…/dto/AssetSearchCursor.java` **[D1-A]** | the fail-closed cursor for the new sort | `case POPULARITY` |
 | `…/repository/reactive/ReactiveAssetSearchRepositoryImpl.java` | T1, T2, T4, T11 | `POPULARITY_SCORE.between`, `popularityHistogram` |
 | `…/service/PopularityBands.java` | T5 | `minViews` |
 | `…/service/AssetSearchServiceImpl.java` | T4 (shared scoping) | `popularityFacet` |
@@ -579,6 +609,7 @@ check (≥ 98 %) from the jacoco XML — before the PR leaves draft.
 | the stored spec | the reapplied range | `assetSearchFormDataToUrlState` + the sanitiser clause | LSN-042 again — a saved search that silently lost its filter |
 | the served bands | the SQL function | the R5 boundary pin | a label that includes an entity the predicate excludes |
 | the tile's View all **[D1-A]** | a list that resembles the tile | `sort=popularity` + `popularity_min=1` | a link that betrays its origin |
+| a `sort=popularity` page 2 **[D1-A]** | a fail-closed seek | `AssetSearchCursor.parsesForSort` + the `:128` guard extended to POPULARITY | a tampered cursor 500s (`Short.parseShort` in the seek) or seeks `UPDATED_AT IS NULL` |
 | IT-156 | a real RED on base | asserting the FOIL's absence, never the subject's presence | a test green on the unfixed base (G-C15) |
 
 **Two key_links verified as already wired (traced, not assumed):** the request build — both fetch sites in `Results.tsx`
@@ -589,6 +620,32 @@ output, so `Search.tsx`'s `urlStateKey` changes and page 1 re-fires (the `asset_
 **No scope-reduction language.** The sort is a GATE-1 option, not a deferred shadow; the tile convergence is a named
 sibling with a paste-ready draft, not "reported separately"; the server cache is excluded on a measurement, not on
 effort.
+
+## 7a. Plan-check record (G-C19)
+
+**Round 1 — `plan-checker`, fresh context, 2026-09-05: `ISSUES FOUND` — 1 blocker, 11 warnings**
+(`contributor/CTRIB-066-plancheck.md`). Every cited file/line verified at `af5a573b`; D4 clean (no scope-reduction or
+class-extension phrase; D2's disposition compliant with G-C5); D6 system-level ADR conformance holds; D8 all open
+questions resolved/routed; D10 no G-C7 stop.
+- **B1 (fixed):** the `Most popular` sort had a consumer with no step and no test — `AssetSearchCursor.parsesForSort`
+  accepts any string in its `default` and the `:128` NOT-NULL guard names only `STATUS_PRIORITY`, so a tampered
+  POPULARITY cursor would 500 or seek `UPDATED_AT IS NULL`. → Step 2 files/action, Step 9 (two tamper tokens in the
+  fail-closed test + the POPULARITY seek in the EXPLAIN test), an artifact row and a key_link.
+- **W1 (fixed):** `PLT-266` had been taken by the co-active session ten minutes earlier → the draft is `PLT-267`
+  (re-check the max id at packet assembly).
+- **W2 (fixed):** two more consumers of the changed repository arity (`AssetSearchScopePredicateTest`) and of
+  `SearchSortDto` (the legacy `getSearchResultOrderFields` fallback — the shared `sort` prose now scopes the token).
+- **W3 (recorded):** size over the letter of the budget; precedent + the D1 split named for the maintainer.
+- **W4 (fixed):** R3 no longer claims an on-load URL rewrite (none exists; junk normalises on the next mirror write).
+- **W5 (fixed):** IT-156 case 4 asserts the narrowing first, then Clear All.
+- **W6 (fixed):** the three CHANGED tests enumerated with SoT + surviving RED (G-C15).
+- **W7 (fixed):** the generated POPULARITY seek shape is EXPLAINed in the keyset test, not only the hand-written ORDER BY.
+- **W8 (fixed):** a stored inverted range is normalised by the sanitiser so the server and the FE reapply agree.
+- **W9 (fixed):** `catalog-overview.md:62` + both clauses of `:76`; the description is re-authored, not appended.
+- **W10 (fixed):** T15 covers R15.
+- **W11 (fixed):** `suites.yaml` edit sequenced after the co-active commit; the hook key strips `sort` as well.
+
+**Round 2 — pending (below).**
 
 ## 8. Test ledger
 _(filled in Phase D — every gate RUN, never reasoned: full unit build · targeted classes · vitest + tsc + i18n parity ·

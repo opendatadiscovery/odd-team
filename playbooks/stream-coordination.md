@@ -66,7 +66,11 @@ builds on: `adrs/drafts/parallel-contribution-infra.md`, R1-R9 / O1-O10).
      visibility. Cheap runs (the unit build, a targeted API probe on your own isolated stack) do NOT take the
      lock and parallelise freely.
    - **The odd-team git index + `PROGRESS.md` (R5)** take explicit-path atomic commits only; keep new files
-     untracked until the commit moment (a stray `git add -A` sweeps another stream's staged files — O3).
+     untracked until the commit moment (a stray `git add -A` sweeps another stream's staged files — O3). **And
+     commit with a pathspec — `git commit -- <your paths>` — never a bare `git commit -m`:** the index is shared, so
+     a bare commit takes EVERYTHING staged, including files another live stream staged but has not committed yet
+     (2026-09-05: ctrib066's bare commit swept six of ctrib065close's staged files under ctrib066's message; caught
+     by `git show --stat`, split before push). Check `git diff --cached --name-only` before every commit.
    - **The `documentation` `release/{version}` train (R6)** — per-stream docs worktree; same-name pushes only.
    - **Never `git checkout --` / revert / weaken a path you do not own** (O10) — *while its owner can still
      return*: route around it, the owner reconciles it. **O10 forbids _sweeping/reverting_ another stream's work,

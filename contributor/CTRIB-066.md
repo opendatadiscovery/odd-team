@@ -750,4 +750,8 @@ bare-commit sweep of files someone ELSE staged.
 ## 10. Comments posted (G-C6 / G-C5)
 - Clarifying question: **none warranted** — every open point resolved from source, the manual, the measurement or the
   SME consult; the two residuals are product decisions for GATE 1, not questions the maintainer must research.
-- Scope comments: after GATE 1 (step 13).
+- Scope comments (posted 2026-09-05 right after GATE 1, before any code — one per issue, ASCII, self-contained,
+  no workspace-internal ids; the tile divergence described as a DOCUMENTED behaviour, with no "tracked separately"
+  claim until PLT-267 has a URL — G-C5 / LSN-042 rule 1):
+  - #1843 (scope of the ST-9 PR incl. the Most-popular sort + what it deliberately does not do): https://github.com/opendatadiscovery/odd-platform/issues/1843#issuecomment-5553257740
+  - #1861 (item 1's sort option ships with the ST-9 PR, `Part of #1861`; the browse-default fork + items 2-3 stay): https://github.com/opendatadiscovery/odd-platform/issues/1861#issuecomment-5553257855

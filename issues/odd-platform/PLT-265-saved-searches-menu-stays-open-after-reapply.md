@@ -3,8 +3,8 @@ id: PLT-265
 title: "The Saved searches menu stays open after picking an entry, and its modal backdrop hides the reapplied results from assistive technology"
 target_repo: odd-platform
 issue_type: bug
-status: fixed-in-pr      # 2026-09-04 — folded into odd-platform PR #1879 on the maintainer's call during the /review of #1878, rather than filed and queued. NOT filed as a GitHub issue: it ships with the PR that surfaced it.
-github_issue_url: ""
+status: merged           # 2026-09-05 — SHIPPED. Folded into odd-platform PR #1879 on the maintainer's call during the /review of #1878, and merged with it (squash af5a573b on origin/main, merged by RamanDamayeu 07:39:18Z). NEVER filed as a GitHub issue: it shipped with the PR that surfaced it, which is why this draft has no github_issue_url. Ships in milestone 1.0.0 (open).
+github_issue_url: ""     # deliberately none — fixed before it needed filing
 github_issue_number: null
 filed_title: "Saved searches: picking an entry does not close the menu (and hides the results from screen readers while it stays open)"
 filed_labels: "kind: bug, scope: frontend"

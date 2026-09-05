@@ -5,7 +5,7 @@ github_issue: 1878
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1878
 target_repo: odd-platform
 milestone: "1.0.0"
-status: review-ready       # 2026-09-04 ~21:40 +02:00 — **/review ACCEPTED (session review-ctrib065)**: all six spec requirements PASS, all five must_haves proven, gates 1/3/4/6/9/10 PASS and 2/5/7/8/11 N/A with reasons. Reviewer ran its OWN four-suite regression on its OWN SUT built from ORIGIN's branch (feature-complete 331/16 — twelve tracked-baseline reds set-equal by spec:line, four off-baseline 60s timeouts DISJOINT from both prior runs; known-bugs 3-RED-expected/0-unexpected-GREEN; ingestion-e2e 15/15; multi-stack 16/3 adjudicated to a host network event + the documented C0 flake + a demo-stand readiness failure), plus IT-155 4/4 (the item's own gate, which no regression lane runs), plus a live API A/B on the running fix, plus tsc + vitest lib/search 48/48. Item STAYS review-ready: the human GATE-2 merge owns pending-release, /review release:1.0.0 owns done.
+status: pending-release    # 2026-09-05 GATE 2 (human): **PR #1879 MERGED** by RamanDamayeu 07:39:18Z -> squash `af5a573b` on odd-platform `origin/main`. The head at merge was `510a29b9` == the reviewed SHA, and `git diff 510a29b9 af5a573b` is EMPTY, so the review evidence carries verbatim. Issue #1878 auto-closed (completed). Milestone 1.0.0 still OPEN (18 open / 13 closed, due 2026-12-31) -> **/review release:1.0.0 owns `done`**; Gate 8 is OWED there: live-verify DOC-499's complete-search line once the 1.0.0 doc train publishes. IT-155 GRADUATED out of `pending-merge` into `feature-complete` + `ui-e2e` (TST-067's OWNER rule) and re-run on merged main from the new slot — see §15.
 classification: bug        # a contract gap (the persisted representation cannot hold two shipped dimensions); the correct behaviour has ONE right answer, the fix has two defensible shapes (§7 D1)
 parent: "CTRIB-061 (ST-7 / #1841 / PR #1875) — the slice that ADDED the second instance of this class and deferred it; retrospectives/LSN-042 — this record is the class-extension clause applied (G-C5)"
 stream_id: ctrib065
@@ -742,3 +742,56 @@ changes. **The bot still never MERGES (G-C4)** — GATE 2 remains the maintainer
 **Note for the next `/review`**: this fold-in was authored in the review session, on the maintainer's
 instruction and under their GATE-2 ownership. The separate-session rule therefore binds the NEXT review of
 these commits, which must be fresh.
+
+
+## 15. GATE-2 close-out (2026-09-05) — merged, verified, graduated
+
+**The merge, re-read from the API and the remote refs rather than inferred.** PR #1879 `merged: true`,
+`merged_by: RamanDamayeu`, `merged_at 2026-09-05T07:39:18Z`, squash **`af5a573b`** on `origin/main`.
+
+**The head had NOT moved, and that was checked, not assumed** — the classic close-out trap (CTRIB-061 hit it):
+`head at merge = 510a29b9`, which is exactly the SHA this review measured, and **`git diff 510a29b9 af5a573b`
+is EMPTY**, so the squash is byte-faithful and every measurement in §11-§14 and in the `## Review` verdict
+carries verbatim to what now ships on `main`. Previous `main` was `96d77668` (the base) — a clean linear step.
+
+**Issue #1878 auto-closed** (`state: closed`, `state_reason: completed`, 07:39:19Z — one second after the
+merge, i.e. the `Closes #1878` keyword fired). **Milestone 1.0.0 is still OPEN** (18 open / 13 closed, due
+2026-12-31), so this record goes to **`pending-release`**, not `done`: `/review release:1.0.0` owns that flip.
+
+**PLT-265 shipped with it** and never needed filing — it was found in this review, folded in on the
+maintainer's instruction, and merged in the same squash. Its draft is marked `merged` with the reason it
+carries no `github_issue_url`.
+
+### IT-155 GRADUATED — the obligation `TST-067` put on this slice
+
+`pending-merge` is graduate-or-die, and the merging stream owns the graduation. Done in this close-out:
+`integration-tests/suites.yaml` moves **IT-155** into **`feature-complete`** (137 protocols) **and `ui-e2e`**
+(99, since it is browser-driven), the `pending-merge` lane is back to **`[]`**, and the lane comment records
+the move the way IT-148's did. The protocol's own §0 LANE section is rewritten from "sits in `pending-merge`"
+to the graduated state, so the two cannot drift.
+
+**The graduation is only real once the protocol EXECUTES from its new slot**, so `feature-complete` was re-run
+against a SUT built from **merged `origin/main`** (`ODD_SUT=main`) — the first run in which IT-155 is part of
+the standard regression rather than a parked spec. Result below.
+
+**Graduation run — `feature-complete` on merged `main @ af5a573b`, 2026-09-05: 339 passed / 12 failed of 351
+(37.4m).** The twelve are **exactly the tracked baseline, set-equal by exact `spec:line`, with ZERO
+off-baseline reds** — the cleanest sample of this suite in this whole slice. The suite total moved **347 ->
+351** because IT-155's four cases joined it, and **all four passed from the new slot**:
+`saved-search-round-trip.spec.ts` #283 (the Favorites scope survives save -> reapply with the foil excluded),
+#284 (the Asset-type narrowing survives), #285 (the copied share link carries both) and #286 (a pre-#1878 row
+reapplies unchanged). Evidence line: `integration-tests/run-log/2026-09-05-feature-complete.md` (the entry
+whose runner names this close-out).
+
+That is the graduation actually closed rather than declared: the behaviour these four cases assert was FALSE
+on `main` until this merge — which is why the protocol was parked — and it is now part of the standard
+regression every future stream runs.
+
+### What is still owed, and by whom
+
+| Owed | Owner | When |
+|---|---|---|
+| Gate 8 live verification — `DOC-499`'s complete-search line published on `docs.opendatadiscovery.org` | `/review release:1.0.0` | at the 1.0.0 release |
+| `DOC-526` — the missing Search page in the API Reference (this review's editorial finding), on the 1.0.0 train | the docs pillar | before 1.0.0 publishes |
+| `TST-066` — the `demo-stand.ts:28` shared-checkout trap this review root-caused | the tests pillar | independent of the release |
+| `pending-release` -> `done` | `/review release:1.0.0` | at the 1.0.0 release |

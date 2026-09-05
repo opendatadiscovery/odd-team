@@ -17,13 +17,16 @@ status: ready
 > A protocol is the source of truth — a human can execute every step below WITHOUT tooling.
 > The `automation:` spec runs the same steps and writes the same result.
 
-## 0. LANE — `pending-merge` until odd-platform#1878's PR merges
+## 0. LANE — `feature-complete` + `ui-e2e` (GRADUATED 2026-09-05)
 
-This protocol asserts behaviour that is FALSE on `origin/main @ 96d77668`: the saved-search contract there is
-`SearchFormData`, so a save silently drops the two dimensions this protocol pins. It sits in `pending-merge`
-(shared spec repo, per-stream SUTs — `pillars/tests/pillar.md` "`pending-merge` is not a bucket either") and
-**graduates to `feature-complete` + `ui-e2e` at CTRIB-065's GATE-2 close-out**, which cites the first
-`feature-complete` run-log line that executed it.
+This protocol asserted behaviour that was FALSE on `origin/main @ 96d77668`: the saved-search contract there
+was `SearchFormData`, so a save silently dropped the two dimensions it pins. It therefore sat in
+`pending-merge` (shared spec repo, per-stream SUTs — `pillars/tests/pillar.md` "`pending-merge` is not a
+bucket either") until the behaviour existed on `main`.
+
+**odd-platform#1879 merged 2026-09-05 (squash `af5a573b`), so it graduated** to `feature-complete` + `ui-e2e`
+in the CTRIB-065 GATE-2 close-out, per the OWNER rule `TST-067` installed. The `feature-complete` run-log
+line that executed it from the new slot is cited in `contributor/CTRIB-065.md` §15.
 
 ## 1. What this checks
 

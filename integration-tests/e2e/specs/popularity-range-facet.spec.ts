@@ -213,7 +213,7 @@ test.describe('Popularity range facet — narrows, survives, saves, and the tile
     page,
   }) => {
     test.setTimeout(120_000);
-    type Facet = { buckets: Array<{ score: number; min_views: number; max_views: number | null; count: number }> };
+    type Facet = { buckets: Array<{ score: number; min_views: number; max_views?: number | null; count: number }> };
     const first = page.waitForResponse(r => FACET_URL.test(new URL(r.url()).pathname) && r.status() === 200);
     await gotoSearch(page, `/search?q=${TOKEN}`);
     const facet = (await (await first).json()) as Facet;
@@ -226,7 +226,7 @@ test.describe('Popularity range facet — narrows, survives, saves, and the tile
     expect(facet.buckets.reduce((sum, b) => sum + b.count, 0)).toBe(3);
     expect(facet.buckets[4].min_views).toBe(15);
     expect(facet.buckets[4].max_views).toBe(30);
-    expect(facet.buckets[20].max_views, 'the top band is open').toBeNull();
+    expect(facet.buckets[20].max_views == null, 'the top band is open — no upper bound on the wire').toBe(true);
 
     // apply a facet: only the STABLE entity (40 views) remains counted
     await dbQuery('UPDATE data_entity SET status = 3 WHERE id = $1', [SOME_ID]);
@@ -258,9 +258,15 @@ test.describe('Popularity range facet — narrows, survives, saves, and the tile
     await settled(page);
     await expect(page).toHaveURL(/popularity_min=1/);
     await expect(page).toHaveURL(/sort=popularity/);
-    await expect(page.locator('[data-qa="search-sort-menu"]'), 'the sort menu shows the new ordering').toHaveText(
-      /Most popular/,
+    // captured shape: data-qa sits on MUI Select's hidden native <input value="popularity">; the label the user
+    // reads is the sibling <div role="combobox" aria-labelledby="search-sort-label">Most popular</div>
+    await expect(page.locator('[data-qa="search-sort-menu"]'), 'the sort state is popularity').toHaveValue(
+      'popularity',
     );
+    await expect(
+      page.locator('[role="combobox"][aria-labelledby="search-sort-label"]'),
+      'the sort menu shows the new ordering',
+    ).toHaveText('Most popular');
     await expect(chip(page)).toHaveText('Popularity: 1+ views');
     // relative order: other specs may have seeded higher-viewed entities, so assert MANY above SOME, NEVER absent
     const rows = page.getByTestId('search-result-item');
@@ -276,6 +282,8 @@ test.describe('Popularity range facet — narrows, survives, saves, and the tile
 
   test('8 — the "Never viewed" preset lists only never-viewed data entities', async ({ page }) => {
     await gotoSearch(page, `/search?q=${TOKEN}`);
+    // at the default 1280x720 viewport the preset sits below the fold of the fixed rail: this click doubles as
+    // the reachability guard (the rail must scroll its own overflow — it did not, before this PR)
     await control(page).getByRole('button', { name: 'Never viewed' }).click();
     await expect(page).toHaveURL(/popularity_max=0/, { timeout: 15_000 });
     await expect(page).toHaveURL(/popularity_min=0/);

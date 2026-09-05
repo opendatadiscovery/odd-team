@@ -11,7 +11,7 @@ parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/uni
 stream_id: ctrib066
 base_sha: "af5a573b"      # odd-platform origin/main at intake (= the #1879 CTRIB-065 squash); every line cited below was read at this SHA via the detached worktree ../odd-platform-ctrib066
 branch: contrib/CTRIB-066-popular-range-facet   # cut at GATE 1 from af5a573b in ../odd-platform-ctrib066 via `git switch -c` (no upstream; push.default=current; O6/LSN-038)
-head_sha:
+head_sha: f4896072          # f0dbe92b the contract · a93efc79 the front end (21 files) · 3a77e094 the backend + tests · f4896072 max_views optional-absent (no JsonNullable module in the app) — worktree CLEAN at this SHA when the IT-156 GREEN run built its SUT
 pr:
 reproduced: "n/a — feature slice, not a bug. Baseline observations of the CURRENT surface (no Popular facet; the Popular panel has no View all) are captured in §3 and go RED in Phase D's IT."
 adr_required: false       # confirmed §6(b): conforms to the approved spine ADR D5 (+ its rev-3 SRE correction) and D8; no migration (the column + index + job shipped in V0_0_100), no auth-posture change, an ADDITIVE wire change (optional fields on AssetSearchFormData + one new read endpoint)

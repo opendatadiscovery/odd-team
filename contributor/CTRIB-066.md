@@ -652,7 +652,20 @@ _(filled in Phase D — every gate RUN, never reasoned: full unit build · targe
 IT-156 GREEN on the fix + RED on `ref:main` · the FULL four-suite regression under the flock · changed-lines coverage ·
 the SRE re-measurement · the pixel review of the rendered rail.)_
 
-## 9. Comments posted (G-C6 / G-C5)
+## 9. A coordination hazard I created (recorded, not buried)
+
+My round-1-fixes commit (`7435fdb5`, never pushed) was a bare `git commit -m` after an explicit `git add` of three
+paths. The odd-team checkout's index is SHARED, and the co-active `ctrib065close` session had by then STAGED six files
+of its own close-out (`contributor/CTRIB-065.md`, the IT-155 protocol, `run-log/2026-09-05-feature-complete.md`,
+`suites.yaml`, `PLT-265`, `state/PROGRESS.md`) — a bare commit takes the whole index, so their 441 lines rode into my
+commit under my message. Caught by `git show --stat` on a routine "did the co-active session commit its dirt?" check
+(the four files had gone clean with no commit of theirs in the log). Remedied before any push: `git reset --soft HEAD~1`
++ `git commit -- <my three paths>` (`b6ffca96`); their six files are back in the index, staged exactly as they left
+them, for their own commit. Rule installed in `playbooks/stream-coordination.md` step 6 + the registry header: **commit
+with a pathspec; `git diff --cached --name-only` first.** O3 named the `git add -A` sweep; this is its sibling — the
+bare-commit sweep of files someone ELSE staged.
+
+## 10. Comments posted (G-C6 / G-C5)
 - Clarifying question: **none warranted** — every open point resolved from source, the manual, the measurement or the
   SME consult; the two residuals are product decisions for GATE 1, not questions the maintainer must research.
 - Scope comments: after GATE 1 (step 13).

@@ -12,7 +12,7 @@ stream_id: ctrib065
 base_sha: 96d77668         # origin/main = the #1875 squash; every line cited below was read at this SHA
 branch: contrib/CTRIB-065-saved-search-holds-every-dimension   # created at GATE 1 from 96d77668 in the reused ../odd-platform-ctrib061 worktree (a SHA start-point: no upstream; push.default=current; O6/LSN-038)
 head_sha: 510a29b9          # 51f324a6 = the #1878 fix (spec + BE + FE + tests); e7bc3b0e = a test-only coverage closure; 5751a8cb = two unreachable null-guards removed in deserializeSpec + tests for explicit nulls / a non-string kind; 510a29b9 = PLT-265 folded in on the maintainer's instruction during /review (AppPopover gains an opt-in render-prop child carrying onClose; the Saved-searches menu closes itself on reapply). All pushed same-name via the App token, upstream NONE (never origin/main).
-pr: https://github.com/opendatadiscovery/odd-platform/pull/1879     # DRAFT, base main, "Part of #1825. Closes #1878." (the only slice for #1878 -> the closing keyword is correct); no reviewer requested (GH_REVIEWERS unconfigured)
+pr: https://github.com/opendatadiscovery/odd-platform/pull/1879     # **READY FOR REVIEW** since 2026-09-05 (undrafted on the maintainer's instruction, after all five DoD gates were re-verified at the head 510a29b9: CI 6/6 green + 795 tests, Files-changed coverage 100%, the reviewer's own full four-suite regression 335/12-baseline-only + 19/19 + 15/15 + known-bugs-expected, docs decided, ontology nothing-to-refresh, and the G-C12 pixel review done on the rendered surface). Base main, "Part of #1825. Closes #1878."; body extended with the PLT-265 fold-in. The bot still never MERGES (G-C4) — GATE 2 is the maintainer's.
 reproduced: "2026-09-03 22:08 +02:00 — POST /api/saved_searches on main@96d77668 (isolated stack ctrib061 @ :18100, image odd-platform:odd-team-sut-ctrib061, digest sha256:46d9ae04…): spec sent with favorites=true + asset_kinds=[TERM] + sort=name + my_data=[MY_OBJECTS] -> 201 whose stored spec carries sort + my_data and NEITHER favorites NOR asset_kinds (the keys are absent, not null); GET list identical; probe row deleted (204). Full capture §3."
 adr_required: false        # conforms to adrs/drafts/unified-asset-search.md D10/D11 — REALISES D11's invariant ("one canonical spec, two surfaces") which ST-4 + ST-7 had broken; no new decision (§6b)
 plan_approved_by: "RamanDamayeu"
@@ -722,7 +722,22 @@ Dataset-field-header and Query-example-details kebabs), so the blast radius is w
 
 **Upstream CI at `510a29b9`: all six check-runs GREEN** (verified through the API, not the PR page). Pushed to
 `contrib/CTRIB-065-saved-search-holds-every-dimension` (`5751a8cb..510a29b9`), so PR #1879 carries the
-fold-in. The PR stays a DRAFT — the bot never merges (G-C4).
+fold-in.
+
+**PR marked READY FOR REVIEW 2026-09-05** on the maintainer's instruction (GraphQL
+`markPullRequestReadyForReview`; `draft: false` confirmed by re-reading the PR). Undrafting is the DoD's own
+gate — *"the PR stays `draft` until all five are checked as actually-run"* — so all five were re-verified at
+the head `510a29b9`, not carried over from `5751a8cb`: (1) unit — CI's identical build green, 795 tests / 0
+failed / 183 suites; (2) the FULL four-suite integration regression, mine, recorded above; (3) docs read +
+decided + routed (none owed — the surface is undocumented and `DOC-499` carries the obligation; PLT-265 is a
+UI affordance on that same undocumented surface); (4) ontology — no sidecar exists for any touched file
+(`AppPopover` has a substrate node but no `understanding/` entry), so `/enrich --touched` has nothing to
+refresh; (5) G-C13 — both buckets present and both RED-proved, changed-lines coverage **100 %** at this head,
+and the **G-C12 step-5 pixel review DONE**: I re-ran IT-155 to regenerate
+`test-results/it155-reapplied-favorites.png` and looked at it — the menu is gone, the results are unobscured,
+the **Favorites (shared) only** checkbox is checked, and the single result `it155_tbl` carries a filled star
+while the un-starred foil is absent. The PR body was extended with the fold-in so a human reviewer sees both
+changes. **The bot still never MERGES (G-C4)** — GATE 2 remains the maintainer's.
 
 **Note for the next `/review`**: this fold-in was authored in the review session, on the maintainer's
 instruction and under their GATE-2 ownership. The separate-session rule therefore binds the NEXT review of

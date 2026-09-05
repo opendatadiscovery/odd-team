@@ -5,19 +5,19 @@ github_issue: 1843
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1843
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1843` 2026-09-05: milestone 1.0.0, state OPEN, semver, due 2026-12-31 (18 open / 13 closed)
-status: scoping
+status: plan-approved   # GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
 classification: feature   # a slice of the #1825 epic (ST-9 in state/search-overhaul-decomposition.md); the entry gate is spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D5 (+ D3 / D8 / D10 / D11); depends on ST-5c (#1839 slice 5c = CTRIB-059 / PR #1862, MERGED as 82e7e70e)"
 stream_id: ctrib066
 base_sha: "af5a573b"      # odd-platform origin/main at intake (= the #1879 CTRIB-065 squash); every line cited below was read at this SHA via the detached worktree ../odd-platform-ctrib066
-branch:                   # contrib/CTRIB-066-popular-range-facet — cut at GATE 1 (`git switch -c`, no upstream; O6/LSN-038)
+branch: contrib/CTRIB-066-popular-range-facet   # cut at GATE 1 from af5a573b in ../odd-platform-ctrib066 via `git switch -c` (no upstream; push.default=current; O6/LSN-038)
 head_sha:
 pr:
 reproduced: "n/a — feature slice, not a bug. Baseline observations of the CURRENT surface (no Popular facet; the Popular panel has no View all) are captured in §3 and go RED in Phase D's IT."
-adr_required: false       # to be confirmed in §6 (Design) — expected: conforms to the approved spine ADR D5 (+ its rev-3 SRE correction) and D8; no migration (the column + index + job shipped in V0_0_100), no auth-posture change, an ADDITIVE wire change (optional fields on AssetSearchFormData + one new read endpoint)
-plan_approved_by:
-plan_approved_at:
-docs_routing:             # decided in the plan — expected: documentation@release/1.0.0 (unreleased behaviour, G-C11) + a paired backlog DOC item
+adr_required: false       # confirmed §6(b): conforms to the approved spine ADR D5 (+ its rev-3 SRE correction) and D8; no migration (the column + index + job shipped in V0_0_100), no auth-posture change, an ADDITIVE wire change (optional fields on AssetSearchFormData + one new read endpoint)
+plan_approved_by: "RamanDamayeu"
+plan_approved_at: "2026-09-05"
+docs_routing: "documentation@release/1.0.0 (unreleased behaviour, G-C11) — own worktree ../documentation-ctrib066 off origin/release/1.0.0 @ 716d3e7; paired backlog/docs/DOC-527 (milestone 1.0.0); pages: search.md (## Popularity + description), catalog-overview.md (:60/:62/:76 + the R13 caveat), Features.md:60, data-discovery.md:13,23"
 ---
 
 # CTRIB-066 — #1843 ST-9: the Popular numeric-range facet + histogram
@@ -661,6 +661,14 @@ output, so `Search.tsx`'s `urlStateKey` changes and page 1 re-fires (the `asset_
 **No scope-reduction language.** The sort is a GATE-1 option, not a deferred shadow; the tile convergence is a named
 sibling with a paste-ready draft, not "reported separately"; the server cache is excluded on a measurement, not on
 effort.
+
+### GATE 1 — APPROVED 2026-09-05 (`RamanDamayeu`, via the structured ask after plan-check round 3 PASSED)
+
+| Decision | Chosen | Consequence folded into the plan |
+|---|---|---|
+| **D1** — the tile's View all needs a ranking | **A** — the range facet + histogram **and** the `Most popular` sort option (#1861 item 1, the option only); the tile links to `/search?popularity_min=1&sort=popularity` | every **[D1-A]** step is IN; the browse-default fork stays in #1861; a scope comment on #1843 AND on #1861 (`Part of #1861`, never `Closes`) |
+| **D2** — tile vs search divergence | **A** — disclose the three consequences in the manual's Popularity section; the maintainer files `PLT-267` (converge the tile onto the snapshot) as its own slice | the tile's query is untouched; the scope comment describes the documented behaviour without a "tracked separately" claim until the issue URL exists (G-C5 / LSN-042 rule 1) |
+| **Delivery** | **one PR**, per-step commits | one draft PR, one review, one merge |
 
 ## 7a. Plan-check record (G-C19)
 

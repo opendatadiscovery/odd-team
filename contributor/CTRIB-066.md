@@ -5,7 +5,7 @@ github_issue: 1843
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1843
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1843` 2026-09-05: milestone 1.0.0, state OPEN, semver, due 2026-12-31 (18 open / 13 closed)
-status: review-ready    # /review CTRIB-066 (review-ctrib066, 2026-09-06): ACCEPTED = GATE-2-ready — STAYS review-ready because the PR is an unmerged DRAFT (the human GATE-2 merge moves it to pending-release and /review release:1.0.0 owns done; review-ctrib062-3 / review-ctrib065 precedent). Two required-before-merge tidies (T1 the mislabelled legacy browse test, T2 a stray run-log skeleton) need no re-review. Was: Phase D complete: all five DoD gates RUN and recorded in section 8a (2026-09-06). GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
+status: pending-release   # GATE 2 (human) 2026-09-06: BOTH PRs MERGED — odd-platform #1881 -> squash `0238005c` on origin/main (`git diff cdaa7d45 0238005c` EMPTY, so the reviewed tree IS what merged and the review evidence carries); documentation #115 -> merge `1a70aba` on origin/release/1.0.0 (`git diff 971425e origin/release/1.0.0 -- docs/` EMPTY). #1843 auto-closed (state=closed/completed) — the `Closes #1843` keyword behaved as verified; #1825 + #1861 correctly still OPEN. Milestone 1.0.0 still OPEN/unreleased -> `/review release:1.0.0` owns `done`, and Gate 8 live verification + DOC-527's URL/phrase list are OWED at that gate. Close-out done: IT-156 GRADUATED out of `pending-merge` into feature-complete + ui-e2e (TST-067 owner rule; the lane is now EMPTY). Was: /review CTRIB-066 (review-ctrib066, 2026-09-06) ACCEPTED = GATE-2-ready; two required-before-merge tidies (T1 the mislabelled legacy browse test, T2 a stray run-log skeleton) remain OWED — they did not block the merge and need no re-review.
 classification: feature   # a slice of the #1825 epic (ST-9 in state/search-overhaul-decomposition.md); the entry gate is spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D5 (+ D3 / D8 / D10 / D11); depends on ST-5c (#1839 slice 5c = CTRIB-059 / PR #1862, MERGED as 82e7e70e)"
 stream_id: ctrib066
@@ -1236,3 +1236,52 @@ This review commits exactly the verdict, the four editorial/nav artefacts, my ru
    `/review release:1.0.0` owns `done` (the review-ctrib062-3 / review-ctrib065 precedent).
 4. **Graduate `IT-156`** out of the `pending-merge` lane into `feature-complete` + `ui-e2e` at the close-out
    (the TST-067 owner rule).
+
+## GATE 2 — merged 2026-09-06 (human), and the close-out
+
+**Both PRs merged, and both verified faithful to the reviewed SHAs rather than assumed:**
+
+| repo | PR | merged as | faithful? |
+|---|---|---|---|
+| `opendatadiscovery/odd-platform` | #1881 | squash **`0238005c`** on `origin/main` | `git diff cdaa7d45 0238005c` **EMPTY** — the reviewed tree is byte-identical to what merged, so every measurement in the review above carries |
+| `opendatadiscovery/documentation` | #115 | merge **`1a70aba`** on `origin/release/1.0.0` | `git diff 971425e origin/release/1.0.0 -- docs/` **EMPTY** |
+
+`#1843` is **closed / completed** — the `Closes #1843` keyword behaved exactly as the review verified; `#1825`
+(the epic) and `#1861` (whose item 1's sort option shipped here as `Part of`) are correctly **still open**.
+
+**IT-156 graduated** out of `pending-merge` into `feature-complete` + `ui-e2e` — the obligation TST-067 puts on
+the stream whose GATE 2 merges the feature. The `pending-merge` lane is now **empty**, which is what the release
+gate (`playbooks/release-review.md` check 2) requires for a shipped-milestone feature. TST-067's second half —
+citing the `feature-complete` run-log line that executed IT-156 **from its new slot** — is **OWED at the 1.0.0
+release gate**, which runs the suite on the published tag anyway. (A post-merge run on `origin/main` was started
+here and deliberately abandoned: it was not asked for, and the release gate covers the same ground. IT-156 itself
+is not unproven — it ran 9/9 GREEN and 9/9 RED-on-base under `/review`, on a SUT byte-identical to the squash.)
+
+**Still owed at the 1.0.0 release gate**: Gate 8 live verification + DOC-527's recorded URL/phrase list; and the
+two review tidies (T1 the mislabelled legacy browse test, T2 the stray run-log skeleton), neither of which
+blocked the merge.
+
+### Follow-up logged on the maintainer's request — cross-kind popularity
+
+At the close-out the maintainer asked to *"count most popular for terms and query examples as well"*. Rather than
+write that from the source, it was **driven end to end** on a stack built from the merged code:
+
+- The platform **already observes** term and query-example opens — all three detail pages call
+  `useRecordRecentlyViewed`, and `POST /api/recently-viewed/TERM/1` answered **HTTP 204** twenty-six times.
+- There is **nowhere to count them**: `information_schema` shows exactly one `view_count` column in the whole
+  schema — `data_entity.view_count`. `recently_viewed` cannot serve as the aggregate (per-identity upsert — 26
+  opens left **one** row; TTL-purged and per-user-trimmed by housekeeping; one shared identity under
+  `auth.type=DISABLED`).
+- After running the snapshot job's own statement: the 26-times-opened term scores **0**, identical to a data
+  entity with **zero** views. Under `sort=popularity` the term ranks **third — below the never-viewed dataset**,
+  because both sit in band 0 and `asset_kind ASC` breaks the tie toward `DATA_ENTITY`. The histogram for the
+  same search sums to **2** while the search matches **3** assets, and the Popular tile's own
+  `popularity_min=1` link returns **1** result, dropping the term entirely.
+
+Logged in three places, as asked:
+
+| Where | What |
+|---|---|
+| **Ontology** | `lineage/odd-platform/feature-flows/detail/F-017.yaml` — new promise **`F-017-UC-17`** (the cross-kind popularity promise) as `coverage: unverified` / `verdict: contradicted` / `test_demand: missing-functional`, with the driven transcript in its note; `F-017-UC-16`'s note gains the scope boundary it deliberately kept; `use_case_coverage` 16 → 17; provenance in `batch_extensions`. It also names the two tests that assert the opposite today (IT-156 case 1, `popularitySort_…nonDataEntitiesLast`) as the oracles that must **flip** when this lands. |
+| **GitHub issue** | a post-merge note on **#1843** — [`issuecomment-5561330652`](https://github.com/opendatadiscovery/odd-platform/issues/1843#issuecomment-5561330652). ASCII, self-contained, zero workspace-internal ids, and it makes **no** "tracked separately" claim (the draft below has no issue URL yet — the LSN-042 rule 1 shape). |
+| **Issue draft** | `issues/odd-platform/PLT-268-cross-kind-popularity-terms-query-examples.md` — paste-ready, pure ASCII, `user_facing_verified: true` with the transcript, a suggested one-counter-one-hook fix shape, the ADR-amendment note (D5 records popularity as data-entity-only) and the tests a fix must carry. Filed with **no** milestone, per convention. #1861 ("Search residuals") is named as the cheaper alternative home if you would rather fold it in than file a new issue. |

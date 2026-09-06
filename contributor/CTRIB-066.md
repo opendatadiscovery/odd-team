@@ -976,6 +976,10 @@ landed as a NEW remote branch, nothing touched a shared branch.
 | `opendatadiscovery/odd-platform` | [#1881](https://github.com/opendatadiscovery/odd-platform/pull/1881) | `main` ← `contrib/CTRIB-066-popular-range-facet` @ `cdaa7d45` | **DRAFT**, milestone **1.0.0** |
 | `opendatadiscovery/documentation` | [#115](https://github.com/opendatadiscovery/documentation/pull/115) | `release/1.0.0` ← `docs/CTRIB-066-popularity-facet` @ `971425e` | **DRAFT** (publishes at the 1.0.0 release gate) |
 
+**CI on #1881 at `cdaa7d45`: 6 / 6 check-runs SUCCESS** (read through the API, not assumed) — `run_tests`
+(the backend suite + the `min-coverage-changed-files: 98` gate this PR measured locally at 100 %), `Test Results`,
+`run_playwright_tests / test`, `/ format-check`, `/ lint`, `update_release_draft`. The local gates and CI agree.
+
 **Closing-keyword safety re-verified on the LIVE body** (the CTRIB-039 case-law): the only closing keyword on
 #1881 is `Closes #1843`. #1825 (the epic) and #1861 (whose item 1's sort option ships here) are referenced as
 `Part of` and will NOT be auto-closed on merge.

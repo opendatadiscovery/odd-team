@@ -11,7 +11,7 @@ filed_labels: "kind: bug, scope: backend, scope: frontend"
 severity: low            # a consistency defect between two surfaces that will sit one click apart once ST-9 links them; no data is wrong, no security exposure is new
 discovered_during: "CTRIB-066 / #1843 (ST-9 Popular range facet) -- the odd-sme consult + the source read, 2026-09-05"
 found_date: "2026-09-05"
-user_facing_verified: false   # derived from the source (listPopular vs the unified-search predicates) and the shipped doc caveat; the click-through divergence is observable once #1843 ships the View all link
+user_facing_verified: true    # the ORDERING divergence was DRIVEN on a running stack 2026-09-06 (CTRIB-066 probe corpus, 120k data entities on the ST-9 build): the tile endpoint and the View all target return disjoint top-5 sets -- see "## User-facing impact". Consequence 3 (exclude_from_search click-through) remains source-derived, and is labelled as such there.
 suggested_milestone: ""       # SUGGESTED ONLY -- filed with NO milestone; the maintainer attaches one (1.0.0 would close the gap before the facet publishes)
 related: "#1843 (ST-9 -- adds the search side + the tile's View all), #1839 slice 5c / PR #1862 (the popularity_score snapshot), #1861 item 1 (the Most popular sort)"
 ---
@@ -38,6 +38,31 @@ User-visible consequences once the link exists:
 
 None of this is a data error; it is two definitions of the same word. #1843 discloses all three in the manual's
 Popularity section rather than fixing the tile, because the fix changes a released endpoint's semantics.
+
+## User-facing impact
+
+**Driven, not deduced** (2026-09-06, the CTRIB-066 probe stack: the ST-9 image on a 120k-data-entity corpus with a
+heavy-tailed view_count; `playbooks/user-facing-verification.md`):
+
+- The **Popular tile**'s own source, `GET /api/dataentities/popular?page=1&size=5`, returned, in order:
+  `ctrib066tok9_105859`, `ctrib066tok3_35143`, `ctrib066tok2_113432`, `ctrib066tok3_41523`, `ctrib066tok2_32462`.
+- The tile's **View all** target, `/search?popularity_min=1&sort=popularity` (48,337 results), rendered as its first
+  rows: `ctrib066tok1_119921`, `ctrib066tok6_119766`, `ctrib066tok3_119673`, `ctrib066tok9_119649`, ...
+
+**The two lists are disjoint.** A user who clicks *View all* on the five entities the home page calls the most
+popular lands on a page whose top five are five DIFFERENT entities -- not a re-ordering, a different set. The cause
+is the table above: the tile orders by the exact live counter, the search orders by the log2 band and then by the id
+tiebreaker, so at 120k assets the band-0..20 ties are resolved by id and the exact leaders sink. On a small catalog
+the two lists mostly agree, which is why this reads as correct until a real catalog is loaded.
+
+The staleness consequence (2) is the same mechanism with a 15-minute clock and is stated in the shipped manual.
+Consequence (3) -- an `exclude_from_search = true` entity showing on the tile and vanishing on click-through -- is
+**source-derived only** (the tile's list-shape helper filters soft-delete + hollow, not the flag); it was not driven,
+because seeding that flag was outside the ST-9 slice.
+
+**Operator consequence:** the home page's "Popular" and the catalog's "Most popular" are two different answers to the
+same question, one click apart. Whichever a steward trusts for a deprecation or ownership decision, the other
+contradicts it, and nothing in either surface says they are computed differently.
 
 ## Where
 

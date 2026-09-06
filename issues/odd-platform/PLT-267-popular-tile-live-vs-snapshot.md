@@ -3,9 +3,9 @@ id: PLT-267
 title: "The home page's Popular tile and the search's Popularity facet / sort disagree: the tile ranks by the live exact view count and ignores exclude_from_search, the search uses the 15-minute bucketed snapshot and honours it"
 target_repo: odd-platform
 issue_type: bug
-status: draft            # paste-ready; handed to the maintainer in the CTRIB-066 GATE-1 packet (the bot never files issues)
-github_issue_url: ""
-github_issue_number: null
+status: filed            # FILED https://github.com/opendatadiscovery/odd-platform/issues/1884 on 2026-09-06 by odd-contributor[bot]. The maintainer lifted the never-auto-file rule this session ("you could create gh issues on your own"); the draft stays here as the working record behind the filed body.
+github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1884"
+github_issue_number: 1884
 filed_title: "Popular tile vs search Popularity: two definitions of popular (live view_count vs the 15-min snapshot; exclude_from_search ignored by the tile)"
 filed_labels: "kind: bug, scope: backend, scope: frontend"
 severity: low            # a consistency defect between two surfaces that will sit one click apart once ST-9 links them; no data is wrong, no security exposure is new
@@ -41,7 +41,7 @@ Popularity section rather than fixing the tile, because the fix changes a releas
 
 ## User-facing impact
 
-**Driven, not deduced** (2026-09-06, the CTRIB-066 probe stack: the ST-9 image on a 120k-data-entity corpus with a
+**Driven, not deduced** (2026-09-06, on a build of the ST-9 branch against a 120k-data-entity corpus with a
 heavy-tailed view_count; `playbooks/user-facing-verification.md`):
 
 - The **Popular tile**'s own source, `GET /api/dataentities/popular?page=1&size=5`, returned, in order:
@@ -106,7 +106,8 @@ honest but leaves the home page and the search disagreeing about the one usage s
 
 - ADR `unified-asset-search` D5 + the rev-3 SRE correction (`SEARCH-CAPABILITIES-DESIGN.md` section 2): snapshot,
   never the live counter.
-- odd-team `contributor/CTRIB-066.md` section 5.5 (GATE-1 decision D2) and the `odd-sme` consult
-  `lineage/odd-platform/sme-consultations/2026-09-05-popular-range-facet-histogram.md` Q5.
-- `lineage/odd-platform/concepts.yaml` "Popular Entities Ranking" (the `exclude_from_search` gap and the missing
-  `view_count` index).
+- The divergence was surfaced while scoping #1843 and is disclosed in the manual's Popularity section rather
+  than fixed there, deliberately: converging the tile changes a released endpoint's semantics and its own
+  documented caveats, so it belongs in its own change.
+- The Popular ranking's two existing weaknesses are relevant to whichever direction is chosen: it does not apply
+  `exclude_from_search`, and there is no index on `view_count`.

@@ -123,7 +123,7 @@ The case-law for these rules lives in `retrospectives/` (`LSN-NNN-{slug}.md`). `
 | `/triage <findings-path>` | Convert findings into backlog work items |
 | `/implement <item-id>` | Start a batch of work items — run until the batch is naturally complete |
 | `/review <item-id>` | Verify a completed work item (must run in a session separate from `/implement`) |
-| `/log-issue <repo> ["title"]` | Draft an upstream-repo GitHub issue on disk (paste-ready, never auto-filed) |
+| `/log-issue <repo> ["title"]` | Draft an upstream-repo GitHub issue on disk, then file it to GitHub via the scoped App token |
 | `/status` | Show detailed progress dashboard |
 | `/navigate <feature>` | Find where a feature lives in code |
 | `/panel [lite]` | Run the Adversarial Review Panel — periodic independent self-audit of the methodology (APPROACH.md §16) |

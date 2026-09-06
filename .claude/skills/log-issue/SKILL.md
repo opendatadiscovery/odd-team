@@ -1,8 +1,8 @@
 ---
 name: log-issue
-description: Draft an upstream-repo GitHub issue on disk. Creates the next ISS file under issues/{repo}/ with paste-ready frontmatter + body skeleton. The actual filing into GitHub is a deliberate human action — this skill never opens a real issue.
+description: Draft an upstream-repo GitHub issue on disk and file it. Creates the next ISS file under issues/{repo}/ with frontmatter + body, then opens the real GitHub issue via the scoped App token and writes the returned URL + number back into the draft.
 argument-hint: <repo> [optional: "title"]
-allowed-tools: Read Grep Glob Bash(ls *) Bash(find *) Write
+allowed-tools: Read Grep Glob Bash(ls *) Bash(find *) Bash(curl *) Bash(scripts/gh-app/*) Write Edit
 ---
 
 # Log Upstream Issue Draft
@@ -110,12 +110,12 @@ Increment the `draft` count for the target repo in the Upstream Issues table. If
 
 Print:
 - Path of the new draft.
-- A 1-line reminder: "Filing is a manual action — when you're ready, paste into `https://github.com/opendatadiscovery/{repo}/issues/new` and update `github_issue_url` + status."
+- The filed issue's URL + number (file it — see Rules), or, if the caller asked for a draft only, the path plus a 1-line note that `github_issue_url` + `status` are still to be set.
 - If sections were left as placeholders, list them so the caller knows what to fill in.
 
 ## Rules
 
-- **Never file an issue to GitHub.** Even if `gh` CLI is available. Filing is a deliberate human action under the workspace's "visible to others" safety rule.
+- **File it.** The maintainer lifted the never-auto-file rule on 2026-09-06 ("you could create gh issues on your own"). The GitHub App token carries `issues: write` — `POST /repos/{owner}/{repo}/issues` with `{title, body, labels}` from the draft's `filed_title` / `filed_labels`. Then write the returned URL + number into the draft and flip `status: draft` → `filed`. Preconditions, every time: the body is pure ASCII (the maintainer's paste mangles UTF-8, and a filed body is read the same way); the body carries **zero** workspace-internal ids (`PLT-`/`CTRIB-`/`DOC-`/`TST-`/`LSN-`/`G-C`/`lineage/`/`backlog/` — describe the thing instead of naming the tracker row); and every label in `filed_labels` exists on the target repo (a missing label 422s the whole call). File with **no** milestone — that stays the maintainer's. Don't batch-file a backlog of older drafts unasked; file what belongs to the work in hand.
 - **Never invent code references.** If you don't have a real `file:line` for the Where section, leave a TODO. A wrong file:line in a paste-ready draft is worse than a TODO.
 - **Never reuse an ID.** Each new draft increments the prefix's counter, even if older drafts have been closed or rejected.
 - **One file = paste-ready draft.** Workspace-internal context belongs in the originating backlog item or in conversation, not in the draft body.

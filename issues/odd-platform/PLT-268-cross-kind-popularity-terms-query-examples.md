@@ -3,9 +3,9 @@ id: PLT-268
 title: "Most popular ranks glossary terms and query examples below assets nobody has ever opened: the platform records term / query-example opens but has nowhere to count them, so popularity is data-entity-only"
 target_repo: odd-platform
 issue_type: feature
-status: draft            # paste-ready; the bot never files issues (G-C4)
-github_issue_url: ""
-github_issue_number: null
+status: filed            # FILED https://github.com/opendatadiscovery/odd-platform/issues/1883 on 2026-09-06 by odd-contributor[bot]. The maintainer lifted the never-auto-file rule this session ("you could create gh issues on your own"); the draft stays here as the working record behind the filed body.
+github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1883"
+github_issue_number: 1883
 filed_title: "Cross-kind popularity: count views for Terms and Query Examples so Most popular / the Popularity facet rank all three asset kinds"
 filed_labels: "kind: feature, scope: backend, scope: frontend"
 severity: medium         # not a defect - ST-9 shipped its DE-only scope deliberately and documented it. It is a
@@ -19,7 +19,7 @@ user_facing_verified: true    # DRIVEN end to end on a running platform built fr
                               # views under sort=popularity, contributes 0 to the histogram, and disappears
                               # entirely from the Popular tile's own link. Transcript in "User-facing impact".
 suggested_milestone: ""       # SUGGESTED ONLY - filed with NO milestone; the maintainer attaches one
-public_note: "https://github.com/opendatadiscovery/odd-platform/issues/1843#issuecomment-5561330652 - the post-merge note on #1843 carrying the same driven evidence, posted 2026-09-06. It deliberately makes NO tracked-separately claim (this draft has no issue URL yet); when you file this issue, that comment is the place to link it from."
+public_note: "https://github.com/opendatadiscovery/odd-platform/issues/1843#issuecomment-5561330652 - the post-merge note on #1843 carrying the same driven evidence, posted 2026-09-06 BEFORE this issue existed, so it deliberately made no tracked-separately claim. A short follow-up on the same thread now links #1883."
 related: "#1843 (ST-9 - shipped the DE-only facet + sort), #1825 (the unified-asset-search epic this narrows), #1861 (Search residuals - a plausible alternative home if you would rather fold this in than file it), #1839 slice 5c / #1862 (V0_0_100, the popularity substrate), #1816 (recently-viewed, which already records all three kinds)"
 ---
 
@@ -142,8 +142,8 @@ open**, rather than a second counter bolted onto `term` and `query_example`:
    terms and query examples are recorded by an explicit front-end POST. Whether the new counter replaces the DE
    one or runs beside it is the one real decision in this issue. Note that the front-end POST path is the
    better-behaved of the two: the detail-GET increment is the one the manual already warns is "trivially
-   inflatable" (no rate limit, no de-duplication, no auth), and #1843's own follow-up PLT-267 is about the same
-   counter's live-vs-snapshot divergence.
+   inflatable" (no rate limit, no de-duplication, no auth), and there is a separate follow-up open on the same
+   counter's live-vs-snapshot divergence between the home page's Popular tile and the search.
 
 **Scope notes.** `asset_popularity_bucket()`, the `asset_search_entrypoint_popularity_idx` composite and the
 whole ST-9 read path are already kind-agnostic -- the DE-scoping is three predicates and one source column, not

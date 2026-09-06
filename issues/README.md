@@ -151,7 +151,14 @@ The principle: **work we do here lives in `backlog/`, work we hand off lives in 
 
 ## Don't
 
-- Don't file from `draft` → `filed` automatically. The GitHub issue tracker is a public, indexed surface; every filing should be a deliberate human action.
+- Don't file a draft the maintainer has not asked for, and don't batch-file a backlog of old drafts. The agent
+  MAY file to GitHub via the scoped App token (`issues: write`) — the "every filing is a deliberate human
+  action" rule was lifted by the maintainer on 2026-09-06 ("you could create gh issues on your own"). What
+  survives is the judgment, not the prohibition: the tracker is a public, indexed surface, so file the drafts
+  that belong to the work in hand, and leave a pile of older drafts alone unless asked. Before every filing,
+  scrub the body of workspace-internal ids (`PLT-`/`CTRIB-`/`DOC-`/`TST-`/`LSN-`/`G-C`/`lineage/`/`backlog/`),
+  check it is pure ASCII, and confirm the labels exist on the target repo. After filing, write the real URL +
+  number back into the draft and flip `status: draft` → `filed`.
 - Don't move a draft into `backlog/` or vice versa. The directory choice IS the work-vs-handoff statement.
 - Don't keep workspace-internal context in the body. The body is the GitHub issue. Internal-only context belongs in the originating backlog item or in a session-specific finding file.
 - Don't delete rejected items. The file stays as audit trail; status flip + `## Rejection` section is enough.

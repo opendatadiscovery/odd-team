@@ -733,7 +733,7 @@ against the diff (G-C19).
 
 Branch `contrib/CTRIB-066-popular-range-facet` in `../odd-platform-ctrib066` off `af5a573b` (no upstream, push.default
 current). Commits land per step: `f0dbe92b` the contract (Step 1); the backend + its tests, the front end + its tests
-follow as their gates go green (§8a). Docs: `documentation@docs/CTRIB-066-popularity-facet` `3321c8d` (off
+follow as their gates go green (§8a). Docs: `documentation@docs/CTRIB-066-popularity-facet` `971425e` (off
 `origin/release/1.0.0 @ 716d3e7`). odd-team: `b3053f5b` (IT-156 + DOC-527 + F-017-UC-16).
 
 ### Contract (Step 1)

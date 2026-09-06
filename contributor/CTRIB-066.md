@@ -5,14 +5,14 @@ github_issue: 1843
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1843
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1843` 2026-09-05: milestone 1.0.0, state OPEN, semver, due 2026-12-31 (18 open / 13 closed)
-status: pr-draft        # Phase D complete: all five DoD gates RUN and recorded in section 8a (2026-09-06). GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
+status: review-ready    # Phase D complete: all five DoD gates RUN and recorded in section 8a (2026-09-06). GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
 classification: feature   # a slice of the #1825 epic (ST-9 in state/search-overhaul-decomposition.md); the entry gate is spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D5 (+ D3 / D8 / D10 / D11); depends on ST-5c (#1839 slice 5c = CTRIB-059 / PR #1862, MERGED as 82e7e70e)"
 stream_id: ctrib066
 base_sha: "af5a573b"      # odd-platform origin/main at intake (= the #1879 CTRIB-065 squash); every line cited below was read at this SHA via the detached worktree ../odd-platform-ctrib066
 branch: contrib/CTRIB-066-popular-range-facet   # cut at GATE 1 from af5a573b in ../odd-platform-ctrib066 via `git switch -c` (no upstream; push.default=current; O6/LSN-038)
 head_sha: cdaa7d45          # f0dbe92b the contract · a93efc79 the front end (21 files) · 3a77e094 the backend + tests · f4896072 max_views optional-absent (no JsonNullable module in the app) · cdaa7d45 the rail scrolls its overflow + sqrt histogram bars (found by IT-156 case 8 + the pixel review on the built SUT)
-pr:
+pr: "odd-platform DRAFT #1881 https://github.com/opendatadiscovery/odd-platform/pull/1881 (base main, head contrib/CTRIB-066-popular-range-facet @ cdaa7d45, milestone 1.0.0, live-verified draft + the ONLY closing keyword is `Closes #1843`) · documentation DRAFT #115 https://github.com/opendatadiscovery/documentation/pull/115 (base release/1.0.0, head docs/CTRIB-066-popularity-facet @ 971425e)"
 reproduced: "n/a — feature slice, not a bug. Baseline observations of the CURRENT surface (no Popular facet; the Popular panel has no View all) are captured in §3 and go RED in Phase D's IT."
 adr_required: false       # confirmed §6(b): conforms to the approved spine ADR D5 (+ its rev-3 SRE correction) and D8; no migration (the column + index + job shipped in V0_0_100), no auth-posture change, an ADDITIVE wire change (optional fields on AssetSearchFormData + one new read endpoint)
 plan_approved_by: "RamanDamayeu"
@@ -964,3 +964,29 @@ bare-commit sweep of files someone ELSE staged.
   claim until PLT-267 has a URL — G-C5 / LSN-042 rule 1):
   - #1843 (scope of the ST-9 PR incl. the Most-popular sort + what it deliberately does not do): https://github.com/opendatadiscovery/odd-platform/issues/1843#issuecomment-5553257740
   - #1861 (item 1's sort option ships with the ST-9 PR, `Part of #1861`; the browse-default fork + items 2-3 stay): https://github.com/opendatadiscovery/odd-platform/issues/1861#issuecomment-5553257855
+
+## 11. PRs opened (GATE-2 entry — the bot never merges)
+
+Both branches were pushed with an explicit same-name refspec after the O6/LSN-038 pre-push assertions
+(`@{u}` is NONE on both, `push.default=current`, neither branch is `main`/`master`/`release/1.0.0`); each
+landed as a NEW remote branch, nothing touched a shared branch.
+
+| repo | PR | base ← head | state |
+|---|---|---|---|
+| `opendatadiscovery/odd-platform` | [#1881](https://github.com/opendatadiscovery/odd-platform/pull/1881) | `main` ← `contrib/CTRIB-066-popular-range-facet` @ `cdaa7d45` | **DRAFT**, milestone **1.0.0** |
+| `opendatadiscovery/documentation` | [#115](https://github.com/opendatadiscovery/documentation/pull/115) | `release/1.0.0` ← `docs/CTRIB-066-popularity-facet` @ `971425e` | **DRAFT** (publishes at the 1.0.0 release gate) |
+
+**Closing-keyword safety re-verified on the LIVE body** (the CTRIB-039 case-law): the only closing keyword on
+#1881 is `Closes #1843`. #1825 (the epic) and #1861 (whose item 1's sort option ships here) are referenced as
+`Part of` and will NOT be auto-closed on merge.
+
+### What the maintainer owns from here (GATE 2)
+
+1. **Run `/review CTRIB-066` in a SEPARATE session** — this session implemented, so it cannot self-review.
+2. **File `PLT-267`** — `issues/odd-platform/PLT-267-popular-tile-live-vs-snapshot.md` is paste-ready and ASCII;
+   it converges the Popular tile onto the snapshot the facet and sort read. GATE-1 D2 chose to DISCLOSE the
+   divergence in the docs now and track the convergence separately; the scope comments deliberately make no
+   "tracked separately" claim while PLT-267 has no URL.
+3. **Merge both PRs** (the bot never merges — G-C4). At GATE-2 close-out, graduate `IT-156` out of the
+   `pending-merge` lane into `feature-complete` + `ui-e2e` (the TST-067 owner rule, the same graduation IT-155
+   took at #1879's close).

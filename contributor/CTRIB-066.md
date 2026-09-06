@@ -5,7 +5,7 @@ github_issue: 1843
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1843
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1843` 2026-09-05: milestone 1.0.0, state OPEN, semver, due 2026-12-31 (18 open / 13 closed)
-status: plan-approved   # GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
+status: pr-draft        # Phase D complete: all five DoD gates RUN and recorded in section 8a (2026-09-06). GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
 classification: feature   # a slice of the #1825 epic (ST-9 in state/search-overhaul-decomposition.md); the entry gate is spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D5 (+ D3 / D8 / D10 / D11); depends on ST-5c (#1839 slice 5c = CTRIB-059 / PR #1862, MERGED as 82e7e70e)"
 stream_id: ctrib066
@@ -839,9 +839,109 @@ FE `pnpm run generate` — docker `openapi-generator-cli:v7.2.0`).
 - **Integration:** `IT-156` (protocol + spec, nine cases — §7 Step 9), run in §8a.
 
 ## 8a. Test ledger
-_(filled in Phase D — every gate RUN, never reasoned: full unit build · targeted classes · vitest + tsc + i18n parity ·
-IT-156 GREEN on the fix + RED on `ref:main` · the FULL four-suite regression under the flock · changed-lines coverage ·
-the SRE re-measurement · the pixel review of the rendered rail.)_
+
+Every gate below was RUN on the built artefact, not reasoned about; each row names the exact command and the read
+result. Session `ctrib066`; the fix branch head is `cdaa7d45` on `contrib/CTRIB-066-popular-range-facet` (base
+`af5a573b`), the docs train commit is `971425e` on `documentation@docs/CTRIB-066-popularity-facet`.
+
+### Unit — the CI replica (odd-platform, `scripts/run-platform-tests.sh` = full `:odd-platform-api:build`)
+- **845 tests, checkstyleMain + checkstyleTest GREEN, assemble GREEN.** One test (`OpenApiDocsContractTest.
+  platformApiGroupDocumentLoads`) hit a 60 s blocking-read timeout on the first pass under a load average of ~28
+  (three heavy builds were overlapping); it is a springdoc document-load timing flake, not an assertion — re-run
+  alone it is 3/3 GREEN, and the clean full re-run (`jacocoTestReport` re-triggering `test`) has it 3/3 GREEN.
+  The re-run-stragglers rule (the same class as the FE `DataSourceItem` load flake) applies: the suite is green.
+- **The new/'-extended BE classes, all GREEN in-run:** `AssetSearchPopularityIntegrationTest` (9 — the histogram
+  shape, the 21-bucket fill, the DE-only scope, the range predicate, the empty/one-band degenerate states),
+  `AssetSearchKeysetPaginationTest` (12, +3 — a tampered POPULARITY cursor fails closed, popularity paging is
+  stable, the seek rides `asset_search_entrypoint_popularity_idx`), `LegacySearchSortFallbackTest` (2 — the
+  legacy `/api/search` sort falls back to its per-context default for the new value), `AssetSearchControllerWebTest`
+  (+2 — `getAssetSearchPopularityFacet` returns 200 with 21 buckets and `max_views` ABSENT on band 20, read on the
+  raw JSON), `SavedSearchControllerWebTest` (+1), `SavedSearchServiceImplTest` (+1 — `sanitisePopularity`),
+  `SearchSortDtoTest` (+1 — `POPULARITY`), arity updates to `AssetSearchServiceMyDataTest` +
+  `AssetSearchScopePredicateTest`.
+
+### Unit — the front end (odd-platform-ui, Node 24 / pnpm 9)
+- `tsc --noEmit` clean; `eslint --max-warnings 0` clean on every touched file (the 22 pre-existing warnings live in
+  untouched files).
+- `vitest run`: **211 / 212** on a quiet box — the 1 = the untouched `DataSourceItem.test.tsx` load flake (TST-057
+  class, 2/2 GREEN in isolation). The Popularity + range-facet suites: `searchUrlState` (+7), `searchFormDataToUrlState`
+  (the D11 `Required<SearchUrlState>` wire-key lock now lists `popularity`; +2), `SearchSortMenu` (the five
+  orderings), `PopularityFilter` (8). After the sqrt-bars + rail-scroll fix, the `Search/Filters` suite re-ran
+  **19 / 19** GREEN.
+
+### Integration — the browser e2e (odd-team `IT-156`, `run-suite.sh`, the working-tree SUT)
+- **GREEN 9 / 9** on the SUT built from `cdaa7d45` (`ODD_STREAM=ctrib066 ODD_PLATFORM_DIR=../odd-platform-ctrib066
+  run-suite.sh IT-156`; digest `sha256:0d14477b…`). Every case carries a FOIL that must be absent; run-log
+  `integration-tests/run-log/2026-09-06-IT-156.md`.
+- **RED 9 / 9** on `af5a573b` (`ODD_SUT=ref:main ODD_SUT_TAG=…-ctrib066red … run-suite.sh IT-156`; digest
+  `sha256:09cba3ee…`). The RIGHT red: the control does not exist on main, and where a case still asserts the data,
+  the foil is PRESENT (the `popularity` form field is ignored on main). A test green on both would have hidden the
+  feature; none is. (G-C15 RED-on-base.)
+- **The first GREEN pass found two real defects and one bad assertion** — recorded in §8 "What the build … corrected":
+  the fixed filter rail did not scroll its own overflow (the new facet fell below the fold at 1280x720 — class-fixed
+  in `FiltersStyles`), the linear histogram collapsed to hairlines on the heavy-tailed corpus (sqrt-scaled), and one
+  assertion read the hidden native `<input>` instead of the `role=combobox` label (fixed from the captured shape).
+
+### Integration — the FULL four-suite regression (`run-regression.sh ctrib066`, under the heavy-e2e flock)
+- **The full four-suite regression is CLEAN — zero regressions from ST-9.** Run on the cdaa7d45 image under the
+  heavy-e2e flock (the SUT build was bypassed by reusing the image, after two OOM kills of the build+run on a box
+  shared with another session + the IDE — the reuse dropped my footprint below the harness's low-memory threshold):
+  - **feature-complete: 339 passed / 12 failed** — the twelve are the tracked baseline (TST-059's eleven stale
+    unified-search-overhaul specs + TST-057's swagger/springdoc known bug), **SET-EQUAL by exact spec:line to the
+    set the CTRIB-065 reviewer accepted at #1879's merge**, ZERO off-baseline reds (asserted in-session:
+    mine==baseline True, off-baseline NONE, baseline-not-hit NONE). They fail identically on ctrib063/ctrib065/here
+    and are unrelated to ST-9 (the FE stopped calling `/api/search/{id}/results` at ST-4; swagger is PLT-141).
+  - **known-bugs: 3 failed / 3** — the EXPECTED signature; all three pinned bugs still reproduce (attachment
+    durability LSN-001/PLT-086, error-boundary F-042, quality-dashboard PLT-052), none fixed un-flipped.
+  - **multi-stack: 19 / 19 PASS** (MinIO / LOGIN_FORM / OAUTH2 / LDAP / notifications).
+  - **ingestion-e2e: 15 / 15 PASS** (collector -> platform -> UI stands).
+  Run-logs: `integration-tests/run-log/2026-09-06-{feature-complete,known-bugs,multi-stack,ingestion-e2e}.md`.
+
+### Changed-lines coverage (the CI `min-coverage-changed-files: 98` model — the ADDED-lines aggregate)
+- **100.00% (72 / 72 executable added lines) covered** — above the CI `min-coverage-changed-files: 98` gate.
+  Measured locally from a JaCoCo report over the nine changed test classes PLUS the three pre-existing
+  integration tests that also traverse the refactored `scoped()` path (`AssetSearchFavoritesIntegrationTest`,
+  `AssetSearchServiceIntegrationTest`, `AssetSearchSortIntegrationTest`) — the last covers the authenticated
+  favorites lambda that a nine-class subset left at 71/72. Per-file: `AssetSearchController` 3/3, `AssetSearchCursor`
+  2/2, `PopularityBands` 3/3, `PopularityRangeDto` 7/7, `SearchSortDto` 2/2, `AssetSearchServiceImpl` 32/32,
+  `SavedSearchServiceImpl` 23/23. The three `repository/reactive` classes are `not-instrumented` — JaCoCo excludes
+  the repository layer, exactly as the CI config does (memory `reference_odd_platform_coverage_gate_mechanics`), so
+  their changed lines are outside the gate's denominator on BOTH sides. This local number is a floor for the CI's
+  full-suite figure (a superset of tests can only cover more).
+
+### SRE re-measure — the built fix image on the 126k-asset probe corpus (auto_explain, postgres 13.2)
+Image odd-platform:odd-team-sut-ctrib066 (sha256:16f4acde / rebuilt 0d14477b), compose project ctrib066probe,
+120k data entities (band 0 = 71,663) + 5k terms + 1k query examples = 126k rows.
+
+**Endpoint wall-time** (curl, 3 samples each; the histogram is the NEW endpoint under scrutiny):
+| request                         | browse (q='')      | q='ctrib066tok7'   |
+|---------------------------------|--------------------|--------------------|
+| page + count (shipped baseline) | 0.95 - 1.07 s      | 0.51 - 0.98 s      |
+| **facet (histogram) [NEW]**     | **0.71 - 0.84 s**  | **0.42 - 0.52 s**  |
+| page + count, popularity range  | 0.80 - 1.00 s      | 0.34 - 0.38 s      |
+| page + count, sort=popularity   | 0.70 - 0.99 s      | 0.43 - 0.61 s      |
+
+The histogram endpoint costs ~0.75-0.85x the shipped page+count in every case (it does less — no row fetch),
+so it is comfortably inside the plan's "<= 1.2x count" gate. It is NOT a new heavy query.
+
+**Executed plans** (auto_explain ANALYZE — the GENERATED SQL, the real gate):
+- **histogram** = `GROUP BY popularity_score` over the union view -> **Finalize GroupAggregate, 17 rows** (the
+  occupied bands), 585-757 ms, a Parallel Seq Scan on asset_search_entrypoint + the visibility joins — the SAME
+  scan+joins the shipped count(*) does (487-797 ms). At most 21 groups; no sort spill (quicksort 25 kB).
+- **popularity range count** rides **Index Only Scan using asset_search_entrypoint_popularity_idx** (410-562 ms
+  browse; 143-176 ms with a query via data_entity_pkey) — the range is a `between` on the indexed score.
+- **sort=popularity page 1** = **Index Only Scan using asset_search_entrypoint_popularity_idx**, 5-10 ms
+  (index-only keyset seek; the DESC NULLS LAST order matches the index), + the pkey lookups to hydrate 30 rows.
+
+Verdict: the histogram is ~= the shipped count (not slower); the range and the sort are index-driven. Gate met.
+
+### Pixel review (G-C12 step 5 — the rendered surface READ, not just produced)
+Five screenshots taken on the built fix image against the 126k corpus and LOOKED at, saved under
+`contributor/evidence/CTRIB-066/`: the full-rail default; a committed band range where the **sqrt-scaled** bars are
+visibly varied (a linear scale had collapsed every band next to the never-viewed one) with the chip
+`Popularity: 31 - 62 views`; the TERM-only disabled state stating `No data entities match your other filters` with
+no slider; the Popular tile's View all landing (`48,337 results`, `Sort by Most popular`, the `1+ views` chip,
+most-viewed data entities first); and the Catalog Overview Popular tile with its five rows and the View all link.
 
 ## 9. A coordination hazard I created (recorded, not buried)
 

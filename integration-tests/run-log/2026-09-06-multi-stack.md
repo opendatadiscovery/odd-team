@@ -8,3 +8,13 @@
 - machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
 - evidence/notes: **19 / 19 PASS (18.7m)** — every docker-churning multi-stack spec green (MinIO object storage, LOGIN_FORM / OAUTH2 / LDAP auth postures, notifications/WAL). ST-9 is a search-surface change and touched none of these; zero regressions in the multi-stack suite.
 
+## 2026-09-06 — suite/protocol: multi-stack
+- runner: AI-assisted (Claude Opus 5, session review-ctrib066 — the REVIEWER's own four-suite regression)
+- odd-platform working-tree HEAD: af5a573b (the SUT only when ODD_SUT=working)
+- e2e SUT: explicit raw image (build-sut bypassed): odd-platform:odd-team-sut-revctrib066  (image odd-platform:odd-team-sut-revctrib066, digest sha256:61132a929fb7e6f160e470a80927944879280029039bdc475550d4195404f61f)
+- protocols: IT-008 IT-009 IT-010 IT-011 IT-012 IT-123 IT-124 IT-153 IT-154
+- api probes: none; ui e2e: specs/attachment-remote-roundtrip.spec.ts specs/auth-mode-boundary.spec.ts specs/ldap-rbac-enforcement.spec.ts specs/notifications-wal-lifecycle.spec.ts specs/notifications-wal-failover.spec.ts session-cookie-posture.spec.ts rbac-policy-lifecycle.spec.ts my-data-scope-narrows.spec.ts demo-stand-first-run.spec.ts; manual: none
+- outcome: e2e:PASS
+- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)
+- evidence/notes: **19 / 19 PASS**, read from the JSON reporter (MinIO object storage, LOGIN_FORM / OAUTH2 / LDAP auth postures, notifications/WAL, IT-153 my-data, IT-154 demo stand). Zero regressions in the docker-churning suite; the TST-064 intermittent multi-stack red did not reproduce here.
+

@@ -5,7 +5,7 @@ github_issue: 1843
 github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1843
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1843` 2026-09-05: milestone 1.0.0, state OPEN, semver, due 2026-12-31 (18 open / 13 closed)
-status: review-ready    # Phase D complete: all five DoD gates RUN and recorded in section 8a (2026-09-06). GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
+status: review-ready    # /review CTRIB-066 (review-ctrib066, 2026-09-06): ACCEPTED = GATE-2-ready — STAYS review-ready because the PR is an unmerged DRAFT (the human GATE-2 merge moves it to pending-release and /review release:1.0.0 owns done; review-ctrib062-3 / review-ctrib065 precedent). Two required-before-merge tidies (T1 the mislabelled legacy browse test, T2 a stray run-log skeleton) need no re-review. Was: Phase D complete: all five DoD gates RUN and recorded in section 8a (2026-09-06). GATE 1 (human) 2026-09-05 — D1 = A (facet + histogram + the Most-popular sort option from #1861 item 1 + the tile link), D2 = A (disclose the tile divergence in docs; the maintainer files PLT-267), delivery = ONE PR. Phase D starts.
 classification: feature   # a slice of the #1825 epic (ST-9 in state/search-overhaul-decomposition.md); the entry gate is spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D5 (+ D3 / D8 / D10 / D11); depends on ST-5c (#1839 slice 5c = CTRIB-059 / PR #1862, MERGED as 82e7e70e)"
 stream_id: ctrib066
@@ -994,3 +994,245 @@ landed as a NEW remote branch, nothing touched a shared branch.
 3. **Merge both PRs** (the bot never merges — G-C4). At GATE-2 close-out, graduate `IT-156` out of the
    `pending-merge` lane into `feature-complete` + `ui-e2e` (the TST-067 owner rule, the same graduation IT-155
    took at #1879's close).
+
+## Review (2026-09-06, session: review-ctrib066)
+
+- **Result**: **ACCEPTED — GATE-2-ready**, with one required-before-merge tidy (T1 below) that needs no re-review.
+- **Reviewed**: odd-platform `contrib/CTRIB-066-popular-range-facet` @ `cdaa7d45` (44 files, +2308/-84) / draft PR
+  **#1881** (live: `state: open`, `draft: true`, base `main` @ `af5a573b`, head `cdaa7d45`, milestone 1.0.0) ·
+  documentation `docs/CTRIB-066-popularity-facet` @ `971425e` (4 pages) / draft PR **#115** vs `release/1.0.0`.
+- **Separate-session gate**: HOLDS. All five odd-platform commits and the doc commit carry
+  `Claude-Session: …/session_01YaBCBGVUVL6LRbYWrfqnqi`; this review is `…/session_016UoJG8awYHsyzfUy1a4bUo`.
+- **No 2-minute bounce** — the §8a ledger declares all five DoD gates RUN at the head and the artefacts exist;
+  nothing says "NOT RUN" or "deferred".
+- **`Sources:` footer — N/A, not waived.** `pillars/contributor/gates.md` defines no `Sources:`/`Consumer-read:`
+  footer (the posture accepted at `/review` CTRIB-059 / 062 / 063 / 065). Provenance is inline per `file:line`
+  and was re-derived here rather than trusted.
+
+### SUT provenance — established FIRST, because the ledger's own digests disagreed
+
+The three run-log entries from the implement session cite **three different digests** for one tag
+(`0d14477b` IT-156 · `0ee6bc89` the OOM-killed regression · `b3701f31` the accepted regression). Rather than
+assume, I compared them: the jib `dependencies`, `project dependencies` (the bundled `odd-platform-ui.jar`),
+`classes` and `jvm arg files` layer digests are **identical across all three**, and a file-level `sha256` sweep
+of `/app/resources` (118 files, incl. the whole UI bundle) differs in **exactly one file** —
+`META-INF/build-info.properties`, the Spring build timestamp. The drift is cosmetic.
+
+Then I pinned the tag to *this commit specifically*, not merely "an ST-9 build": the shipped
+`odd-platform-ui.jar` contains `N("div")(()=>({height:`calc(100vh - 110px - ${da}px)`,overflowY:"auto",overflowX:"hidden"}))`
+— the `FiltersStyles.ts` rail-overflow rule that `cdaa7d45` adds and its parent `f4896072` does not. The same
+extraction on a pre-ST-9 `main` build (`odd-team-sut-ctrib065close`) shows the identical styled component
+**without** the two overflow keys, and no `popularity_min` / `Most popular` / `facets/popularity` strings and no
+`PopularityBands.class` / `PopularityRangeDto.class`. So the base image is a genuine pre-ST-9 `af5a573b`, and the
+fix image is a genuine `cdaa7d45` — which is what makes the RED/GREEN pair below meaningful.
+
+For the regression I did not reuse any of it: `run-regression.sh` built the SUT itself from the reviewed
+worktree `../odd-platform-ctrib066` (clean @ `cdaa7d45`) into `odd-platform:odd-team-sut-revctrib066`
+(`sha256:61132a92…`), whose functional layers are again byte-identical to `b3701f31`.
+
+### Acceptance criteria — the §4 spec, each re-derived
+
+- **R1 — a popularity range narrows the unified search** — PASS. `ReactiveAssetSearchRepositoryImpl.java:509-522`
+  condition (8) adds `POPULARITY_SCORE.between(min,max)`, threaded through **all three** page/count methods
+  (`keysetPage:57`, `relevancePage:95`, `count:111`) so the total cannot disagree with the rows. Driven: IT-156
+  cases 1-2 on my own stack — `[5,5]` lists only the 40-view entity, `{min:4}` lists 40 + 1,000.
+- **R2 — DE-scoped, and the control says so** — PASS. The same condition adds
+  `ASSET_KIND.eq(DATA_ENTITY)` whenever a range is present (`:514`); `PopularityFilter.tsx` passes
+  `qualifier={t('Data entities only')}` + the inline-help sentence. IT-156 case 1 asserts the term ABSENT under
+  a range and PRESENT without one.
+- **R3 — fail closed** — PASS. Server: `PopularityRangeDto.of` clamps into `[0,20]` and returns empty for `{}`;
+  `contradictory()` ⇒ `DSL.falseCondition()`. FE: `parsePopularityBound` returns `null` for a non-integer / an
+  array (a repeated param), and `parsePopularity` drops the WHOLE range on `null` or inverted. `AssetSearch
+  ControllerWebTest` asserts 200 + empty for `{min:10,max:2}` and `{}` ≡ absent; my own vitest run covers the
+  parser (41 cases).
+- **R4 — the histogram, bounded, exclude-own-facet** — PASS. `popularityHistogram` calls
+  `conditions(state, kinds, scope, favorites, **null**)` — the range is structurally absent, not filtered out
+  afterwards — then `.and(ASSET_KIND.eq(DATA_ENTITY))` and `GROUP BY POPULARITY_SCORE` (≤21 groups by
+  construction; `width_bucket` would re-bucket an already-bucketed column). Driven: IT-156 case 6 reads the raw
+  wire — 21 buckets, scores 0..20 in order, Σ = 3 (the term never counted), and a Statuses facet moves the counts.
+- **R5 — exact band boundaries** — PASS. `PopularityBands.minViews/maxViews` is the single derivation, pinned
+  against the SQL function at **every** edge by `AssetSearchPopularityIntegrationTest.servedBands_matchTheSql
+  FunctionAtEveryBoundary` (for each s: `bucket(minViews)==s`, `bucket(maxViews)==s`, `bucket(maxViews+1)==s+1`).
+- **R6 — performance** — PASS, with the provenance stated. The structural half is gated by a test CI runs and I
+  verified green: `AssetSearchKeysetPaginationTest.keysetSeek_popularity_unionOfRangesRangeStarts` EXPLAINs the
+  seek over 30k seeded rows and asserts `asset_search_entrypoint_popularity_idx` present and
+  `Rows Removed by Filter` absent. The absolute 126k timings (§8a: histogram 0.71-0.84 s vs page+count
+  0.95-1.07 s) are the implementer's published measurement with auto_explain plans; **I did not re-seed a 126k
+  corpus** and say so rather than imply I did. The claim I did check is the one that could silently rot — the
+  ORDER BY spells `DESC NULLS LAST` verbatim (`:545-552`) to match the composite index's direction.
+- **R7 — the control** — PASS. `Slider` did not exist anywhere in `odd-platform-ui/src` at `af5a573b`
+  (`git grep -l Slider af5a573b -- odd-platform-ui/src` → empty), so `RangeFacetFilter` is genuinely the first,
+  not a parallel copy. It knows nothing about popularity (props only), which is what makes #1844/#1845 reuse real.
+- **R8 — disabled with its reason** — PASS. Three reasons + the distinct failed-request fallback; vitest covers
+  all four; IT-156 case 9 drives `asset_kinds[]=TERM` → *"No data entities match your other filters"*, zero thumbs.
+- **R9 — the URL survives every other control (#1858)** — PASS. `Search.tsx:119` adds `popularity: live.popularity`
+  to the mirror merge. IT-156 case 3 toggles a Statuses facet **and waits 1.5 s past the 400 ms debounce** before
+  re-asserting the range is still in the URL — the shape that actually catches a late mirror write.
+- **R10 — the saved search holds and reapplies it** — PASS. `sanitisePopularity` drops a non-object, a
+  non-integer bound (field-level) and an inverted range (whole) on READ (`deserializeSpec:140`). The D11 lock is
+  extended to the 10th wire key, so an 11th dimension fails the test by design. IT-156 case 5 reads the stored
+  spec off the 201 response (`{min:5,max:5}`) and drives reapply.
+- **R11 — "Most popular"** — PASS, including the part that is easy to miss: the legacy `/api/search` guard
+  (`ReactiveDataEntityRepositoryImpl:1019-1020`). I verified by reading that removing it would change the legacy
+  path's shipped behaviour **with a query** (POPULARITY falls to the status-priority `else`), and that
+  `LegacySearchSortFallbackTest.withQuery_…` goes RED if it is removed. See T1 for the browse half.
+- **R12 — the tile deep-links** — PASS. IT-156 case 7 asserts the exact `href`
+  (`/search?popularity_min=1&sort=popularity`), then drives the click and reads the rendered combobox label
+  ("Most popular") and the relative order — the 1,000-view entity above the 40-view one, the never-viewed absent.
+- **R13 — the divergences disclosed** — PASS. `search.md`'s warning hint names all three (band-order,
+  ≤15-min lag, `exclude_from_search`). Code-checked: the search DOES honour the flag
+  (`ReactiveAssetSearchRepositoryImpl:333`) while `listPopular` reads through `cteDataEntitySelect`, which does
+  not — so the divergence the doc describes is real. `issues/odd-platform/PLT-267-*.md` is on disk, pure ASCII,
+  and carries the mandatory user-facing-impact section with `user_facing_verified: true`.
+- **R14 — i18n ×7** — PASS, measured here, not taken on trust: all 7 catalogs are 707 keys with an identical key
+  set; all **16** new keys present in every locale; **none** equal to the English string (i.e. actually
+  translated, not fallback-copied); every `{{placeholder}}` preserved per locale. The repo's own
+  `i18n-key-parity.test.ts` (17 tests, incl. the no-raw-JSX-string and no-raw-object-label guards) is GREEN in my
+  run, and a manual sweep of the three new source files found zero hardcoded user-visible strings.
+- **R15 — docs on the 1.0.0 train** — PASS. The train branch exists on origin and a commit carries the change
+  (`971425e`, base `origin/release/1.0.0`); this is not a backlog-only draft (the `review-ctrib040` failure mode).
+  All four frontmatters parse under PyYAML; descriptions are 181 / 191 / 173 / 161 chars, all under GitBook's
+  200-char meta cut; no `: ` hazard.
+
+### Quality Bar
+
+- **Gate 1 — No duplicates: PASS.** The `Slider`-absence sweep above; `RangeFacetFilter` is the shell and
+  `PopularityFilter` the only instance; `popularityBands.ts` is explicitly the *fallback* rail, with the server
+  response as the source of truth.
+- **Gate 2 — Aliases: N/A** (no new alias; "Popularity" is the UI label already used by the Popular tile).
+- **Gate 3 — Caveats as admonitions: PASS.** The 15-minute snapshot + the three tile-vs-search divergences +
+  the inflatability link ride ONE `{% hint style="warning" %}` block on `search.md`, not buried in prose.
+- **Gate 4 — Consumer-read: PASS.** Every runtime claim traced to its consumer: the `popularity_score` column and
+  `asset_popularity_bucket()` in `V0_0_100`; the snapshot job's kind-guard; the index spelling; the
+  `@RestControllerAdvice` mapping; `application.yml:51-53` for the ingestion-filter default I checked while
+  auditing. No behaviour-affecting consumer of the new fields is missing from the change.
+- **Gate 5 — Unset-parameter audit: N/A** (no SDK builder in scope).
+- **Gate 6 — Bidirectional code ↔ doc: PASS.** Every user-visible path the diff adds is documented (the facet,
+  the bands, DE-only, the disabled states, the sort, the tile link, the snapshot lag); every doc claim traces to
+  code. The one direction I could have got wrong I checked rather than assumed: `catalog-overview.md`'s new
+  *"Every column ends in a View all link"* is scoped to the **Recommended** panel's four columns (all four now
+  do), not to the separately-documented Favorites / Recently-Viewed panels — and `RecentlyViewedColumn.tsx:24`
+  says "there is no 'View all' yet", so the wording is correct as scoped.
+- **Gate 7 — Layout: PASS.** No new page ⇒ no SUMMARY change (verified: the SUMMARY diff is empty), and
+  `search.md` is already listed. The new `## Popularity` sits after `## Favorites` and before
+  `## Per-result transparency` — the same order as the rail.
+- **Gate 8 — Publishing: PENDING-RELEASE (1.0.0).** The doc is genuinely authored on the train, not drafted in
+  the backlog. Branch-verifiable sub-checks all run against `971425e` and PASS (PyYAML, ≤200-char descriptions,
+  tree-relative links, Gate 11). The change adds **zero** outbound external URLs; its nine internal cross-links
+  were each checked, and the three that resolve to already-published pages were verified LIVE
+  (`catalog-overview#recommended`, `entity-detail-page#general-panel-view-count-caveats` — both `id=` present in
+  the raw HTML). The `search.md`-internal anchors (`#my-data`, `#favorites`, `#query-syntax`, `#popularity`) are
+  all train-only content, so they publish together at the 1.0.0 gate; DOC-527 already records the URL + phrase
+  list for that check.
+- **Gate 9 — Factual claim provenance: PASS.** Every load-bearing claim re-derived here (the SUT provenance, the
+  i18n figures, the index spelling, the legacy-guard behaviour, the `exclude_from_search` asymmetry). No banned
+  phrase used in this verdict without a `VERIFIED via` behind it.
+- **Gate 10 — Content-type homing: PASS.** The operator page gained operator content (a control, its bands, its
+  states); no endpoint table, no request/response schema leaked onto it. The API surface stays undocumented for
+  developers — which is **DOC-526**, already tracked, not this slice's to fix.
+- **Gate 11 — Audience isolation: PASS.** Strict banned-term grep on the ADDED doc lines: **zero hits** (pattern
+  widened this run with `CTRIB-NNN|DOC-NNN|PLT-NNN|TST-NNN`). Whole-tree strict grep also zero.
+
+### Regressions — my own measurements, on my own SUT built from `cdaa7d45`
+
+| Bucket | Result |
+|---|---|
+| **Unit (CI replica)** | CI **6 / 6 check-runs SUCCESS** at `cdaa7d45`, read through the GitHub API myself (`run_tests`, `Test Results`, `run_playwright_tests / test`, `/ format-check`, `/ lint`, `update_release_draft`; all completed 2026-09-06T13:2x-13:30Z). Per the protocol a CI full-suite run on the same head SHA is citable evidence of the same measurement. |
+| **FE unit** | `vitest run` full suite **207 / 212**. All five failures are the first test of their file timing out at exactly 5000 ms under load (`DataEntitiesUsageInfoView`, `DataSourceItem`, `AppPopover`, `ConfirmationDialog` — all untouched — **and** `PopularityFilter`'s first case). **A/B-proved change-independent rather than assumed**: re-run in isolation the ST-9 suites are **81 / 81 GREEN** (`PopularityFilter` 8/8, `searchUrlState` 41, `searchFormDataToUrlState` 16, `SearchSortMenu` 7, `FavoritesFilter` 9). TST-057 class. |
+| **FE static** | `tsc --noEmit` **clean**; `eslint --max-warnings 0` **clean** on all nine touched FE paths. |
+| **feature-complete** | **339 passed / 12 failed (37.2m)**. The twelve are **SET-EQUAL by exact `spec:line`** to the tracked baseline — asserted mechanically from the JSON reporter, not by eye: `mine == baseline` **True**, off-baseline **NONE**, baseline-not-hit **NONE**. Identical to both implementer runs. **ST-9 adds zero off-baseline reds.** |
+| **known-bugs** | **3 failed / 3** — the expected signature; all three pinned bugs still reproduce, **no unexpected GREEN** (nothing fixed un-flipped). |
+| **multi-stack** | **19 / 19 PASS** — the TST-064 intermittent red did not reproduce. |
+| **ingestion-e2e** | **15 / 15 PASS (6.4m)**. |
+| **IT-156 (the new protocol)** | **9 / 9 GREEN** on the fix SUT, and **9 / 9 RED** on a genuine pre-ST-9 `af5a573b` build. |
+| **G-C15 RED-on-base** | Discharged **by me**, not carried. The right red, not a broken harness: case 4's pure data oracle fires — *"THE NARROWING: it156pop_never must be absent (on ref:main it is listed — the range is dropped there)" · Expected: 0, Received: 1*. A test asserting presence only would have been green on both systems; none is. Changed (not added) tests are arity-only (`AssetSearchScopePredicateTest`, `AssetSearchServiceMyDataTest`), one exact-list strengthening (`SearchSortMenu` 4→5 orderings) and one fixture rename that PRESERVES the property (`searchFormDataToUrlState`'s unknown-sort fixture `'popularity'` → `'garbage'`, correct now that `popularity` is a known token). No matcher weakened, no boundary mocked, nothing skipped or deleted. |
+
+### Required before merge (no re-review needed)
+
+- **T1 — `LegacySearchSortFallbackTest.onBrowse_popularityFallsBackToStatusPriority` never browses.** Its only
+  entry point, `legacyOrder` (`:74-75`), always sets `.query(token)`, and
+  `ReactiveDataEntityRepositoryImpl:701-702` sets `fts` for any non-empty query — so `hasQuery` is **true** in
+  both tests and the browse branch is never exercised. Worse, its assertion cannot tell the two orderings apart:
+  the test seeds UNASSIGNED first and STABLE second, so STABLE has the higher id, and
+  `containsExactly(stable, unassigned)` is satisfied by relevance (newest-id-first) exactly as by status
+  priority. The `@DisplayName`, the assertion message *"status priority: STABLE (0) before UNASSIGNED (3)"* and
+  §8a's "falls back to its per-context default" all claim a context the test does not measure. It also carries a
+  half-finished authoring note — *"…share a fresh namespace-less data source? Not available here — instead
+  compare RELATIVE order…"* — describing an approach the code does not take.
+  **Why this is a tidy and not a blocker** (checked, not assumed): with the guard removed, browse resolves
+  POPULARITY into the same final `else` that STATUS_PRIORITY reaches (`:1032-1034`), so the browse branch is a
+  provable **no-op** — there is no behaviour for a test to protect there, and the guard's real regression risk
+  (the *with-query* path) IS pinned by the sibling test. Nothing ships wrong and the safety net loses nothing.
+  **Fix:** rename to what it measures (`browseSeeding_popularityIsByteIdenticalToAnUnknownToken`) or give it a
+  genuinely query-less path, drop the stray note, and soften §8a's "(2 — …per-context default)" to the
+  equivalence it actually proves.
+- **T2 — one stray run-log entry.** `run-log/2026-09-06-known-bugs.md` entry 2 (digest `b3701f31`) is an
+  unfilled skeleton from the implement session's build-then-OOM attempt; the result the ledger quotes comes from
+  entry 1 (digest `0ee6bc89`). I annotated it in place rather than inventing values. The mechanism is **TST-070**.
+
+### Navigation
+
+`navigation/domains/search.md` is **stale** — last touched `f6b59789` (2026-08-30, CTRIB-060), so it names none of
+ST-9's five new source files, the new endpoint, or the fact that `popularity_score` is now a query predicate and a
+sort key rather than only a snapshot target. Logged as an extension to **NAV-004** (which already owns this file)
+rather than blocking: the pointer file is odd-team's own harness, not part of either PR, and the gap predates this
+slice by three merged PRs — it is the class, not the instance.
+
+### Doc-product editorial audit (`playbooks/doc-product-editorial-read.md`)
+
+- **Coverage this run**: partition `configuration-and-deployment/**` + `integrations/**` (35 pages — the two
+  subtrees `review-ctrib065` queued), read at the 1.0.0 train, plus a whole-tree mechanical pass. **Queued next,
+  not skipped silently**: `developer-guides/**` (48 pages; only `api-reference/**` claimed so far) and an
+  `active-platform-features/**` re-check against the train. Recorded in `state/doc-quality-coverage.md` run #13.
+- **Findings**:
+  - **DOC-528** (high, *doc-claim-vs-code drift*, NEW) — `integrations/README.md`'s Ingestion error contract
+    tells collector authors an unknown `data_source_oddrn` surfaces as **5xx** and that structured 4xx is "on the
+    roadmap". **Driven** on the live review SUT: it is **HTTP 404** with
+    `{"code":"USR002","retryable":false,"resolvable":false}`, and an empty payload is a structured 400
+    (`USR001`) — a contract that shipped in `5d5fcfb9` (2022-11-11), years before the page claimed it was
+    pending. The page's stated premise ("the controller has no `@ExceptionHandler` advice") is refuted by the
+    global `@RestControllerAdvice`. Source: `docs/integrations/README.md:143-150`.
+  - **DOC-510 EXTENDED** (critical, existing) — its 8-site inventory is incomplete AND its own recommended
+    residue grep provably misses the gap: `enable-security/README.md:24` (the endpoint table still lists the
+    sibling paths with `Filter: —` and "they do not cover sibling paths", contradicting the same page 27 lines
+    below) and `integrations/README.md:136` ("the stats endpoint is **never covered** by that filter under any
+    setting" — false since 0.29.0). Re-verified in source: `IngestionAuthenticationFilter.java:49,58,60`.
+  - **NAV-004 EXTENDED** — the search-domain pointer gap above.
+  - **TST-070** (medium, NEW, harness) — a four-suite regression leaves no recoverable per-spec record for any
+    suite but the last: playwright's fixed `results.json` is overwritten by each following suite and
+    `run-suite.sh` never fills the run-log's `runner` / `evidence` fields. Hit first-hand — it cost this review a
+    45-minute re-run of `feature-complete` to state its own evidence, and it is why T2 exists.
+  - **Independently re-derived and NOT re-filed** (LSN-009; convergent validation): **DOC-523** — the three
+    `custom-collectors.md` links GitBook renders as raw `github.com/.../blob/main/...` URLs; I confirmed live
+    that all three render as GitHub blobs and that the three site paths 404 while the two correct targets are
+    200. **DOC-524** — the dead in-page anchors; I re-derived 10 across 3 pages by reading the real `id=`
+    attributes out of the live HTML (GitBook **keeps** the `.` in a dotted-key slug: `id="odd.platform-base-url"`
+    exists, `id="odd-platform-base-url"` does not, yet every link uses the latter). **DOC-508** — the wizard
+    registry ships empty and `integration-wizard.md` never says so.
+  - **Checked and correct — recorded so a later run need not re-check**: the 4 collector adapter counts
+    (41 / 11 / 4 / 4, exact against `../odd-collectors` @ `d498f09`); `auth.ingestion.filter.enabled: false`;
+    the 4 push-adapter auth caveats (all correctly scoped to `/ingestion/entities` under the default-off flag);
+    `collectors-secrets-backend.md`'s "at most 10 plugin parameters" caveat (`ssm_parameter_store.py:144` calls
+    `get_parameters_by_path` with no paginator); `admin-promotion.md`'s matrix; the partition's 0.29.0 version
+    claims; and a 62-key config-key sweep whose 28 "missing" hits were **all** false positives (prefix-bound
+    `@ConfigurationProperties`).
+- **Outbound URL sweep**: the doc change adds **zero** external URLs. 12 live fetches performed this run
+  (5 doc pages + 5 anchor-resolution probes + 2 GitHub API reads); 3 confirmed 404s, all attributable to DOC-523.
+- **Banned-phrase check**: none used.
+
+### Resources released
+
+Stacks `revctrib066` + `revctrib066base` torn down `-v`; no ODD container left running. The heavy-e2e flock was
+acquired and released by `run-regression.sh`'s exit trap (`.holder` gone; the pre-existing stale `ctrib066
+pid=2503266` holder was a dead pid). **`lineage/**` never written** — `git status --short lineage/` empty.
+This review commits exactly the verdict, the four editorial/nav artefacts, my run-log entries, `PROGRESS.md`,
+`state/doc-quality-coverage.md` and my `active-streams.yaml` entry — with explicit pathspecs.
+
+### What the maintainer owns from here (GATE 2)
+
+1. **T1 + T2** above — a rename, a comment deletion and one softened sentence; no re-review.
+2. **File `PLT-267`** — `issues/odd-platform/PLT-267-popular-tile-live-vs-snapshot.md` is paste-ready and ASCII.
+3. **Merge both PRs.** CTRIB-066 stays `review-ready`; the human GATE-2 merge moves it to `pending-release`, and
+   `/review release:1.0.0` owns `done` (the review-ctrib062-3 / review-ctrib065 precedent).
+4. **Graduate `IT-156`** out of the `pending-merge` lane into `feature-complete` + `ui-e2e` at the close-out
+   (the TST-067 owner rule).

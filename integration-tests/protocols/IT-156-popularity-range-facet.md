@@ -84,7 +84,9 @@ the popularity SNAPSHOT job (`AssetPopularitySnapshotJob`, ST-5c) is its own tes
 7. Open `/search?q=it156pop` and read the facet response (`POST /api/search/assets/facets/popularity`); then pick
    STABLE in Statuses and read the next facet response.
 8. Open `/` (the home page); in the **Popular** tile click **View all**.
-9. Open `/search?q=it156pop` and click the **Never viewed** preset under the slider.
+9. Open `/search?q=it156pop` and click the **Never viewed** preset under the slider. In a 1280×720 window the
+   preset sits below the fold of the filter rail: the rail must scroll to reach it (before this PR the fixed rail
+   did not scroll its overflow, and the control was unreachable — this step is the reachability guard).
 10. Open `/search?q=it156pop&asset_kinds[]=TERM`.
 
 **Automated rail:** `ODD_STREAM=<id> ODD_PLATFORM_DIR=<worktree> integration-tests/run-suite.sh IT-156`

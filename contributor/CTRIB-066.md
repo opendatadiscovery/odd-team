@@ -11,7 +11,7 @@ parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/uni
 stream_id: ctrib066
 base_sha: "af5a573b"      # odd-platform origin/main at intake (= the #1879 CTRIB-065 squash); every line cited below was read at this SHA via the detached worktree ../odd-platform-ctrib066
 branch: contrib/CTRIB-066-popular-range-facet   # cut at GATE 1 from af5a573b in ../odd-platform-ctrib066 via `git switch -c` (no upstream; push.default=current; O6/LSN-038)
-head_sha: f4896072          # f0dbe92b the contract · a93efc79 the front end (21 files) · 3a77e094 the backend + tests · f4896072 max_views optional-absent (no JsonNullable module in the app) — worktree CLEAN at this SHA when the IT-156 GREEN run built its SUT
+head_sha: cdaa7d45          # f0dbe92b the contract · a93efc79 the front end (21 files) · 3a77e094 the backend + tests · f4896072 max_views optional-absent (no JsonNullable module in the app) · cdaa7d45 the rail scrolls its overflow + sqrt histogram bars (found by IT-156 case 8 + the pixel review on the built SUT)
 pr:
 reproduced: "n/a — feature slice, not a bug. Baseline observations of the CURRENT surface (no Popular facet; the Popular panel has no View all) are captured in §3 and go RED in Phase D's IT."
 adr_required: false       # confirmed §6(b): conforms to the approved spine ADR D5 (+ its rev-3 SRE correction) and D8; no migration (the column + index + job shipped in V0_0_100), no auth-posture change, an ADDITIVE wire change (optional fields on AssetSearchFormData + one new read endpoint)
@@ -785,12 +785,33 @@ FE `pnpm run generate` — docker `openapi-generator-cli:v7.2.0`).
   `viewAllTo = buildSearchLink({ sort: 'popularity', popularity: { min: 1 } })`.
 - i18n: 16 keys in all 7 catalogs (machine-assisted translations for `br ch es fr hy ua`, marked in the commit).
 
-### Two things the build corrected in the plan's own details
+### What the build — and driving the built SUT — corrected in the plan's own details
 - `{{count}}` is an i18next-RESERVED interpolation name (it drives plurals and is typed `number`), so the one-band
   reason key became `All {{total}} data entities have {{band}} views` — in the record, the seven catalogs and the
   component.
 - MUI's marks-only slider moves ONE mark per hidden-input change whatever value the event carries (the keyboard
   semantics) — the component test steps twice to reach stop 2; the shell's contract is unchanged.
+- **The filter rail did not scroll (a product defect, class-fixed — `cdaa7d45`).** IT-156 case 8 at Playwright's
+  default 1280×720 viewport could not click *Never viewed*: "element is outside of the viewport" after scrolling.
+  Geometry read off the live page: the rail is a `position: fixed` grid item whose `ListContainer` had a height
+  (`calc(100vh - 110px - toolbar)`) and NO overflow rule — clientHeight 618 vs scrollHeight 704, the Popularity
+  control at y 704–768, the document itself unscrollable (720/720). The page cannot scroll a fixed box and the box
+  did not scroll itself; the eight-facet rail on `main` already touched the bottom of a 720-px viewport, so the new
+  facet is the instance that made the class bite (LSN-042 class-extension: the slice that adds the instance owns
+  the class). Fix: `overflowY: 'auto'` (+ `overflowX: 'hidden'`) on `FiltersStyles.ListContainer` — any facet, any
+  short viewport; MUI popovers portal out, nothing is clipped. Case 8 is now documented as the reachability guard.
+- **Histogram bars are square-root scaled (`cdaa7d45`).** The pixel review on the 126k-asset probe corpus (band 0 =
+  71,663 of ~120k data entities; every other band 1.7–4.5k) showed ONE tall bar and hairlines: on a linear scale a
+  3k band is 4 % of a 28-px strip ≈ 1 px. A real catalog's view counts are heavy-tailed by construction (the plan's
+  own seed says so), so the plan's linear strip failed the "distribution" promise exactly where it matters. sqrt
+  keeps the order of the bars and the min-2 % floor; exact counts stay in each bar's `title` and the strip's aria
+  text. The component tests do not pin heights; 19/19 green after the change.
+- **One assertion was written from an assumed shape, and the run caught it.** Case 7 asserted `toHaveText(/Most
+  popular/)` on `[data-qa="search-sort-menu"]` — on a MUI `Select` the `data-qa` lands on the hidden native `<input
+  value="popularity">` (empty text); the label the user reads is the sibling `<div role="combobox"
+  aria-labelledby="search-sort-label">`. Captured from the failure context + a live DOM dump, then asserted on both
+  (state on the input, label on the combobox) — `fd860e7c`. Recorded because the rule ("write assertions from a
+  CAPTURED shape") was honoured on the wire shapes and skipped on this DOM one; the GREEN run is what made it cheap.
 
 ### Tests (Step 9)
 - **Unit, BE (new/extended, all run — §8a):** `AssetSearchPopularityIntegrationTest` (9: closed/open/never/up-to ranges

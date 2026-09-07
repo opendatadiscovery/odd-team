@@ -60,7 +60,7 @@ It **composes** existing machinery (8 skills/pillars reused, 3 extended, 4 net-n
 This pillar is the documented home of two deliberate exceptions; both remain in force for every *other* pillar:
 
 - **`CLAUDE.md:254` "No functional changes."** The contributor changes odd-platform code. Scoped to this pillar; gated by GATE 1.
-- **The human-only-GitHub rule (`issues/README.md:121,148`).** The contributor posts COMMENTS and opens DRAFT PRs directly via a scoped-token GitHub App. It still never *creates new issues* and never *merges* — those stay human.
+- **The human-only-GitHub rule (`issues/README.md`).** The contributor posts COMMENTS, **files ISSUES**, and opens DRAFT PRs directly via a scoped-token GitHub App. It still never *merges* — that stays human, and GitHub enforces it (G-C4). *(Issue creation was human-only until 2026-09-06, when the maintainer retired that half of the rule — `CLAUDE.md:126`, commit `2b20196d`; the token always carried `issues: write`. A discovery is FILED and its URL handed back, never handed over as a draft to paste.)*
 
 ## Success / failure signals
 

@@ -65,12 +65,12 @@ Order slices by genuine dependency (a slice depends on another only if it consum
 - **`state/{slug}-decomposition.md`** — the paste-ready sub-issue bodies. Each slice carries: a title (`ST-N — <outcome>`), the user-observable goal + 2–5 truths, **scope IN / OUT (+ why)**, the **SPIDR axis** it came from, its dependencies, the milestone, the spine refs (ADR decision IDs), and a one-line *"ships X to the user."*
 - **`state/roadmap-{slug}.md`** — the spine: the one-line strategy, how the tracks interlock (an ASCII map), the sequence (step → what → unblocks), parked items, and the open maintainer decisions (release-planning authority stays human).
 
-### 5. Map to GitHub — the bot does not create issues
+### 5. Map to GitHub — the bot files the sub-issues
 
-The `odd-contributor[bot]` is policy-barred from creating GitHub issues (`playbooks/github-write.md` — comments + draft PRs only). So slices are **paste-ready** and filed by the maintainer:
+The `odd-contributor[bot]` **files** GitHub issues via its scoped App token (`playbooks/github-write.md` step 4b; the never-auto-file rule was retired 2026-09-06 — `CLAUDE.md:126`). So the slice bodies are written to the paste-ready standard and then filed:
 
-- **Default:** the maintainer creates each sub-issue (paste the body), then links it under the epic via GitHub's native **sub-issue** control (parent/child rollup). Each child carries the epic's milestone (G-C11).
-- The maintainer may explicitly authorise the bot to create them once via the Issues + `sub_issues` API — a deliberate crossing of the standing policy, scripted on a granted token.
+- **Default:** the bot creates each sub-issue (`POST /repos/{owner}/{repo}/issues` — ASCII body, zero workspace-internal ids, only labels that already exist, **no milestone**) and hands back the URLs.
+- **What stays the maintainer's:** linking the children under the epic via GitHub's native **sub-issue** control (parent/child rollup), and setting each child's milestone — release planning is maintainer authority (G-C11), which is exactly why the bot files without one.
 
 Each filed slice then runs the **normal single-slice flow**: intake → `spec-gate.md` → reproduce/verify (if it has a broken state) → `design-before-build.md` → `plan-contract.md` + plan-check → GATE 1 → build + tests → GATE 2. The maintainer is the merge gate on every slice.
 

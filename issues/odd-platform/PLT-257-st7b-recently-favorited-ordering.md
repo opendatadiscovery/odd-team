@@ -3,11 +3,13 @@ id: PLT-257
 title: "ST-7b -- \"Recently favorited\" ordering for the Favorites filter"
 target_repo: odd-platform
 issue_type: feature
-status: draft            # PASTE-READY sub-issue for the maintainer to file under #1825. The bot is policy-barred
-                         # from creating issues (playbooks/github-write.md; G-C18) -- this is a draft, not a filing.
+status: draft            # Sub-issue body for #1825, READY TO FILE. (Historical note: this sat as a draft because the
+                         # bot was policy-barred from creating issues; that rule was RETIRED 2026-09-06 -- CLAUDE.md:126,
+                         # commit 2b20196d -- so filing is now an agent action, not a human one.)
                          # 2026-09-03: odd-platform#1875 (ST-7) MERGED and #1841 was CLOSED as completed -- this draft
-                         # is now the ONLY tracker of the ordering. Filing it (title + body below, labels, milestone
-                         # 1.0.0) is the one human action that unblocks `/contribute <new-issue>` for ST-7b.
+                         # is now the ONLY tracker of the ordering, so filing it is what unblocks `/contribute` for
+                         # ST-7b. Deliberately NOT auto-filed during the NAV-005 rails fix: "file what belongs to the
+                         # work in hand, never a batch of older drafts unasked" (.claude/skills/log-issue/SKILL.md).
 github_issue_url: ""
 github_issue_number: null
 filed_title: "ST-7 followup -- \"Recently favorited\" ordering for the Favorites filter"

@@ -7,6 +7,8 @@ deciders: maintainer (Raman)
 amends:
   - CLAUDE.md:254 ("No functional changes — only docs, tests, comments, spec alignment") — scoped, not removed
   - issues/README.md ("filing is always a human action") — scoped to issue-creation + merge, not comments/draft-PRs
+amended_by:
+  - "2026-09-06 (CLAUDE.md:126, commit 2b20196d): the ISSUE-CREATION half of the human-only rule was retired by the maintainer. The bot now files issues via its scoped token; only the MERGE stays human. See the amendment note below — the Decision text is left as written on 2026-06-09."
 research:
   - adrs/drafts/research/contributor/STACK.md
   - adrs/drafts/research/contributor/EXTERNAL-PRACTICE.md
@@ -24,6 +26,18 @@ The odd-team has matured from documentation-maintainer + issue-drafter into a **
 This is a deliberate expansion that crosses two standing rules:
 - `CLAUDE.md:254` — "No functional changes." The contributor **changes odd-platform code**. Scoped exception, this pillar only.
 - The human-only-GitHub rule (`issues/README.md:121,148`). The contributor **posts comments and opens draft PRs directly**. Scoped: it never creates new issues and never merges.
+
+> **Amendment — 2026-09-06 (partial supersession; the text above is preserved as decided on 2026-06-09).**
+> The maintainer retired the **issue-creation** half of the human-only rule: *"you could create gh issues on your own"*
+> (`CLAUDE.md:126`, commit `2b20196d`). The App's token always carried `issues: write` — the change is policy, not
+> scope. So the contributor now **posts comments, FILES issues, and opens draft PRs**; the preconditions live in
+> `playbooks/github-write.md` step 4b (ASCII body, zero workspace-internal ids, only existing labels, **no milestone**).
+> **The merge remains human and GitHub-enforced** (G-C4), and so does anything touching workflows or secrets — the
+> irreversible-blast-radius reasoning in this ADR is untouched. The rationale for the change: handing the maintainer a
+> reviewed, ASCII-checked, label-checked draft plus "now go paste this" made them the copy-paste transport, which is the
+> same waste as making them the QA gate. Reconciliation of the dependent rails: `backlog/navigation/NAV-005.md`.
+> *(`adrs/drafts/research/contributor/STACK.md` §Rule B quotes the pre-amendment wording as it stood in June; it is
+> research evidence of the baseline, deliberately left unedited.)*
 
 The four shaping decisions were taken by the maintainer (2026-06-09): **scoped-token GitHub write** (comments + draft PRs directly; humans merge only), **two human gates** (approve the plan before code; approve the PR before merge), **full code mandate** (bugs + features + migrations, ADR-gated), and the deliverable is **this ADR + a `contributor` pillar + skill/agent contracts**, with PLT-001 as the worked example.
 

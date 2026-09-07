@@ -29,7 +29,7 @@ Convert findings at `$ARGUMENTS` into backlog work items.
    - **Actionable?** — Reject false positives with brief explanation
    - **Work we do here, or a handoff to upstream?** — This is the first split:
      - **Work we do here** → backlog item under `backlog/{cat}/{ID}.md` (continue with the fields below).
-     - **Handoff to upstream** (the fix lives in a repo we don't directly maintain in this workspace — Java in `odd-platform`, Python in `odd-collectors`, schema in the spec, Helm in `charts`, etc.) → instead of a backlog item, draft a paste-ready GitHub issue at `issues/{repo}/{PREFIX}-NNN.md` via `/log-issue {repo} "title"` (see `issues/README.md` for prefixes). A single finding can produce both — e.g., a missing doc caveat (backlog) **plus** an upstream code fix (issue draft); link them both ways.
+     - **Handoff to upstream** (the fix lives in a repo we don't directly maintain in this workspace — Java in `odd-platform`, Python in `odd-collectors`, schema in the spec, Helm in `charts`, etc.) → instead of a backlog item, draft a GitHub issue at `issues/{repo}/{PREFIX}-NNN.md` via `/log-issue {repo} "title"` (see `issues/README.md` for prefixes) and FILE it, writing the returned URL back into the draft — since 2026-09-06 filing is the agent's action, not a hand-off. A single finding can produce both — e.g., a missing doc caveat (backlog) **plus** an upstream code fix (issue draft); link them both ways.
    - **Category** (for backlog items) — DOC (documentation), TST (test), NAV (navigation), SPC (specification)
    - **Issue type** (for issue drafts) — bug | feature | adjustment; bugs also need `severity`
    - **Granularity** — One work item / one issue draft per logical change (split complex findings, merge trivial ones)

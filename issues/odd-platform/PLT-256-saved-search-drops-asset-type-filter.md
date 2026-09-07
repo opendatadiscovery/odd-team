@@ -16,7 +16,7 @@ user_facing_verified: true   # favorites: maintainer-observed in the UI on merge
 suggested_milestone: "1.0.0"   # SUGGESTED ONLY -- filed with NO milestone; the maintainer attaches it (G-C11)
 # NOTE (workspace-internal, not part of the paste): the PR body of odd-platform#1875 and two odd-contributor[bot]
 # comments on #1841 (2026-08-30 scope comment, 2026-09-02 PR announcement) say this defect was "reported separately".
-# THIS DRAFT is that report. It sat unfiled until 2026-09-03 (the bot is policy-barred from creating issues on its
+# THIS DRAFT is that report. It sat unfiled until 2026-09-03 (the bot was, AT THE TIME, policy-barred from creating issues on its
 # own), so from the GitHub side nothing was reported until #1878 -- filed on the maintainer's explicit instruction;
 # its body references #1841 + #1875, which gives both threads the missing backlink. Retrospective: retrospectives/LSN-042.
 ---

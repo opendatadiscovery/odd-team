@@ -119,12 +119,16 @@ rejected  rejected
 | From → To | Who | When |
 |-----------|-----|------|
 | `(new)` → `draft` | `/log-issue` or any session that surfaces an upstream defect | Immediately on discovery |
-| `draft` → `filed` | **A human, manually**, via the GitHub web UI (or `gh issue create`) | After review of the draft. Update `github_issue_url` + `github_issue_number` in frontmatter. |
+| `draft` → `filed` | **The agent**, via the scoped App token (`POST /repos/{owner}/{repo}/issues`) — or a human, via the web UI | As soon as the draft is sound. Write the returned `github_issue_url` + `github_issue_number` back into the frontmatter. |
 | `filed` → `closed` | Any session noticing the upstream issue closed | Update frontmatter; add a `## Outcome` section noting the closing PR / commit and whether the workspace's caveat doc can be removed. |
 | `draft` → `rejected` | Any session, with reasoning | False positive, obsolete, superseded. Add a `## Rejection` section with evidence. |
 | `filed` → `rejected` | Any session | Upstream maintainer marked "wontfix" or closed without a fix. Document the upstream conversation; consider whether a permanent doc caveat is now needed in `documentation`. |
 
-Filing is **always** a human action for now (a "visible to others" operation under the workspace's safety rules). Drafts can be created freely; filing requires a deliberate paste-and-submit.
+**Filing is the agent's action since 2026-09-06** — the maintainer retired the human-only rule ("you could create gh issues on your own"; `CLAUDE.md:126`, commit `2b20196d`). The App token always carried `issues: write`; what changed is the policy. Handing back a paste-ready file plus "now go paste this" bought nothing — the draft was already reviewed, ASCII-checked and label-checked, so it made the maintainer the copy-paste transport.
+
+The draft on disk is still written first and still kept: it is the working record and the audit trail. What changed is that `draft → filed` is now a call, not a chore. **Preconditions every time** (each has bitten): a pure-ASCII body; **zero** workspace-internal ids in it (`PLT-`/`CTRIB-`/`DOC-`/`TST-`/`LSN-`/`G-C`/`lineage/`/`backlog/` — describe the thing, do not name the tracker row); every label already existing on the target repo (a missing one 422s the call); and **no milestone** — release planning stays the maintainer's. Judgment survives the lifted rule: file what belongs to the work in hand, never a batch of old drafts unasked. Mechanics: `.claude/skills/log-issue/SKILL.md`; protocol: `playbooks/github-write.md` step 4b.
+
+What is still **never** the agent's: the **merge** (`pillars/contributor/gates.md` G-C4, GitHub-enforced), and anything touching workflows or secrets.
 
 ## Cross-referencing
 

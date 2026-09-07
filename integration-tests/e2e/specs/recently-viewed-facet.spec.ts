@@ -417,6 +417,17 @@ test.describe('Last viewed scope — narrows to my history, orders it, survives,
     await gotoSearch(page, `/search?q=${TOKEN}&viewed_after=2026-09-01`);
     await expect(chip(page)).toHaveCount(0);
     await expectListed(page, [NEVER], []);
+
+    // THE CONTROL, and it is what makes the two assertions above mean anything. "Junk does not filter" is
+    // trivially true on a system that cannot filter AT ALL — this case was the ONE of twelve that passed on
+    // `ref:main`, where the params are dropped on parse, so it was proving nothing there. A VALID bound in the
+    // same param, on the same URL shape, must narrow: that is what separates "fails closed" from "does nothing",
+    // and it is what takes this case RED on the base with the rest of them (G-C15).
+    const validBound = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    await gotoSearch(page, `/search?q=${TOKEN}&viewed_after=${encodeURIComponent(validBound)}`);
+    await expect(chip(page), 'a VALID bound is read — so the two junk cases above are a rejection, not a no-op')
+      .toContainText('Last viewed: since');
+    await expectListed(page, [OPENED], [NEVER]);
   });
 
   test('12 — the same link returns the same rows in another timezone (the boundary is an instant, not a day)', async ({

@@ -24,6 +24,9 @@
 #   SUT_IMAGE_ID=sha256:...
 #
 # Portable: no absolute paths. Overrides: ODD_PLATFORM_DIR=<path>  JAVA_HOME_17=<jdk17 path>
+#   ODD_GRADLE_ARGS=<flags>   extra gradle flags for the SUT build (e.g. '--no-parallel --max-workers=1'
+#                             on a memory-constrained box - odd-platform's own gradle.properties forces
+#                             parallel, and a project file beats the user's, so this is the only lever)
 #   ODD_SUT_TAG=<image:tag>   per-stream SUT image tag (default the stable shared tag). For N parallel
 #                            streams, each builds into odd-platform:odd-team-sut-<stream-id> so the streams
 #                            do not clobber each other's image (findings §5.1 / parallel-contribution model).
@@ -53,7 +56,15 @@ JDK="$(find_jdk17 || true)"
 
 # Build the odd-platform image from a checked-out source dir, WITH the UI bundled (the e2e drives the SPA).
 jib_from() {  # $1 = an odd-platform source checkout
-  JAVA_HOME="$JDK" "$1/gradlew" -p "$1" :odd-platform-api:jibDockerBuild --image="$TAG" -x test
+  # ODD_GRADLE_ARGS: extra gradle flags for the SUT build, word-split on purpose.
+  # It exists for ONE measured reason. odd-platform's own gradle.properties sets `org.gradle.parallel=true`, and a
+  # project file OVERRIDES ~/.gradle/gradle.properties for the same key - so the SUT build cannot be made serial
+  # from the machine's own config, only from the command line. On a workstation already carrying an IDE, a browser
+  # and docker stacks, the parallel build is what runs the box out of memory: measured 2026-09-07, the OS killed
+  # the SUT build twice, and once left a daemon at 80% CPU writing nothing for thirty minutes with 521,615K used
+  # of a 524,288K heap. `ODD_GRADLE_ARGS='--no-parallel --max-workers=1'` finishes instead.
+  # shellcheck disable=SC2086
+  JAVA_HOME="$JDK" "$1/gradlew" -p "$1" :odd-platform-api:jibDockerBuild --image="$TAG" -x test ${ODD_GRADLE_ARGS:-}
 }
 
 case "$SUT" in

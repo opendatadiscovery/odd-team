@@ -6,7 +6,7 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1844
 also_closes: "#1832 (the panel's View all — wholly delivered by this slice; the PR carries `Closes #1832` beside `Closes #1844`)"
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1844` 2026-09-06: milestone 1.0.0 (#29), state OPEN, semver, due 2026-12-31; #1832 carries the same milestone and is also OPEN — both re-verified live at the GATE-1 packet (19 open / 15 closed at that read)
-status: planned           # Phases A–C complete (planning session 2026-09-06); GATE 1 pending — the packet is §8. Phase D+ is executed later by a different model against §9 (the runbook).
+status: plan-approved     # GATE 1 APPROVED 2026-09-07 (RamanDamayeu): D1 = A (the filter works on the shared history under auth.type=DISABLED, labelled), D2 = A (filter + the Recently viewed ordering; the PR closes #1832 too), D3 = approve now with the independent round-3 plan-check run BEFORE any code. Step 0 DONE (both scope comments posted, §10). Phase D+ is executed later by a different model against §9 (the runbook).
 classification: feature   # a slice of the #1825 epic (ST-10 in state/search-overhaul-decomposition.md :156); entry gate = spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D3 (the 'Recently viewed (datetime)' row of the facet table, joined per current identity) + D8 (the panel as a deep-link widget) + D10 / D11; depends on #1816 (CTRIB-041 — MERGED #1826 backend + #1827 frontend) — UNBLOCKED"
 stream_id: ctrib067
@@ -16,8 +16,8 @@ head_sha:                 # Phase D
 pr:                       # Phase E — odd-platform DRAFT (base main) + documentation DRAFT (base release/1.0.0)
 reproduced: "n/a — feature slice, not a bug. BASELINE captured on a running stack built from main @ 0238005c (§3a): POST /api/search/assets silently ignores an unknown `recently_viewed` field (HTTP 200, total 126,001 with and without it), the list endpoint honours viewed_after today, the wire shapes are captured verbatim. These observations go RED in Phase D's IT-157."
 adr_required: false       # §6(b): conforms to the approved spine ADR D3/D8/D10/D11/D12; no migration (the table + both indexes shipped in V0_0_95), no auth-posture change (identity from the session, the DISABLED sentinel as shipped), an ADDITIVE wire change (one optional object on AssetSearchFormData + one sort token)
-plan_approved_by:
-plan_approved_at:
+plan_approved_by: "RamanDamayeu"
+plan_approved_at: "2026-09-07"   # via the structured GATE-1 ask; all three recommendations taken
 docs_routing: "documentation@release/1.0.0 (unreleased behaviour, G-C11) — own worktree ../documentation-ctrib067 off origin/release/1.0.0 @ 1a70aba; paired backlog/docs/DOC-529 (milestone 1.0.0); pages: search.md (## Last viewed + the link bullet + description), recently-viewed.md (## Finding your history in Search), catalog-overview.md (:47 the panel's View all), Features.md:60, data-discovery.md:13,23, main-concepts.md (Terms & Aliases: Last viewed ↔ Recently Viewed)"
 planning_session: "2026-09-06, Claude Fable 5.1 at max effort — Phases A–C only (intake → spec-gate → baseline → product critique → design → plan + must_haves → plan-check → GATE-1 packet). The maintainer runs Phase D later with a less capable model: §9 is written to be followed literally, every value resolved, every command exact."
 ---
@@ -897,8 +897,19 @@ the picker's i18n gap is FIXED in-slice rather than deferred as pre-existing (G-
 
 ## 8. GATE 1 — the packet for the maintainer
 
-**Status: PENDING.** Two decisions, then the plan is approved as written (or corrected). Both are stated in §5.4 / §5.5
-with their option tables; the recommendation is **D1 = A** and **D2 = A**.
+**Status: APPROVED 2026-09-07 by `RamanDamayeu`** — both decisions taken as recommended, plus a third on how to close
+the owed plan-check:
+
+- **D1 = A** — the filter works on the shared instance-wide history under `auth.type=DISABLED`, labelled
+  `Last viewed (shared)` with the consequence tooltip. The issue's "empty under `auth.type=DISABLED`" AC line is
+  superseded, and the public thread says so (§10).
+- **D2 = A** — the slice ships the filter **and** the `Recently viewed` ordering coupled to it; the PR carries
+  `Closes #1844` **and** `Closes #1832`.
+- **D3 (asked because round 3 could not run independently) = approve now, and run the independent re-check BEFORE any
+  code.** So Phase D opens with the owed round-3 plan-check in a fresh context; nothing is skipped, only resequenced.
+  Any blocker it raises is fixed before Step 1.
+
+Both decisions are stated in §5.4 / §5.5 with their option tables.
 
 | | The question, in plain language | Recommended | The cost of NOT doing it |
 |---|---|---|---|
@@ -1296,7 +1307,17 @@ FILED as a real issue via the App token — the never-auto-file rule was retired
 regression concurrently with another (the flock serialises it — wait, do not bypass).
 
 ## 10. Comments posted (G-C6 / G-C5)
-Step 0's two scope comments — URLs recorded here when posted (nothing posted during the planning session; GATE 1 first).
+
+Step 0, posted 2026-09-07 immediately after GATE-1 approval and **before any code**, as `odd-contributor[bot]`, with the
+bodies verbatim from §8b (read back live: both rendered pure-ASCII, 25 and 3 lines):
+
+| Issue | Comment | What it says |
+|---|---|---|
+| **#1844** | [`issuecomment-5567958331`](https://github.com/opendatadiscovery/odd-platform/issues/1844#issuecomment-5567958331) | the PR's scope, that it also closes #1832, that the "empty under `auth.type=DISABLED`" line is superseded and why, and that relative windows are excluded |
+| **#1832** | [`issuecomment-5567958521`](https://github.com/opendatadiscovery/odd-platform/issues/1832#issuecomment-5567958521) | it is delivered by this work and the PR will carry `Closes #1832` |
+
+No third artefact: the accessibility issue round 1 asked for was **withdrawn** after the source falsified its claims
+(§8b iii). The one-question clarify bar (G-C6) was never spent — nothing needed asking that the source could not answer.
 
 ## 11. Test ledger
 Filled by the executing session: the full unit build (counts + checkstyle), the FE vitest run, IT-157 GREEN on the
@@ -1304,4 +1325,13 @@ branch SUT + RED on `ref:main` (with the run-log line + the SUT digest for each)
 changed-lines coverage figure, the SRE re-measure, and the pixel-review screenshots.
 
 ## 12. Outcome
-Pending. Phases A–C complete 2026-09-06; GATE 1 is the next gate.
+
+Phases A–C complete 2026-09-06; **GATE 1 approved 2026-09-07** (all three decisions as recommended); Step 0's two scope
+comments posted (§10). **No code, no branch, no PR** — Phase D is a separate session by the maintainer's choice.
+
+**The executing session starts here, in this order:**
+1. the **owed independent round-3 plan-check** (D3's condition) — fresh context, before Step 1; fix any blocker first;
+2. §9.0's preconditions (re-verify `origin/main`, cut the branch inside `../odd-platform-ctrib067`, push-safety);
+3. Steps 1 → 12 of §7, one commit per step, against §9's runbook;
+4. the five Definition-of-Done gates (§9.4), all RUN, none deferred to `/review`;
+5. the draft PRs → `review-ready`. The implementer never sets `merged` or `done`.

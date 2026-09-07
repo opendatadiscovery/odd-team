@@ -5,7 +5,11 @@ checker: plan-checker (fresh context, adversarial, goal-backward — playbooks/p
 round: 1
 date: 2026-09-06
 base_verified: odd-platform 0238005c (worktree ../odd-platform-ctrib067, detached, read-only — no build, no run); documentation origin/release/1.0.0 @ 1a70aba
-verdict: ISSUES FOUND — 4 blockers, 11 warnings
+verdict: ISSUES FOUND — 4 blockers, 11 warnings   # round 1
+round_2: 2026-09-06   # fresh adversarial re-read of the revised §7 / §9 / §8a / §8b, static-only at the same base
+round_3: 2026-09-06
+round_3_verdict: "NOT RUN INDEPENDENTLY - the round-3 agent terminated on a session rate limit (HTTP 429) before a verdict. Self-run by the planner instead (plan-contract.md on-fail clause): D1/D4/D7/D9 re-derived from source, all three round-2 blockers confirmed fixed, and ONE NEW defect found + fixed (the defaultRange clamp covered only one of the two inverting shapes; it now orders the pair). An independent round 3 is OWED - see contributor/CTRIB-067.md section 8a."
+round_2_verdict: ISSUES FOUND — 3 blockers, 7 warnings
 ---
 
 # CTRIB-067 plan-check — round 1
@@ -290,3 +294,199 @@ recorded, not actionable.
 The plan's citation accuracy, its wiring coverage, its class-extension posture (the calendar locale fixed in-slice with a
 run-verified fragment) and its GATE-1 framing are all at or above the ST-9 bar. The four blockers are concentrated in
 exactly the place this plan's own risk model names: values and conditions a less capable executor will read literally.
+
+---
+
+# CTRIB-067 plan-check — round 2
+
+## ISSUES FOUND
+
+**Slice:** CTRIB-067 / #1844 ST-10 — the per-identity, cross-kind **Last viewed** datetime-range scope, the
+`last_viewed` ordering coupled to it, and the Recently Viewed panel's **View all** (#1832).
+
+**Scope of this round:** the revised §7 Steps 3/5/6/7/8/10/11/12, the `must_haves` R14 note, §8a (the round-1
+disposition), §8b (the three drafted public bodies) and §9.2(e) / §9.3 — read as a fresh reader, crediting nothing to
+the record's own claim that a fix is in. D1, D4 and D7 re-run in full; D2/D3/D5/D6/D8/D9/D10 re-run only where a fix
+could have broken them. Static-only at odd-platform `0238005c` in the read-only worktree; docs via
+`git -C ../documentation show origin/release/1.0.0:<path>`. Nothing was built and nothing was run.
+
+**Round-1 blockers: 2 of 4 cleared, 2 half-cleared.**
+
+| R1 blocker | Status | Evidence |
+|---|---|---|
+| **B1** `parseInstant` rejected a `Date` | **CLEARED** | Step 3 now types it `raw: unknown`, handles `raw instanceof Date` explicitly before the catch-all, keeps the bare-`YYYY-MM-DD` rejection, and Step 8's FE list pins the R9 fixture to real `Date` bounds ("an ISO-string fixture passes on the broken implementation and proves nothing"). The `Date`/`string`/junk trichotomy is now stated identically in Step 3 and §9.2(b). |
+| **B2** `SearchSortDtoTest` mislabelled "(new)" | **CLEARED** | The file exists with exactly three tests and the 2-arg `resolveEffective` at `:29-30` (re-read this round); it is relabelled **EXTENDED** with a CHANGED-table row whose SoT (the 3-arg contract, Step 2.2) and surviving RED are both accurate, and the kept 2-arg overload does leave `:29-30` byte-identical. `AssetSearchCursorTest` joined the plan (W8). The other five "(new)" artefacts — `RangeFacetShell.test.tsx`, `RecentlyViewedFilter*`, `recencyPresets*`, `calendarLocale*`, `AssetSearchRecentlyViewedIntegrationTest` — are genuinely absent at `0238005c` (re-checked by `find`). |
+| **B3** the `RangeFacetShell` extraction changes shipped Popularity behaviour | **HALF-CLEARED → still a blocker** | the `disabledReason` half is fixed and the chip gate is now provably behaviour-identical; the `stops.length < 2` half is not — see blocker 1 below. |
+| **B4** the picker's required `defaultRange` was `{…}` | **HALF-CLEARED → still a blocker** | §9.2(e) resolves three of the four scope shapes; the `viewed_before`-only shape produces an inverted range — see blocker 2 below. |
+
+**Issues:** 3 blockers, 7 warnings.
+
+### Blockers (must fix before GATE 1)
+
+1. **[D3 / D7] B3 is only half-fixed: the shell's stated render conditions still contradict the shipped one-stop
+   guard, and neither named oracle can see the half that ships.**
+   - **Plan location:** §7 Step 5 — *"**`children` AND the presets row are BOTH gated on `!disabledReason`**"* +
+     *"`RangeFacetFilter.tsx` becomes `<RangeFacetShell …>{bars}{slider}</RangeFacetShell>`"* + the new
+     `RangeFacetShell.test.tsx` case list (*"no `children` and no presets row when `disabledReason` is set …"*).
+   - **What is wrong, at `0238005c`:** the shipped gate is **two** conditions, not one —
+     `RangeFacetFilter.tsx:100` `const canSlide = !disabledReason && stops.length >= 2;` drives `:138`
+     (`canSlide ? bars+slider+presets : disabledReason && <reason>`), and the component's own Javadoc `:60-63`
+     documents the second guarded state ("fewer than two stops renders NO slider **even without a reason**, because
+     MUI computes NaN positions for min == max"). That state is reachable on the only shipped consumer:
+     `PopularityFilter.tsx:86` sets `disabledReason` **only** when `selectedScores.size === 0`, so one occupied band
+     **plus a selection** (e.g. the "Never viewed" preset on a catalog whose only occupied band is 0 views) yields
+     `stops.length === 1` with **no** `disabledReason`. `PopularityFilter.test.tsx:161` pins exactly that case
+     (*"a one-stop rail with a selection renders the chip but no slider (never a NaN-positioned control)"*,
+     `queryAllByRole('slider')).toHaveLength(0)` + `innerHTML` not containing `NaN`).
+   - **Consequence for a literal executor:** the shell as specified renders `children` in that state, so
+     `PopularityFilter.test.tsx:161` goes RED and the executor must improvise mid-flight — against §9's promise
+     ("no value to invent, no path to guess"). Whatever they improvise for `children`, the **presets** half has no
+     oracle at all: neither `PopularityFilter.test.tsx` (its :161 case asserts the chip and the slider, never the
+     preset) nor the new `RangeFacetShell.test.tsx` (which only covers `disabledReason`) asserts preset-absence in
+     the one-stop state — so a clickable *Never viewed* link ships where the shipped rail renders nothing, silently.
+   - **Fix:** say it in Step 5 — `RangeFacetFilter` keeps its `canSlide` computation and passes **both**
+     `children={canSlide ? <>{bars}{slider}</> : null}` **and** `presets={canSlide ? mapped : undefined}` (the
+     shell's own `!disabledReason` gate then stays correct and complete for the shell). Pin the presets half: one
+     added assertion in the existing `:161` case (an ADD that asserts more truth → one more CHANGED-tests row), or a
+     third `RangeFacetShell.test.tsx` case with `presets` undefined.
+   - *(Verified sound and not re-litigated: the chip gate change is behaviour-identical — `parsePopularity`
+     (`searchUrlState.ts:337-349`) never returns `{}`, so `chipText !== ''` ⟺ `hasSelection`; the preset prop's
+     `{label,onSelect}` reshape preserves the click contract, and the existing preset test clicks by accessible
+     name; the `../FixedOptionsMultiFilter/…` chip import resolves unchanged from the new folder (same depth).)*
+
+2. **[D9 executor-readiness / D3] B4's `defaultRange` fragment resolves three of the four scope shapes; the
+   `viewed_before`-only shape yields an inverted range that can silently destroy the filter.**
+   - **Plan location:** §9.2(e) — `const end = viewedBefore ? new Date(viewedBefore) : endOfDay(new Date());`
+     `const begin = viewedAfter ? new Date(viewedAfter) : startOfDay(subDays(new Date(), 6));`
+   - **What it violates:** round 1's own fix criterion ("name the value for **each of the four** scope shapes"). The
+     `before`-only state is first-class in this plan — R3/R4's grammar allow one bound, the serialiser writes it, and
+     R7 gives it a dedicated chip key `Last viewed: before {{to}}` — and for it the fragment computes
+     `begin = today−6d` **after** `end = the stored bound` whenever the bound is older than six days.
+   - **Consequence:** `AppDateRangePicker` receives `value={[rangeStart, rangeEnd]}` (`:103`) reversed, and
+     `handleClickDone` (`:70-75`) calls `setCurrentRange(rangeStart, rangeEnd)` **unconditionally** — so a user who
+     opens a shared "before X" link, opens the picker and presses Done writes `viewedAfter > viewedBefore`, which
+     Step 3's URL rule (*"`after > before` → `undefined`"*) drops as the WHOLE dimension: the filter vanishes and the
+     list unfilters, with nothing red. `RecentlyViewedFilter.test.tsx`'s per-shape cases assert the chip, not the
+     picker's seeded value, so no planned test sees it.
+   - **Fix:** clamp in the fragment — when only `viewedBefore` is set, `begin = startOfDay(subDays(new Date(viewedBefore), 6))`
+     (and, defensively, never return `beginDate > endDate`); add the `before`-only shape to
+     `RecentlyViewedFilter.test.tsx` asserting the seeded range, not only the chip.
+   - *(Verified sound: `defaultRange` is required (`:8`), drives `value` (`:103`) and is re-applied by
+     `useEffect([defaultRange])` (`:26-28`); memoising on the two ISO strings is the right identity fix; the
+     "no bounds → last seven days, visible but not applied" decision is byte-for-byte the shipped precedent —
+     `CalendarFilter.tsx:33-41` has the same memo and the same "WITHOUT writing it to the query" comment;
+     `startOfDay`/`endOfDay`/`subDays` are importable where the fragment sits (`date-fns ^2.30.0` is a direct
+     dependency and `AppDateRangePicker.tsx:2` already imports from it).)*
+
+3. **[D6 / D9 — G-C9 factual-claim provenance] §8b(iii)'s public issue body states three facts the source
+   contradicts, and GATE-1 approval posts it at Step 0, before any code.**
+   - **Plan location:** §8b(iii) — *"there is no text input to type a date into, and the trigger is not reachable or
+     operable from the keyboard … a keyboard-only or screen-reader user cannot set a range at all"*; repeated in §4's
+     exclusions and §6(d) as *"the picker's icon-only trigger (no typed-date input)"*.
+   - **What the source says:** `AppDateRangePickerStyles.ts:2` wraps
+     `react-multi-date-picker/components/input_icon`, whose implementation renders
+     `<input type="text" className="rmdp-input" value={…} autoComplete="off" {...rest}/>` next to the icon; the
+     DatePicker clones the `render` element with `{value, openCalendar, onFocus: openCalendar, handleValueChange,
+     onChange: handleValueChange, locale, separator}` (the library's `build/index.js`), and its `editable` prop
+     defaults to true. So the trigger **is** a native text input — tabbable by default, opening the calendar on
+     focus, which is precisely why ODD's own wrapper carries `&:focus, &:active` border rules (`:20-22`);
+     `overrides.css` contains no `.rmdp-input` rule that would hide or disable it. The claim traces to the SME note,
+     which this record's own §5.3 discipline says is re-verified before use — this one was not.
+   - **Why blocking:** the body is a public artefact filed under the bot's identity on the project's own tracker, the
+     maintainer's GATE-1 approval covers *the words*, and a wrong bug report is not cheaply recoverable
+     (`CLAUDE.md` — publishing standards; Gate 9 — every claim cites what enforces it).
+   - **Fix:** drive the control on the plan-time stack (it is still up per §9.3) and re-scope the issue to what is
+     provable — e.g. whether typing parses against `format='D MMM'` + `range`, that the calendar **icon**'s own
+     `onClick` handler is mouse-only, or the missing label/`aria` association — then correct §4's exclusion and
+     §6(d) to match. ASCII and id-freedom of all three bodies are otherwise verified clean (checked
+     programmatically: zero non-ASCII characters, zero workspace-internal ids in all three blocks), and (i) and (ii)
+     describe exactly what §7 builds (the scope + the ordering + View all + `Closes #1832`; the superseded DISABLED
+     line; relative windows excluded — each matches §5.4 / §5.5 / §4's exclusions).
+
+### Warnings (fold before the GATE-1 packet)
+
+1. **[D9] §9.3 "The gate commands, **verbatim**" still runs `pnpm test` — the watch-mode command §8a claims was
+   replaced.** §8a: *"the FE gate is `pnpm exec vitest run`, not watch-mode `pnpm test` (W4)"*; Step 9 was changed,
+   §9.3's block was not (`pnpm generate && pnpm tsc && pnpm lint && pnpm test`). §9.3 is the block a literal executor
+   copies. Fix: `pnpm exec vitest run` there too.
+
+2. **[D3 / D1] The three-valued history signal reaches the facet but not `Results.tsx`, and the case that would
+   catch it has no home.** Step 6 exports `useRecentlyViewedHistoryEmpty()` — a boolean whose `true` means
+   *settled and empty* — while Step 7's literal expression is a binary ternary
+   (`isRecencyScope ? (historyEmpty ? … : t('Nothing you opened matches this range.')) : …`). During the history
+   fetch the flag is `false`, so the results area renders *"Nothing you opened matches this range."* — which R10
+   forbids (*"a third vitest case pins that the not-yet-fetched state shows NEITHER sentence"*). The race is real:
+   `Results.tsx`'s `EmptyContentPlaceholder` gates on the **search**'s loading flag, not the recency slice's.
+   Fix: make the hook three-valued (`'loading' | 'empty' | 'has-history'`) and branch Results on it — and name the
+   file: Step 7's Verify cites a *"`Results` empty-state vitest"* that appears in no Files line and has no existing
+   home (`components/Search/Results/` carries tests only for `SearchResultsHeader` and `SearchSortMenu`).
+
+3. **[D1 record accuracy] R9 still asserts the identity the plan now deliberately breaks.** R9: the projection reads
+   the stored spec *"through the SAME fail-closed reading the URL uses"*, while Step 2.8 / Step 3 now state (and
+   pin with a paired test) that the stored-spec inversion rule differs on purpose (both bounds dropped, scope kept)
+   from the URL rule (whole dimension dropped). The two steps agree with each other — the spec line is the residue.
+   Fix: R9 → "through the SAME `parseInstant`; the stored-spec inversion rule is Step 2.8 / Step 3's".
+
+4. **[D7 / D1] R13's second acceptance clause has no test.** *"web/IT: the search never calls the record path (no
+   `POST /api/recently-viewed/*` during a search)"* — Step 8's three new `AssetSearchControllerWebTest` cases are
+   bind/inverted/400, and none of IT-157's 13 cases asserts it. Fix: one request-listener assertion in IT-157 case 1
+   (the harness already uses `page.waitForResponse` predicates on `RV_DE` in the IT-149 spec).
+
+5. **[D7 precision] The `AssetSearchCursorTest` row names a method a test cannot call.** `parsesForSort` is
+   `private static` (`AssetSearchCursor.java:148`); the file's own idiom is
+   `decode(keyset(sort, "not-a-timestamp", false, "TERM", 1L).encode(), sort)` (`AssetSearchCursorTest.java:85-92`,
+   including the `vn:true` guard case the `LAST_VIEWED` case mirrors). Fix: quote the idiom in the row so the
+   executor writes a compiling test first time.
+
+6. **[D9 record accuracy] Round-1 W7's second half was not folded.** §4 still reads *"the `react-multi-date-picker`
+   calendar's English calendar's **icon-only trigger**"* — an editing artefact §8a does not claim to have fixed. It
+   needs rewriting anyway once blocker 3 corrects the underlying claim.
+
+7. **[plan-contract §2] The §7 preamble's "every step names Files · Action · Verify · Done" is still not true for
+   Steps 1 and 3–7** (they name files in their headings and in the artifacts table, but carry no `Files:` line).
+   Round 1 asked only about Steps 8/10/11/12 and those are now fixed. Worth one pass: the new
+   `useRecentlyViewedHistoryEmpty()` hook has no named file anywhere, and warning 2 turns on where it lives.
+
+### D1 / D4 / D7 re-run in full
+
+- **D1 coverage — 16/16 requirements still map to ≥1 step, 15/16 to a truth (R14 is now an explicit measured-only
+  note, W1 folded correctly).** The revision changed no requirement's owner. Two acceptance CLAUSES inside covered
+  requirements are unowned: R10's not-yet-fetched case (warning 2) and R13's no-write-on-read case (warning 4).
+  Out-of-scope discipline holds: no relative window, no facet-count endpoint, no inverse scope, no `/api/info`
+  change, nothing on the legacy `/api/search` beyond the one-token guard, no ST-11 work, no write on read. IT-157's
+  renumbering is internally consistent — 13 cases, and every cross-reference resolves to the right one
+  (R10→#11, R12/§3→#12, T7→#13, Step 4→#5–6, Step 7→#2/9/10/11, §9.5 trap 10→#9).
+- **D4 scope reduction / class extension — PASSES again.** Phrase scan over the revised §7 + §9: zero hits for
+  `v1` / `v2` / `simplified` / `static for now` / `hardcoded for now` / `placeholder` / `basic version` / `minimal` /
+  `wired later` / `stub` / `skip for now` / `too complex`; every occurrence of "defer" is the plan refusing one. The
+  class-extension posture is unchanged and still in-slice (the picker's four footer labels through `t()`, the
+  runtime `Intl` calendar locale with the verified `br → pt-BR` / `ch → zh-CN` / `ua → uk` map). The i18n
+  arithmetic re-verified this round: 707 keys × 7 catalogs, `Recently viewed` present in all seven, and `Last viewed`
+  / `Today` / `Last 7 days` / `Last 30 days` / `Any time` / `Custom range` absent from all seven — the 22-new-key
+  count reconciles. One caveat, folded into blocker 3: §6(d)'s "disclosed rather than fixed" line rests on a claim
+  the source contradicts, so the class analysis needs one correction — not a deferral.
+- **D7 test integrity — both buckets still routed correctly.** The CHANGED-tests table now carries six rows, each
+  with an SoT and a surviving RED, and both new rows were verified against the tree (`SearchSortDtoTest` 3 tests /
+  2-arg at `:29-30`; `AssetSearchCursorTest:83-92` with the `UPDATED_AT` "not-a-timestamp" and `STATUS_PRIORITY`
+  `vn:true` precedents). The mandatory integration IT is present and each of its 13 cases still names a RED-on-base
+  reason and a FOIL. The IT-157 isolation rule is real and sufficient: IT-149's spec (`recently-viewed-record-see-loop.spec.ts`)
+  asserts its own rows with `.first()` and deletes only what it created, so IT-157 seeding-and-windowing rather than
+  emptying the shared `__shared__ / DISABLED` bucket does not collide; case 12's single DELETE + re-record restores
+  presence (the re-record lands at `now`, which is safe here because case 13 compares two contexts against each
+  other at the same instant, not against a captured older ordering). Residual test gaps are warnings 2, 4, 5 and the
+  missing preset oracle inside blocker 1.
+
+### Recommendation
+
+**3 blockers → return to the planner; revise and re-check (loop ≤ 3 — this is round 2 of 3).** None is large: blocker 1
+is one clause in Step 5 plus one assertion; blocker 2 is one clamp in §9.2(e) plus one test shape; blocker 3 is a
+verification pass on a control the plan can drive today, plus rewriting one public body and two record lines. Fold
+the seven warnings in the same pass — 1, 2 and 3 are the ones that otherwise reach the maintainer as behaviour or as
+a stalled gate; 4–7 are packet hygiene.
+
+What improved measurably since round 1: B1 and B2 are closed cleanly, the inverted-window rule is now stated once
+and mirrored with a paired test, IT-157 no longer mutates a sibling spec's bucket, the doc description is measured
+correctly (181, re-measured with PyYAML on `origin/release/1.0.0` this round), the 13-case count reconciles
+everywhere, and all three public bodies are ASCII and id-free. What did not: the two half-fixes above were both
+recorded in §8a as complete — which is the thing to watch, because the round-1 finding named the one-stop path and
+the four scope shapes explicitly, and the disposition table asserts more than the text delivers.

@@ -142,7 +142,9 @@ consult `lineage/odd-platform/sme-consultations/2026-09-06-recently-viewed-datet
 | **R10** | The two **empty states** — never a bare "No matches found" under the scope | `Results.tsx:207` (favorites' teaching empty) | (a) the caller has NO history at all: the control renders **disabled with the reason** *"You haven't opened any assets yet."* (an existing chip stays clearable — the shell's rule) and the result area, if the scope is on, reads *"You haven't opened any assets yet. Assets you open will appear here."*; (b) history exists but nothing matches the window / other filters: *"Nothing you opened matches this range."* The signal is three-valued — not-yet-fetched vs settled-and-empty vs non-empty — and both surfaces read ONE derived hook, never two copies | **vitest** owns state (a), mocked, because proving it in the browser would mean emptying the single shared DISABLED bucket that IT-149 also drives; **IT-157 case 11** owns state (b) with a window that excludes everything; a third vitest case pins that the not-yet-fetched state shows NEITHER sentence |
 | **R11** | The **panel deep-links** (#1832, ADR D8) | `RecentlyViewedColumn.tsx:24-25` — no View all | `View all` (rendered when the column has rows — the Favorites idiom, `data-qa='recently-viewed-view-all'`) → `buildSearchLink({ recentlyViewed: {}, sort: 'last_viewed' })` = `/search?recently_viewed=yes&sort=last_viewed` — explicit sort even though the default would produce it (the URL says what it means and survives a default change; the ST-9 shape) | IT: click View all → that URL; the list's first rows are the panel's rows in the SAME order; a not-viewed foil absent; the sort menu reads "Recently viewed" |
 | **R12** | **Per-row transparency + removal** | `ResultItem.tsx:155` renders `RecentlyViewedTag`; removal is a hard DELETE | unchanged code; asserted: each listed row shows "Viewed … ago" + remove; removing a row drops it from the filtered list without reload | IT-157 case 12 |
-| **R13** | **Privacy** (the ADR's security bar) | identity from the session (`CurrentUserIdentityResolver`) | the URL carries instants only — no username, no ids; a shared link re-resolves to the RECIPIENT's history (a query spec run as the requester, ADR D11); no write on read (search never records a view) | unit: two identities, one request shape, disjoint results; web/IT: the search never calls the record path (no `POST /api/recently-viewed/*` during a search) |
+| **R13** | **Privacy** (the ADR's security bar) | identity from the session (`CurrentUserIdentityResolver`) | the URL carries instants only — no username, no ids; a shared link re-resolves to the RECIPIENT's history (a query spec run as the requester, ADR D11); no write on read (search never records a view) | unit: two identities, one request shape, disjoint results; **IT-157 case 1 asserts it directly** — a Playwright route listener over the whole scoped-search
+interaction records ZERO `POST /api/recently-viewed/*` calls (the read path must never write; the view-count hotspot
+lesson), and the unit side is covered because the service resolves the identity read-only |
 | **R14** | **Performance** — the scope must not extend the search round-trip | count(*) is the shipped hot cost (PLT-260): 396 ms browse at 126k rows (§4a M0) | the scope is an INNER JOIN to the identity's ≤ 200 rows driven by `recently_viewed_identity_ts_idx`; every scoped query (count, page, sort page 1/2, FTS + scope, histogram) costs **single-digit ms** at 126k assets; no new index, no migration; the ordering reuses the index's presort (a bare `DESC` — the popularity idiom's `NULLS LAST` would force a full sort, §4a) | measured on main's exact code (§4a: 1.7–6.8 ms vs 396 ms); re-measured on the built SUT through the real endpoint in Phase D; the EXPLAIN oracle pins the presort |
 | **R15** | **i18n ×7** | 707 keys each; `Recently viewed`, `Recently Viewed (shared)`, `Assets you open will appear here.`, `Done` exist | every new string exists **and is translated** in `br ch en es fr hy ua` (22 keys, §7 Step 6 — incl. the 4 picker footer presets that were English literals, the class-extension fix); `i18n-key-parity.test.ts` run and cited | the parity test GREEN; `git diff --stat` shows all 7 catalogs |
 | **R16** | **Docs on the 1.0.0 train** (G-C11) | `search.md` (description 184 chars; `## Favorites` :117, `## Popularity` :152, the "filters travel with the link" bullet), `recently-viewed.md` (no search section; says "a retention job trims it"), `catalog-overview.md:47` (the panel, no View all), `Features.md:60`, `data-discovery.md:13,23` | `search.md` gains **`## Last viewed`** after `## Favorites` (what it scopes, cross-kind, the presets + custom range, the local-days/exact-instants rule, the default ordering + the sort option, the URL shape, saved searches, the DISABLED `(shared)` posture, the retention bound with a link to housekeeping, the shared-link-is-the-recipient's-history sentence, the two shipped DE-only facet interactions) and the link bullet lists it; the description is re-authored ≤ 200 chars; `recently-viewed.md` gains **`## Finding your history in Search`** + the panel's View all; `catalog-overview.md:47` the panel now links; the two enumerations gain the scope; `main-concepts.md` Terms & Aliases logs *Last viewed (the search scope) ↔ Recently Viewed (the feature)*; paired `backlog/docs/DOC-529` (`milestone: 1.0.0`) | every page re-read end-to-end; the description measured ≤ 200 (PyYAML + the `: ` check); `git grep -n "no \"View all\" yet\|has no View all"` on the branch returns nothing |
@@ -159,8 +161,9 @@ the resolved dates — the freeze is visible); **preset counts / a recency histo
 **an inverse scope** ("assets I have NOT opened" — steward hygiene; the wire object has no inverse today); **exposing the
 retention values (`90 days / 200`) via `/api/info`** so the tooltip can quote them (the UI says "bounded by retention", the docs
 carry the defaults + the config link; never a hardcoded number in the UI); the `react-multi-date-picker` calendar's English
-calendar's **icon-only trigger** — no typed-date input (unchanged on all three surfaces; its English month names ARE
-fixed here, §6d; the trigger is filed as its own upstream issue at Step 0 and its number cited in §6d);
+calendar's keyboard / screen-reader behaviour beyond its month names (the trigger IS a native tabbable
+`<input type="text">` — verified in the library source, §8b iii; whether typing round-trips in range mode and how it reads
+to a screen reader is answered by DRIVING it in Step 9, not asserted here; its English month names ARE fixed here, §6d);
 ST-11's Created/Updated ranges (#1845 — they reuse the date body built here); the legacy `/api/search` session and the per-kind
 searches (no recency — the `favorites`/`popularity` posture, ADR D9); cross-kind facet application (ST-11); any write on the
 read path.
@@ -388,7 +391,7 @@ not already state; `adr_required: false` confirmed. G-C7: no migration, no auth 
 | **migration** | none — `V0_0_95` shipped the table + both indexes |
 | **docs + ontology** | `search.md`, `recently-viewed.md`, `catalog-overview.md`, `Features.md`, `data-discovery.md`, `main-concepts.md` on `release/1.0.0` + `DOC-529`; `F-017` gains `UC-18` + the graph re-embedded |
 | **tests** | both buckets (§7 Step 8): 1 new + 6 extended BE classes, 4 new + 3 extended FE files, `IT-157` with **13** user-driven cases, each with a FOIL |
-| **the class this slice extends, fixed in-slice (G-C5 / LSN-042)** | `AppDateRangePicker` today renders **English month + weekday names for every locale** (`react-multi-date-picker` defaults to `gregorian_en`) and its four footer preset labels are untranslated string literals. Adding a THIRD consumer on the search rail adds a new instance of that class, so this slice owns it: the footer labels go through `t()`, and the calendar gets a `locale` built at runtime from `Intl` (Step 5) — which fixes the two shipped surfaces (Activity, Alerts) too. **Not deferred, not called pre-existing.** What remains and is disclosed rather than fixed: the picker's icon-only trigger (no typed-date input — an accessibility nicety NN/g recommends; unchanged behaviour on all three surfaces) and the client clock behind "Today" (as Activity's presets already do) |
+| **the class this slice extends, fixed in-slice (G-C5 / LSN-042)** | `AppDateRangePicker` today renders **English month + weekday names for every locale** (`react-multi-date-picker` defaults to `gregorian_en`) and its four footer preset labels are untranslated string literals. Adding a THIRD consumer on the search rail adds a new instance of that class, so this slice owns it: the footer labels go through `t()`, and the calendar gets a `locale` built at runtime from `Intl` (Step 5) — which fixes the two shipped surfaces (Activity, Alerts) too. **Not deferred, not called pre-existing.** What remains: the client clock behind "Today" (as Activity's presets already do), disclosed in the docs. The SME's "icon-only trigger / no typed-date input" item was **checked and withdrawn** — the trigger is a native tabbable `<input type="text">` (`input_icon`'s source; ODD's wrapper styles its `:focus`), so the claim was false; what is genuinely unknown (typing in range mode, screen-reader behaviour) is DRIVEN in Step 9 and filed only if observed (§8b iii) |
 
 ### (e) Product-Owner / SRE lens — what the consult changed in the plan
 
@@ -423,6 +426,7 @@ stays reviewable.
 - **Done:** the issue threads reflect the actual PR scope, and the one adopted limitation is tracked, before any code exists.
 
 ### Step 1 — the contract (`odd-platform-specification/{components,openapi}.yaml`)
+- **Files:** `odd-platform-specification/components.yaml`, `odd-platform-specification/openapi.yaml`.
 - **Action:** add
   ```yaml
   RecentlyViewedScope:
@@ -511,6 +515,7 @@ stays reviewable.
   closed; a stored spec is normalised field-level.
 
 ### Step 3 — the URL state (`odd-platform-ui/src/lib/search/searchUrlState.ts`)
+- **Files:** `odd-platform-ui/src/lib/search/searchUrlState.ts` (only).
 - **Action:** `SEARCH_RECENTLY_VIEWED_PARAM = 'recently_viewed'`, `SEARCH_VIEWED_AFTER_PARAM = 'viewed_after'`,
   `SEARCH_VIEWED_BEFORE_PARAM = 'viewed_before'`; `export interface SearchRecentlyViewedScope { viewedAfter?: string;
   viewedBefore?: string }` (canonical ISO `Z` strings); `SearchUrlState.recentlyViewed?: SearchRecentlyViewedScope`.
@@ -541,6 +546,7 @@ stays reviewable.
 - **Done:** the four scope shapes round-trip byte-identically; junk drops the dimension; the sort rules mirror the server.
 
 ### Step 4 — the mirror + Clear All (`Search.tsx`, `Filters.tsx`) — the #1858 trap
+- **Files:** `odd-platform-ui/src/components/Search/Search.tsx`, `odd-platform-ui/src/components/Search/Filters/Filters.tsx`.
 - **Action:** `Search.tsx:119` merge object gains `recentlyViewed: live.recentlyViewed,` (the comment there already says
   EVERY URL-ONLY PARAM MUST BE LISTED HERE — add the line, extend the list of pinned cases with IT-157).
   `Filters.tsx:40` `handleClearAll` — today it rebuilds `{query, sort}`; the scope must clear AND a now-meaningless
@@ -549,14 +555,21 @@ stays reviewable.
 - **Done:** a facet toggle preserves the scope; Clear All removes the scope and any dangling recency sort.
 
 ### Step 5 — the shared chrome (`RangeFacetShell.tsx` new; `RangeFacetFilter.tsx` refactored; `AppDateRangePicker` gains `ranges?`)
+- **Files:** `…/Filters/FilterItem/RangeFacetShell/{RangeFacetShell.tsx,RangeFacetShellStyles.ts}` (new) · `…/Filters/FilterItem/RangeFacetFilter/{RangeFacetFilter.tsx,RangeFacetFilterStyles.ts}` · `…/shared/elements/AppDateRangePicker/{AppDateRangePicker.tsx,calendarLocale.ts}`.
 - **Action:** move the chrome out of `RangeFacetFilter.tsx` into
   `Filters/FilterItem/RangeFacetShell/RangeFacetShell.tsx` — props `name, filterId, qualifier?, help?, presets?,
   chipText, onClear, disabledReason?, children`. **The render conditions are not a detail — copy them exactly, because
   the shipped component's are not the obvious ones** (read at `0238005c`): the heading + info icon + qualifier always
-  render; **`children` AND the presets row are BOTH gated on `!disabledReason`** (today the presets live INSIDE the
-  `canSlide` branch at `:173-185`, so they do not render in the disabled or one-stop states — rendering them
-  unconditionally would put a clickable *Never viewed* link under *"No views recorded yet"*, a state any deployment with
-  ≤1 occupied band reaches); **the chip is gated on a non-empty `chipText`** (today `hasSelection`, `:99`/`:199` — and
+  render; the shell renders `children` and the presets row **only when it is given them** and never second-guesses the
+  caller — **the gate stays in `RangeFacetFilter`, which keeps its own `canSlide = !disabledReason && stops.length >= 2`
+  (`:100`) and passes `children={canSlide ? <>{bars}{slider}</> : null}` and `presets={canSlide ? mapped : undefined}`**.
+  That is deliberate and load-bearing: the shipped guard has **TWO** conditions, not one. A one-stop rail renders no
+  slider *even with no `disabledReason`* (`:60-63`: "MUI computes NaN positions for min == max"), and that state is
+  REACHABLE on the only consumer today — `PopularityFilter.tsx:86` sets a reason only when nothing is selected, so one
+  occupied band **plus a selection** gives `stops.length === 1` with no reason, the state `PopularityFilter.test.tsx:161`
+  already pins. A shell that gated on `!disabledReason` alone would render the slider there (turning `:161` RED) and the
+  presets row (a clickable *Never viewed* under a dead rail). **The shell also renders `disabledReason`'s text when it is
+  set**; the chip is gated on a non-empty `chipText` (today `hasSelection`, `:99`/`:199` — and
   `PopularityFilter.tsx:98-104` already passes `''` when nothing is selected, so the two conditions coincide and nothing
   changes). **The presets prop CHANGES SHAPE:** today `RangeFacetPreset = {label, range: [number, number]}` (`:17-21`),
   which cannot express a date preset — the shell takes
@@ -572,8 +585,11 @@ stays reviewable.
 - **Verify:** `PopularityFilter.test.tsx` GREEN **unchanged** — necessary but NOT sufficient, and the plan says so: it
   asserts neither preset-absence in the disabled/one-stop state nor chip-absence with no selection, so it cannot see the
   two conditions above. The sufficient oracle is a **new `RangeFacetShell.test.tsx`** (a new file, so no G-C15 exposure)
-  pinning: no `children` and no presets row when `disabledReason` is set; no chip when `chipText` is empty; the chip and
-  its × when it is not. Then `calendarLocale.test.ts` (new —
+  pinning: the shell renders neither `children` nor a presets row when it is given none (the one-stop case) and shows the
+  `disabledReason` text when set; no chip when `chipText` is empty; the chip and its × when it is not. **And one added
+  assertion in the existing `PopularityFilter.test.tsx:161` one-stop case — the preset link is ABSENT there** (it asserts
+  chip + no-slider today, never the preset), which is the only oracle that would catch the *Never viewed*-under-a-dead-rail
+  regression; that makes it a CHANGED test, with its row in the table below. Then `calendarLocale.test.ts` (new —
   `en` matches the library's shipped `gregorian_en` arrays exactly — including the Saturday-first weekDays order — **`br`
   returns Portuguese (`janeiro`) and NOT Breton (`Genver`), `ch` returns Chinese and `ua` Ukrainian**, an unknown key falls
   back to English, and every result is IDENTICAL under `TZ=America/Los_Angeles` and `TZ=Pacific/Kiritimati`, which is what
@@ -582,6 +598,7 @@ stays reviewable.
   on all three surfaces that use it.
 
 ### Step 6 — the facet (`Filters/RecentlyViewedFilter/{RecentlyViewedFilter.tsx,recencyPresets.ts}`) + the rail + the 7 catalogs
+- **Files:** `…/Filters/RecentlyViewedFilter/{RecentlyViewedFilter.tsx,recencyPresets.ts}` (new) · `…/lib/hooks/useRecentlyViewedHistoryEmpty.ts` (new) + `…/lib/hooks/index.ts` · `…/Filters/Filters.tsx` · `…/locales/translations/{br,ch,en,es,fr,hy,ua}.json`.
 - **Action:** `recencyPresets.ts` — a pure `presetWindow(kind: 'today'|'7d'|'30d', now: Date, timeZone: string):
   {viewedAfter: string}` using `date-fns` `startOfDay`/`subDays` + `date-fns-tz` `zonedTimeToUtc`, returning a canonical
   `Z` instant (today = local midnight; 7d/30d = local midnight 6 / 29 days ago — "including today"), plus
@@ -591,8 +608,9 @@ stays reviewable.
   (or `pageInfo.page === 0`, the untouched initial state) says NOT-YET-FETCHED, and only a settled `total === 0` means an
   empty history; the slice's initial state is `{ total: 0, page: 0, hasNext: true }` (`recentlyViewed.slice.ts:9`), so a
   naive `total === 0` shows *"You haven't opened any assets yet."* on every mount, before the fetch resolves. **Both this
-  control and `Results.tsx` read the SAME derived flag** — export it as `useRecentlyViewedHistoryEmpty()` beside the
-  component so there is one definition, not two;
+  control and `Results.tsx` read the SAME derived signal** — a new
+  `odd-platform-ui/src/lib/hooks/useRecentlyViewedHistoryEmpty.ts` (exported from `lib/hooks/index.ts`, the shipped
+  barrel idiom) returning `'loading' | 'empty' | 'has-history'`, so there is one definition, not two;
   `fetchRecentlyViewedList({page:1,size:1})` once + `getRecentlyViewedListPage()` for the
   empty-history signal (**verified**: `redux/selectors/recentlyViewed.selectors.ts:24` returns `CurrentPageInfo`, and
   the thunk returns `{...pageInfo, page}`, so `.total` is the server's history size). **Note the shared slice** — its
@@ -622,17 +640,22 @@ stays reviewable.
 - **Done:** the control narrows the rendered list; the URL is byte-identical to the serialiser's output.
 
 ### Step 7 — the ordering, the empty states and the panel link
+- **Files:** `…/Search/Results/SearchSortMenu/SearchSortMenu.tsx` · `…/Search/Results/Results.tsx` · `…/Overview/OwnerAssociation/OwnerEntitiesList/RecentlyViewedColumn/RecentlyViewedColumn.tsx`.
 - **Action:** `SearchSortMenu.tsx` — read the scope from `paramsToSearchState(useLocation().search)`; pass it to
   `resolveActiveSort`; render `SEARCH_SORT_OPTIONS.filter(o => o.value !== 'last_viewed' || hasScope)` (the option exists
-  only where it means something). `Results.tsx` — beside `isFavoritesScope`, `isRecencyScope`; the empty text becomes
-  `isRecencyScope ? (historyEmpty ? t("You haven't opened any assets yet. Assets you open will appear here.") : t('Nothing you opened matches this range.')) : isFavoritesScope ? … : t('No matches found')`.
+  only where it means something). `Results.tsx` — beside `isFavoritesScope`, `isRecencyScope`; it consumes the SAME
+  `useRecentlyViewedHistoryEmpty()` hook the facet does, and that hook returns **three states, not a boolean**
+  (`'loading' | 'empty' | 'has-history'`), so the empty text is a three-way branch, never a binary ternary:
+  `isRecencyScope ? (history === 'loading' ? t('No matches found') : history === 'empty' ? t("You haven't opened any assets yet. Assets you open will appear here.") : t('Nothing you opened matches this range.')) : isFavoritesScope ? … : t('No matches found')`
+  — a boolean hook would render *"Nothing you opened matches this range."* during the fetch, which R10 forbids.
   `RecentlyViewedColumn.tsx` — replace the "there is no 'View all' yet" sentence in the component's doc comment (`:24-25`)
   with the link, inserted **immediately after `</S.ListLinksContainer>` (`:97`)** and guarded by `items.length > 0` —
   byte-for-byte the `FavoritesColumn:102-112` shape (`MuiLink component={Link} variant='subtitle2' sx={{ mt: 1 }}`), with
   `data-qa='recently-viewed-view-all'` and `to={buildSearchLink({ recentlyViewed: {}, sort: 'last_viewed' })}`. Both files
   already declare the same `items` variable (`RecentlyViewedColumn:38`, `FavoritesColumn:44`), so this is a copy with two
   substitutions — verified at `0238005c`.
-- **Verify:** `SearchSortMenu.test.tsx` (extended), `Results` empty-state vitest, IT-157 cases 2/9/10/11.
+- **Verify:** `SearchSortMenu.test.tsx` (extended), the new `Results.emptyState.test.tsx` (all THREE states, including
+  loading), IT-157 cases 2/9/10/11.
 - **Done:** the scope's list reads newest-first; the panel's View all reproduces the panel.
 
 ### Step 8 — tests, BOTH buckets, each with a named RED-on-base oracle (G-C9 / G-C15)
@@ -640,8 +663,10 @@ stays reviewable.
   `AssetSearchKeysetPaginationTest`, `AssetSearchControllerWebTest`, `SavedSearchControllerWebTest`,
   `SavedSearchServiceImplTest`, `LegacySearchSortFallbackTest`, `AssetSearchServiceMyDataTest`,
   `AssetSearchScopePredicateTest`. FE new — `RecentlyViewedFilter.test.tsx`, `recencyPresets.test.ts`,
-  `calendarLocale.test.ts`, `RangeFacetShell.test.tsx`; FE extended — `searchUrlState.test.ts`,
-  `searchFormDataToUrlState.test.ts`, `SearchSortMenu.test.tsx`. odd-team —
+  `calendarLocale.test.ts`, `RangeFacetShell.test.tsx`, **`components/Search/Results/__tests__/Results.emptyState.test.tsx`**
+  (the three-way branch has no existing home — `Results.tsx` has no test file today); FE extended —
+  `searchUrlState.test.ts`, `searchFormDataToUrlState.test.ts`, `SearchSortMenu.test.tsx`, **`PopularityFilter.test.tsx`**
+  (the one added preset-absence assertion, B1). odd-team —
   `integration-tests/protocols/IT-157-recently-viewed-facet.md`, `integration-tests/e2e/specs/recently-viewed-facet.spec.ts`,
   **and `integration-tests/suites.yaml`** (the one-line `pending-merge` lane entry — easy to forget, and a protocol that is
   in no suite is never executed).
@@ -676,7 +701,10 @@ stays reviewable.
   | Test | Change | SoT | Surviving RED |
   |---|---|---|---|
   | `SearchSortDtoTest` (exists; 3 tests, 2-arg `resolveEffective` at `:29-30`) | ADD the scope × query × token truth table | the 3-arg contract defined in Step 2.2 | the new rows cannot resolve on `ref:main` (no third parameter, no `LAST_VIEWED`); the three existing cases are untouched because the 2-arg overload is kept — nothing is weakened |
-  | `AssetSearchCursorTest:83-92` (exists; it already carries the tampered-value + `STATUS_PRIORITY` `vn:true` cases) | ADD `parsesForSort(LAST_VIEWED, "not-a-timestamp")` → empty and `keyset(LAST_VIEWED, null, true, …)` → empty | the cursor's own fail-closed contract, mirroring the `STATUS_PRIORITY` case beside it | RED on base (`LAST_VIEWED` does not exist there) — and this is the cheap pure-unit home for those changed lines, so the coverage gate sees them |
+  | `AssetSearchCursorTest:83-92` (exists; it already carries the tampered-value + `STATUS_PRIORITY` `vn:true` cases) | ADD two cases through the PUBLIC API (`parsesForSort` is `private static`, `AssetSearchCursor.java:148` — use the
+  file's own `decode(<token>, sort)` idiom): a `LAST_VIEWED` token whose `v` is `"not-a-timestamp"` → `decode` empty, and
+  `decode(keyset(LAST_VIEWED, null, true, kind, id).encode(), LAST_VIEWED)` → empty (the NOT-NULL guard) | the cursor's own fail-closed contract, mirroring the `STATUS_PRIORITY` case beside it | RED on base (`LAST_VIEWED` does not exist there) — and this is the cheap pure-unit home for those changed lines, so the coverage gate sees them |
+  | `PopularityFilter.test.tsx:161` (the one-stop-with-selection case) | ADD one assertion — `expect(screen.queryByRole('button', { name: 'Never viewed' })).toBeNull()` (the preset IS a button with that accessible name; the file's own `ua` case at the end already queries it as `getByRole('button', {name: …})`) | the shipped render conditions at `RangeFacetFilter.tsx:100`/`:173-185` — the presets live inside `canSlide`, so they must not render on a one-stop rail | RED if the shell extraction ever renders presets outside `canSlide`; strictly MORE truth than today's chip+no-slider assertions, nothing weakened |
   | `AssetSearchServiceMyDataTest:167-171` | the repository mock arities gain one `any()` | the new interface signature (compile-time) | assertions unchanged; still RED if the scoping regresses |
   | `AssetSearchScopePredicateTest:151,235,244` | the call sites gain a trailing `null` | same | same |
   | `SearchSortMenu.test.tsx:85` "the five canonical orderings" → five **without** the scope and six **with** it (two cases) | `SEARCH_SORT_OPTIONS` + the conditional-render rule | RED on base (no sixth option exists) |
@@ -685,7 +713,9 @@ stays reviewable.
 round-trip, the junk/inverted/bare-date drops, the canonicalisation of an offset instant, the projections both ways, the
 sort truth table) · `searchFormDataToUrlState.test.ts` (the D11 lock — **its recency fixture must carry real `Date`
 bounds, exactly what `FromJSON` produces; an ISO-string fixture passes on the broken implementation and proves nothing**) · `RecentlyViewedFilter.test.tsx` (new — URL
-reflection per shape, a preset click writing the canonical URL through a location probe, the picker commit, the DISABLED
+reflection per shape, a preset click writing the canonical URL through a location probe, the picker commit, **the two shapes that would invert an unordered seed — `viewed_before`-only with an
+old bound, and a hand-written future `viewed_after` — where the seeded `defaultRange` must come back ordered and
+pressing Done must not clear the filter**, the DISABLED
 label + info icon, the empty-history disabled reason, clearing drops the dangling sort, one render under `ua.json`) ·
 `recencyPresets.test.ts` (new — fixed `now` + `Pacific/Kiritimati` / `UTC` / `America/New_York`) · `SearchSortMenu.test.tsx` ·
 `Filters` Clear-All case · `i18n-key-parity.test.ts` (unchanged, run).
@@ -719,6 +749,7 @@ Every `expect(...)` on a response body is written from a CAPTURED real response 
 the CTRIB-023/IT-137 rule.
 
 ### Step 9 — run the gates (the Definition of Done; nothing is deferred to `/review`)
+- **Files:** none — this step RUNS things; its outputs are the run-logs and this record's §11 ledger.
 - Full unit build: `ODD_PLATFORM_DIR=../odd-platform-ctrib067 scripts/run-platform-tests.sh` (test + checkstyle + assemble).
 - FE: `pnpm generate && pnpm tsc && pnpm lint && pnpm exec vitest run
 # the inner loop (bare `pnpm test` is `vitest` = WATCH mode on a TTY - it never returns):
@@ -830,6 +861,7 @@ reproduced on the built SUT. Recorded so the 16-vs-15 gap reads as a decision, n
 | `…/Filters/RecentlyViewedFilter/{RecentlyViewedFilter.tsx,recencyPresets.ts}` | T1, T2, T7, T11, T12 | `filter-recently_viewed` |
 | `…/shared/elements/AppDateRangePicker/{AppDateRangePicker.tsx,calendarLocale.ts}` | the date body + the i18n fix (labels + the calendar's own month/weekday names) | `ranges?:`, `calendarLocale(` |
 | `…/Search/Results/SearchSortMenu/SearchSortMenu.tsx` | T3's control | `last_viewed` |
+| `…/lib/hooks/useRecentlyViewedHistoryEmpty.ts` (+ the `lib/hooks/index.ts` barrel) | T12's ONE three-valued signal, shared by the facet and the results area | `has-history` |
 | `…/Search/Results/Results.tsx` | T12's list-side sentence | `isRecencyScope` |
 | `…/Overview/…/RecentlyViewedColumn/RecentlyViewedColumn.tsx` | **T10** | `recently-viewed-view-all` |
 | `…/locales/translations/{br,ch,en,es,fr,hy,ua}.json` | T14 | `Last viewed` |
@@ -884,7 +916,47 @@ windows excluded; on #1832: closed by this PR), posted before any code.
 | Round | Verdict | Disposition |
 |---|---|---|
 | **1** (2026-09-06, fresh context, static-only at `0238005c`) | **ISSUES FOUND — 4 blockers, 11 warnings** | all 4 blockers FIXED (below) + 9 of 11 warnings folded; W9 (size) recorded as justified, W5 closed by adding `Files·Verify·Done` to Steps 8/10/11/12 |
-| **2** | see the file `contributor/CTRIB-067-plancheck.md` | re-check of the revised §7 / §9 |
+| **2** (same day, same checker, fresh read) | **ISSUES FOUND — 3 blockers, 7 warnings**; it confirmed B1/B2 of round 1 genuinely cleared and caught that two of my four "fixes" were HALF-fixes | all 3 blockers fixed + the 4 genuinely-open warnings folded (3 of the 7 were already fixed in the file before round 2 read it) |
+| **3** | **SELF-RUN — the independent re-check is OWED.** The round-3 agent terminated on a session rate limit (HTTP 429) before producing a verdict, so `playbooks/plan-contract.md`'s on-fail clause applies: "self-run its dimensions against the plan and record the result; note that the independent check is owed, the same way `/review` is owed on the diff." | D1/D4/D7/D9 self-run against the three round-2 fixes; each fix re-verified in the source; **one NEW defect found and fixed** (below) |
+
+**Round 3, self-run — what was checked and what it found.** Each round-2 fix was re-derived from the source rather than
+re-read from the plan: `PopularityFilter.test.tsx:161` **is** the one-stop-with-selection case
+(`popularity_min=5&popularity_max=5` over `facet({5:3})` → one occupied band, `disabledReason` undefined because a
+selection exists) and it genuinely asserts chip + no-slider + no-`NaN` and **not** preset-absence — so the added
+assertion is exactly the missing oracle, and the same file's `ua` case proves the query shape (the preset is a button
+with an accessible name). `AssetSearchCursorTest` already uses `decode(keyset(...).encode(), sort)` as its public idiom
+and already carries both the `UPDATED_AT "not-a-timestamp"` and the `STATUS_PRIORITY` `vn:true` cases the two
+`LAST_VIEWED` cases mirror. The three-valued hook is spelled consistently in both consumers and now has its own row in
+the artifacts contract.
+
+**The new defect this pass found:** the round-2 `defaultRange` clamp fixed only ONE of the two shapes that invert. A
+hand-written future `viewed_after` with no `viewed_before` also lands `begin` after `end`, with the same consequence
+(Done commits an inverted window and the URL rule drops the filter). The fragment now **orders the pair** rather than
+clamping one side — a no-op for the two well-formed shapes, correct for both pathological ones.
+
+**What is owed:** an independent round-3 plan-check, run in a fresh context when the session limit resets. It is owed the
+way `/review` is owed on a diff: the three round-2 blockers were fixed by the same author who wrote the text they
+correct. Recorded here rather than quietly skipped; the maintainer decides at GATE 1 whether to approve on a self-checked
+round or wait for the independent one.
+
+**Round 2's three blockers — the two half-fixes and the one that would have been published:**
+
+1. **My shell fix gated on `!disabledReason` alone; the shipped guard has TWO conditions.** `RangeFacetFilter.tsx:100` is
+   `!disabledReason && stops.length >= 2`, and its own Javadoc `:60-63` documents the second state ("fewer than two stops
+   renders NO slider **even without a reason** … MUI computes NaN positions"). It is reachable on the only consumer today
+   — one occupied band plus a selection — and `PopularityFilter.test.tsx:161` already pins it. The gate now stays in
+   `RangeFacetFilter` (it keeps `canSlide` and passes `children`/`presets` conditionally), and the preset-absence
+   assertion that was missing from every oracle is added to `:161` as a CHANGED test.
+2. **My `defaultRange` fragment resolved three of the four scope shapes.** With only `viewed_before` set and older than
+   six days, the unclamped start landed AFTER the end; the picker takes it as `value` and Done commits unconditionally,
+   so opening a shared "before X" link and pressing Done would have silently cleared the filter. Clamped, with a
+   `viewed_before`-only test case.
+3. **The public issue I drafted stated three things the source contradicts.** The SME raised the picker's "icon-only
+   trigger, no typed-date input", graded it LOW and said *verify*; I did not, and drafted it for posting. It renders a
+   native tabbable `<input type="text">` (`input_icon`'s source; ODD's wrapper styles its `:focus`). The issue is
+   **withdrawn**, the false claims are struck from §4 and §6(d), and what is genuinely unknown is answered by driving the
+   control in Step 9 — see §8b(iii). This is the finding that most justifies the gate: it was one approval away from a
+   false public statement under the team's name.
 
 **The four blockers, and what each changed — every one was re-verified in the source before fixing:**
 
@@ -905,7 +977,15 @@ windows excluded; on #1832: closed by this PR), posted before any code.
    the control that delivers T2, against §9's own promise. Resolved as §9.2(e) with the literal memoised JSX, plus the
    product decision it encodes (what the calendar shows in the "any time" state).
 
-**Warnings folded:** R14's missing truth is now an explicit measured-only note (W1); the empty-history signal is
+**Round-2 warnings:** three were already fixed in the file before round 2 read it (the R9 asymmetry wording, the §4
+garbled clause, and IT-157 case 12's restore step). The four genuinely open ones are now folded: §9.3's command block
+still ran watch-mode `pnpm test` (only Step 9 had been corrected); `Results.tsx` needed the same THREE-valued signal as
+the facet, via one shared `useRecentlyViewedHistoryEmpty()` hook with a named file, and its empty-state vitest had no
+home so one is created; R13's no-write-on-read now has a real oracle (IT-157 case 1 counts zero record POSTs across the
+interaction); and the cursor cases go through the public `decode(...)` API because `parsesForSort` is private. Steps 1
+and 3–7 and 9 gained their `Files:` lines.
+
+**Round-1 warnings folded:** R14's missing truth is now an explicit measured-only note (W1); the empty-history signal is
 three-valued and shared by one hook, so the not-yet-fetched state cannot masquerade as "no history" (W2); IT-157 no
 longer empties the single shared DISABLED bucket that IT-149 also drives — the truly-empty state moved to vitest (W3);
 the FE gate is `pnpm exec vitest run`, not watch-mode `pnpm test` (W4); Steps 8/10/11/12 gained `Files·Verify·Done`, and
@@ -960,24 +1040,19 @@ This is delivered by the Last viewed filter on #1844: the Recently Viewed panel 
 most-recent-first, which is what this issue asks for. The PR carries "Closes #1832".
 ```
 
-**(iii) A new issue** (filed via the App token; the never-auto-file rule was retired 2026-09-06) for the one limitation
-this slice adopts rather than fixes — the SME graded it low and said to log it:
+**(iii) No third artefact — a planned public issue was WITHDRAWN, and why is recorded rather than quietly dropped.**
+Round 1 asked for the picker's "icon-only trigger, no typed-date input" to be filed as an upstream accessibility issue —
+the `odd-sme` note raised it, graded it LOW, and explicitly said *"verify"*. **Verified 2026-09-06, and the claim is
+false.** `AppDateRangePickerStyles.ts:2` wraps `react-multi-date-picker/components/input_icon`, whose source renders a
+real `<input type="text" className="rmdp-input" value=… autoComplete="off" {...rest}/>` with the calendar icon beside
+it — a native, tabbable text input, which is exactly why ODD's own wrapper styles `&:focus, &:active` (`:20-22`). So
+"there is no text input", "the trigger is not reachable from the keyboard" and "a keyboard-only user cannot set a range
+at all" would all have been **false statements published to a public tracker under the team's name**.
 
-```text
-Title: Date range picker: no way to type a date, and no keyboard path to the calendar
-
-The shared date-range picker (the Period filter on Activity and Alerts, and now the Last
-viewed filter on catalog search) can only be opened by clicking its calendar icon: there is no
-text input to type a date into, and the trigger is not reachable or operable from the keyboard.
-
-A user who knows the date they want has to navigate the two-month calendar by mouse, and a
-keyboard-only or screen-reader user cannot set a range at all.
-
-Suggested fix: render the trigger as a real input that accepts a typed date in the displayed
-format and still opens the calendar, and make the trigger focusable and operable with Enter or
-Space. The month and weekday names are already localised.
-```
-(No milestone - release planning stays with the maintainer. Its number is cited in §6d once filed.)
+Nothing is filed here. Whether typing actually round-trips in `range` mode under `format='D MMM'`, and how the control
+reads to a screen reader, are questions only DRIVING it answers — so Phase D's keyboard + pixel review (Step 9) drives
+the picker on the search rail, and files an issue **then, describing what it observed**, if a real defect appears. An
+unverified accessibility claim is not a follow-up; it is a guess with a public URL.
 
 ## 9. Phase-D runbook — written to be followed literally by the executing session
 
@@ -1140,8 +1215,14 @@ const defaultRange = React.useMemo(() => {
   // the last week "WITHOUT writing it to the query"). The calendar is a picker, not a statement of the filter -
   // the CHIP is what states the filter, and in the "any time" state it reads "Last viewed: any time".
   const end = viewedBefore ? new Date(viewedBefore) : endOfDay(new Date());
-  const begin = viewedAfter ? new Date(viewedAfter) : startOfDay(subDays(new Date(), 6));
-  return { beginDate: begin, endDate: end };
+  const begin = viewedAfter ? new Date(viewedAfter) : startOfDay(subDays(end, 6));
+  // ORDER THE PAIR - do not skip this, and do not clamp only one side. The picker takes whatever it is given as
+  // `value` (:103) and Done commits it unconditionally (:70-75), so an inverted seed produces an inverted commit,
+  // which the URL rule then drops entirely: the filter silently vanishes. TWO shapes invert if unguarded -
+  // `viewed_before` alone older than six days (begin from "now" lands after end), and a hand-written future
+  // `viewed_after` with no `viewed_before` (begin after today's end). Ordering covers both, and is a no-op for
+  // the two well-formed shapes (the URL parser has already dropped an inverted pair before it reaches here).
+  return begin <= end ? { beginDate: begin, endDate: end } : { beginDate: end, endDate: begin };
 }, [viewedAfter, viewedBefore]);   // the ISO STRINGS are the deps - stable identity across renders
 ```
 The product decision this encodes, stated so it is reviewed rather than discovered: **with the scope on and no bounds the
@@ -1156,7 +1237,10 @@ ODD_PLATFORM_DIR=../odd-platform-ctrib067 scripts/run-platform-tests.sh
 ODD_PLATFORM_DIR=../odd-platform-ctrib067 scripts/run-platform-tests.sh --tests "*AssetSearch*"
 
 # front end (in ../odd-platform-ctrib067/odd-platform-ui) — codegen FIRST or the new types do not exist
-pnpm generate && pnpm tsc && pnpm lint && pnpm test
+pnpm generate && pnpm tsc && pnpm lint && pnpm exec vitest run
+# NEVER bare `pnpm test` - package.json maps it to `vitest`, i.e. WATCH mode, which never returns on a TTY.
+# inner loop:
+pnpm exec vitest run src/lib/search src/components/Search src/components/shared/elements/AppDateRangePicker
 
 # the impacted IT on YOUR worktree's SUT (the LSN-033 trap: a bare run-suite.sh builds from the SHARED checkout)
 ODD_STREAM=ctrib067 ODD_PLATFORM_DIR=../odd-platform-ctrib067 integration-tests/run-suite.sh IT-157

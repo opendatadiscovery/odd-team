@@ -3,22 +3,23 @@ id: PLT-257
 title: "ST-7b -- \"Recently favorited\" ordering for the Favorites filter"
 target_repo: odd-platform
 issue_type: feature
-status: draft            # Sub-issue body for #1825, READY TO FILE. (Historical note: this sat as a draft because the
-                         # bot was policy-barred from creating issues; that rule was RETIRED 2026-09-06 -- CLAUDE.md:126,
-                         # commit 2b20196d -- so filing is now an agent action, not a human one.)
-                         # 2026-09-03: odd-platform#1875 (ST-7) MERGED and #1841 was CLOSED as completed -- this draft
-                         # is now the ONLY tracker of the ordering, so filing it is what unblocks `/contribute` for
-                         # ST-7b. Deliberately NOT auto-filed during the NAV-005 rails fix: "file what belongs to the
-                         # work in hand, never a batch of older drafts unasked" (.claude/skills/log-issue/SKILL.md).
-github_issue_url: ""
-github_issue_number: null
+status: filed            # FILED 2026-09-07 as odd-platform#1885 by odd-contributor[bot], on the maintainer's explicit
+                         # instruction, with NO milestone (release planning stays his -- G-C11). Read back publicly:
+                         # 72 body lines, pure ASCII, backlinks #1825/#1841/#1875, the three labels applied.
+                         # (History: it sat as a draft because the bot was policy-barred from creating issues; that
+                         # rule was RETIRED 2026-09-06 -- CLAUDE.md:126, commit 2b20196d. It became the ONLY tracker
+                         # of the ordering on 2026-09-03, when #1875 merged and #1841 closed as completed.)
+                         # NEXT: the maintainer links #1885 under the epic #1825 and attaches milestone 1.0.0;
+                         # `/contribute 1885` is then unblocked for ST-7b.
+github_issue_url: "https://github.com/opendatadiscovery/odd-platform/issues/1885"
+github_issue_number: 1885
 filed_title: "ST-7 followup -- \"Recently favorited\" ordering for the Favorites filter"
 filed_labels: "scope: backend, scope: frontend, kind: feature"
 severity: medium
 discovered_during: "CTRIB-061 / #1841 ST-7 planning -- split out of ST-7 at GATE 1 (see contributor/CTRIB-061.md section 6.2)"
 found_date: "2026-08-31"
 user_facing_verified: false   # design-verified against the source; not yet built
-suggested_milestone: "1.0.0"  # SUGGESTED ONLY -- filed with NO milestone; the maintainer attaches it (G-C11)
+suggested_milestone: "1.0.0"  # SUGGESTED ONLY -- filed 2026-09-07 with NO milestone, as designed; the maintainer attaches it (G-C11)
 parent_issue: 1825
 sibling_issue: 1841      # ST-7, CLOSED 2026-09-03 (completed) on odd-platform#1875 / squash 96d77668
 ---

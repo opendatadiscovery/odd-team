@@ -798,7 +798,11 @@ pnpm exec vitest run src/lib/search src/components/Search src/components/shared/
   note gains a cross-reference (the popularity histogram is scoped by recency too); `use_case_coverage` 17 → 18, verified
   5 → 6; then `uv run --project lineage/_extractor lineage-extractor graph-build odd-platform` (re-embed) and **commit**.
 - Any discovery outside this scope routes through `playbooks/follow-up-on-disk.md` — filed as a real GitHub issue via the
-  App token (memory `feedback_agent_files_github_issues`), not left as a draft.
+  App token, not left as a draft. **The authority is `CLAUDE.md:126` + `.claude/skills/log-issue/SKILL.md`** (the
+  never-auto-file rule was retired 2026-09-06). Note the drift the plan-check found: three rails still carry the OLD
+  rule and were not updated with it — `playbooks/github-write.md:10,77`, `issues/README.md:127` and
+  `pillars/contributor/gates.md` G-C18. **Follow CLAUDE.md**; the reconciliation is logged as
+  `backlog/navigation/NAV-005.md` and is NOT this slice's work.
 - **Files:** `lineage/odd-platform/feature-flows/detail/F-017.yaml` (+ whatever follow-up files a discovery creates).
 - **Verify:** `uv run --project lineage/_extractor lineage-extractor graph-build odd-platform` reports a node/vector count
   ≥ the previous build; `git status --short lineage/` is clean after the commit.
@@ -906,8 +910,8 @@ the owed plan-check:
 - **D2 = A** — the slice ships the filter **and** the `Recently viewed` ordering coupled to it; the PR carries
   `Closes #1844` **and** `Closes #1832`.
 - **D3 (asked because round 3 could not run independently) = approve now, and run the independent re-check BEFORE any
-  code.** So Phase D opens with the owed round-3 plan-check in a fresh context; nothing is skipped, only resequenced.
-  Any blocker it raises is fixed before Step 1.
+  code.** **DONE 2026-09-07: the owed check ran and returned VERIFICATION PASSED — 0 blockers, "Step 1 may begin"**
+  (§8a). Its nine actionable warnings are folded into §7/§9; nothing is outstanding, and Phase D now starts at §9.0.
 
 Both decisions are stated in §5.4 / §5.5 with their option tables.
 
@@ -928,7 +932,8 @@ windows excluded; on #1832: closed by this PR), posted before any code.
 |---|---|---|
 | **1** (2026-09-06, fresh context, static-only at `0238005c`) | **ISSUES FOUND — 4 blockers, 11 warnings** | all 4 blockers FIXED (below) + 9 of 11 warnings folded; W9 (size) recorded as justified, W5 closed by adding `Files·Verify·Done` to Steps 8/10/11/12 |
 | **2** (same day, same checker, fresh read) | **ISSUES FOUND — 3 blockers, 7 warnings**; it confirmed B1/B2 of round 1 genuinely cleared and caught that two of my four "fixes" were HALF-fixes | all 3 blockers fixed + the 4 genuinely-open warnings folded (3 of the 7 were already fixed in the file before round 2 read it) |
-| **3** | **SELF-RUN — the independent re-check is OWED.** The round-3 agent terminated on a session rate limit (HTTP 429) before producing a verdict, so `playbooks/plan-contract.md`'s on-fail clause applies: "self-run its dimensions against the plan and record the result; note that the independent check is owed, the same way `/review` is owed on the diff." | D1/D4/D7/D9 self-run against the three round-2 fixes; each fix re-verified in the source; **one NEW defect found and fixed** (below) |
+| **3 (independent, the owed check)** | **VERIFICATION PASSED — 0 blockers, 11 warnings; "Step 1 may begin."** Run 2026-09-07 in a fresh context after the session limit reset, at the maintainer's D3 condition. It re-derived all three round-2 blockers from source rather than from §8a's account, walked the `defaultRange` fragment over SIX shapes, checked the withdrawn claims against the library's compiled source, and fetched the two POSTED comments from the GitHub API (byte-identical to §8b, zero non-ASCII, zero workspace ids, every claim mapping to a §7 step). It also re-verified G-C11 live (both issues open on milestone 1.0.0). | 9 of the 11 warnings folded below; W10 (size) recorded as justified, W11 informational (no edit warranted) |
+| ~~3 (earlier attempt)~~ | **SELF-RUN — superseded by the independent round above.** The round-3 agent terminated on a session rate limit (HTTP 429) before producing a verdict, so `playbooks/plan-contract.md`'s on-fail clause applies: "self-run its dimensions against the plan and record the result; note that the independent check is owed, the same way `/review` is owed on the diff." | D1/D4/D7/D9 self-run against the three round-2 fixes; each fix re-verified in the source; **one NEW defect found and fixed** (below) |
 
 **Round 3, self-run — what was checked and what it found.** Each round-2 fix was re-derived from the source rather than
 re-read from the plan: `PopularityFilter.test.tsx:161` **is** the one-stop-with-selection case
@@ -945,10 +950,26 @@ hand-written future `viewed_after` with no `viewed_before` also lands `begin` af
 (Done commits an inverted window and the URL rule drops the filter). The fragment now **orders the pair** rather than
 clamping one side — a no-op for the two well-formed shapes, correct for both pathological ones.
 
-**What is owed:** an independent round-3 plan-check, run in a fresh context when the session limit resets. It is owed the
-way `/review` is owed on a diff: the three round-2 blockers were fixed by the same author who wrote the text they
-correct. Recorded here rather than quietly skipped; the maintainer decides at GATE 1 whether to approve on a self-checked
-round or wait for the independent one.
+**The owed check was RUN and PASSED (2026-09-07).** Nothing is outstanding. Its three most useful confirmations, each
+re-derived rather than trusted: the shell extraction's *"render the reason when set"* is **provably equal** to the
+shipped `!canSlide && disabledReason` (because `disabledReason` truthy ⇒ `canSlide` false), and the chip gate is equal
+too — `chipText !== '' ⟺ hasSelection`, since `parsePopularity` can never return `{}`; the `defaultRange` ordering
+holds across all six shapes and an inverted *pair* provably cannot reach the component; and the library source
+(`input_icon.js` renders `type:"text"`, `editable` defaults true) confirms the withdrawn accessibility claims were
+false and that no third issue was filed.
+
+**Its 11 warnings, folded (9) or recorded (2):** R13's zero-record-POST oracle moved into IT-157's case table; a
+behaviour-diff of the picker's TWO shipped consumers (Activity + Alerts Period) under `en` and `ua` added to Step 9 —
+the control has no test of its own and this slice changes it three ways, which is the LSN-036 shape exactly; the
+keyboard drive §4 promises is now scheduled rather than implied; the homeless `Filters` Clear-All vitest dropped in
+favour of IT-157 cases 5-6, which already own the rule; the three refactor-invariant rows in the CHANGED table
+LABELLED as such so `/review` does not read the bug-hiding signature into a test that is green on both sides by design;
+§9.5's trap-10 citation corrected (case 9 never returns to the panel — the hazard is safe by construction, so no test
+is owed); Step 2.2's default clause disambiguated (**the BROWSE default slot** becomes `LAST_VIEWED`; a text query still
+resolves to `RELEVANCE`); the last editing artifact removed; and the rails-vs-`CLAUDE.md` drift on issue-filing logged
+as `backlog/navigation/NAV-005.md`. Recorded without action: the size warning (justified in the §7 preamble) and an
+informational note that the posted #1844 comment omits R6's "and no query is typed" caveat — true but not misleading,
+so the public thread stands.
 
 **Round 2's three blockers — the two half-fixes and the one that would have been published:**
 
@@ -1330,7 +1351,7 @@ Phases A–C complete 2026-09-06; **GATE 1 approved 2026-09-07** (all three deci
 comments posted (§10). **No code, no branch, no PR** — Phase D is a separate session by the maintainer's choice.
 
 **The executing session starts here, in this order:**
-1. the **owed independent round-3 plan-check** (D3's condition) — fresh context, before Step 1; fix any blocker first;
+1. ~~the owed independent round-3 plan-check~~ — **DONE 2026-09-07, PASSED, 0 blockers** (§8a); its warnings are folded;
 2. §9.0's preconditions (re-verify `origin/main`, cut the branch inside `../odd-platform-ctrib067`, push-safety);
 3. Steps 1 → 12 of §7, one commit per step, against §9's runbook;
 4. the five Definition-of-Done gates (§9.4), all RUN, none deferred to `/review`;

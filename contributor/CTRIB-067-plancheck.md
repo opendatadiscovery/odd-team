@@ -7,8 +7,8 @@ date: 2026-09-06
 base_verified: odd-platform 0238005c (worktree ../odd-platform-ctrib067, detached, read-only — no build, no run); documentation origin/release/1.0.0 @ 1a70aba
 verdict: ISSUES FOUND — 4 blockers, 11 warnings   # round 1
 round_2: 2026-09-06   # fresh adversarial re-read of the revised §7 / §9 / §8a / §8b, static-only at the same base
-round_3: 2026-09-06
-round_3_verdict: "NOT RUN INDEPENDENTLY - the round-3 agent terminated on a session rate limit (HTTP 429) before a verdict. Self-run by the planner instead (plan-contract.md on-fail clause): D1/D4/D7/D9 re-derived from source, all three round-2 blockers confirmed fixed, and ONE NEW defect found + fixed (the defaultRange clamp covered only one of the two inverting shapes; it now orders the pair). An independent round 3 is OWED - see contributor/CTRIB-067.md section 8a."
+round_3: 2026-09-07   # the OWED independent re-check, fresh context, static-only at 0238005c
+round_3_verdict: "VERIFICATION PASSED - 0 blockers, 11 warnings. The independent owed check: all three round-2 blockers re-derived from source and CLEARED (the RangeFacetShell extraction simulated state-by-state against RangeFacetFilter.tsx and proved render-identical; the defaultRange fragment walked over all six scope shapes incl. both pathological ones; the withdrawn accessibility claim confirmed false in the library source and struck everywhere, with the two POSTED public comments fetched live and byte-identical to 8b). D1/D4/D7/D9 re-run in full. The plan may proceed to Step 1; the eleven warnings are hardening, none gates code."
 round_2_verdict: ISSUES FOUND — 3 blockers, 7 warnings
 ---
 
@@ -490,3 +490,157 @@ correctly (181, re-measured with PyYAML on `origin/release/1.0.0` this round), t
 everywhere, and all three public bodies are ASCII and id-free. What did not: the two half-fixes above were both
 recorded in §8a as complete — which is the thing to watch, because the round-1 finding named the one-stop path and
 the four scope shapes explicitly, and the disposition table asserts more than the text delivers.
+
+---
+
+# CTRIB-067 plan-check — round 3 (independent, owed)
+
+## VERIFICATION PASSED
+
+**Slice:** CTRIB-067 / #1844 ST-10 — the per-identity, cross-kind **Last viewed** datetime-range scope over the #1816
+`recently_viewed` history, the `last_viewed` ordering coupled to it, and the Recently Viewed panel's **View all** (#1832).
+
+**Requirements covered:** 16/16 map to ≥1 step; 15/16 to a truth (R14 is an explicit measured-only note).
+**Tasks:** 13 steps (0–12) · **Files:** ~46.
+**must_haves:** 15 truths, all user-observable; **12 key_links, every one implemented by a named step.**
+**Issues:** 0 blockers, 11 warnings.
+
+**What this round is.** The owed independent re-check (GATE-1 decision D3, 2026-09-07): rounds 1 and 2 were run by the
+same checker and the round-3 agent died on a rate limit, so the planner self-ran the dimensions and recorded the
+independent check as OWED. This round credits **nothing** to §8a's account of the fixes — every one was re-derived from
+the source at `0238005c` in the read-only worktree, and the two public comments were fetched live from the GitHub API.
+Nothing was built and nothing was run.
+
+### The three round-2 blockers — re-derived, all CLEARED
+
+| R2 blocker | Verdict | How it was proved this round |
+|---|---|---|
+| **B1** the `RangeFacetShell` extraction changes shipped Popularity behaviour (the `stops.length < 2` half) | **CLEARED** | The extraction was **simulated state-by-state** against `RangeFacetFilter.tsx` (read at `0238005c`). The gate now stays in `RangeFacetFilter` (`canSlide = !disabledReason && stops.length >= 2`, `:100`), which passes `children={canSlide ? … : null}` and `presets={canSlide ? mapped : undefined}`. Shipped renders the reason iff `!canSlide && disabledReason`, and since `disabledReason` truthy ⇒ `canSlide` false, that is **exactly** the shell's "render the reason when it is set" — no divergence. Chip: `PopularityFilter.tsx:98-104` returns `''` iff `selected` is falsy, and `parsePopularity` (`searchUrlState.ts:326-348`) never returns `{}` (both-bounds-undefined ⇒ `undefined`), so `chipText !== '' ⟺ hasSelection` **exactly**. Walked: (1) normal, (2) disabled-with-reason (`PopularityFilter.tsx:86` sets a reason only when `selectedScores.size === 0`, so no chip either way), (3) one-stop-with-selection (`facet({5:3})` + `popularity_min=5&max=5` ⇒ one stop, no reason ⇒ children null, presets undefined, chip on — `PopularityFilter.test.tsx:161`'s `queryAllByRole('slider') → 0` still passes), (4) no-selection, plus the fifth state (`isError` ⇒ 21 stops, no bars) — **rendered output identical in all of them**. The presets prop reshape to `{label, onSelect}` preserves the click contract (`onCommit({min: preset.range[0], max: preset.range[1]})`), the added `:161` assertion is well-formed (`:122` proves the preset is a `button` named `Never viewed`, and only one render happens in that case so `queryByRole` cannot throw on multiples), and `../FixedOptionsMultiFilter/FixedOptionsMultiFilterStyles` resolves unchanged from `FilterItem/RangeFacetShell/` (same depth — the tree was listed). |
+| **B2** `defaultRange` inverts on the `viewed_before`-only shape | **CLEARED, and the self-run's extra fix verified** | `AppDateRangePicker.tsx` re-read: `defaultRange` required `:8`, drives `value={[rangeStart, rangeEnd]}` `:103`, re-applied by `useEffect([defaultRange])` `:26-28`, and `handleClickDone` `:70-75` commits unconditionally — the hazard is real. The §9.2(e) fragment (`end = viewedBefore ?? endOfDay(now)`; `begin = viewedAfter ?? startOfDay(subDays(end, 6))`; then `begin <= end ? {begin,end} : {end,begin}`) was walked over **six** shapes: both bounds (ordered by the URL parser) → exact window; `after`-only → `[after, todayEnd]`; **`before`-only → `[before−6d, before]`** (the round-2 defect: fixed by seeding from `end`, not from `now`); no bounds / facet off → last 7 days; **future `after`-only** → swapped, so Done commits a valid window instead of clearing the filter (the self-run's find); equal bounds → ordered. An inverted PAIR cannot reach the component (the URL rule drops it; the stored-spec rule drops both bounds and keeps the scope), which is what the fragment's comment says. Memo deps are the two ISO strings — stable identity. |
+| **B3** the drafted public issue stated three things the source contradicts | **CLEARED — and the withdrawal is source-true** | `react-multi-date-picker@4.4.1` was read on disk: `components/input_icon.js` renders `createElement("input", {ref, type:"text", className:"rmdp-input", value, autoComplete:"off", …})`, and `build/index.js` defaults `editable` to true (`de = r.editable, le = void 0 === de || de`). `AppDateRangePickerStyles.ts:2` wraps that component and styles `&:focus, &:active` `:20-22`; `overrides.css` carries **no** `.rmdp-input` rule. So "there is no text input / it is not keyboard-reachable" was indeed false. The claim is struck in §4, §6(d) and §8b(iii), and the replacement text asserts only what the source supports. **No third artefact was filed** — verified live: the bot's issue list on the repo ends at #1883/#1884 (2026-09-06, the CTRIB-066 popularity follow-ups). |
+
+**The two POSTED public bodies — fetched live and diffed.** `issuecomment-5567958331` (#1844) and `issuecomment-5567958521`
+(#1832), both `odd-contributor[bot]`, 2026-09-07T08:49Z, are **byte-identical** to §8b(i)/(ii) (compared
+programmatically), **zero** non-ASCII characters and **zero** workspace-internal ids. Claim-by-claim against §7 they
+hold: the scope + the ordering + View all + `Closes #1832` (Steps 1-7, 12); the superseded DISABLED line with the
+labelled shared history and the consequence icon (R8, Step 6); relative windows excluded with presets resolving at click
+time (§4, R7); ISO params failing closed, the mirror, the saved-search round-trip, 7 locales (R3/R4/R9/R15). One nuance
+only — warning 11.
+
+**The four round-2 warning-folds — verified present.** `pnpm exec vitest run` is in §9.3's verbatim block **and** Step 9,
+with the watch-mode caveat; `useRecentlyViewedHistoryEmpty()` is three-valued (`'loading' | 'empty' | 'has-history'`),
+has a named file (`…/lib/hooks/useRecentlyViewedHistoryEmpty.ts`, exported from the real `lib/hooks/index.ts` barrel),
+is consumed by **both** `RecentlyViewedFilter` (Step 6) and `Results.tsx` (Step 7, a three-way branch), and its
+`Results.emptyState.test.tsx` has a Files line (`components/Search/Results/` genuinely has no test dir today — checked);
+R13's no-write-on-read oracle exists in the spec; the cursor cases use the file's real public idiom
+(`AssetSearchCursorTest:83-92` does `decode(keyset(sort, value, valueNull, kind, id).encode(), sort)` — arity and both
+precedents confirmed, and `parsesForSort` is `private static` at `AssetSearchCursor.java:148`); `Files:` lines are on
+Steps 0-12 including 1, 3-7 and 9; the hook has its artifacts row.
+
+### D1 / D4 / D7 / D9 — re-run in full
+
+- **D1 coverage — 16/16.** R1→Steps 1/2.1/2.4-2.6/3 · R2→2.5/2.6 · R3→2.5/3/8 · R4→3/4 · R5→6+§9.2(c)/8 · R6→1/2.2/2.3/2.5/2.7/3/7 · R7→5/6 · R8→6 · R9→2.8/3 · R10→6/7 · R11→7 · R12→8 (asserted, no code) · R13→2.6/8 · R14→2/9 (measured-only, no truth — stated) · R15→6 · R16→10. All 15 truths are drivable on the running system. **Out-of-scope discipline holds**: no relative window, no facet-count endpoint, no inverse scope, no `/api/info` change, nothing on the legacy `/api/search` beyond the one-token guard, no ST-11 work, no write on read. Two acceptance CLAUSES are under-homed (warnings 1 and 4), not uncovered.
+- **D4 scope reduction — PASSES.** Mechanical scan of §7 + §9 for 26 patterns: the only hits are `odd-minimal` (a stack name), "1.5 s later" (a timing assertion), `v2` (`date-fns-tz` v2 vs v3 names) and five occurrences of "defer" — **every one of them the plan refusing to defer**. The class-extension test passes on evidence, not on assertion: the picker's four footer labels + the calendar's own month/weekday names are fixed **in-slice** for all seven catalogs, and the i18n arithmetic was re-verified by loading the JSON — 707 keys × 7, `Recently viewed` / `Done` / `View all` / `Assets you open will appear here.` present in **all seven**, and every one of the 22 new keys (incl. `3 Day` / `1 Week` / `2 Week` / `1 Month`) absent from **all seven**. The saved-search dimension (LSN-042) is closed in-slice, not extended.
+- **D7 test integrity — both buckets, correctly routed.** Unit: 1 new Testcontainers class + 8 extended BE classes + the FE vitest set; integration: the mandatory `IT-157` (13 cases, each with a RED-on-base reason and a FOIL, lane `pending-merge` — `suites.yaml:102` confirmed, IT-157 is the next free id, DOC-529 the next free doc id). The CHANGED-tests table's seven rows each name an SoT; `SearchSortDtoTest` really does exist with **3** `@Test`s calling the **2-arg** `resolveEffective` (so keeping the overload leaves them byte-identical), and `searchFormDataToUrlState.test.ts:153-164` really does lock **10** wire keys (→ 11). Residual gaps are warnings 1, 4, 5.
+- **D9 conventions — clean.** Zero absolute paths in the record (`§9.0` uses `cd /path/to/odd-team`); zero shell `export` (the only `export`s are TypeScript); `git add -A` appears only in its prohibition; `git commit -F <msg> -- <paths>` + `git diff --cached --name-only` mandated; the branch is cut with `git switch -c` inside the dedicated worktree with an `@{u} != origin/main` assertion before every push (LSN-038); no build in the shared `../odd-platform`; the bot opens DRAFT PRs and never merges; Step 0's comments were posted before any code (G-C5, verified live). **G-C11 re-verified live today:** #1844 and #1832 both OPEN on milestone **1.0.0 (open)**. Docs are routed to `documentation@release/1.0.0`. Warning 9 is the only residue and it is workspace drift, not a plan defect.
+
+### Citation audit — what this round re-read at `0238005c` (so a later round need not)
+
+`RangeFacetFilter.tsx` in full (`:18-21` the preset type, `:99` `hasSelection`, `:100` `canSlide`, `:106` `showBars`,
+`:117-216` the render tree, the Javadoc `:60-63`) · `RangeFacetFilterStyles.ts` (the `Presets` / `Bars` / `Bar` /
+`SliderRow` split) · `PopularityFilter.tsx` (`:67-96` the reason, `:98-104` the chipText, `:131` the preset) ·
+`PopularityFilter.test.tsx` (`:122`, `:137-151`, `:153-158`, `:161-170`, the `ua` case) · `parsePopularity`
+`searchUrlState.ts:317-348` · `AppDateRangePicker.tsx` in full · `AppDateRangePickerFooter.tsx` (`ranges={[]}` renders an
+empty Box and keeps Done) · `AppDateRangePickerStyles.ts:1-27` · `overrides.css` · `react-multi-date-picker@4.4.1`
+`components/input_icon.js` + `build/index.js` · `Search.tsx:69,77-81,109-120` (`urlStateKey` → page-1 re-fire, the merge
+object) · `Filters.tsx:38-45,70-79` (`handleClearAll`, `<FavoritesFilter/>` placement) · `Results.tsx:86,96,105,113,202-208` ·
+`RecentlyViewedColumn.tsx:24-25,30-38,97` + `FavoritesColumn.tsx:44,102-112` · `recentlyViewed.slice.ts:7-11,43-48`
+(page-1 REPLACE) + `recentlyViewed.selectors.ts:15,24` + the **only** consumer of `getRecentlyViewedList` ·
+`lib/hooks/index.ts` · `searchUrlState.ts:162,181,196,249,491,567` + the only production consumer of
+`resolveActiveSort`/`defaultSortForContext` (`SearchSortMenu.tsx:34`) · `searchFormDataToUrlState.test.ts:153-164,184` ·
+`SearchSortDto.java:15-49` · `AssetSearchCursor.java:118-160` · `AssetSearchCursorTest.java:78-96` ·
+`SearchSortDtoTest.java` · `ReactiveAssetSearchRepositoryImpl.java` (`:60,62,65,71,79-89,101,115,138,165-169,179,235,245,259,280,294,533`
+— the five `searchFrom()` call sites incl. `branch`) · `AssetSearchServiceImpl.java:74,77,91-93,132,178,211-223` · the
+complete test-tree consumer list of the four changed repository methods (`AssetSearchServiceMyDataTest`,
+`AssetSearchScopePredicateTest`; `popularityHistogram` has none) · `SavedSearchServiceImpl.java:35-37,140,152-186` ·
+`V0_0_95__create_recently_viewed.sql` + `V0_0_98__create_asset_search_entrypoint.sql` (**both sides of the join are
+`varchar(64)` + `bigint`, and `asset_search_entrypoint`'s PK is exactly `(asset_kind, asset_id)`** — the join compiles and
+the measured index-only probe is the real plan; `last_viewed_at` is NOT NULL, which is what licenses the bare `desc()` and
+the cursor's NOT-NULL guard) · `application.yml:176-177` · the 7 locale catalogs (707 keys each, loaded and diffed) ·
+`integration-tests/suites.yaml:102` · `documentation@origin/release/1.0.0 @ 1a70aba` (`search.md` description **181**
+chars PyYAML-measured with no `: ` hazard, `## Favorites` :117, `## Popularity` :152; `catalog-overview.md` :43/:45/:62/:76;
+`Features.md`; `data-discovery.md`; `recently-viewed.md`) · the two live GitHub comments + the bot's issue list.
+
+### Warnings (none blocks Step 1; fold them as the executor passes through)
+
+1. **[D7] R13's no-write-on-read oracle is in the spec but not in the IT case table.** R13 says *"IT-157 case 1 asserts
+   it directly — a Playwright route listener … records ZERO `POST /api/recently-viewed/*` calls"*, but Step 8's case-1 row
+   is *"deep link … chip `Last viewed: any time`"* with no listener clause. An executor writing the spec from the case
+   table drops the only oracle for the acceptance clause. **Fix:** add the clause to case 1's row.
+2. **[D6 / G-C2] The shared `AppDateRangePicker` gets three changes and its existing consumer has no guard.** The slice
+   adds `ranges?`, routes four labels through `t()` and passes a runtime `locale` — and the component has **no test at
+   all**, while its only production consumer is `CalendarFilter.tsx` (the Activity / Alerts Period filter). `calendarLocale.test.ts`
+   pins the locale DATA (good), `tsc` pins the shape, and Step 9's pixel review exercises the prop wiring on the search
+   rail — but nothing looks at the two shipped surfaces the fix also lands on. This is exactly G-C2's
+   behaviour-diff-vs-released clause for a cross-cutting i18n change (LSN-036). **Fix:** one line in Step 9 — open the
+   Activity Period filter under `ua` and read the calendar + footer.
+3. **[D9 executor-readiness] §4 and §8b(iii) promise a Step-9 drive that Step 9 does not schedule.** Both say the
+   picker's typing round-trip and screen-reader behaviour are *"answered by DRIVING it in Step 9"*; Step 9 lists a
+   screenshot pixel review only. **Fix:** add the keyboard drive explicitly (Tab to the `rmdp-input`, type a range under
+   `format='D MMM'` + `range`, record whether it round-trips; file an issue only on an observed defect).
+4. **[D7] Step 4's Verify names a `Filters` Clear-All vitest with no file and no home.** `components/Search/Filters/`
+   carries tests only for `FavoritesFilter`, `PopularityFilter` and `SelectedFilterOption`; a `Filters` render needs the
+   redux store plus several providers, so this is not a free test. **Fix:** name the file + harness, or drop it — IT-157
+   case 6 plus a `searchStateToParams` unit case already cover the rule.
+5. **[D7 / G-C15] The CHANGED-tests table header over-claims "RED survives" for three of its rows.** The added
+   `PopularityFilter.test.tsx:161` assertion is green on `ref:main` **and** on the fix **by design** — its SoT is the
+   shipped render conditions, so it is a refactor-invariant guard, not a RED-on-base row (same for the two arity-only
+   rows). G-C15's enforcement says `/review` re-runs the RED proof on every changed test and rejects one that passes on
+   the unfixed base. **Fix:** label those rows "refactor-invariant guard (green on both sides by construction)" so the
+   reviewer does not read the bug-hiding signature into them.
+6. **[D3] §9.5 trap 10 cites an oracle that does not exercise it.** It says *"assert the panel still lists its five rows
+   after a visit to `/search` (IT-157 case 9 exercises it)"*, but case 9 goes panel → search and never returns. The
+   hazard itself is **verified safe by construction** this round: `fetchRecentlyViewedList.fulfilled` REPLACES the list
+   for `page <= 1` (`recentlyViewed.slice.ts:43-48`), `getRecentlyViewedList` has exactly **one** consumer, and that
+   consumer re-fetches on mount — so the residue is a transient. **Fix:** extend case 9 with a return-to-overview step,
+   or correct the sentence.
+7. **[D6] Step 2.2's default clause reads two ways.** *"when the scope IS present and nothing was requested (or
+   `RELEVANCE` without a query), the default becomes `LAST_VIEWED`"* — read literally, recency becomes the default even
+   **with** a query, contradicting R6 (*"query + scope ⇒ relevance"*), §5.5's option A and Step 3's FE rule
+   (`hasRecencyScope && !text.trim()`). The plan's own tests catch it, so it is not a blocker. **Fix:** say "the BROWSE
+   default slot becomes `LAST_VIEWED`; a text query still resolves to `RELEVANCE`" — the shipped `resolveEffective`
+   (`SearchSortDto.java:45-48`) is a two-line fold and the third argument only changes the `STATUS_PRIORITY` slot.
+8. **[D9 record hygiene] The round-1 W7 / round-2 W6 editing artifact survives into round 3.** §4 still reads *"the
+   `react-multi-date-picker` calendar's **English calendar's** keyboard / screen-reader behaviour"*. **Fix:** delete the
+   duplicated possessive.
+9. **[D9 workspace drift, not a plan defect] The plan's issue-filing instruction is authorised but three rule files still
+   say the opposite.** Step 11 and §9.6 tell the executor to FILE real issues via the App token — which `CLAUDE.md:126`
+   and `.claude/skills/log-issue/SKILL.md:118` now permit (and the bot demonstrably does: #1872/#1874/#1878/#1883/#1884)
+   — while `playbooks/github-write.md:10,77`, `issues/README.md:127` and `pillars/contributor/gates.md` G-C18 still say
+   the bot never creates issues. A `/review` session reading those would bounce a filed issue. **Fix:** cite
+   `CLAUDE.md:126` in the plan, and log the three stale files as a workspace follow-up (out of this slice's diff).
+10. **[D5] Size — recorded, not blocking (unchanged from rounds 1-2).** 13 steps / ~46 files is well over
+    `plan-contract.md` §2's 2-3 tasks / 3-5 files. It stands because G-C18 bars a horizontal split, the only SPIDR seam is
+    rejected on a stated product argument (§5.5 — the ordering is what makes the filter's panel link honest), ST-7 (33) /
+    ST-8 (40+) / ST-9 (~50) shipped on this rail, commits land per step, and the maintainer approved the size in plain
+    language. **Watch:** Phase D runs on a less capable model — if context runs out mid-slice, resume from the last
+    committed step (§9.1 supports it); do not compress steps.
+11. **[D1, informational — no edit warranted] The posted #1844 comment says the ordering is "used as its default"** without
+    R6's *"and no query is typed"* caveat. True in the browse case a reader will actually test, and the same comment says
+    any other ordering still works; a text query keeping relevance is the platform-wide shipped rule. Recorded so a later
+    reader does not mistake it for a divergence. If the thread is revisited for another reason, one clause closes it.
+
+### Recommendation
+
+**0 blockers → the plan may proceed to Step 1.** The three round-2 blockers are genuinely closed, and this round proved
+each from the source rather than from §8a's account of it — including the one that mattered most, the extraction whose
+render conditions are not the obvious ones. The eleven warnings are hardening: 1-4 are worth folding **before** the step
+they belong to (they are one line each and two of them are missing oracles), 5-8 are packet hygiene the reviewer will
+otherwise raise, 9-11 are recorded rather than actionable in this slice.
+
+What this round adds that the self-run could not: an adversary who had not written the text. The extraction was
+simulated state-by-state rather than read; the `chipText ⟺ hasSelection` equivalence was proved from `parsePopularity`'s
+own early return rather than asserted; the withdrawn accessibility claim was checked against the library's compiled
+source; the public bodies were fetched from GitHub and byte-compared; and the join's two column types were read out of
+the migrations. The plan's citation accuracy remains its strongest property — **every** anchor re-checked this round
+resolved exactly as written.

@@ -1,3 +1,19 @@
+# Last updated 2026-09-08 — **/review CTRIB-067 round 2: the three items are fixed, verified and pushed — `blocked` → `review-ready`, GATE 2 is the maintainer's.**
+
+Maintainer-directed ("fix the three items and re-review"), so this session made the fixes and verified them rather than bouncing the item back — the separate-session rule catches an `/implement` → `/review` handoff, not the maintainer driving a close.
+
+**odd-platform `6a7faf65` → `5c55e8b5`** (PR #1888) — the `AppDateRangePicker` prop comment now says what the Alerts caller actually does: Activity always carries `begin/endDate` so that surface is unchanged, Alerts leaves the period unset by default and now passes NONE, which is what stops its box displaying a last-week range it was never filtering by. The two files agree instead of one contradicting the other.
+
+**documentation `8fe5a92` → `549ad0e`** (PR #116) — the page counts its own controls correctly now that there are three. `search.md:146` reads "where the **three** personal scopes part company … whereas favorites and Last viewed **both** fall back to a shared bucket", which also drops the false "the one place" claim (the Last viewed hint draws the same contrast) and names the second surviving scope instead of only one; `:226` reads "**all three** personal scopes", which is code-true — the recency window and the popularity range are independent predicates and the histogram is itself recency-scoped.
+
+**The class was swept, not just its two instances.** A tree-wide grep for `both/the two (personal) scopes` over `docs/**` leaves three unrelated hits (ingestion include/exclude filters, the directory's two-filter list, the permissions API's orthogonal endpoint scopes). No stale personal-scope count remains in the manual.
+
+**What made the re-review cheap, and honest.** The platform delta is 100% inside a block comment — `git diff -U0 | grep` for changed non-comment lines returns **0** — so the built artifact is behaviourally identical and round 1's IT-157 GREEN/RED pairing, four-suite regression with its `ref:main` attribution, pixel review and 126k SRE numbers still describe what ships. No suite was re-run and none was claimed. What WAS re-run, at the new head: **all six CI checks green — 828 tests / 859 runs, 0 failed, 0 skipped, ±0 against the base** — plus local `tsc --noEmit` (exit 0, zero diagnostics) and `eslint src` (exit 0, zero errors; 19 prettier warnings whose intersection with this slice's 30 touched UI files is empty). Round 1's first local check read the exit code of `tail` rather than of the tool; that was corrected here rather than left standing.
+
+On the docs head: frontmatter parses, `description` 194 chars ≤ 200, every in-page anchor resolves including the new `#last-viewed`, Gate 11 zero hits.
+
+**Status**: CTRIB-067 `blocked` → **`review-ready`**. Gate 8 stays **PENDING-RELEASE (1.0.0)** — both PRs are DRAFT and the docs ride the `release/1.0.0` train. Editorial-audit queue for the next `/review` is unchanged: `docs/active-platform-features/**`, `docs/integrations/**`, `docs/developer-guides/**`.
+
 # Last updated 2026-09-08 — **/review of CTRIB-067 (odd-platform#1888 + documentation#116): REJECTED on ONE Gate-7 blocker, and it is two sentences on one documentation page.**
 
 Session `review-ctrib067`, a separate read-only session (no worktree, no build, no stack, no `/enrich`; `lineage/**` untouched). The 2-minute precondition did NOT fire: the ledger claims all five DoD gates RUN, and the claim held up — GitHub check-runs on the reviewed SHA `6a7faf65` are **all green** (`run_tests`, `Test Results`, `run_playwright_tests` test/lint/format-check), and `run-log/2026-09-08-IT-157.md` entry (5) is a 12/12 GREEN whose SUT was built from that exact tree, paired with entry (4)'s **12/12 RED on `main`**.

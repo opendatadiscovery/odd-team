@@ -6,14 +6,14 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1844
 also_closes: "#1832 (the panel's View all — wholly delivered by this slice; the PR carries `Closes #1832` beside `Closes #1844`)"
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1844` 2026-09-06: milestone 1.0.0 (#29), state OPEN, semver, due 2026-12-31; #1832 carries the same milestone and is also OPEN — both re-verified live at the GATE-1 packet (19 open / 15 closed at that read)
-status: blocked           # /review (review-ctrib067) 2026-09-08 REJECTED: Gate 7 FAIL — the change makes two sentences on docs/data-discovery/search.md false (:146 "the one place the two personal scopes", :226 "both personal scopes"; there are now THREE). Every other gate PASSES with cited evidence; see the Review section at the end for the 2-blocker + 2-fold-in fix list. Prior: plan-approved — GATE 1 APPROVED 2026-09-07 (RamanDamayeu): D1 = A (the filter works on the shared history under auth.type=DISABLED, labelled), D2 = A (filter + the Recently viewed ordering; the PR closes #1832 too), D3 = approve now with the independent round-3 plan-check run BEFORE any code. Step 0 DONE (both scope comments posted, §10). Phase D+ is executed later by a different model against §9 (the runbook).
+status: review-ready      # /review round 2 (review-ctrib067) 2026-09-08 ACCEPTED — the round-1 Gate-7 blocker and both fold-ins are closed at odd-platform 5c55e8b5 + documentation 549ad0e. All six CI checks green at the reviewed head (828 tests / 859 runs, 0 failed, +-0 vs base); the platform delta is comment-only (0 non-comment lines changed), so round-1's IT-157 pairing, four-suite regression, pixel review and 126k SRE numbers still describe what ships. GATE 2 (merge) is the maintainer's. See the two Review sections at the end.
 classification: feature   # a slice of the #1825 epic (ST-10 in state/search-overhaul-decomposition.md :156); entry gate = spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D3 (the 'Recently viewed (datetime)' row of the facet table, joined per current identity) + D8 (the panel as a deep-link widget) + D10 / D11; depends on #1816 (CTRIB-041 — MERGED #1826 backend + #1827 frontend) — UNBLOCKED"
 stream_id: ctrib067
 base_sha: "0238005c"      # odd-platform origin/main at intake (= the #1881 CTRIB-066 squash); every line cited below was read at this SHA via the detached worktree ../odd-platform-ctrib067
 branch: contrib/CTRIB-067-recently-viewed-facet   # cut at GATE 1 from 0238005c (or the then-current origin/main, re-diffed) in ../odd-platform-ctrib067 via `git switch -c` (no upstream; push.default=current on the clone — verified; O6/LSN-038)
-head_sha: 6a7faf65        # Phase D — PR #1888 head (base main @ 0238005c); reviewed at this SHA
-pr: "odd-platform#1888 (DRAFT, base main) + documentation#116 (DRAFT, base release/1.0.0, head docs/CTRIB-067-recently-viewed-facet @ 8fe5a92)"
+head_sha: 5c55e8b5        # PR #1888 head after the round-1 rework (was 6a7faf65; the delta is comment-only)
+pr: "odd-platform#1888 (DRAFT, base main) + documentation#116 (DRAFT, base release/1.0.0, head docs/CTRIB-067-recently-viewed-facet @ 549ad0e)"
 reproduced: "n/a — feature slice, not a bug. BASELINE captured on a running stack built from main @ 0238005c (§3a): POST /api/search/assets silently ignores an unknown `recently_viewed` field (HTTP 200, total 126,001 with and without it), the list endpoint honours viewed_after today, the wire shapes are captured verbatim. These observations go RED in Phase D's IT-157."
 adr_required: false       # §6(b): conforms to the approved spine ADR D3/D8/D10/D11/D12; no migration (the table + both indexes shipped in V0_0_95), no auth-posture change (identity from the session, the DISABLED sentinel as shipped), an ADDITIVE wire change (one optional object on AssetSearchFormData + one sort token)
 plan_approved_by: "RamanDamayeu"
@@ -1819,3 +1819,81 @@ Consistent. `lineage/odd-platform/feature-flows/detail/F-017.yaml` gained UC-18 
 
 **Status transition**: `plan-approved` (stale) → **`blocked`**. Re-run `/review` after the fix list; the
 re-review is the diff of the fix only — every other gate above stands.
+
+---
+
+## Review — round 2 (2026-09-08, session: review-ctrib067, maintainer-directed rework + re-review)
+
+- **Result**: **ACCEPTED** — the round-1 blocker and both fold-ins are closed. `blocked` → **`review-ready`**
+  (GATE 2, the merge, remains the maintainer's; the bot never merges).
+- **Reviewed SHAs**: odd-platform **`5c55e8b5`** (PR #1888, base `main`) · documentation **`549ad0e`**
+  (PR #116, base `release/1.0.0`). Both PRs confirmed live on the new heads via the API.
+- **Mode**: the maintainer directed "fix the three items and re-review", so this session made the fixes and
+  verified them (`feedback_maintainer_driven_close_no_bounce` — the separate-session rule catches an
+  `/implement` → `/review` handoff, not the maintainer driving the close). Nothing outside the round-1 fix list
+  was touched; every other gate's round-1 evidence stands unchanged and is not re-litigated here.
+
+### The fix list, item by item
+
+| # | Item | Fix | Evidence |
+|---|---|---|---|
+| 1 | `search.md:146` — "the one place the **two** personal scopes differ in availability" | now "This is where the **three** personal scopes part company — My data hides itself entirely under DISABLED …, whereas favorites and [Last viewed](#last-viewed) **both** fall back to a shared bucket and stay usable." Also drops the false "one place" claim (the `## Last viewed` hint draws the same contrast) and names the second surviving scope instead of only one. | documentation `549ad0e`; the claim is code-true — `MyDataFilter.tsx:87-90` returns `null` under DISABLED, while `FavoritesFilter` and `RecentlyViewedFilter` both render with a `(shared)` label |
+| 2 | `search.md:226` — "…and **both** personal scopes…" in `## Popularity` | now "**all three** personal scopes". Code-true: `conditions()` applies the popularity range and the recency window as independent predicates, and `popularityHistogram` is itself recency-scoped, so the bars describe the list they sit under. | documentation `549ad0e` |
+| 3 | `AppDateRangePicker.tsx` — "Both shipped callers … always pass one, and their behaviour is unchanged" | replaced with the accurate split: Activity always carries `begin/endDate` so that surface is unchanged; **Alerts** leaves the period unset by default and now passes NONE, which is what stops its box showing a last-week range it was never filtering by. The two files now agree instead of one contradicting the other. | odd-platform `5c55e8b5` |
+| 4 | ledger frontmatter stale (`plan-approved`, empty `head_sha`/`pr`) and §12's "what remains" tail | fixed in the round-1 verdict commit `ec07395a`; `head_sha` re-pointed to `5c55e8b5` here | this file's frontmatter |
+
+### Verification of the rework
+
+- **The odd-platform delta is comment-only, and that is measured, not asserted.**
+  `git diff -U0 6a7faf65..5c55e8b5 | grep -E '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^\s*[+-]\s*\*'` → **0 lines**.
+  Every changed line lives inside a `/** … */` block. The built artifact is therefore behaviourally identical to
+  `6a7faf65`, so **round 1's IT-157 GREEN/RED pairing, the four-suite regression with its `ref:main` attribution,
+  the pixel review and the 126k SRE re-measure all still describe what ships** — no re-run is owed, and none was
+  fabricated.
+- **CI at the reviewed head `5c55e8b5` — all six checks green.** `Test Results` reports **828 tests / 859 runs,
+  0 failed, 0 skipped, 186 suites, ±0 against the base**; `run_tests` success; `run_playwright_tests`
+  test / lint / format-check all success. Read from the check-run output, not from a badge colour.
+- **Local gates re-run with TRUE exit codes** (round 1's first pass read the exit of `tail`, not of the tool —
+  corrected rather than left standing): `npx tsc --noEmit` → **exit 0, zero diagnostics**;
+  `npx eslint src` → **exit 0, 0 errors**, 19 prettier warnings whose file set intersected with this slice's 30
+  touched UI files is **EMPTY** (`comm -12` of the two lists returns nothing); `npx prettier --check` on the
+  edited file → "All matched files use Prettier code style!".
+- **Documentation delta is 5 prose lines in one file** (`git diff 8fe5a92..549ad0e`), no frontmatter change.
+  Re-verified on the new head: frontmatter parses under PyYAML, `description` is **194 chars ≤ 200**, and every
+  in-page anchor resolves to a real heading — including the newly-introduced `#last-viewed`
+  (headings enumerated and diffed against the anchor set; **UNRESOLVED: []**).
+- **The blocker's whole CLASS was swept, not just its two instances.** A tree-wide grep for
+  `both (personal )?scopes | the two (personal )?scopes | two personal | the other personal scope` over
+  `docs/**` returns only three unrelated hits — ingestion `include`/`exclude` filters
+  (`integrations/ingestion-filters.md:44`), the directory's two-filter list (`data-discovery/directory.md:31`),
+  and the permissions API's orthogonal endpoint scopes (`…/permissions.md:135`). **No stale personal-scope count
+  remains anywhere in the manual.**
+- **Gate 11 re-run on the full doc diff vs `release/1.0.0`**: **0 hits** for workspace vocabulary, `ST-NN` slice
+  ids and `#1NNN` issue numbers on a published line.
+
+### Gate roll-up at the reviewed heads
+
+| Gate | Round 2 |
+|---|---|
+| Acceptance criteria (6) | PASS — unchanged from round 1; the rework touched no behaviour |
+| Gate 1 duplicates · 2 aliases · 3 caveats · 4 consumer-read · 6 code↔doc · 9 provenance · 10 homing · 11 audience | PASS — round-1 evidence stands (comment-and-prose-only delta) |
+| Gate 5 unset-parameter | N/A — no SDK builder in scope |
+| **Gate 7 layout and completeness** | **PASS** — the page's own scope count is now internally consistent at `:76`, `:146` and `:226`; anchors resolve; SUMMARY unaffected (no new page) |
+| **Gate 8 publishing** | **PENDING-RELEASE (1.0.0)** — unchanged. Neither PR is merged; the doc lives on a real branch with a real PR into `release/1.0.0`, not as a backlog draft (the `review-ctrib040` case-law). The post-merge URL + phrase list recorded in the round-1 verdict stands, with one addition: `search.md` must render "**where the three personal scopes part company**" and "**all three personal scopes**" |
+| G-C15 changed-test hazard | PASS — the rework added, changed and removed no test |
+| Regressions | none — the delta cannot produce one (comment-only), and CI is ±0 tests against the base |
+| Navigation / ontology | consistent — untouched by the rework |
+
+### Notes
+
+- Round 1's `98.44 %` vs `100.00 %` and "eleven commits" vs ten in the earlier `PROGRESS.md` entry were noted,
+  not rewritten, and remain noted: the authoritative numbers are the ledger's §11 (changed-lines coverage
+  **64/64 = 100.00 %** at the final commit) and `git log` (the branch carries **eleven** commits at `5c55e8b5`,
+  which is what makes the earlier count right by accident rather than by measurement — it was ten when written).
+- No new DOC-NNN or issue draft was spawned for this rework: the item was in hand and being touched, so the
+  findings were folded into it (the CTRIB-023 over-logging lesson). Nothing was narrated without a file.
+- Editorial-audit coverage is unchanged from round 1 (`docs/data-discovery/**` end-to-end plus the touched
+  `Features.md` / `main-concepts.md` / `odd-platform.md`). **Still queued for the next `/review`:**
+  `docs/active-platform-features/**`, `docs/integrations/**`, `docs/developer-guides/**`.
+
+**Status transition**: `blocked` → **`review-ready`**. Both PRs are DRAFT and awaiting the maintainer's GATE 2.

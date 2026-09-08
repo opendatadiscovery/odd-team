@@ -6,14 +6,14 @@ github_issue_url: https://github.com/opendatadiscovery/odd-platform/issues/1844
 also_closes: "#1832 (the panel's View all — wholly delivered by this slice; the PR carries `Closes #1832` beside `Closes #1844`)"
 target_repo: odd-platform
 milestone: "1.0.0"        # G-C11 PASS — live `GET /repos/opendatadiscovery/odd-platform/issues/1844` 2026-09-06: milestone 1.0.0 (#29), state OPEN, semver, due 2026-12-31; #1832 carries the same milestone and is also OPEN — both re-verified live at the GATE-1 packet (19 open / 15 closed at that read)
-status: plan-approved     # GATE 1 APPROVED 2026-09-07 (RamanDamayeu): D1 = A (the filter works on the shared history under auth.type=DISABLED, labelled), D2 = A (filter + the Recently viewed ordering; the PR closes #1832 too), D3 = approve now with the independent round-3 plan-check run BEFORE any code. Step 0 DONE (both scope comments posted, §10). Phase D+ is executed later by a different model against §9 (the runbook).
+status: blocked           # /review (review-ctrib067) 2026-09-08 REJECTED: Gate 7 FAIL — the change makes two sentences on docs/data-discovery/search.md false (:146 "the one place the two personal scopes", :226 "both personal scopes"; there are now THREE). Every other gate PASSES with cited evidence; see the Review section at the end for the 2-blocker + 2-fold-in fix list. Prior: plan-approved — GATE 1 APPROVED 2026-09-07 (RamanDamayeu): D1 = A (the filter works on the shared history under auth.type=DISABLED, labelled), D2 = A (filter + the Recently viewed ordering; the PR closes #1832 too), D3 = approve now with the independent round-3 plan-check run BEFORE any code. Step 0 DONE (both scope comments posted, §10). Phase D+ is executed later by a different model against §9 (the runbook).
 classification: feature   # a slice of the #1825 epic (ST-10 in state/search-overhaul-decomposition.md :156); entry gate = spec-gate (G-C17), not reproduce-first
 parent: "#1825 (the unified-asset-search overhaul); realises ADR adrs/drafts/unified-asset-search.md D3 (the 'Recently viewed (datetime)' row of the facet table, joined per current identity) + D8 (the panel as a deep-link widget) + D10 / D11; depends on #1816 (CTRIB-041 — MERGED #1826 backend + #1827 frontend) — UNBLOCKED"
 stream_id: ctrib067
 base_sha: "0238005c"      # odd-platform origin/main at intake (= the #1881 CTRIB-066 squash); every line cited below was read at this SHA via the detached worktree ../odd-platform-ctrib067
 branch: contrib/CTRIB-067-recently-viewed-facet   # cut at GATE 1 from 0238005c (or the then-current origin/main, re-diffed) in ../odd-platform-ctrib067 via `git switch -c` (no upstream; push.default=current on the clone — verified; O6/LSN-038)
-head_sha:                 # Phase D
-pr:                       # Phase E — odd-platform DRAFT (base main) + documentation DRAFT (base release/1.0.0)
+head_sha: 6a7faf65        # Phase D — PR #1888 head (base main @ 0238005c); reviewed at this SHA
+pr: "odd-platform#1888 (DRAFT, base main) + documentation#116 (DRAFT, base release/1.0.0, head docs/CTRIB-067-recently-viewed-facet @ 8fe5a92)"
 reproduced: "n/a — feature slice, not a bug. BASELINE captured on a running stack built from main @ 0238005c (§3a): POST /api/search/assets silently ignores an unknown `recently_viewed` field (HTTP 200, total 126,001 with and without it), the list endpoint honours viewed_after today, the wire shapes are captured verbatim. These observations go RED in Phase D's IT-157."
 adr_required: false       # §6(b): conforms to the approved spine ADR D3/D8/D10/D11/D12; no migration (the table + both indexes shipped in V0_0_95), no auth-posture change (identity from the session, the DISABLED sentinel as shipped), an ADDITIVE wire change (one optional object on AssetSearchFormData + one sort token)
 plan_approved_by: "RamanDamayeu"
@@ -1559,3 +1559,263 @@ says so, which is GATE-1 decision D1 and the correction the issue's own acceptan
 rebuilt from the final commit, the RED half on `ref:main`, the four-suite regression, the changed-lines coverage
 figure, the SRE re-measure at 126k, and the ontology rebuild. Status flips to `review-ready`; GATE 2 is the
 maintainer's, and the implementer never sets `merged` or `done`.
+
+---
+
+## Review (2026-09-08, session: review-ctrib067 — PR https://github.com/opendatadiscovery/odd-platform/pull/1888)
+
+- **Result**: **REJECTED** — one Gate-7 blocker on the documentation half. Everything else passes with cited
+  evidence; the rework is three one-line edits and the re-review is a diff-of-the-fix.
+- **Reviewed SHA**: odd-platform `6a7faf65` (= PR #1888 head, base `main @ 0238005c`); documentation
+  `8fe5a92` (= PR opendatadiscovery/documentation#116 head, base `release/1.0.0 @ 1a70aba`).
+- **Intake**: separate session (no `/implement` ran here). `state/active-streams.yaml` read at intake — the only
+  non-terminal entry is `ctrib067` itself (`status: review-ready`); no co-active stream contends for the
+  odd-platform checkout, the SUT tags, the compose ports or `lineage/**`. Read-only on both target repos: no
+  worktree, no stack, no build, no `/enrich`.
+
+### Cheap precondition (the 2-minute bounce) — NOT triggered
+
+The implement DoD is claimed RUN, and the claim was checked rather than taken:
+
+- Unit CI-replica at the branch tip `6a7faf65` — §11 records BUILD SUCCESSFUL, 859/859, changed-lines coverage
+  64/64 = 100.00 % vs the CI floor of 98. VERIFIED independently via the GitHub check-runs API on
+  `6a7faf65`: `run_tests` **success**, `Test Results` **success**, `run_playwright_tests / test|lint|format-check`
+  all **success** (completed 2026-09-08T12:05–12:10Z).
+- Integration run-log whose SUT is the reviewed commit — `integration-tests/run-log/2026-09-08-IT-157.md`
+  entry (5): SUT built from the working tree @ `6a7faf65`, **12 passed / 0 failed**, paired against entry (4)
+  **11 failed / 1 passed on `main @ 0238005c`** (the RED half).
+
+### Regression — measured, and the SUT provenance verified rather than trusted
+
+The four-suite regression (`run-regression.sh ctrib067`, 2026-09-08 run-logs) ran against the raw image tag
+`odd-platform:odd-team-sut-ctrib067`, whose recorded digest (`a6c9700f`) matches neither IT-157 entry — so the
+tag's SOURCE was verified directly instead of inferred (LSN-033):
+
+- `docker run … odd-platform:odd-team-sut-ctrib067` → `/app/classes/…/dto/RecentlyViewedScopeDto.class` **PRESENT**;
+  the bundled `odd-platform-ui.jar` contains `Pick two dates`, `right-start`, `Last viewed (shared)`,
+  `recently_viewed` and `Останній перегляд` — i.e. the UI is built from **≥ `8b7d7639`**, the pixel-review commit.
+- `odd-platform:odd-team-sut-ctrib067red` → `RecentlyViewedScopeDto.class` **ABSENT**, none of the UI markers —
+  the A/B baseline really is `main`.
+- The only commits after `8b7d7639` are `49c7087d` (prettier, 3 FE files), `944aef57` (checkstyle: one import
+  order + one blank line) and `6a7faf65` (test-only, `SavedSearchServiceImplTest`) — each diff read here; **no
+  product behaviour changes between the regression SUT and the reviewed head.** VERIFIED via `git show --stat`.
+
+| suite | measured (implement) | reviewer's reading |
+|---|---|---|
+| `feature-complete` | 19 failed / 340 passed | attributed by a same-box `ref:main` A/B: 12 fail on BOTH (TST-059 + TST-057 baseline), 7 branch-only **all green on retry**, 4 main-only. Root cause tracked as `TST-071`. Not this change. |
+| `multi-stack` | 7 failed / 12 passed | 5 are `demo-stand-first-run` against the PUBLISHED ghcr image — change-independent by construction; 2 are `my-data-scope-narrows` `:388`/`:434`, both now seen passing AND failing on identical code (TST-071). Not this change. |
+| `known-bugs` | 3 failed | expected RED, the pin holding — no unexpected GREEN, so no un-flipped fix. |
+| `ingestion-e2e` | 15 passed | green. |
+
+**Verdict on regressions: none attributable to this change** — the attribution is a measurement (set-equality on
+`spec:line` across a `ref:main` A/B), not an assertion.
+
+### Acceptance criteria
+
+- [x] *a datetime range narrows by my last-viewed* — PASS. `ReactiveAssetSearchRepositoryImpl.searchFrom(recentlyViewed)`
+      (identity-keyed INNER JOIN on `RECENTLY_VIEWED`, UNIQUE `(oidc_username, provider, asset_kind, asset_id)` so
+      `count` stays exact) + `conditions(...)` block **(9)** (inclusive bounds, `DSL.falseCondition()` on a
+      contradictory window). Behaviourally pinned by `AssetSearchRecentlyViewedIntegrationTest`
+      `emptyScope_narrowsToTheCallersHistory` / `window_isInclusiveAndNarrowsBothEnds` /
+      `contradictoryWindow_matchesNothing` — each asserts NARROWING with a foil (`neveropened` must be ABSENT),
+      never presence. SRE re-measure on the built SUT at 126k assets: `{}` → 126,000 · `recently_viewed:{}` → **200**
+      · 2-day window → **5**, with a second identity's 200 rows present as the leak foil.
+- [x] *empty under `auth.type=DISABLED`* — PASS **as corrected by GATE-1 decision D1**. The issue's own line was
+      stale; the shipped `CurrentUserIdentityResolver` yields the `(__shared__, DISABLED)` sentinel, so the filter
+      works on the shared bucket and says so (`Last viewed (shared)` + the consequence in the info icon), matching
+      the panel it links from. The correction was surfaced at GATE 1 and approved, and it is documented for
+      operators (`search.md` DISABLED hint).
+- [x] *the panel deep-links (#1832)* — PASS. `RecentlyViewedColumn.tsx` renders **View all** →
+      `buildSearchLink({ recentlyViewed: {}, sort: 'last_viewed' })` (the canonical serialiser, so the mirror
+      cannot rewrite it away), gated on `items.length > 0` exactly as the `FavoritesColumn` precedent.
+- [x] *unit (timestamp range + identity scoping)* — PASS. Nine behavioural cases incl.
+      `scope_isPerIdentity` (another identity's recorded view under a different `(oidc_username, provider)` must
+      NOT appear) and `popularityHistogram_isScopedByRecency`. Views are recorded through the production write
+      path (`recentlyViewedRepository.recordView`), not a direct INSERT.
+- [x] *integration (filter narrows; panel deep-links) — new IT-NNN* — PASS. `IT-157`, 12 cases, GREEN on the
+      branch and **RED (12/12) on `main`**.
+- [x] *i18n — all 7 locales* — PASS. **730 keys in every catalog** (`br ch en es fr hy ua`), verified by counting
+      each file on the branch. Spot-read the new keys in `br/ch/hy/es/fr/ua`: real translations, not English
+      copies (`ch: 最近查看`, `hy: Վերջին դիտում`, `ua: Останній перегляд`). The four `AppDateRangePicker` footer
+      presets (`3 Day` / `1 Week` / `2 Week` / `1 Month`) were hard-coded English literals until this diff — the
+      exact hardcoded-string class `feedback_i18n_done_is_rendered_page_not_catalog_parity` names, now keyed and
+      translated, which also fixes the shipped Activity and Alerts Period filters.
+
+### Quality Bar
+
+- **Gate 1 — No duplicates** — PASS. The range chrome is EXTRACTED (`RangeFacetShell`) and consumed by both
+  `PopularityFilter` and `RecentlyViewedFilter`; the date body reuses the platform's single shipped date control
+  (`AppDateRangePicker`) rather than adding a second date-range implementation — the pre-work comment's own
+  instruction. The fail-closed URL reading is ONE function (`parseRecentlyViewed`) shared by the URL parser and
+  the saved-spec projection, so the two surfaces cannot drift. VERIFIED via read of
+  `RangeFacetShell.tsx`, `RangeFacetFilter.tsx` and `searchUrlState.ts:408-470`.
+- **Gate 2 — Aliases logged** — PASS. `docs/main-concepts.md` gains the row `Recently Viewed | Last viewed,
+  viewing history, browsing history | …` which names all three surface labels (feature **Recently Viewed**, facet
+  **Last viewed**, ordering **Recently viewed**) and distinguishes it from **Popular**. VERIFIED via the
+  documentation#116 diff.
+- **Gate 3 — Caveats captured** — PASS, as admonitions not prose: the shared-link privacy consequence
+  (`search.md` warning), the `auth.type=DISABLED` shared-history posture (warning), the retention bound
+  (`recently-viewed.md` info hint + the `search.md` paragraph), and the housekeeping partial-override danger hint
+  extended with `recently_viewed_max_per_user: 0` (`odd-platform.md`).
+- **Gate 4 — Consumer-read** — PASS. Every runtime claim traced to the enforcing code:
+  `CurrentUserIdentityResolver` (identity from the security context, never the request),
+  `DateTimeUtil.mapUTCDateTime` (null-safe, `atZoneSameInstant(UTC)` — read at
+  `service/ingestion/util/DateTimeUtil.java:15-20`), `SavedSearchServiceImpl.sanitiseRecentlyViewed`,
+  `ReactiveDataEntityRepositoryImpl:1020` (the legacy path now filters BOTH `POPULARITY` and `LAST_VIEWED`).
+  Config consumers: `housekeeping.ttl.recently_viewed_days: 90` + `recently_viewed_max_per_user: 200` read at
+  `odd-platform-api/src/main/resources/application.yml:176-177` — both documented with the shipped defaults.
+- **Gate 5 — Unset-parameter audit** — N/A. No SDK builder in scope (no new external client; the join is jOOQ
+  over an existing table, no migration — `recently_viewed` + both indexes shipped in `V0_0_95`).
+- **Gate 6 — Bidirectional code ↔ doc** — PASS.
+  - code → doc: the new facet, the ordering, the URL params, the saved-search round-trip, the panel's View all,
+    the DISABLED posture and the two retention keys are all documented. The one non-obvious touched surface is
+    the **shipped Alerts Period filter**, whose control now shows a placeholder instead of a fabricated
+    "last week" range — no doc change is owed because the published manual ALREADY documents the correct
+    behaviour: `docs/active-platform-features/alerting.md:75` on `origin/release/1.0.0` — *"**Period** | … Left
+    unset by default, so the unfiltered view is 'all alerts' rather than 'alerts in the last N days'."*
+    The UI was contradicting the manual; this diff makes the UI match. VERIFIED via
+    `git grep -n "Period" origin/release/1.0.0 -- 'docs/**'`.
+  - doc → code: the "six cleanup tasks" claim VERIFIED — `housekeeping/job/` holds six concrete jobs (Activity,
+    Alert, DataEntity, Message, RecentlyViewed, SearchFacets) beside the `HousekeepingJob` interface and the
+    `EmptyPartitionsHousekeepingJob` base.
+  - out-of-scope discoveries all landed **on disk and upstream**, never as narration: `PLT-269` →
+    [odd-platform#1886](https://github.com/opendatadiscovery/odd-platform/issues/1886) (open, verified live),
+    `PLT-270` → [#1887](https://github.com/opendatadiscovery/odd-platform/issues/1887) (open, verified live),
+    `TST-071` (the `net::ERR_NETWORK_CHANGED` blank-page class) and `TST-046` (closed as the tracking question it
+    was) in `backlog/tests/`.
+- **Gate 7 — Layout and completeness** — **FAIL (the blocker).** No SUMMARY change is owed (no new page) and the
+  in-page TOC/IA placement is right — `## Last viewed` sits between `## Favorites` and `## Popularity`, matching
+  both the page's own "third kind … the fourth is Popularity" sentence and the real rail order
+  (`Filters.tsx:82,87,91 … 115`). BUT the change makes **two sentences on the same page false**:
+  1. `docs/data-discovery/search.md:146` (in the Favorites warning hint) — *"This is **the one place the two
+     personal scopes** differ in availability"*. The page states forty lines earlier (`:76`) that there are
+     **three** personal scopes, and the new `## Last viewed` section carries the same DISABLED-vs-My-data
+     contrast — so the page now contradicts itself on both the count and the "one place".
+  2. `docs/data-discovery/search.md:226` (in `## Popularity`) — *"it combines with the query, every facet, the
+     Asset-type and Data-entity-type filters and **both personal scopes**"*. There are now three, and Popularity
+     really does compose with the recency scope (`conditions()` applies both; the histogram is recency-scoped).
+- **Gate 8 — Publishing standards** — **PENDING-RELEASE (1.0.0)**. Neither PR is merged, so no live fetch is
+  possible; the release-gated sub-checks were run against the TRAIN COMMIT rather than a backlog draft
+  (the `review-ctrib040` case-law): `origin/release/1.0.0` exists on the documentation remote @ `1a70aba`, and
+  the change is a real branch + real PR into it — `docs/CTRIB-067-recently-viewed-facet @ 8fe5a92`,
+  documentation#116, base `release/1.0.0`, 7 files / +107. Branch-verifiable sub-checks: `search.md` frontmatter
+  parses under PyYAML and its `description` is **194 chars ≤ 200** (the GitBook truncation limit); all new links
+  are tree-relative (`../configuration-and-deployment/odd-platform.md#…`, `search.md#last-viewed`), no raw
+  `docs.opendatadiscovery.org` or GitHub-blob fallbacks introduced. Post-merge verification list recorded below.
+- **Gate 9 — Factual claim provenance** — PASS. Spot-checked the load-bearing claims rather than accepting them:
+  the `auth.type=DISABLED` sentinel posture, the retention defaults, the six housekeeping jobs, the
+  `alerting.md:75` "Left unset by default" precedent, the "My data shows itself greyed out" cross-reference
+  (`MyDataFilter.tsx:87-90` returns `null` under DISABLED but renders greyed-out-with-remedy when signed in and
+  not Owner-bound — which is exactly what `search.md:34-35` already documents), and the panel/rail ordering.
+  The bare-`DESC` performance claim is backed by an executed `EXPLAIN (ANALYZE, BUFFERS)` showing **Incremental
+  Sort with one full-sort group**, 1.381 ms — the presort the index supplies, which `.nullsLast()` would discard.
+  No banned phrase stands unqualified in the ledger.
+- **Gate 10 — Content type homing** — PASS. The `Sources:` shape is code + one config pair; no API-reference
+  fragment is embedded on a feature page (the wire contract lives in `components.yaml` / `openapi.yaml`, which is
+  its canonical home), and the two retention keys were homed in
+  `configuration-and-deployment/odd-platform.md#housekeeping-settings-configuration` — not restated as a
+  configuration block on the feature page, which only links to it.
+- **Gate 11 — Audience isolation** — PASS. Mechanical grep over every `+` line of the documentation diff for
+  `Cornerstone N` / `Gate N` / `LSN-NNN` / `DOC-NNN` / `CTRIB-` / `IT-NNN` / `feature-flow` / `Quality Bar` /
+  `backlog` / `playbook` / `pillar` / `scanner` / `lineage` / `sidecar` / `retrospectiv`: **zero hits**. Also zero
+  `ST-NN` slice ids and zero `#1NNN` issue numbers on a published line — the workspace vocabulary stops at the
+  repo boundary, and the operator-facing pages read as operator prose.
+
+### G-C15 — the changed-test hazard
+
+Every MODIFIED (not added) test was read for weakening. Verdict: **no test was weakened.**
+
+- `AssetSearchScopePredicateTest`, `AssetSearchServiceMyDataTest` — arity-only edits (one extra `null` / `any()`
+  for the new repository parameter); every assertion and its `.as(...)` rationale unchanged.
+- `FavoritesFilter.test.tsx`, `useAppDateTime.test.ts` — prettier re-wrapping only; identical matchers.
+- `PopularityFilter.test.tsx` — **strengthened**: a new `expect(screen.queryByRole('button', {name:'Never viewed'})).toBeNull()`
+  guarding the chrome extraction from starting to render a preset under a rail with no usable slider.
+- `searchFormDataToUrlState.test.ts` — the wire-key guard was widened from ten to eleven keys **deliberately and
+  with the new key named**; the "a regenerated TWELFTH key must fail this" tripwire is preserved, so the LSN-042
+  guard still fires for the next dimension.
+- No `.skip`, no `@Disabled`, no deleted case, no matcher softened, no real boundary swapped for a mock.
+- The RED proof is real and was hardened by the implementer's own `ref:main` run: IT-157 case 10 was GREEN on
+  BOTH systems (it asserted only that junk bounds are inert — trivially true on a platform that cannot narrow at
+  all), which is precisely the G-C15 hazard. A positive control was added and the case is now RED on `main`.
+  That catch is the strongest evidence in this ledger that the RED half was actually executed.
+
+### Navigation / ontology
+
+Consistent. `lineage/odd-platform/feature-flows/detail/F-017.yaml` gained UC-18 as a verified promise
+(`312562f4`); `IT-157` declares `validates: [F-017]` so the traceability ledger has no orphan test. No
+`navigation/domains/*.md` pointer moved (no new bean factory or SDK builder).
+
+### Fix list — ONE rework pass closes all of it
+
+**Blocker (Gate 7, documentation#116 / `docs/data-discovery/search.md`):**
+
+1. `:146` — *"This is the one place the two personal scopes differ in availability"* → there are now **three**,
+   and this is no longer "the one place" (the `## Last viewed` DISABLED hint draws the same contrast). Rewrite so
+   the sentence is true of three scopes, or scope it to the Favorites-vs-My-data pair explicitly.
+2. `:226` — *"…and both personal scopes…"* → **all three personal scopes**.
+
+**Fold in while you are there (do NOT spawn separate items — this rework is already touching these files):**
+
+3. `odd-platform-ui/src/components/shared/elements/AppDateRangePicker/AppDateRangePicker.tsx`, the `defaultRange`
+   javadoc: *"Both shipped callers (the Activity and Alerts Period filters) always pass one, and their behaviour
+   is unchanged."* — **false as of the same commit that wrote it** (`8b7d7639`). `CalendarFilter` now passes
+   `undefined` when the query carries no period, which is the Alerts default; the Alerts box therefore shows the
+   placeholder instead of a fabricated last-week range. The sibling file's own comment states this correctly
+   ("Activity always carries begin/endDate, so that surface is unchanged") — make the two agree.
+4. This ledger's frontmatter still reads `status: plan-approved` with `head_sha:` and `pr:` empty, while
+   `state/active-streams.yaml` already says `review-ready` and §12's closing paragraph ("What remains before the
+   PRs leave draft…") is stale — §11 records those gates as RUN. Fill `head_sha: 6a7faf65`, the two PR URLs, and
+   retire the stale paragraph so the ledger stops contradicting itself.
+
+### Post-merge verification owed at the 1.0.0 release gate (Gate 8 close-out)
+
+| URL | Phrase to confirm |
+|---|---|
+| `https://docs.opendatadiscovery.org/data-discovery/search` (anchor `#last-viewed`) | "Come back to what you were just working on" · "A shared link shows the recipient *their* history" |
+| `https://docs.opendatadiscovery.org/data-discovery/recently-viewed` | "Finding your history in Search" · the **View all** sentence |
+| `https://docs.opendatadiscovery.org/data-discovery/catalog-overview` (`#recently-viewed`) | the **View all** sentence |
+| `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` (`#housekeeping-settings-configuration`) | `recently_viewed_days` · `recently_viewed_max_per_user` · "six cleanup tasks" |
+| `https://docs.opendatadiscovery.org/main-concepts` | the `Recently Viewed | Last viewed, …` alias row |
+| `https://docs.opendatadiscovery.org/features` · `/data-discovery` | "**Last viewed**" in the Search-and-Filtering prose |
+
+- **Outbound URL sweep**: 2 outbound URLs introduced in workspace artefacts (odd-platform#1886, #1887) — both
+  WebFetched via the API and confirmed OPEN with the titles the ledger claims. The documentation diff introduces
+  **no** outbound URL; every new link is tree-relative.
+- **Banned-phrase check**: none used in this verdict — every PASS above ends in a read, a grep, an API response
+  or an executed command.
+- **Upstream issues logged**: none new this review (the two the implement phase found are already filed).
+
+### Doc-product editorial audit (`playbooks/doc-product-editorial-read.md`)
+
+- **Coverage this run**: `docs/data-discovery/**` read end-to-end on `origin/docs/CTRIB-067-recently-viewed-facet`
+  (the composed post-change state), plus the touched pages in `docs/Features.md`, `docs/main-concepts.md` and
+  `docs/configuration-and-deployment/odd-platform.md`. **Queued for the next `/review`:**
+  `docs/active-platform-features/**`, `docs/integrations/**`, `docs/developer-guides/**`.
+- **Findings**: the two stale-count sentences above are the audit's findings, and because the item is being
+  bounced anyway they are folded into the rework fix-list rather than spawned as DOC-NNN items (the CTRIB-023
+  over-logging lesson). No other coherence defect surfaced in the covered subtree: the Recently-Viewed ↔
+  Favorites ↔ Popular three-way distinction is stated consistently on `catalog-overview.md`,
+  `recently-viewed.md`, `favorites.md` and `search.md`; the View-all wording is parallel across the panels; and
+  the new page-to-page cross-links are bidirectional (`search.md#last-viewed` ↔ `recently-viewed.md`,
+  `catalog-overview.md#recently-viewed` ↔ both).
+
+### Notes
+
+- The engineering standard of this slice is the highest in the CTRIB series so far. Three things are worth
+  naming because they are what a review cannot manufacture after the fact: the RED half found its own
+  hidden-bug test (case 10) and was strengthened rather than explained away; the pixel review found three
+  defects with the whole suite green, one of them on a SHIPPED surface that had been contradicting the
+  published manual; and the coverage number was pushed from a passing 98.44 % to 100 % because the one missed
+  line was the branch every real "any time" saved search takes. VERIFIED via the `ref:main` run-log entry (4),
+  the `8b7d7639` diff, and the `6a7faf65` diff respectively.
+- The `sanitiseRecentlyViewed` / `parseRecentlyViewed` asymmetry (a stored inverted window keeps the scope as
+  "any time"; a hand-edited URL drops the dimension) is deliberate, stated in BOTH implementations' comments,
+  asserted from both sides, and documented in `components.yaml`. It is the kind of decision that reads as drift
+  unless it is written down — it is written down. NOT a finding.
+- `useRecentlyViewedHistoryEmpty` is mounted twice on the Search page (`Results.tsx` and
+  `RecentlyViewedFilter.tsx`), so a search page load fires two identical `size: 1` probes. The hook's own comment
+  argues correctly against duplicating it into a second slice, and the cost is one bounded request. Dropped as a
+  nit, not deferred.
+
+**Status transition**: `plan-approved` (stale) → **`blocked`**. Re-run `/review` after the fix list; the
+re-review is the diff of the fix only — every other gate above stands.

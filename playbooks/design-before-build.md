@@ -70,15 +70,32 @@ item. Skip only for genuinely mechanical edits (a typo, a null-guard, a doc-stri
      name, a discoverable affordance)?
    Record the consultation (the `odd-sme` note at `lineage/{repo}/sme-consultations/`) and fold its
    findings into the plan BEFORE building — not after the maintainer catches them at review.
-5. **LOOK at the rendered result (UI changes — verify the pixels, not just the behaviour).** A passing
-   e2e proves a control *functions*; it does NOT prove it is *legible or usable*. After building (and
-   before "done"), **drive the running UI and screenshot the actual rendered surface** (the e2e harness
-   can: `page.screenshot(...)`), then review it as a user would: contrast / background, text wrapping vs.
-   a single unreadable row, width, truncation, alignment, empty state, the affordance's discoverability.
-   A tooltip with no background and an unwrapped one-line wall of text "works" and is still a defect you
-   would be ashamed to show a user (LSN-035, the second instance). If you reuse a styled pattern (G-C12
-   step 1), reuse its **content container** too (e.g. the existing info tooltip's styled body), not just
-   its outer component — a bare string in a styled wrapper renders raw.
+5. **OPERATE the rendered result (UI changes — drive the control, do not photograph it).** A passing e2e
+   proves *some* path functions; a screenshot proves a thing *exists*. Neither proves the control does its
+   job. This step was already prose here and a slice still shipped a date picker that could not pick and a
+   tooltip 1264px wide — because it screenshotted, which satisfied the letter of "look at the rendered
+   result" (LSN-043). So the step is now a **recorded list, not an impression**. After building and before
+   "done", drive the running UI and produce this table in the plan/ledger:
+
+   | control touched | interaction performed | observed output |
+   |---|---|---|
+
+   - **Every interactive control the change touches gets its PRIMARY interaction performed**, end to end,
+     and the OUTPUT recorded — the callback fired, the URL written, the chip text, the row count. A date
+     range: pick two dates and press the commit button. A slider: drag it. A multi-select: select and
+     deselect. If the control has an intermediate state (one of two dates chosen), pass through it —
+     that is where LSN-043's bug lived.
+   - **Every tooltip / popover / overlay is hovered and MEASURED** — record the bounding box. "Looks fine"
+     hid a 1264px-wide line across the results table. A number is the gate.
+   - **A shared component ⇒ a consumer sweep.** Grep its import sites, list them, and drive EACH one.
+     LSN-043 broke the shipped Activity and Alerts Period filters and neither was opened.
+   - Then review as a user would: contrast / background, wrapping vs. a single unreadable row, width,
+     truncation, alignment, empty state, discoverability, and whether the common path sits above the rare
+     one.
+   - If you reuse a styled pattern (G-C12 step 1), reuse its **content container** too (e.g. the existing
+     info tooltip's styled body), not just its outer component — a bare string in a styled wrapper renders
+     raw. **And if the element makes that mistake easy, fix the ELEMENT**: a defect whose remedy depends on
+     every future author remembering an opt-in is not fixed, it is pending (LSN-043 rule 4).
 
 ## exit
 
@@ -90,8 +107,10 @@ The plan (the GATE-1 artefact) explicitly states, before any code:
 - the impact-dimension checklist, each dimension handled-here or deferred-with-a-logged-item (i18n
   covered for all locales, not deferred);
 - for a feature-shaped change, the Product-Owner/SRE assessment and what it changed in the plan;
-- for a UI change, a **screenshot of the rendered result** was reviewed for legibility / styling /
-  wrapping / empty-state — not just a green e2e — before "done".
+- for a UI change, the **control → interaction → observed output** table (step 5) is recorded, every
+  tooltip/overlay has a measured bounding box, every consumer of a touched shared component was driven,
+  and the surface was reviewed for legibility / wrapping / truncation / empty-state — a screenshot alone
+  is NOT an exit (LSN-043).
 
 ## on-fail
 
@@ -109,3 +128,7 @@ The plan (the GATE-1 artefact) explicitly states, before any code:
   one missing "design the HOW" step; this protocol is the fix.
 - `retrospectives/LSN-009-backlog-internal-duplication.md` — grep-the-existing-first before creating (the
   duplication principle, here applied to code patterns, not only backlog items).
+- `retrospectives/LSN-043-presence-not-function.md` — CTRIB-067 screenshotted this step and still shipped a
+  date picker that could not complete a selection and a tooltip that ran across the results, breaking two
+  shipped surfaces on the way. The paragraph describing that exact tooltip defect was ALREADY in this
+  playbook. Advisory prose does not gate; the recorded table and the measurement do.

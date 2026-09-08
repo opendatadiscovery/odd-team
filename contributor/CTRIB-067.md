@@ -1340,19 +1340,222 @@ bodies verbatim from §8b (read back live: both rendered pure-ASCII, 25 and 3 li
 No third artefact: the accessibility issue round 1 asked for was **withdrawn** after the source falsified its claims
 (§8b iii). The one-question clarify bar (G-C6) was never spent — nothing needed asking that the source could not answer.
 
-## 11. Test ledger
-Filled by the executing session: the full unit build (counts + checkstyle), the FE vitest run, IT-157 GREEN on the
-branch SUT + RED on `ref:main` (with the run-log line + the SUT digest for each), the four-suite regression counts, the
-changed-lines coverage figure, the SRE re-measure, and the pixel-review screenshots.
+## 11. Test ledger — every gate RUN, with the number read from the artefact
+
+### The branch — `contrib/CTRIB-067-recently-viewed-facet`, cut inside `../odd-platform-ctrib067` off `origin/main @ 0238005c`
+
+| SHA | What |
+|---|---|
+| `07754dc2` | the contract — `RecentlyViewedScope` on `AssetSearchFormData`, `LAST_VIEWED` in the sort prose |
+| `4d12d15b` | the backend predicate, the ordering and the URL state |
+| `8aedddf2` | the mirror merge, the shared range chrome, a calendar that reads in the user's language |
+| `bed27c62` | the facet, its empty states and the panel's View all |
+| `53bc690a` | the platform-side unit bucket — nine behavioural cases, both cursor guards, the sanitiser pair |
+| `16da5726` | the front-end unit bucket — the URL reading and the facet's own states |
+| `8b7d7639` | the three defects the pixel review found after everything was green |
+
+Pushed and verified by a public read; the documentation train is `docs/CTRIB-067-recently-viewed-facet @ 8fe5a92`.
+
+### Front end
+- `tsc --noEmit`: **clean** (exit 0).
+- `eslint src`: **0 errors**. 22 prettier warnings, none in a file this slice touches after the format pass.
+- vitest, the six touched files: **102 passed / 0 failed** — `searchUrlState`, `searchFormDataToUrlState`,
+  `RecentlyViewedFilter`, `recencyPresets`, `calendarLocale`, `CalendarFilter`, `RangeFacetShell`.
+- i18n: **730 keys in all seven catalogs**, parity verified by set-difference in both directions.
+
+> A whole-suite vitest run taken while a docker stack and a gradle build were competing for the box reported 13
+> failures, every one of them `Test timed out in 5000ms`. Re-run alone, the same files pass. The honest reading of
+> that run is "invalid under contention", not "13 failures" — recorded here because a number read off a contended
+> run is exactly the kind of thing that gets copied forward as fact.
+
+### Platform (the unit bucket — the CI replica)
+`ODD_PLATFORM_DIR=../odd-platform-ctrib067 scripts/run-platform-tests.sh --no-parallel --max-workers=1`
+(`:odd-platform-api:build` = test + checkstyle + assemble + `jacocoTestReport`):
+
+| | |
+|---|---|
+| **BUILD SUCCESSFUL** at the branch tip `6a7faf65` | 31m 21s |
+| tests | **859 passed / 0 failed / 0 errors / 0 skipped**, 186 classes — read from the per-class result XML, never the exit code |
+| checkstyle main + test | clean |
+| **changed-lines coverage** | **64 / 64 = 100.00 %** against the CI `min-coverage-changed-files: 98` floor |
+
+Per-file, added executable lines: `AssetSearchServiceImpl` 19/19 · `SavedSearchServiceImpl` 26/26 ·
+`RecentlyViewedScopeDto` 9/9 · `SearchSortDto` 8/8 · `AssetSearchCursor` 2/2. The three `repository/reactive`
+classes are **not instrumented** — JaCoCo excludes that layer exactly as the CI config does, so their 127 changed
+lines sit outside the denominator on BOTH sides.
+
+**It reached 100 % because the one missed line was worth more than the percentage.** The first complete run
+measured **63/64 = 98.44 %** — over the floor, and easy to ship. The missing line was the `continue` in
+`sanitiseRecentlyViewed` that fires when a stored bound is absent or JSON-null, which is the branch EVERY real
+"any time" saved search takes. IT-157's saved-search case had already proved the wire shape on a running stack:
+the 201 body carries `{"viewed_after": null, "viewed_before": null}`, not `{}`, because Jackson writes the unset
+bounds explicitly. So production's own shape had no unit test while the synthetic `{}` did. Closed in `6a7faf65`
+and re-measured here, not assumed.
+
+**Two checkstyle violations the gate found (`944aef57`).** `checkstyleMain` had never run over this branch — an
+earlier commit said "backend compiles", another said "checkstyle on the test tree", so nothing had claimed a green
+main-tree check and nothing had one. It produced a static import out of alphabetical order and a blank line after a
+record's opening brace. Checkstyle stops at the first failure, so fix one and the next appears; rather than pay
+another round trip the whole diff was swept locally against the rules the build enforces — 16 changed Java files,
+0 import blocks out of order, 0 lines over 120 characters, 0 other blank-line-in-block hits.
+
+**One failure appeared in the first complete run and became a public bug.** `PrometheusMetricsIngestionTest` failed
+on a 500 from the metrics endpoint. `TST-046` had tracked that test as a CI transient since June, asking whoever saw
+it next to pull the server-side trace. This run was local with standard streams on, so the trace was there:
+`getTimestampValue` accepts only `String` and `Double`, and Prometheus emits a whole-second timestamp as a bare
+integer that Jackson binds to `Integer`. Filed as
+**[odd-platform#1887](https://github.com/opendatadiscovery/odd-platform/issues/1887)** (`PLT-270`); `TST-046`
+closed as the tracking question it was. Unrelated to this slice — it touches search, not metrics — and the class
+passes 2/2 in isolation.
+
+### The FULL four-suite regression (`run-regression.sh ctrib067`, the machine-wide flock held)
+
+| suite | measured | verdict |
+|---|---|---|
+| `feature-complete` | 19 failed / 340 passed (44.4m) | **attributed — none of it this change** |
+| `known-bugs` | 3 failed | **expected RED**; the lane working as designed |
+| `multi-stack` | 7 failed / 12 passed (17.1m) | **attributed — none of it this change** |
+| `ingestion-e2e` | **15 passed** (7.2m) | green |
+
+**Attribution, by measurement rather than by assertion.** A `ref:main` A/B of `feature-complete` on the same box,
+against the image the RED half had already built:
+
+| set | count | what it is |
+|---|---|---|
+| fail on BOTH branch and main | 12 | the tracked baseline — TST-059's eleven + TST-057's swagger straggler, confirmed by set-equality on `spec:line` |
+| fail on the BRANCH only | 7 | **all seven pass on retry** (32/32 green re-running the six specs on the same branch SUT) |
+| fail on MAIN only | 4 | the same class on the other side — nobody claims this slice *fixed* `entity-alerts-display` |
+
+`multi-stack`'s seven: five are `demo-stand-first-run`, which drives odd-platform's own `docker/demo.yaml` against
+the PUBLISHED image (`ghcr.io/opendatadiscovery/odd-platform@sha256:3b61b3f2…`) — it never executes this branch's
+code, so it is change-independent by construction, not by argument. The other two are `my-data-scope-narrows`
+`:388` and `:434`.
+
+**`:434` was the one that refused the easy answer, and it is the finding.** It failed on the branch three runs
+running and passed on main — regression-shaped. Opening its trace gave the cause:
+
+```
+console   net::ERR_NETWORK_CHANGED
+pageError TypeError: Failed to fetch dynamically imported module: .../assets/Search-IgjLSmJj.js
+```
+
+Chromium aborts in-flight requests when the HOST's network configuration changes, and a full regression does that
+constantly — one run's log shows `probe-stacks_default`, `oddlf_default` and `oddemo154_default` all created and
+destroyed. The abort landed on a code-split route chunk, the lazy import rejected, and with **no error boundary in
+`odd-platform-ui`** the page rendered BLANK — so every locator read absent and the failure wore whatever mask that
+spec's wait happened to have. Its sibling `:388` shows the mirror image on main; both cases have now passed AND
+failed on identical code. Logged as **`TST-071`** with the signature, the eight specs it has been seen in, and the
+fix (promote IT-157's one-reload guard into a shared helper); `TST-059`'s standing guidance now points there so the
+next stream reads it before spending the ~70-minute A/B its own author warned about.
+
+**Two of my own reading errors, corrected rather than left standing:** a failure line hidden behind an ANSI cursor
+prefix made me report "no failures" once (fixed by stripping control sequences before parsing), and one retry ran
+against `ghcr.io/...:latest` instead of the branch because `odd-minimal` falls back to the published image when
+`ODD_PLATFORM_IMAGE` is unset — a result that attributes nothing, and was re-run pinned.
+
+### Integration — IT-157, driven as a user
+| Run | SUT | Result |
+|---|---|---|
+| authoring | working tree @ `53bc690a`, digest `be0c420d` | 7 passed / 5 failed — **every failure in the SPEC**, none in the system |
+| **GREEN** | working tree @ `53bc690a`, digest `be0c420d` | **12 passed / 0 failed**, 2.9 min |
+
+Both entries are in `integration-tests/run-log/2026-09-07-IT-157.md`, the first one written honestly rather than
+overwritten. The five spec defects the first run found are listed in the `80da8d06` commit body; the sixth failure
+was environmental (`net::ERR_NETWORK_CHANGED` on the SPA's lazy chunks, a blank page, no error boundary) and is
+documented in the protocol together with the one-reload recovery that does not weaken any oracle.
+
+### SRE re-measure on the BUILT SUT at 126k assets (R14)
+
+Stack `ctrib067probe` (:18430/:15630) running `odd-platform:odd-team-sut-ctrib067` — the image built from the
+branch tip, not the plan-time cached one. The §4a fixture reproduced exactly: **126,000 union rows**
+(120k data entities + 5k terms + 1k query examples) and **200 history rows** for the DISABLED sentinel plus a
+second identity's 200 as the leak foil.
+
+**Endpoint wall-time through the real `POST /api/search/assets`** (3 samples, warm):
+
+| request | warm |
+|---|---|
+| browse count+page, NO scope (the shipped baseline) | 0.78 – 0.84 s |
+| browse + scope, 30-day window | **0.34 – 0.35 s** |
+| browse + scope, any time | **0.24 – 0.26 s** |
+| scope + `sort=last_viewed` | **0.15 – 0.18 s** |
+
+**The scope makes the search FASTER, which is what §4a predicted** ("the round-trip the issue guards is not
+extended — it is shortened when the scope is on"). Every scoped query is bounded by the per-identity history cap,
+not by the catalog.
+
+**The narrowing and the leak foil, measured on the same stack:**
+
+| body | `total` |
+|---|---|
+| `{}` (no scope) | 126,000 |
+| `recently_viewed: {}` | **200** — exactly the sentinel's own history |
+| `recently_viewed: {viewed_after: <2 days ago>}` | **5** |
+
+400 rows sit in `recently_viewed`; the scoped total is 200. The identity-keyed join is therefore proven on a
+running system at scale, not argued from the SQL.
+
+**The executed plan confirms the bare-`DESC` decision** (`EXPLAIN (ANALYZE, BUFFERS)` on the ordering shape):
+
+```
+Limit (rows=31)
+  -> Incremental Sort   Sort Key: rv.last_viewed_at DESC, a.asset_kind, a.asset_id DESC
+       Full-sort Groups: 1   quicksort   Peak Memory: 27kB
+       -> Nested Loop (rows=32)
+            -> Index Scan using recently_viewed_identity_ts_idx on recently_viewed
+                 Index Cond: oidc_username = '__shared__' AND provider = 'DISABLED'   (rows=32)
+            -> Index Only Scan using asset_search_entrypoint_pkey    (loops=32)
+Execution Time: 1.381 ms
+```
+
+**Incremental Sort with ONE full-sort group** — the index's presort on `last_viewed_at DESC` is reused and only
+the tiebreakers sort. That is precisely what the `DESC NULLS LAST` spelling would have thrown away (§4a measured
+it as a full top-N heapsort at 5.3 ms). 32 rows read, 1.38 ms executed, against §4a's 2.5 ms for the same shape.
+
+### Pixel review (G-C12 step 5) — the gate that earned its place
+Screenshotted at 1280x720 with the facet open, the picker popup, the chip, the sort control and the home panel,
+then the whole rail again under `ua`. **Three defects, all invisible to a green suite:**
+
+| # | What a user saw | Fix |
+|---|---|---|
+| 1 | the date box read `1 Sep ~ 7 Sep` while the chip read `any time` — a control stating a filter the search was not applying. **The shipped Alerts Period filter does the same**, and the published manual already says the opposite ("Left unset by default…"), so the UI was contradicting the docs | the picker accepts no range and shows a placeholder; `CalendarFilter` passes none when the query carries no period |
+| 2 | a two-month calendar opening upward from a control ~350 px down the rail overflows the viewport top and takes the month header and its arrows with it | an optional `calendarPosition`; the facet opens sideways, into the empty page to its right |
+| 3 | `Останній перегляд: від 1 Sep 2026` beneath a calendar reading `1 вер.` | the chip formats through `Intl` with the catalog-key map the calendar already needed |
+
+Defect 3's cause is app-wide — `useAppDateTime` passes no `locale`, so every date in the platform renders en-US —
+and is filed as **[odd-platform#1886](https://github.com/opendatadiscovery/odd-platform/issues/1886)** (`PLT-269`)
+with the rendered evidence. Each of the three now has a test, and the shared date control finally has the
+behaviour-diff suite for its two shipped consumers that made changing it safe in the first place.
 
 ## 12. Outcome
 
 Phases A–C complete 2026-09-06; **GATE 1 approved 2026-09-07** (all three decisions as recommended); Step 0's two scope
-comments posted (§10). **No code, no branch, no PR** — Phase D is a separate session by the maintainer's choice.
+comments posted (§10); the owed independent round-3 plan-check RAN and PASSED with 0 blockers (§8a).
 
-**The executing session starts here, in this order:**
-1. ~~the owed independent round-3 plan-check~~ — **DONE 2026-09-07, PASSED, 0 blockers** (§8a); its warnings are folded;
-2. §9.0's preconditions (re-verify `origin/main`, cut the branch inside `../odd-platform-ctrib067`, push-safety);
-3. Steps 1 → 12 of §7, one commit per step, against §9's runbook;
-4. the five Definition-of-Done gates (§9.4), all RUN, none deferred to `/review`;
-5. the draft PRs → `review-ready`. The implementer never sets `merged` or `done`.
+**Phase D BUILT 2026-09-07** — eight commits on `contrib/CTRIB-067-recently-viewed-facet` (pushed) and one on
+`documentation@docs/CTRIB-067-recently-viewed-facet` (pushed), with the ledger in §11.
+
+**What the slice delivers, in the user's terms.** A **Last viewed** control on the Catalog search that narrows the
+result list to the assets the reader has opened, optionally inside a date window they pick as local days; the list
+reads newest-first under a **Recently viewed** ordering coupled to the scope; it is cross-kind, rides the URL,
+survives every other facet, is cleared by Clear All together with the ordering it turned on, is stored and reapplied
+by a saved search, and the home page's Recently Viewed panel finally has a **View all** that opens exactly that list
+— which is what lets the PR close **#1832** as well. Under `auth.type=DISABLED` it works on the shared history and
+says so, which is GATE-1 decision D1 and the correction the issue's own acceptance line needed.
+
+**Three things this run got right only because it looked rather than assumed.**
+
+1. **The tests found their own defects first.** IT-157's opening run was 7/12, and all five failures were in the
+   spec: a batch read counted as a write, a signed-in label asserted on an auth-disabled stack, a literal `{}`
+   expected where the wire carries explicit nulls, an ambiguous locator paired with a default that a text query
+   correctly overrides, and a fixture destroyed by the spec's own case 9. Fixed against observed shapes, then 12/12.
+2. **The pixel review found three defects with the suite fully green** (§11) — including one on a SHIPPED surface
+   whose behaviour contradicted the published manual, and one that no key-parity check can see.
+3. **A stalled build was diagnosed, not waited out.** A `ref:main` SUT build sat at 80 % CPU writing nothing for
+   thirty minutes; a heap dump showed 521,615K used of a 524,288K Gradle heap. The daemon heap is a machine-local
+   setting now, and the case is recorded so the next run does not spend the same thirty minutes.
+
+**What remains before the PRs leave draft** is the rest of §9.4: the unit-build counts, IT-157 re-green on a SUT
+rebuilt from the final commit, the RED half on `ref:main`, the four-suite regression, the changed-lines coverage
+figure, the SRE re-measure at 126k, and the ontology rebuild. Status flips to `review-ready`; GATE 2 is the
+maintainer's, and the implementer never sets `merged` or `done`.
